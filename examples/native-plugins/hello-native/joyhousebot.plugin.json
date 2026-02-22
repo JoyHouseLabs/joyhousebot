@@ -1,0 +1,23 @@
+{
+  "id": "hello-native",
+  "name": "hello-native",
+  "version": "0.1.0",
+  "runtime": "python-native",
+  "entry": "plugin.py:plugin",
+  "capabilities": {
+    "tools": true,
+    "rpc": true,
+    "hooks": true
+  },
+  "skills": ["skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "prefix": {
+        "type": "string"
+      }
+    }
+  }
+}
+

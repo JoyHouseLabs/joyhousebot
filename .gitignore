@@ -1,0 +1,64 @@
+# Local / env
+.env
+.env.local
+.env.*.local
+.assets
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzz
+.venv/
+venv/
+__pycache__/
+*.egg-info/
+*.egg
+dist/
+build/
+poetry.lock
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.log
+botpy.log
+
+# Tests (optional: remove to track tests)
+# tests/
+
+# Node (anywhere: frontend, bridge, etc.)
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+*.tsbuildinfo
+**/*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+coverage/
+.cache/
+
+# Frontend / bridge env and generated
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/components.d.ts
+bridge/.env
+bridge/.env.local
+bridge/.env.*.local
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+knowledge/

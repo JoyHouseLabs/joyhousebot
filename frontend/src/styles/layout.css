@@ -1,0 +1,208 @@
+/* Shell: topbar + nav + content (OpenClaw-style) */
+.shell {
+  height: 100vh;
+  display: grid;
+  grid-template-columns: var(--shell-nav-width) minmax(0, 1fr);
+  grid-template-rows: var(--shell-topbar-height) 1fr;
+  grid-template-areas:
+    "topbar topbar"
+    "nav content";
+  overflow: hidden;
+}
+
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  height: var(--shell-topbar-height);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: transparent;
+}
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.brand-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--text-strong);
+}
+.brand-sub {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* Nav sidebar wrapper (contains nav + edge trigger) */
+.shell-nav-wrap {
+  grid-area: nav;
+  position: relative;
+  display: flex;
+  min-height: 0;
+}
+
+.shell-nav {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 12px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Collapsed sidebar */
+.shell.nav-collapsed {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+.shell.nav-collapsed .shell-nav {
+  padding: 12px 8px;
+}
+.shell.nav-collapsed .nav-label {
+  display: none;
+}
+.shell.nav-collapsed .nav-item-text {
+  display: none;
+}
+.shell.nav-collapsed .nav-item {
+  justify-content: center;
+  padding: 10px;
+  min-width: 0;
+}
+.shell.nav-collapsed .nav-group {
+  margin-bottom: 8px;
+}
+
+.nav-group {
+  margin-bottom: 20px;
+}
+.nav-group:last-child { margin-bottom: 0; }
+
+.nav-label {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 4px;
+  border-radius: var(--radius-sm);
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+  font-size: 13px;
+  font-weight: 500;
+  width: 100%;
+  text-align: left;
+  box-sizing: border-box;
+}
+.nav-item:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.nav-item.active {
+  color: var(--text-strong);
+  background: var(--accent-subtle);
+}
+
+/* Content area */
+.shell-content {
+  grid-area: content;
+  padding: 12px 16px 32px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg-content);
+}
+
+.content-header {
+  margin-bottom: 24px;
+}
+.page-title {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+  color: var(--text-strong);
+}
+.page-sub {
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 6px;
+}
+
+@media (max-width: 768px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas: "topbar" "nav" "content";
+  }
+  .shell.nav-collapsed {
+    grid-template-columns: 1fr;
+  }
+  .shell-nav {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .nav-group { margin-bottom: 0; }
+  .nav-trigger {
+    display: none;
+  }
+  .shell.nav-collapsed .nav-item-text {
+    display: inline;
+  }
+  .shell.nav-collapsed .nav-label {
+    display: none;
+  }
+}

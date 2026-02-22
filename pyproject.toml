@@ -1,0 +1,110 @@
+[project]
+name = "joyhousebot-ai"
+version = "0.1.1"
+description = "Joyhouse agent framework"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "joyhouse team"}
+]
+keywords = ["ai", "agent", "chatbot"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "litellm>=1.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "websockets>=12.0",
+    "websocket-client>=1.6.0",
+    "httpx[socks]>=0.25.0",
+    "loguru>=0.7.0",
+    "readability-lxml>=0.8.0",
+    "rich>=13.0.0",
+    "croniter>=2.0.0",
+    "dingtalk-stream>=0.4.0",
+    "python-telegram-bot[socks]>=21.0",
+    "lark-oapi>=1.0.0",
+    "socksio>=1.0.0",
+    "python-socketio>=5.11.0",
+    "msgpack>=1.0.8",
+    "slack-sdk>=3.26.0",
+    "qq-botpy>=1.0.0",
+    "python-socks[asyncio]>=2.4.0",
+    "prompt-toolkit>=3.0.0",
+    "mcp>=1.0.0",
+    "json-repair>=0.30.0",
+    "pycryptodome>=3.20.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "python-multipart>=0.0.6",
+    "playwright>=1.40.0",
+    "pypdf>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+youtube = [
+    "yt-dlp>=2024.0.0",
+]
+retrieval = [
+    "chromadb>=0.4.0",
+]
+
+[project.scripts]
+joyhousebot = "joyhousebot.cli.commands:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["joyhousebot"]
+
+[tool.hatch.build.targets.wheel.sources]
+"joyhousebot" = "joyhousebot"
+
+# Include non-Python files in skills
+[tool.hatch.build]
+include = [
+    "joyhousebot/**/*.py",
+    "joyhousebot/skills/**/*.md",
+    "joyhousebot/skills/**/*.sh",
+    "joyhousebot/static/**",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "joyhousebot/",
+    "bridge/",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"bridge" = "joyhousebot/bridge"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests (e.g. real browser); run with pytest -m e2e",
+]

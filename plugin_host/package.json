@@ -1,0 +1,10 @@
+{
+  "name": "joyhousebot-plugin-host",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "description": "Node sidecar for OpenClaw plugin compatibility",
+  "scripts": {
+    "host": "node ./src/host.mjs"
+  }
+}
