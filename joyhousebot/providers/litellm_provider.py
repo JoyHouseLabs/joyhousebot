@@ -19,6 +19,7 @@ from joyhousebot.providers.registry import find_by_model, find_gateway
 
 # 详细错误信息最大长度，避免刷屏
 _MAX_DETAIL_LEN = 1200
+_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def _mask_api_key(api_key: str | None) -> str:
@@ -31,15 +32,110 @@ def _mask_api_key(api_key: str | None) -> str:
     return f"{key[:6]}...{key[-4:]}"
 
 
-def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure no message has content: null (DeepSeek etc. require string)."""
+def _sanitize_messages(
+    messages: list[dict[str, Any]],
+    *,
+    original_to_alias: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Ensure messages are provider-safe (non-null content, tool_call names)."""
     out: list[dict[str, Any]] = []
+    name_map = original_to_alias or {}
+    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
     for m in messages:
         m = dict(m)
+        # Drop local metadata keys (e.g. timestamp/tools_used) for strict providers.
+        m = {k: v for k, v in m.items() if k in allowed_keys}
         if "content" in m and m["content"] is None:
             m["content"] = ""
+        # Normalize historical assistant tool_calls for strict providers.
+        tc_list = m.get("tool_calls")
+        if isinstance(tc_list, list) and tc_list:
+            fixed_calls: list[Any] = []
+            for tc in tc_list:
+                if not isinstance(tc, dict):
+                    fixed_calls.append(tc)
+                    continue
+                tc_dict = dict(tc)
+                fn = tc_dict.get("function")
+                if isinstance(fn, dict):
+                    fn_dict = dict(fn)
+                    raw = fn_dict.get("name")
+                    if isinstance(raw, str) and raw:
+                        # Prefer deterministic mapping from current tools.
+                        mapped = name_map.get(raw)
+                        if not mapped and not _TOOL_NAME_PATTERN.match(raw):
+                            mapped = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_") or "tool"
+                        if mapped:
+                            fn_dict["name"] = mapped
+                    tc_dict["function"] = fn_dict
+                fixed_calls.append(tc_dict)
+            m["tool_calls"] = fixed_calls
         out.append(m)
     return out
+
+
+def _make_tool_alias(original_name: str, existing: set[str]) -> str:
+    """Make provider-safe function name alias matching ^[a-zA-Z0-9_-]+$."""
+    base = re.sub(r"[^a-zA-Z0-9_-]", "_", original_name).strip("_")
+    if not base:
+        base = "tool"
+    alias = base
+    idx = 2
+    while alias in existing:
+        alias = f"{base}_{idx}"
+        idx += 1
+    return alias
+
+
+def _sanitize_tools_for_provider(
+    tools: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, str]]:
+    """
+    Return provider-safe tool definitions and alias->original map.
+
+    Some providers (e.g. DeepSeek) reject function names containing dots.
+    We keep runtime tool names unchanged by aliasing only at provider boundary.
+    """
+    if not tools:
+        return tools, {}
+
+    sanitized: list[dict[str, Any]] = []
+    alias_to_original: dict[str, str] = {}
+    used_names: set[str] = set()
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            sanitized.append(tool)
+            continue
+        t = dict(tool)
+        fn = t.get("function")
+        if not isinstance(fn, dict):
+            sanitized.append(t)
+            continue
+        f = dict(fn)
+        original_name = f.get("name")
+        if not isinstance(original_name, str) or not original_name.strip():
+            original_name = f"tool_{len(sanitized)}"
+
+        if _TOOL_NAME_PATTERN.match(original_name):
+            used_names.add(original_name)
+            sanitized_name = original_name
+        else:
+            sanitized_name = _make_tool_alias(original_name, used_names)
+            alias_to_original[sanitized_name] = original_name
+            used_names.add(sanitized_name)
+
+        f["name"] = sanitized_name
+        t["function"] = f
+        sanitized.append(t)
+
+    return sanitized, alias_to_original
+
+
+def _restore_tool_name(name: str, alias_to_original: dict[str, str]) -> str:
+    if not isinstance(name, str):
+        return ""
+    return alias_to_original.get(name, name)
 
 
 def _format_request_debug(model: str | None, api_base: str | None, api_key: str | None) -> str:
@@ -268,6 +364,9 @@ class LiteLLMProvider(LLMProvider):
         # Pass api_key directly — more reliable than env vars alone
         if self.api_key:
             kwargs["api_key"] = self.api_key
+        # LiteLLM 对 OpenRouter 主要从环境变量读 key；请求前再次写入，避免被覆盖或未生效
+        if self.api_key and model.startswith("openrouter/"):
+            os.environ["OPENROUTER_API_KEY"] = self.api_key
         
         # Pass api_base for custom endpoints
         if self.api_base:
@@ -277,14 +376,37 @@ class LiteLLMProvider(LLMProvider):
         if self.extra_headers:
             kwargs["extra_headers"] = self.extra_headers
         
+        tool_alias_map: dict[str, str] = {}
+        original_to_alias: dict[str, str] = {}
         if tools:
-            kwargs["tools"] = tools
+            provider_tools, tool_alias_map = _sanitize_tools_for_provider(tools)
+            original_to_alias = {orig: alias for alias, orig in tool_alias_map.items()}
+            kwargs["tools"] = provider_tools
             kwargs["tool_choice"] = "auto"
-        kwargs["messages"] = _sanitize_messages(kwargs["messages"])
+        kwargs["messages"] = _sanitize_messages(kwargs["messages"], original_to_alias=original_to_alias)
         
         try:
+            # Defensive second-pass sanitize right before request (catch any leakage).
+            if kwargs.get("tools"):
+                provider_tools_final, extra_alias = _sanitize_tools_for_provider(kwargs["tools"])
+                kwargs["tools"] = provider_tools_final
+                if extra_alias:
+                    tool_alias_map.update(extra_alias)
+                # Final validation: ensure no invalid names reach the API.
+                used = {fn.get("name") for t in (kwargs["tools"] or []) if isinstance(t, dict) for fn in [t.get("function") or {}] if isinstance(fn, dict) and isinstance(fn.get("name"), str)}
+                for t in (kwargs["tools"] or []):
+                    if isinstance(t, dict):
+                        fn = t.get("function")
+                        if isinstance(fn, dict):
+                            n = fn.get("name")
+                            if isinstance(n, str) and not _TOOL_NAME_PATTERN.match(n):
+                                safe = _make_tool_alias(n, used)
+                                used.add(safe)
+                                fn["name"] = safe
+                                t["function"] = fn
+                                tool_alias_map[safe] = n
             response = await acompletion(**kwargs)
-            return self._parse_response(response)
+            return self._parse_response(response, tool_alias_map=tool_alias_map)
         except Exception as e:
             msg = _user_friendly_llm_error(
                 e, model=model, api_base=self.api_base, api_key=self.api_key
@@ -320,14 +442,20 @@ class LiteLLMProvider(LLMProvider):
         self._apply_model_overrides(model, kwargs)
         if self.api_key:
             kwargs["api_key"] = self.api_key
+        if model.startswith("openrouter/") and self.api_key:
+            os.environ["OPENROUTER_API_KEY"] = self.api_key
         if self.api_base:
             kwargs["api_base"] = self.api_base
         if self.extra_headers:
             kwargs["extra_headers"] = self.extra_headers
+        tool_alias_map: dict[str, str] = {}
+        original_to_alias: dict[str, str] = {}
         if tools:
-            kwargs["tools"] = tools
+            provider_tools, tool_alias_map = _sanitize_tools_for_provider(tools)
+            original_to_alias = {orig: alias for alias, orig in tool_alias_map.items()}
+            kwargs["tools"] = provider_tools
             kwargs["tool_choice"] = "auto"
-        kwargs["messages"] = _sanitize_messages(kwargs["messages"])
+        kwargs["messages"] = _sanitize_messages(kwargs["messages"], original_to_alias=original_to_alias)
 
         accumulated_content: list[str] = []
         accumulated_tool_calls: list[dict[str, Any]] = []
@@ -335,6 +463,24 @@ class LiteLLMProvider(LLMProvider):
         usage: dict[str, int] = {}
 
         try:
+            # Defensive second-pass sanitize right before request.
+            if kwargs.get("tools"):
+                provider_tools_final, extra_alias = _sanitize_tools_for_provider(kwargs["tools"])
+                kwargs["tools"] = provider_tools_final
+                if extra_alias:
+                    tool_alias_map.update(extra_alias)
+                used = {fn.get("name") for t in (kwargs["tools"] or []) if isinstance(t, dict) for fn in [t.get("function") or {}] if isinstance(fn, dict) and isinstance(fn.get("name"), str)}
+                for t in (kwargs["tools"] or []):
+                    if isinstance(t, dict):
+                        fn = t.get("function")
+                        if isinstance(fn, dict):
+                            n = fn.get("name")
+                            if isinstance(n, str) and not _TOOL_NAME_PATTERN.match(n):
+                                safe = _make_tool_alias(n, used)
+                                used.add(safe)
+                                fn["name"] = safe
+                                t["function"] = fn
+                                tool_alias_map[safe] = n
             stream = await acompletion(**kwargs)
             async for chunk in stream:
                 choices = chunk.get("choices", []) if isinstance(chunk, dict) else getattr(chunk, "choices", [])
@@ -372,7 +518,8 @@ class LiteLLMProvider(LLMProvider):
                     args = json_repair.loads(args)
                 if not isinstance(args, dict):
                     args = {}
-                name = (fn.get("name") or "") if isinstance(fn, dict) else (getattr(fn, "name", None) or "")
+                raw_name = (fn.get("name") or "") if isinstance(fn, dict) else (getattr(fn, "name", None) or "")
+                name = _restore_tool_name(raw_name, tool_alias_map)
                 if not isinstance(name, str):
                     name = ""
                 tool_calls_parsed.append(ToolCallRequest(
@@ -394,10 +541,11 @@ class LiteLLMProvider(LLMProvider):
             meta = _build_error_meta(e)
             yield ("done", LLMResponse(content=msg, finish_reason="error", **meta))
 
-    def _parse_response(self, response: Any) -> LLMResponse:
+    def _parse_response(self, response: Any, tool_alias_map: dict[str, str] | None = None) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
         message = choice.message
+        alias_map = tool_alias_map or {}
         
         tool_calls = []
         if hasattr(message, "tool_calls") and message.tool_calls:
@@ -407,7 +555,8 @@ class LiteLLMProvider(LLMProvider):
                     args = json_repair.loads(args)
                 if not isinstance(args, dict):
                     args = {}
-                name = getattr(tc.function, "name", None) or ""
+                raw_name = getattr(tc.function, "name", None) or ""
+                name = _restore_tool_name(raw_name, alias_map)
                 if not isinstance(name, str):
                     name = ""
                 tool_calls.append(ToolCallRequest(

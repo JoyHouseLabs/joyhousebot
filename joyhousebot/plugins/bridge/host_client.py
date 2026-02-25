@@ -49,6 +49,8 @@ class PluginHostClient:
         host_script, openclaw_dir = self._resolve_paths()
         package_json = openclaw_dir / "package.json"
         dist_loader = openclaw_dir / "dist" / "plugins" / "loader.js"
+        src_loader = openclaw_dir / "src" / "plugins" / "loader.ts"
+        loader_available = dist_loader.exists() or src_loader.exists()
         node_bin = shutil.which("node")
         pnpm_bin = shutil.which("pnpm")
         npm_bin = shutil.which("npm")
@@ -57,6 +59,8 @@ class PluginHostClient:
             "openclawDirExists": openclaw_dir.exists(),
             "openclawPackageJsonExists": package_json.exists(),
             "openclawDistLoaderExists": dist_loader.exists(),
+            "openclawSrcLoaderExists": src_loader.exists(),
+            "openclawLoaderAvailable": loader_available,
             "nodeAvailable": bool(node_bin),
             "pnpmAvailable": bool(pnpm_bin),
             "npmAvailable": bool(npm_bin),
@@ -68,15 +72,16 @@ class PluginHostClient:
             suggestions.append(f"Ensure OpenClaw workspace exists at: {openclaw_dir}")
         if checks["openclawDirExists"] and not checks["openclawPackageJsonExists"]:
             suggestions.append(f"OpenClaw package.json is missing under: {openclaw_dir}")
-        if checks["openclawDirExists"] and not checks["openclawDistLoaderExists"]:
+        if checks["openclawDirExists"] and not loader_available:
             pkg_manager = "pnpm" if checks["pnpmAvailable"] else "npm"
-            suggestions.append(f"Build OpenClaw first: cd {openclaw_dir} && {pkg_manager} run build")
+            suggestions.append(f"OpenClaw loader missing. Need dist/plugins/loader.js or src/plugins/loader.ts. Try: cd {openclaw_dir} && {pkg_manager} run build")
         return {
             "paths": {
                 "hostScript": str(host_script),
                 "openclawDir": str(openclaw_dir),
                 "openclawPackageJson": str(package_json),
                 "openclawDistLoader": str(dist_loader),
+                "openclawSrcLoader": str(src_loader),
             },
             "bins": {
                 "node": node_bin or "",
@@ -174,12 +179,22 @@ class PluginHostClient:
             raise PluginHostError("NODE_NOT_FOUND", "node is not available in PATH", report)
         if not report["checks"]["openclawDirExists"]:
             raise PluginHostError("OPENCLAW_DIR_NOT_FOUND", "openclaw workspace directory not found", report)
+        if not report["checks"].get("openclawLoaderAvailable"):
+            raise PluginHostError(
+                "OPENCLAW_LOADER_MISSING",
+                "need dist/plugins/loader.js or src/plugins/loader.ts in openclaw dir; run `pnpm run build` there or ensure src/plugins/loader.ts exists",
+                report,
+            )
         if not host_script.exists():
             raise PluginHostError("HOST_NOT_FOUND", f"plugin host script missing: {host_script}", report)
-        command = [
-            "node",
-            str(host_script),
-        ]
+        plugin_host_dir = host_script.parent.parent
+        use_tsx = (plugin_host_dir / "node_modules" / "tsx").exists()
+        if use_tsx:
+            command = ["node", "--import", "tsx", "./src/host.mjs"]
+            spawn_cwd = str(plugin_host_dir)
+        else:
+            command = ["node", str(host_script)]
+            spawn_cwd = str(openclaw_dir)
         env = os.environ.copy()
         env["JOYHOUSEBOT_OPENCLAW_DIR"] = str(openclaw_dir)
         env.setdefault("NODE_NO_WARNINGS", "1")
@@ -189,7 +204,7 @@ class PluginHostClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=str(openclaw_dir),
+            cwd=spawn_cwd,
             env=env,
             bufsize=1,
         )

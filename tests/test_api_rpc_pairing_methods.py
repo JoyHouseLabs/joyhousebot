@@ -34,7 +34,8 @@ async def test_device_pair_and_token_methods():
         now_ms=lambda: 100,
         broadcast_rpc_event=_broadcast,
     )
-    assert approve == (True, {"ok": True}, None)
+    assert approve[0] is True and approve[1].get("ok") is True
+    assert "token" in approve[1] and "deviceId" in approve[1]
     assert len(state["rpc.device_pairs"]["paired"]) == 1
 
     rotate = await try_handle_pairing_method(

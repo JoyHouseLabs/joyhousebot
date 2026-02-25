@@ -24,7 +24,7 @@ class _MinimalProvider(LLMProvider):
 
 
 def test_agent_loop_registers_plugin_invoke(tmp_path: Path) -> None:
-    """plugin.invoke must appear in Agent tool definitions so Agent can call plugin tools."""
+    """plugin_invoke must appear in Agent tool definitions so Agent can call plugin tools."""
     loop = AgentLoop(
         bus=MessageBus(),
         provider=_MinimalProvider(),
@@ -32,7 +32,7 @@ def test_agent_loop_registers_plugin_invoke(tmp_path: Path) -> None:
         max_iterations=1,
     )
     names = [t["function"]["name"] for t in loop.tools.get_definitions()]
-    assert "plugin.invoke" in names
+    assert "plugin_invoke" in names
 
 
 def test_agent_loop_registers_open_app(tmp_path: Path) -> None:
@@ -77,8 +77,8 @@ def test_apps_config_schema_default() -> None:
     """AppsConfig has enabled list; empty means all enabled."""
     apps = AppsConfig()
     assert apps.enabled == []
-    apps = AppsConfig(enabled=["library"])
-    assert apps.enabled == ["library"]
+    apps = AppsConfig(enabled=["example_app"])
+    assert apps.enabled == ["example_app"]
 
 
 def test_config_has_apps_field() -> None:

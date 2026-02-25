@@ -7,6 +7,7 @@
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -18,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from fastapi import APIRouter, FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -79,6 +80,14 @@ from joyhousebot.api.http.task_methods import (
     list_tasks_response,
 )
 from joyhousebot.api.http.identity_methods import get_identity_response
+from joyhousebot.api.http.cloud_connect_methods import (
+    get_house_identity_response,
+    register_house_response,
+    bind_house_response,
+    get_cloud_connect_status_response,
+    start_cloud_connect_response,
+    stop_cloud_connect_response,
+)
 from joyhousebot.api.http.cron_rest_methods import (
     add_cron_job_response,
     cron_job_to_dict,
@@ -455,6 +464,33 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from joyhousebot.utils.exceptions import JoyhouseBotError, sanitize_error_message
+from joyhousebot.api.rpc.error_boundary import classify_http_status
+
+
+@app.exception_handler(JoyhouseBotError)
+async def joyhousebot_exception_handler(request: Request, exc: JoyhouseBotError):
+    from fastapi.responses import JSONResponse
+    status_code = classify_http_status(exc)
+    return JSONResponse(
+        status_code=status_code,
+        content=exc.to_dict()
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    from fastapi.responses import JSONResponse
+    from joyhousebot.utils.exceptions import classify_exception
+    code, category, _ = classify_exception(exc)
+    sanitized = sanitize_error_message(str(exc))
+    logger.exception(f"Unhandled exception [{code}]: {sanitized}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "INTERNAL_ERROR", "message": "An unexpected error occurred", "code": code}
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -491,79 +527,56 @@ if _a2ui_dir.exists() and ((_a2ui_dir / "index.html").exists() or (_a2ui_dir / "
     )
 
 
+def _extract_http_api_credential(request: Request) -> str | None:
+    """Extract credential from Authorization: Bearer, X-API-Key, or X-Control-Password."""
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        return auth[7:].strip()
+    key = request.headers.get("X-API-Key", "").strip()
+    if key:
+        return key
+    return request.headers.get("X-Control-Password", "").strip() or None
+
+
+async def verify_http_api_token(request: Request) -> None:
+    """Dependency: when gateway.control_token or control_password is set, require matching credential for /api."""
+    config = get_cached_config()
+    token = (getattr(config.gateway, "control_token", None) or "").strip()
+    password = (getattr(config.gateway, "control_password", None) or "").strip()
+    if not token and not password:
+        return
+    provided = _extract_http_api_credential(request)
+    if not provided:
+        raise HTTPException(status_code=401, detail="Invalid or missing API token")
+    if token and hmac.compare_digest(token, provided):
+        return
+    if password and hmac.compare_digest(password, provided):
+        return
+    raise HTTPException(status_code=401, detail="Invalid or missing API token")
+
+
 # API router: all JSON API routes under /api
-api_router = APIRouter()
+api_router = APIRouter(dependencies=[Depends(verify_http_api_token)])
 
 # Plugin apps (webapp dist) list API; static files stay at /plugins-apps/
 @api_router.get("/plugins/apps")
 async def list_plugins_apps():
-    """List plugin webapps for frontend AppHost (app_id, name, route, entry, base_url)."""
+    """List plugin webapps for frontend AppHost (app_id, name, route, entry, base_url, app_link, icon_url)."""
     from joyhousebot.plugins.apps import resolve_plugin_apps
     config = get_cached_config()
     workspace = Path(config.workspace_path).expanduser().resolve()
     apps = resolve_plugin_apps(workspace, config)
     for a in apps:
-        a["base_url"] = f"/plugins-apps/{a['app_id']}"
+        app_id = a["app_id"]
+        a["base_url"] = f"/plugins-apps/{app_id}"
+        a["app_link"] = f"/plugins-apps/{app_id}/index.html"
+        icon_path = a.get("icon")
+        if icon_path and isinstance(icon_path, str):
+            # Sanitize: no parent path segments
+            parts = icon_path.replace("\\", "/").strip().split("/")
+            if not any(p in ("", ".", "..") for p in parts):
+                a["icon_url"] = f"/plugins-apps/{app_id}/{'/'.join(parts)}"
     return {"ok": True, "apps": apps}
-
-
-# ---------- App-first domain API: library (no Agent in loop) ----------
-
-def _library_invoke(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    manager = app_state.get("plugin_manager")
-    if not manager:
-        return {"ok": False, "error": {"code": "UNAVAILABLE", "message": "plugin manager not available"}}
-    return manager.invoke_plugin_tool(plugin_id="library", tool_name=tool_name, arguments=arguments)
-
-
-def _library_http_status(out: dict[str, Any]) -> int:
-    err = out.get("error")
-    if isinstance(err, dict) and err.get("code") == "UNAVAILABLE":
-        return 503
-    return 400
-
-
-@api_router.post("/apps/library/books")
-async def library_create_book(body: dict[str, Any]):
-    """Create a book (App-only API)."""
-    out = _library_invoke("library.create_book", body)
-    if not out.get("ok"):
-        raise HTTPException(status_code=_library_http_status(out), detail=out.get("error", {}))
-    return out
-
-
-@api_router.post("/apps/library/books/{book_id}/tags")
-async def library_tag_book(book_id: str, body: dict[str, Any]):
-    """Add a tag to a book (App-only API)."""
-    args = dict(body or {})
-    args["book_id"] = book_id
-    out = _library_invoke("library.tag_book", args)
-    if not out.get("ok"):
-        raise HTTPException(status_code=_library_http_status(out), detail=out.get("error", {}))
-    return out
-
-
-@api_router.get("/apps/library/books")
-async def library_list_books(limit: int = 50, offset: int = 0):
-    """List books with pagination (App-only API)."""
-    out = _library_invoke("library.list_books", {"limit": limit, "offset": offset})
-    if not out.get("ok"):
-        raise HTTPException(status_code=503 if (out.get("error") or {}).get("code") == "UNAVAILABLE" else 500, detail=out.get("error", {}))
-    return out
-
-
-@api_router.get("/apps/library/search")
-async def library_search(q: str | None = None, tag: str | None = None, limit: int = 50):
-    """Search books by text or tag (App-only API)."""
-    args = {"limit": limit}
-    if q:
-        args["q"] = q
-    if tag:
-        args["tag"] = tag
-    out = _library_invoke("library.search_books", args)
-    if not out.get("ok"):
-        raise HTTPException(status_code=503 if (out.get("error") or {}).get("code") == "UNAVAILABLE" else 500, detail=out.get("error", {}))
-    return out
 
 
 @app.get("/plugins-apps/{app_id}/{path:path}")
@@ -1104,7 +1117,7 @@ async def _run_rpc_shadow(method: str, params: dict[str, Any], payload: Any) -> 
         elif method == "agents.list":
             shadow = await list_agents()
         elif method == "config.get":
-            shadow = await get_config()
+            shadow = await handle_get_config()
         elif method == "sessions.list":
             shadow = await list_sessions(agent_id=params.get("agent_id"))
         else:
@@ -1572,7 +1585,9 @@ def _clear_abort_requested(run_id: str) -> None:
         s.discard(run_id)
 
 
-def _complete_agent_job(run_id: str, *, status: str, error: str | None = None) -> None:
+def _complete_agent_job(
+    run_id: str, *, status: str, error: str | None = None, result: dict[str, Any] | None = None
+) -> None:
     _clear_abort_requested(run_id)
     jobs = app_state.get("rpc_agent_jobs") or {}
     futures = app_state.get("rpc_agent_job_futures") or {}
@@ -1581,6 +1596,8 @@ def _complete_agent_job(run_id: str, *, status: str, error: str | None = None) -
     rec["status"] = status
     rec["endedAt"] = _now_ms()
     rec["error"] = error
+    if result:
+        rec.update(result)
     jobs[run_id] = rec
     sk = rec.get("sessionKey")
     if sk and sk in session_to_run and session_to_run.get(sk) == run_id:
@@ -2545,6 +2562,7 @@ async def _run_update_install() -> None:
 
 
 def _session_usage_entry(key: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build usage entry for a session; aligns with OpenClaw SessionUsageEntry / SessionCostSummary."""
     user = 0
     assistant = 0
     tool_calls = 0
@@ -2552,35 +2570,123 @@ def _session_usage_entry(key: str, messages: list[dict[str, Any]]) -> dict[str, 
     errors = 0
     input_tokens = 0
     output_tokens = 0
+    total_cost = 0.0
+    input_cost = 0.0
+    output_cost = 0.0
+    first_activity_ms: int | None = None
+    last_activity_ms: int | None = None
+    activity_dates: set[str] = set()
+    # Per-day: date -> {tokens, cost, messages, toolCalls, errors}
+    daily: dict[str, dict[str, Any]] = {}
+
+    def _ts_to_ms(ts: Any) -> int | None:
+        if ts is None:
+            return None
+        if isinstance(ts, (int, float)) and ts > 0:
+            return int(ts) if ts < 1e12 else int(ts)
+        if isinstance(ts, str):
+            try:
+                return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+            except Exception:
+                return None
+        return None
+
+    def _date_from_ms(ms: int) -> str:
+        dt = datetime.utcfromtimestamp(ms / 1000.0)
+        return dt.strftime("%Y-%m-%d")
+
     for m in messages:
         role = str(m.get("role") or "")
         content = str(m.get("content") or "")
+        ts_ms = _ts_to_ms(m.get("timestamp"))
+        if ts_ms is not None:
+            if first_activity_ms is None or ts_ms < first_activity_ms:
+                first_activity_ms = ts_ms
+            if last_activity_ms is None or ts_ms > last_activity_ms:
+                last_activity_ms = ts_ms
+            activity_dates.add(_date_from_ms(ts_ms))
+
+        # Tokens/cost: prefer message.usage when present (persisted from LLM response)
+        msg_usage = m.get("usage")
+        if isinstance(msg_usage, dict):
+            inp = int(msg_usage.get("input") or msg_usage.get("prompt_tokens") or 0)
+            out = int(msg_usage.get("output") or msg_usage.get("completion_tokens") or 0)
+            input_tokens += inp
+            output_tokens += out
+        else:
+            inp = _estimate_tokens(content) if role == "user" else 0
+            out = _estimate_tokens(content) if role == "assistant" else 0
+            if role == "user":
+                input_tokens += inp
+            elif role == "assistant":
+                output_tokens += out
+
+        cost_val = m.get("cost")
+        if isinstance(cost_val, (int, float)) and cost_val >= 0:
+            total_cost += float(cost_val)
+            if role == "user":
+                pass  # input cost could be split if we had it
+            elif role == "assistant":
+                output_cost += float(cost_val)
+
         if role == "user":
             user += 1
-            input_tokens += _estimate_tokens(content)
         elif role == "assistant":
             assistant += 1
-            output_tokens += _estimate_tokens(content)
         elif role == "tool":
             tool_results += 1
         if m.get("tools_used"):
             tool_calls += 1
         if "error" in content.lower():
             errors += 1
+
+        # Daily breakdown: use message date; tokens for this message
+        day = _date_from_ms(ts_ms) if ts_ms is not None else ""
+        if not day:
+            continue
+        if day not in daily:
+            daily[day] = {
+                "date": day,
+                "tokens": 0,
+                "cost": 0,
+                "messages": 0,
+                "toolCalls": 0,
+                "errors": 0,
+            }
+        daily[day]["messages"] += 1
+        if role == "user":
+            daily[day]["tokens"] += inp if isinstance(msg_usage, dict) else _estimate_tokens(content)
+        elif role == "assistant":
+            daily[day]["tokens"] += out if isinstance(msg_usage, dict) else _estimate_tokens(content)
+            if isinstance(cost_val, (int, float)) and cost_val >= 0:
+                daily[day]["cost"] += float(cost_val)
+        if m.get("tools_used"):
+            daily[day]["toolCalls"] += 1
+        if "error" in content.lower():
+            daily[day]["errors"] += 1
+
     total_tokens = input_tokens + output_tokens
+    now_ms = int(time.time() * 1000)
+    updated_at = last_activity_ms if last_activity_ms is not None else now_ms
+    daily_breakdown = [daily[d] for d in sorted(daily)]
+
     return {
         "key": key,
         "label": key,
         "sessionId": key,
+        "updatedAt": updated_at,
+        "firstActivity": first_activity_ms,
+        "lastActivity": last_activity_ms,
+        "activityDates": sorted(activity_dates) if activity_dates else [],
         "usage": {
             "input": input_tokens,
             "output": output_tokens,
             "cacheRead": 0,
             "cacheWrite": 0,
             "totalTokens": total_tokens,
-            "totalCost": 0,
-            "inputCost": 0,
-            "outputCost": 0,
+            "totalCost": total_cost,
+            "inputCost": input_cost,
+            "outputCost": output_cost,
             "cacheReadCost": 0,
             "cacheWriteCost": 0,
             "missingCostEntries": 0,
@@ -2592,6 +2698,7 @@ def _session_usage_entry(key: str, messages: list[dict[str, Any]]) -> dict[str, 
                 "toolResults": tool_results,
                 "errors": errors,
             },
+            "dailyBreakdown": daily_breakdown,
         },
     }
 
@@ -2747,6 +2854,50 @@ async def patch_skill(name: str, body: SkillPatchBody):
     )
 
 
+@api_router.get("/house/identity")
+async def get_house_identity():
+    """Get house identity info."""
+    from joyhousebot.storage import LocalStateStore
+    store = LocalStateStore.default()
+    return get_house_identity_response(store=store)
+
+
+@api_router.post("/house/register")
+async def register_house(body: dict[str, Any]):
+    """Register house to backend."""
+    from joyhousebot.storage import LocalStateStore
+    store = LocalStateStore.default()
+    return register_house_response(store=store, body=body)
+
+
+@api_router.post("/house/bind")
+async def bind_house(body: dict[str, Any]):
+    """Bind house to a user."""
+    from joyhousebot.storage import LocalStateStore
+    store = LocalStateStore.default()
+    return bind_house_response(store=store, body=body)
+
+
+@api_router.get("/cloud-connect/status")
+async def get_cloud_connect_status():
+    """Get cloud connection status."""
+    from joyhousebot.storage import LocalStateStore
+    store = LocalStateStore.default()
+    return get_cloud_connect_status_response(store=store)
+
+
+@api_router.post("/cloud-connect/start")
+async def start_cloud_connect(body: dict[str, Any] | None = None):
+    """Start cloud connect worker."""
+    return start_cloud_connect_response(body=body)
+
+
+@api_router.post("/cloud-connect/stop")
+async def stop_cloud_connect(body: dict[str, Any] | None = None):
+    """Stop cloud connect worker."""
+    return stop_cloud_connect_response(body=body)
+
+
 @api_router.get("/agent")
 async def get_agent():
     """Get default agent info (backward compat). Prefer GET /agents for multi-agent."""
@@ -2772,7 +2923,7 @@ async def patch_agent(agent_id: str, body: AgentPatchBody):
 
 
 @api_router.get("/config")
-async def get_config():
+async def handle_get_config():
     """Get current configuration."""
     config = get_cached_config()
     return get_config_response(config=config, get_wallet_from_store=_get_wallet_from_store)
@@ -2894,6 +3045,7 @@ class CronJobCreate(BaseModel):
     to: str | None = None
     delete_after_run: bool = False
     agent_id: str | None = None  # OpenClaw: which agent runs this job; None = default
+    payload_kind: str = "agent_turn"  # agent_turn | memory_compaction
 
 
 class CronJobPatch(BaseModel):
@@ -3125,6 +3277,43 @@ async def _handle_rpc_request(
             (app_state.get("browser_control_url") or "") or resolve_browser_control_url()
         )
 
+        async def _rpc_chat(msg: ChatMessage) -> dict[str, Any]:
+            """Chat callable for RPC: runs agent with on_chat_delta to emit and broadcast chat deltas."""
+            agent = resolve_agent_or_503(agent_id=msg.agent_id, resolve_agent=_resolve_agent)
+            config = get_cached_config()
+            from joyhousebot.services.chat.trace_context import trace_run_id, trace_session_key
+
+            run_id = trace_run_id.get() or ""
+            session_key = trace_session_key.get() or ""
+
+            async def on_chat_delta(text: str) -> None:
+                payload: dict[str, Any] = {
+                    "runId": run_id,
+                    "sessionKey": session_key,
+                    "state": "delta",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": text}],
+                        "timestamp": int(time.time() * 1000),
+                    },
+                }
+                if emit_event:
+                    await emit_event("chat", payload)
+                await broadcast_rpc_event("chat", payload, None)
+
+            return await build_chat_response(
+                agent=agent,
+                message=msg.message,
+                session_id=msg.session_id,
+                log_error=logger.error,
+                error_detail=unknown_error_detail,
+                config=config,
+                check_abort_requested=_check_abort_requested,
+                on_chat_delta=on_chat_delta,
+            )
+
+        chat = _rpc_chat
+
         # Lane queue: when chat_session_serialization is True, enqueue busy-session requests and trigger next on complete.
         serialization = (
             config is not None
@@ -3154,12 +3343,15 @@ async def _handle_rpc_request(
                         complete_agent_job=complete_agent_job_ctx,
                         emit_event=emit_event,
                         fanout_chat_to_subscribed_nodes=_fanout_chat_to_subscribed_nodes,
+                        broadcast_rpc_event=broadcast_rpc_event,
                         persist_trace=_persist_trace,
                     )
                 )
 
-            def _complete_and_trigger(run_id: str, *, status: str = "ok", error: str | None = None) -> None:
-                _complete_agent_job(run_id, status=status, error=error)
+            def _complete_and_trigger(
+                run_id: str, *, status: str = "ok", error: str | None = None, result: dict[str, Any] | None = None
+            ) -> None:
+                _complete_agent_job(run_id, status=status, error=error, result=result)
                 jobs = app_state.get("rpc_agent_jobs") or {}
                 sk = (jobs.get(run_id) or {}).get("sessionKey")
                 if sk:

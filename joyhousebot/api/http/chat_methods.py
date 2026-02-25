@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
+
+CHAT_DELTA_THROTTLE_MS = 150
 
 
 async def build_chat_response(
@@ -17,8 +20,10 @@ async def build_chat_response(
     error_detail: Any,
     config: Any = None,
     check_abort_requested: Any = None,
+    on_chat_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
-    """Send direct chat message via agent and build response payload. Records trace when trace_run_id is set in context."""
+    """Send direct chat message via agent and build response payload. Records trace when trace_run_id is set in context.
+    When on_chat_delta is set, calls it with cumulative text during streaming (throttled ~150ms) and once with final text."""
     from joyhousebot.services.chat.trace_context import (
         TraceRecorder,
         trace_recorder,
@@ -53,12 +58,27 @@ async def build_chat_response(
 
         execution_stream_callback = _record
 
+    stream_callback = None
+    if on_chat_delta is not None:
+        _buf: list[str] = [""]
+        _last_sent: list[int] = [0]
+
+        async def _stream_cb(delta: str) -> None:
+            _buf[0] += delta
+            now_ms = int(time.time() * 1000)
+            if now_ms - _last_sent[0] >= CHAT_DELTA_THROTTLE_MS:
+                _last_sent[0] = now_ms
+                await on_chat_delta(_buf[0])
+
+        stream_callback = _stream_cb
+
     try:
         response = await agent.process_direct(
             content=message,
             session_key=session_id,
             channel="api",
             chat_id="client",
+            stream_callback=stream_callback,
             execution_stream_callback=execution_stream_callback,
             check_abort_requested=check_abort_requested,
         )
@@ -68,6 +88,8 @@ async def build_chat_response(
                 "aborted": True,
                 "session_id": session_id,
             }
+        if on_chat_delta is not None:
+            await on_chat_delta(response)
         if execution_stream_callback:
             rec = trace_recorder.get()
             if rec:

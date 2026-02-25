@@ -69,10 +69,10 @@ class SkillsLoader:
             roots.append(("builtin", self.builtin_skills))
 
         try:
-            from joyhousebot.config.loader import load_config
+            from joyhousebot.config.access import get_config
             from joyhousebot.plugins.skills import resolve_plugin_skill_dirs
 
-            config = load_config()
+            config = get_config()
             plugin_dirs = resolve_plugin_skill_dirs(self.workspace, config)
             for plugin_dir in plugin_dirs:
                 roots.append(("plugin", plugin_dir))

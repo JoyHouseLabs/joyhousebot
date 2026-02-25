@@ -6,19 +6,10 @@
         <p class="chat-subtitle">直连网关对话，快速介入</p>
       </div>
       <div class="chat-header-right">
-        <div class="agent-radio-wrap">
-          <n-radio-group v-model:value="selectedAgentId" name="agent" size="small" class="agent-radio-group" @update:value="onAgentChange">
-            <n-radio
-              v-for="a in activatedAgents"
-              :key="a.id"
-              :value="a.id"
-              class="agent-radio"
-            >
-              {{ a.name || a.id }}
-            </n-radio>
-          </n-radio-group>
-          <n-spin v-if="agentsLoading" size="small" class="agent-radio-loading" />
-        </div>
+        <n-button quaternary size="small" class="agent-select-btn" :loading="agentsLoading" @click="showAgentModal = true">
+          <span class="agent-select-label">{{ currentAgentLabel }}</span>
+          <span class="agent-select-arrow">▾</span>
+        </n-button>
         <n-select
           v-model:value="currentSessionKey"
           :options="sessionOptions"
@@ -39,7 +30,12 @@
     </div>
     <div class="chat-layout">
       <div class="chat-messages" ref="messagesEl">
-        <div v-if="messages.length === 0" class="chat-empty">
+        <div v-if="noAgentAvailable" class="chat-empty chat-empty-no-agent">
+          <span class="chat-empty-text">暂无可用 Agent</span>
+          <p class="chat-empty-hint">请确保网关已启动并已配置 Agent，或刷新页面重试。</p>
+          <n-button size="small" quaternary @click="loadAgents">刷新 Agent 列表</n-button>
+        </div>
+        <div v-else-if="messages.length === 0" class="chat-empty">
           <span class="chat-empty-text">发送一条消息开始对话</span>
         </div>
         <div
@@ -87,15 +83,15 @@
           type="textarea"
           placeholder="Message (↵ 发送，Shift+↵ 换行，可粘贴图片)"
           :autosize="{ minRows: 2, maxRows: 6 }"
-          :disabled="loading"
+          :disabled="loading || noAgentAvailable"
           class="chat-input"
           @keydown.enter.exact.prevent="send"
         />
         <div class="chat-input-actions">
-          <n-button secondary @click="newSession" class="btn-new-session">新会话</n-button>
+          <n-button secondary @click="newSession" class="btn-new-session" :disabled="noAgentAvailable">新会话</n-button>
           <n-button
             secondary
-            :disabled="loading || transcribing"
+            :disabled="loading || transcribing || noAgentAvailable"
             @click="toggleRecording"
             class="btn-record"
           >
@@ -108,15 +104,40 @@
             class="voice-file-input"
             @change="onVoiceFileChange"
           />
-          <n-button secondary :disabled="loading || transcribing" @click="triggerVoiceFileUpload" class="btn-upload-voice">
+          <n-button secondary :disabled="loading || transcribing || noAgentAvailable" @click="triggerVoiceFileUpload" class="btn-upload-voice">
             上传语音
           </n-button>
-          <n-button type="primary" :loading="loading" :disabled="!inputText.trim() || recording" @click="send" class="btn-send btn-warm-orange">
+          <n-button type="primary" :loading="loading" :disabled="!inputText.trim() || recording || noAgentAvailable" @click="send" class="btn-send btn-warm-orange">
             发送 →
           </n-button>
         </div>
       </div>
     </div>
+    <n-modal v-model:show="showAgentModal" preset="card" title="选择 Agent" class="agent-modal" style="width: 360px;">
+      <n-spin :show="agentsLoading">
+        <n-list v-if="activatedAgents.length > 0" class="agent-list">
+          <n-list-item
+            v-for="a in activatedAgents"
+            :key="a.id"
+            class="agent-list-item"
+            :class="{ selected: selectedAgentId === a.id }"
+            clickable
+            @click="selectAgent(a.id)"
+          >
+            <n-thing>
+              <template #header>{{ a.name || a.id }}</template>
+              <template #header-extra>
+                <n-tag v-if="a.is_default" size="tiny" type="info">默认</n-tag>
+              </template>
+              <template #description>
+                <span class="agent-meta">{{ a.model }}</span>
+              </template>
+            </n-thing>
+          </n-list-item>
+        </n-list>
+        <div v-else class="agent-empty">暂无可用 Agent</div>
+      </n-spin>
+    </n-modal>
     <n-modal v-model:show="showDeleteConfirm" preset="dialog" title="删除会话" positive-text="删除" negative-text="取消" :loading="deleteLoading"
       @positive-click="doDeleteSession" @negative-click="showDeleteConfirm = false">
       <template #default>
@@ -127,11 +148,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, computed } from 'vue'
+import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { sendMessageStream } from '../api/chat'
+import { messageContentToText } from '../api/chat'
 import { transcribeAudio } from '../api/transcribe'
+import { useGatewayInject } from '../composables/useGateway'
 import { getSessions, getSessionHistory, deleteSession, type SessionItem } from '../api/sessions'
 import { getAgents, type AgentListItem } from '../api/agent'
 import { normalizeApiError } from '../api/error'
@@ -140,6 +162,7 @@ import { useVoiceRecorder } from '../composables/useVoiceRecorder'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const gateway = useGatewayInject()
 const messages = ref<{ role: 'user' | 'assistant'; content: string; time?: number }[]>([])
 const inputText = ref('')
 const loading = ref(false)
@@ -158,11 +181,34 @@ const sessionsLoading = ref(false)
 const currentSessionKey = ref('ui:default')
 const showDeleteConfirm = ref(false)
 const deleteLoading = ref(false)
+const showAgentModal = ref(false)
+/** When using RPC stream, the run we're waiting for; chat events are applied only when payload.runId === chatRunId */
+const chatRunId = ref<string | null>(null)
+/** 已处理过的 final 的 runId，避免同一 run 的 final 被推送两次导致同一条回复显示两遍 */
+const lastFinalizedRunId = ref<string | null>(null)
+let unsubscribeChat: (() => void) | null = null
 
-/** Only agents with activated !== false show in chat page radio */
+/** Only agents with activated !== false show in agent picker */
 const activatedAgents = computed(() =>
   agents.value.filter((a) => a.activated !== false)
 )
+
+/** 未选择 Agent 或暂无可用 Agent 时展示「暂无可用 Agent」提示 */
+const noAgentAvailable = computed(
+  () => !agentsLoading.value && (selectedAgentId.value == null || activatedAgents.value.length === 0)
+)
+
+const currentAgentLabel = computed(() => {
+  if (!selectedAgentId.value) return '选择 Agent'
+  const a = activatedAgents.value.find((x) => x.id === selectedAgentId.value)
+  return a ? (a.name || a.id) : '选择 Agent'
+})
+
+function selectAgent(agentId: string) {
+  selectedAgentId.value = agentId
+  showAgentModal.value = false
+  onAgentChange(agentId)
+}
 
 const sessionOptions = computed(() => {
   const list = sessions.value.map((s) => ({ label: s.key, value: s.key }))
@@ -303,6 +349,49 @@ async function doDeleteSession() {
   }
 }
 
+function handleChatEvent(payload: unknown) {
+  const p = payload as { runId?: string; sessionKey?: string; state?: string; message?: { content?: unknown }; error?: string; errorMessage?: string }
+  const sessionKey = currentSessionKey.value || 'ui:default'
+  if (p?.sessionKey !== sessionKey) return
+  if (p?.runId && chatRunId.value && p.runId !== chatRunId.value) {
+    if (p.state === 'final') loadSessions()
+    return
+  }
+  if (p?.state === 'delta') {
+    const text = messageContentToText(p?.message?.content)
+    if (typeof text === 'string') {
+      const cur = streamingContent.value ?? ''
+      if (!cur || text.length >= cur.length) {
+        streamingContent.value = text
+        nextTick(scrollToBottom)
+      }
+    }
+    return
+  }
+  if (p?.state === 'final') {
+    if (p?.runId && lastFinalizedRunId.value === p.runId) return
+    const final = streamingContent.value ?? messageContentToText(p?.message?.content) ?? ''
+    // 先清空流式状态，再 push，避免「流式气泡」和「列表新消息」同时出现导致同一条回复显示两遍
+    streamingContent.value = null
+    loading.value = false
+    messages.value.push({ role: 'assistant', content: final, time: Date.now() })
+    if (p?.runId) lastFinalizedRunId.value = p.runId
+    chatRunId.value = null
+    loadSessions()
+    nextTick(scrollToBottom)
+    return
+  }
+  if (p?.state === 'aborted' || p?.state === 'error') {
+    if (p?.state === 'error') {
+      message.error(p?.errorMessage ?? p?.error ?? 'chat error')
+    }
+    streamingContent.value = null
+    chatRunId.value = null
+    loading.value = false
+    nextTick(scrollToBottom)
+  }
+}
+
 onMounted(async () => {
   await loadAgents()
   const qSession = route.query.session
@@ -316,41 +405,72 @@ onMounted(async () => {
   await loadSessions()
   await loadHistory(currentSessionKey.value)
   syncUrl(currentSessionKey.value, selectedAgentId.value)
+  if (gateway?.subscribe) {
+    unsubscribeChat = gateway.subscribe('chat', handleChatEvent)
+  }
+})
+
+onUnmounted(() => {
+  unsubscribeChat?.()
+  unsubscribeChat = null
 })
 
 async function send() {
   const text = inputText.value.trim()
   if (!text || loading.value) return
+  if (!gateway?.connected?.value || !gateway.request) {
+    message.warning('请先连接网关（刷新页面或检查网关地址）')
+    return
+  }
   inputText.value = ''
   const now = Date.now()
   messages.value.push({ role: 'user', content: text, time: now })
   loading.value = true
   streamingContent.value = null
+  chatRunId.value = null
   try {
-    await sendMessageStream(
-      text,
-      (chunk) => {
-        if (streamingContent.value === null) streamingContent.value = chunk
-        else streamingContent.value += chunk
-        nextTick(scrollToBottom)
-      },
-      currentSessionKey.value,
-      selectedAgentId.value,
-      (openApp) => {
-        if (openApp?.navigate_to) router.push(openApp.navigate_to)
-      },
-    )
-    const final = streamingContent.value ?? ''
-    messages.value.push({ role: 'assistant', content: final, time: Date.now() })
-    await loadSessions()
+    const sessionKey = currentSessionKey.value || 'ui:default'
+    const agentId = selectedAgentId.value ?? undefined
+    const payload = await gateway.request<{
+      runId?: string
+      status?: string
+      state?: string
+      message?: { role?: string; content?: Array<{ type?: string; text?: string }> }
+      error?: string
+    }>('chat.send', {
+      message: text,
+      sessionKey,
+      agentId: agentId || undefined,
+      idempotencyKey: crypto.randomUUID?.() ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`,
+    })
+    if (payload?.runId) {
+      chatRunId.value = payload.runId
+      streamingContent.value = ''
+      if (payload?.status === 'in_flight' || payload?.status === 'queued') {
+        message.warning('会话忙，已加入队列')
+      }
+    } else if (payload?.status === 'queue_full') {
+      message.error('队列已满，请稍后再试')
+      loading.value = false
+    } else if (payload?.error) {
+      message.error(payload.error)
+      loading.value = false
+    } else {
+      message.warning('未收到 runId')
+      loading.value = false
+    }
   } catch (e) {
     message.error(normalizeApiError(e))
     if ((streamingContent.value ?? '').length > 0) {
       messages.value.push({ role: 'assistant', content: streamingContent.value ?? '', time: Date.now() })
     }
-  } finally {
+    chatRunId.value = null
     loading.value = false
-    streamingContent.value = null
+  } finally {
+    if (!chatRunId.value) {
+      streamingContent.value = null
+      loading.value = false
+    }
   }
   await nextTick()
   scrollToBottom()
@@ -444,27 +564,48 @@ watch(messages, () => nextTick().then(scrollToBottom), { deep: true })
   gap: 8px;
   flex-shrink: 0;
 }
-.agent-radio-wrap {
-  display: flex;
+.agent-select-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-}
-.agent-radio-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-}
-.agent-radio {
+  gap: 4px;
   font-size: 13px;
 }
-.agent-radio :deep(.n-radio__label) {
+.agent-select-label {
   color: var(--text-strong);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.agent-radio :deep(.n-radio.n-radio--checked .n-radio__label) {
+.agent-select-arrow {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.agent-modal .agent-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.agent-modal .agent-list-item {
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.agent-modal .agent-list-item:hover {
+  background: var(--hover);
+}
+.agent-modal .agent-list-item.selected {
+  background: var(--accent-subtle, rgba(0, 120, 212, 0.1));
   color: var(--accent);
 }
-.agent-radio-loading {
-  flex-shrink: 0;
+.agent-modal .agent-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.agent-modal .agent-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
 }
 .session-select {
   min-width: 160px;
@@ -504,6 +645,23 @@ watch(messages, () => nextTick().then(scrollToBottom), { deep: true })
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
+}
+.chat-empty-no-agent {
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px;
+}
+.chat-empty-no-agent .chat-empty-text {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-color);
+}
+.chat-empty-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 320px;
 }
 .chat-empty-text {
   font-size: 14px;

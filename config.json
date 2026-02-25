@@ -25,23 +25,10 @@
         "default": true,
         "activated": true
       },
-      {
-        "id": "education",
-        "name": "\u5b69\u5b50\u6559\u80b2",
-        "workspace": "~/.joyhousebot/agents/education",
-        "model": "anthropic/claude-opus-4-5",
-        "modelFallbacks": [],
-        "provider": "",
-        "maxTokens": 8192,
-        "temperature": 0.7,
-        "maxToolIterations": 20,
-        "memoryWindow": 50,
-        "default": false,
-        "activated": true
-      },
+      
       {
         "id": "growth",
-        "name": "\u4e2a\u4eba\u6210\u957f",
+        "name": "growth",
         "workspace": "~/.joyhousebot/agents/growth",
         "model": "anthropic/claude-opus-4-5",
         "modelFallbacks": [],

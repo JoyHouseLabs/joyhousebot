@@ -85,18 +85,25 @@ export async function loadOpenClawRegistry(params) {
   const openclawDir = resolveOpenClawDir(params.openclawDir);
   const workspaceDir = path.resolve(params.workspaceDir);
   const distLoaderPath = path.join(openclawDir, "dist/plugins/loader.js");
+  const srcLoaderPath = path.join(openclawDir, "src/plugins/loader.ts");
   const loaderModulePath = fs.existsSync(distLoaderPath)
     ? distLoaderPath
-    : path.join(openclawDir, "src/plugins/loader.ts");
-  if (!fs.existsSync(loaderModulePath)) {
+    : fs.existsSync(srcLoaderPath)
+      ? srcLoaderPath
+      : null;
+  if (!loaderModulePath || !fs.existsSync(loaderModulePath)) {
     throw new Error(
-      `OpenClaw loader not found. Expected ${distLoaderPath} (build openclaw first with pnpm build).`,
+      `OpenClaw loader not found. Need dist/plugins/loader.js or src/plugins/loader.ts under ${openclawDir}. Run \`pnpm run build\` in openclaw or ensure src/plugins/loader.ts exists.`,
     );
   }
   if (loaderModulePath.endsWith(".ts")) {
-    throw new Error(
-      "OpenClaw dist build is missing (dist/plugins/loader.js). Please run `pnpm build` in openclaw first.",
-    );
+    const importIdx = process.execArgv.indexOf("--import");
+    const hasTsx = importIdx !== -1 && process.execArgv[importIdx + 1] === "tsx";
+    if (!hasTsx) {
+      throw new Error(
+        "Loading OpenClaw src/plugins/loader.ts requires Node to be started with tsx. Run `npm install` in the plugin_host directory, then ensure the host is started with `node --import tsx ./src/host.mjs` (or use dist/plugins/loader.js by running `pnpm run build` in openclaw).",
+      );
+    }
   }
   const loaderModuleUrl = pathToFileURL(loaderModulePath).href;
   const module = await import(loaderModuleUrl);

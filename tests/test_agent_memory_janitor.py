@@ -54,3 +54,32 @@ def test_expire_pattern_matches() -> None:
     assert P_EXPIRE_PATTERN.search("[P2|expire:2025-01-15]")
     assert not P_EXPIRE_PATTERN.search("- [P0] Permanent")
     assert not P_EXPIRE_PATTERN.search("- [P1] No date")
+
+
+def test_janitor_never_archives_p0(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.ensure_memory_structure()
+    store.write_long_term("""<!-- updated_at=2026-01-01T00:00:00Z -->
+- [P0] Permanent fact.
+- [P1|expire:2020-01-01] Expired project.
+""")
+    today = date(2026, 2, 22)
+    actions = run_janitor(tmp_path, dry_run=False, today=today)
+    assert len(actions) == 1
+    raw = store.read_long_term()
+    assert "[P0] Permanent fact" in raw
+    assert "Expired project" not in raw
+
+
+def test_janitor_multi_scope_when_config_session(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    store_shared = MemoryStore(tmp_path)
+    store_shared.ensure_memory_structure()
+    store_shared.write_long_term("- [P1|expire:2020-01-01] Shared expired.")
+    (tmp_path / "memory" / "session_1").mkdir(parents=True)
+    (tmp_path / "memory" / "session_1" / "MEMORY.md").write_text("- [P1|expire:2020-01-01] Session expired.")
+    config = SimpleNamespace(tools=SimpleNamespace(retrieval=SimpleNamespace(memory_scope="session")))
+    today = date(2026, 2, 22)
+    actions = run_janitor(tmp_path, dry_run=True, today=today, config=config)
+    assert len(actions) >= 1
+    assert any(a.get("scope") == "session_1" for a in actions if a.get("scope"))

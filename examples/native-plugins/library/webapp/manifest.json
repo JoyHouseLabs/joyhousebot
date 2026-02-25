@@ -1,7 +1,0 @@
-{
-  "app_id": "library",
-  "name": "图书馆",
-  "route": "/app/library",
-  "entry": "dist/index.html",
-  "permissions": []
-}

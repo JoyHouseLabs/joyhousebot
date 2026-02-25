@@ -193,7 +193,7 @@ class AgentEntry(BaseModel):
 
 
 def _default_agent_list() -> list[AgentEntry]:
-    """Default agents: JoyAgent (default), 编程 (programming), 金融/孩子教育/个人成长. OpenClaw-style."""
+    """Default agents: JoyAgent (default), 编程 (programming), 金融/教育/成长. OpenClaw-style."""
     return [
         AgentEntry(
             id="joy",
@@ -213,12 +213,12 @@ def _default_agent_list() -> list[AgentEntry]:
         ),
         AgentEntry(
             id="education",
-            name="孩子教育",
+            name="教育",
             workspace="~/.joyhousebot/agents/education",
         ),
         AgentEntry(
             id="growth",
-            name="个人成长",
+            name="成长",
             workspace="~/.joyhousebot/agents/growth",
         ),
     ]
@@ -406,11 +406,27 @@ class RetrievalConfig(BaseModel):
     embedding_provider: str = ""  # e.g. openai (for V2)
     embedding_model: str = ""  # e.g. text-embedding-3-small
     vector_backend: str = ""  # chroma | qdrant | pgvector (for V2)
-    # Memory search backend: builtin (hybrid over knowledge / future memory index) | mcp_qmd (qmd MCP tool) | auto (try mcp_qmd, fallback builtin)
+    # Memory search backend: builtin (grep, default) | mcp_qmd (QMD via MCP) | sqlite_vector (SQLite+embedding index) | auto (mcp_qmd -> sqlite_vector -> builtin)
     memory_backend: str = "builtin"
+    # Knowledge search backend: builtin (FTS5+Chroma, default) | qmd (QMD via MCP) | auto (try qmd then builtin)
+    knowledge_backend: str = "builtin"
+    # When True, pipeline pushes each indexed doc to QMD via knowledge_qmd_sync_url (POST JSON: doc_id, title, chunks)
+    knowledge_qmd_sync_enabled: bool = False
+    knowledge_qmd_sync_url: str = ""  # e.g. http://localhost:8181/index or QMD index endpoint
     memory_use_l0: bool = False  # When True, system prompt gets L0 (.abstract) + MEMORY.md; when False, only MEMORY.md (legacy)
     memory_first: bool = False  # When True, agent is prompted to consult L0/memory before knowledge base
     memory_top_k: int = 10
+    memory_include_daily_in_context: bool = True  # When True (default, OpenClaw-aligned), inject today+yesterday memory/YYYY-MM-DD.md into context
+    history_max_entries: int = 0  # When > 0, keep only last N entries in HISTORY.md (0 = no limit)
+    # OpenClaw-style memory flush before consolidation: one optional LLM call to capture durable notes before we summarize
+    memory_flush_before_consolidation: bool = False
+    memory_flush_system_prompt: str = "Session nearing compaction. Output only valid JSON."
+    memory_flush_prompt: str = "Write any lasting notes: return JSON with optional keys daily_log_entry (string for memory/YYYY-MM-DD.md) and memory_additions (string to append to MEMORY.md). If nothing to store, return {}."
+    memory_vector_enabled: bool = False  # When True, re-rank memory search hits by embedding similarity (OpenClaw-aligned semantic search)
+    # Memory isolation: shared (default) | session | user — when session/user, each scope has its own memory/ subdir
+    memory_scope: Literal["shared", "session", "user"] = "shared"
+    memory_user_id_from: Literal["sender_id", "metadata"] = "sender_id"  # Only when memory_scope=user
+    memory_user_id_metadata_key: str = "user_id"  # When memory_user_id_from=metadata, read from msg.metadata[this key]
 
 
 class IngestConfig(BaseModel):
@@ -425,6 +441,16 @@ class IngestConfig(BaseModel):
     cloud_ocr_api_key: str = ""  # or use provider's default key from providers config
 
 
+class KnowledgePipelineConfig(BaseModel):
+    """Knowledge base pipeline: source dir (knowledgebase) -> convert to markdown -> processed -> FTS5 index."""
+    # Relative to workspace
+    knowledge_source_dir: str = "knowledgebase"  # Where to watch for new files (PDF, URL-dumped, etc.)
+    knowledge_processed_dir: str = "knowledge/processed"  # Where converted .md and metadata go; only this is indexed
+    watch_enabled: bool = True  # When True, watch source dir and enqueue new files
+    convert_chunk_size: int = 1200
+    convert_chunk_overlap: int = 200
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
@@ -432,6 +458,7 @@ class ToolsConfig(BaseModel):
     code_runner: CodeRunnerConfig = Field(default_factory=CodeRunnerConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
+    knowledge_pipeline: KnowledgePipelineConfig = Field(default_factory=KnowledgePipelineConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     # Optional tools are unrestricted by default; set this allowlist to gate them.
     optional_allowlist: list[str] = Field(default_factory=list)
@@ -553,6 +580,33 @@ class WizardConfig(BaseModel):
     last_run_mode: str | None = None
 
 
+class CapabilityItem(BaseModel):
+    """单个能力项配置"""
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    version: str = "1.0"
+    enabled: bool = True
+
+
+class CloudConnectConfig(BaseModel):
+    """云端连接配置"""
+    enabled: bool = False
+    backend_url: str = "ws://localhost:8000/ws/cloud-connect"
+    house_name: str = ""
+    description: str = ""
+    auto_reconnect: bool = True
+    reconnect_interval: int = 30
+    capabilities: list[CapabilityItem] = Field(
+        default_factory=lambda: [
+            CapabilityItem(id="chat.v1", name="对话", description="多轮对话与上下文记忆"),
+            CapabilityItem(id="code_execution.v1", name="代码执行", description="支持多种编程语言"),
+            CapabilityItem(id="file_operations.v1", name="文件操作", description="读写本地文件"),
+            CapabilityItem(id="web_search.v1", name="网络搜索", description="搜索互联网信息"),
+        ]
+    )
+
+
 class Config(BaseSettings):
     """Root configuration for joyhousebot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -566,6 +620,7 @@ class Config(BaseSettings):
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)
     wallet: WalletConfig = Field(default_factory=WalletConfig)
+    cloud_connect: CloudConnectConfig = Field(default_factory=CloudConnectConfig)
     messages: MessagesConfig | None = None
     commands: CommandsConfig | None = None
     approvals: ApprovalsConfig | None = None

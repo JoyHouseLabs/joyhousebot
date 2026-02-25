@@ -13,7 +13,14 @@ Layering (L0/L1/L2) for pluggable memory:
 
 from pathlib import Path
 
-from joyhousebot.utils.helpers import ensure_dir
+from joyhousebot.utils.helpers import ensure_dir, safe_filename
+
+
+def safe_scope_key(scope_key: str) -> str:
+    """Normalize scope_key for use as a directory name (no .., no path separators)."""
+    if not scope_key or ".." in scope_key:
+        return ""
+    return safe_filename(scope_key.replace(":", "_")).strip() or ""
 
 
 L0_ABSTRACT_FILENAME = ".abstract"
@@ -25,10 +32,16 @@ ARCHIVE_DIR = "archive"
 class MemoryStore:
     """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log).
     Extensions: L0 (.abstract), L2 daily logs (YYYY-MM-DD.md), insights/lessons/archive structure.
+    When scope_key is set, memory is stored under memory/<safe_scope_key>/ (per-session or per-user).
     """
 
-    def __init__(self, workspace: Path):
-        self.memory_dir = ensure_dir(workspace / "memory")
+    def __init__(self, workspace: Path, scope_key: str | None = None):
+        base = workspace / "memory"
+        if scope_key:
+            safe = safe_scope_key(scope_key)
+            self.memory_dir = ensure_dir(base / safe) if safe else base
+        else:
+            self.memory_dir = ensure_dir(base)
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
         self._l0_file = self.memory_dir / L0_ABSTRACT_FILENAME
@@ -52,9 +65,23 @@ class MemoryStore:
             content = f"<!-- updated_at={updated_at} -->\n{content}"
         self.memory_file.write_text(content, encoding="utf-8")
 
-    def append_history(self, entry: str) -> None:
+    def append_history(self, entry: str, max_entries: int = 0) -> None:
+        """Append entry to HISTORY.md. If max_entries > 0, keep only last max_entries entries (paragraphs)."""
         with open(self.history_file, "a", encoding="utf-8") as f:
             f.write(entry.rstrip() + "\n\n")
+        if max_entries > 0:
+            self._trim_history_to_last_n(max_entries)
+
+    def _trim_history_to_last_n(self, n: int) -> None:
+        """Keep only last n entries in HISTORY.md (entries = paragraphs separated by blank lines)."""
+        if not self.history_file.exists() or n <= 0:
+            return
+        text = self.history_file.read_text(encoding="utf-8")
+        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+        if len(blocks) <= n:
+            return
+        new_content = "\n\n".join(blocks[-n:]) + "\n"
+        self.history_file.write_text(new_content, encoding="utf-8")
 
     def read_l0_abstract(self) -> str:
         """Read L0 directory index (routing entry for retrieval)."""
@@ -79,6 +106,20 @@ class MemoryStore:
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()
         return f"## Long-term Memory\n{long_term}" if long_term else ""
+
+    def read_daily_logs_today_yesterday(self) -> str:
+        """Read content of memory/YYYY-MM-DD.md for today and yesterday (if exist). Returns combined text."""
+        from datetime import date, timedelta
+        parts = []
+        for delta in (0, 1):
+            d = date.today() - timedelta(days=delta)
+            path = self.get_l2_path(d.isoformat())
+            if path.exists():
+                try:
+                    parts.append(path.read_text(encoding="utf-8").strip())
+                except Exception:
+                    pass
+        return "\n\n".join(parts) if parts else ""
 
     def get_memory_context_with_l0(self, max_l0_chars: int = 1500) -> str:
         """Build memory context: optional L0 abstract first (for routing), then long-term.

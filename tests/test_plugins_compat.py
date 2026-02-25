@@ -63,7 +63,7 @@ def test_skills_loader_includes_plugin_skills(monkeypatch, tmp_path: Path):
     cfg = Config()
     cfg.plugins.load.paths = [str(plugin_root)]
     cfg.plugins.entries["plugin-a"] = PluginEntryConfig(enabled=True)
-    monkeypatch.setattr("joyhousebot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("joyhousebot.config.access.get_config", lambda *a, **kw: cfg)
 
     loader = SkillsLoader(workspace=workspace)
     names = {item["name"] for item in loader.list_skills(filter_unavailable=False)}

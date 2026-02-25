@@ -1,13 +1,13 @@
 [project]
-name = "joyhousebot-ai"
+name = "joyhousebot"
 version = "0.1.1"
-description = "Joyhouse agent framework"
+description = "Joyhouse edge agent"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "joyhouse team"}
 ]
-keywords = ["ai", "agent", "chatbot"]
+keywords = ["ai", "agent", "chatbot","edge"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -46,6 +46,7 @@ dependencies = [
     "python-multipart>=0.0.6",
     "playwright>=1.40.0",
     "pypdf>=4.0.0",
+    "watchfiles>=0.21.0",
 ]
 
 [project.optional-dependencies]
@@ -86,13 +87,15 @@ include = [
 [tool.hatch.build.targets.sdist]
 include = [
     "joyhousebot/",
-    "bridge/",
+    "bridges/",
+    "plugin_host/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge" = "joyhousebot/bridge"
+"bridges/whatsapp" = "joyhousebot/bridges/whatsapp"
+"plugin_host" = "plugin_host"
 
 [tool.ruff]
 line-length = 100

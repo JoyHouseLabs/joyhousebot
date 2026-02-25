@@ -13,7 +13,8 @@ if ! command -v npm &>/dev/null; then
   echo "npm not found; skip frontend build. Install Node.js to build the UI." >&2
   exit 0
 fi
-npm ci --prefer-offline --no-audit
+# Use npm install so lock file can be updated when out of sync with package.json
+npm install --no-audit
 npm run build
 
 rm -rf "$STATIC"

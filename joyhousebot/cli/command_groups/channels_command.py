@@ -16,7 +16,7 @@ from joyhousebot import __logo__
 
 def _get_bridge_dir(console: Console) -> Path:
     """Get the bridge directory, setting it up if needed."""
-    user_bridge = Path.home() / ".joyhousebot" / "bridge"
+    user_bridge = Path.home() / ".joyhousebot" / "bridges" / "whatsapp"
     if (user_bridge / "dist" / "index.js").exists():
         return user_bridge
 
@@ -24,8 +24,8 @@ def _get_bridge_dir(console: Console) -> Path:
         console.print("[red]npm not found. Please install Node.js >= 18.[/red]")
         raise typer.Exit(1)
 
-    pkg_bridge = Path(__file__).parent.parent.parent / "bridge"
-    src_bridge = Path(__file__).parent.parent.parent.parent / "bridge"
+    pkg_bridge = Path(__file__).parent.parent.parent / "bridges" / "whatsapp"
+    src_bridge = Path(__file__).parent.parent.parent.parent / "bridges" / "whatsapp"
 
     source = None
     if (pkg_bridge / "package.json").exists():

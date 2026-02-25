@@ -97,7 +97,7 @@ class RuntimeService:
         normalized = scope.strip().lower() or "all"
         targets: list[Path] = []
         if normalized in {"all", "state"}:
-            targets.extend([get_data_dir(), Path.home() / ".joyhousebot" / "bridge"])
+            targets.extend([get_data_dir(), Path.home() / ".joyhousebot" / "bridges" / "whatsapp"])
         if normalized in {"all", "config"} and not keep_config:
             targets.append(Path.home() / ".joyhousebot" / "config.json")
         if normalized in {"all", "workspace"}:

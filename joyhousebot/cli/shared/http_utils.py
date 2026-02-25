@@ -20,19 +20,31 @@ def get_gateway_base_url() -> str:
     return f"http://{host}:{port}"
 
 
+def get_http_api_headers() -> dict[str, str]:
+    """Return Authorization header when gateway.control_token is set (for /api requests; same as WS control auth)."""
+    config = load_config()
+    token = (getattr(config.gateway, "control_token", None) or "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
 def http_json(
     method: str,
     url: str,
     payload: dict[str, Any] | None = None,
     timeout: float = 5.0,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Send an HTTP request and parse JSON response."""
     body = None
-    headers = {"Accept": "application/json"}
+    req_headers: dict[str, str] = {"Accept": "application/json"}
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = request.Request(url=url, data=body, method=method.upper(), headers=headers)
+        req_headers["Content-Type"] = "application/json"
+    if headers:
+        req_headers.update(headers)
+    req = request.Request(url=url, data=body, method=method.upper(), headers=req_headers)
     try:
         with request.urlopen(req, timeout=timeout) as response:
             text = response.read().decode("utf-8", errors="replace")

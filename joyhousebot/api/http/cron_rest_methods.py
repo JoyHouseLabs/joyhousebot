@@ -76,15 +76,17 @@ def add_cron_job_response(
 ) -> dict[str, Any]:
     """Build response for creating a cron job."""
     schedule = schedule_body_to_internal(body.schedule)
+    payload_kind = getattr(body, "payload_kind", None) or "agent_turn"
     job = cron_service.add_job(
         name=body.name,
         schedule=schedule,
-        message=body.message,
+        message=getattr(body, "message", "") or "",
         deliver=body.deliver,
         channel=body.channel,
         to=body.to,
         delete_after_run=body.delete_after_run,
         agent_id=body.agent_id,
+        payload_kind=payload_kind,
     )
     return {"ok": True, "job": job_to_dict(job)}
 

@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface ChatResponse {
@@ -6,9 +8,22 @@ export interface ChatResponse {
   session_id: string
 }
 
+/** Extract plain text from RPC chat message content (array of { type, text }). */
+export function messageContentToText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  const parts: string[] = []
+  for (const part of content) {
+    if (part && typeof part === 'object' && 'text' in part && typeof (part as { text: string }).text === 'string') {
+      parts.push((part as { text: string }).text)
+    }
+  }
+  return parts.join('\n')
+}
+
 /** 非流式：等完整回复后返回（POST /chat） */
 export async function sendMessage(message: string, sessionId: string = 'ui:default'): Promise<ChatResponse> {
-  const res = await fetch(`${API_BASE}/chat`, {
+  const res = await apiFetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, session_id: sessionId }),
@@ -26,6 +41,8 @@ export interface OpenAppNavigate {
   route?: string
   params?: Record<string, unknown>
   navigate_to: string
+  /** Standalone app URL; open in new tab with this when present. */
+  app_link?: string
 }
 
 /**
@@ -47,7 +64,7 @@ export async function sendMessageStream(
     session_id: sessionId,
   }
   if (agentId != null && agentId !== '') body.agent_id = agentId
-  const res = await fetch(`${API_BASE}/v1/chat/completions`, {
+  const res = await apiFetch(`${API_BASE}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

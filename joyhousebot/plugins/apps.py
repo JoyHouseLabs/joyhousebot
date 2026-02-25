@@ -70,7 +70,14 @@ def resolve_plugin_apps(workspace: Path, config: Any) -> list[dict[str, Any]]:
         entry = str(app_manifest.get("entry") or "dist/index.html").strip()
         dist_dir = (root / webapp_path / "dist").resolve()
         enabled = enabled_set is None or app_id in enabled_set
-        apps.append({
+        # Optional display fields from webapp manifest
+        icon_raw = app_manifest.get("icon")
+        icon = str(icon_raw).strip() if icon_raw else None
+        description_raw = app_manifest.get("description")
+        description = str(description_raw).strip() if description_raw else None
+        activation_raw = app_manifest.get("activation_command")
+        activation_command = str(activation_raw).strip() if activation_raw else None
+        entry_dict: dict[str, Any] = {
             "app_id": app_id,
             "name": name,
             "route": route,
@@ -78,5 +85,12 @@ def resolve_plugin_apps(workspace: Path, config: Any) -> list[dict[str, Any]]:
             "plugin_id": plugin_id,
             "base_path": str(dist_dir) if dist_dir.exists() else "",
             "enabled": enabled,
-        })
+        }
+        if icon:
+            entry_dict["icon"] = icon
+        if description:
+            entry_dict["description"] = description
+        if activation_command:
+            entry_dict["activation_command"] = activation_command
+        apps.append(entry_dict)
     return apps

@@ -246,12 +246,11 @@ You are the **default JoyAgent**: you receive user intent and decide how to resp
 ## Your role
 
 - **Understand intent**: Interpret what the user wants (answer a question, open an app, run a tool, etc.).
-- **Route or answer**: Use the **open_app** tool when the user wants to use a domain app (e.g. library, books, tags); use other tools when appropriate; otherwise answer directly.
+- **Route or answer**: Use the **open_app** tool when the user wants to use a domain app; use other tools when appropriate; otherwise answer directly.
 - **Be concise**: Reply briefly; when you open an app, say you have opened it and where to continue.
 
 ## Guidelines
 
-- For book/library-related requests (add book, list books, search, tags): use **open_app** with app_id "library" and optional route/params; do not perform those operations yourself.
 - For general questions: answer directly using your knowledge.
 - For **sustained programming work** (e.g. "一起开发这个功能", "重构这个模块"): suggest the user switch to the **编程 (Programming)** agent, which has full code tools and project context.
 - For quick one-off code tasks (run a snippet, small edit): you may use read_file/exec/edit_file; for anything multi-file or ongoing, point to the 编程 agent.
@@ -294,7 +293,7 @@ You are a **finance-focused** AI assistant. Your role is to help with personal f
 - Remember important preferences in memory/MEMORY.md; past context in memory/HISTORY.md
 """
     if agent_id == "education":
-        return f"""# Agent Instructions — 孩子教育{agent_label}
+        return f"""# Agent Instructions — 教育{agent_label}
 
 You are an **education and parenting** AI assistant. Your role is to support learning, study habits, and age-appropriate guidance for children.
 
@@ -312,7 +311,7 @@ You are an **education and parenting** AI assistant. Your role is to support lea
 - Remember learning preferences and milestones in memory/MEMORY.md; past context in memory/HISTORY.md
 """
     if agent_id == "growth":
-        return f"""# Agent Instructions — 个人成长{agent_label}
+        return f"""# Agent Instructions — 成长{agent_label}
 
 You are a **personal growth** AI assistant. Your role is to support reflection, habits, goals, and self-improvement.
 
@@ -359,7 +358,7 @@ I am JoyAgent, the default assistant that routes your intent and answers questio
 ## Values
 
 - Intent-first: route to the right place (app or tool) instead of doing everything in chat.
-- User control: domain actions (e.g. books, tags) happen in their apps; I open the app and step back.
+- User control: domain actions happen in their apps; I open the app and step back.
 """
     if agent_id == "programming":
         return f"""# Soul — 编程 (Programming Agent){agent_label}
@@ -394,7 +393,7 @@ I am joyhousebot, a finance-focused AI assistant.
 - Transparency: not licensed advice; suggest professionals when needed
 """
     if agent_id == "education":
-        return f"""# Soul — 孩子教育{agent_label}
+        return f"""# Soul — 教育{agent_label}
 
 I am joyhousebot, an education and parenting support assistant.
 
@@ -411,7 +410,7 @@ I am joyhousebot, an education and parenting support assistant.
 - Partnership with parents and caregivers
 """
     if agent_id == "growth":
-        return f"""# Soul — 个人成长{agent_label}
+        return f"""# Soul — 成长{agent_label}
 
 I am joyhousebot, a personal growth and reflection assistant.
 
@@ -613,6 +612,18 @@ def gateway(
     # Set cron callback: run with agent selected by job.agent_id
     async def on_cron_job(job: CronJob) -> str | None:
         agent = agents_map.get(job.agent_id or "") or default_agent
+        if getattr(job.payload, "kind", None) == "memory_compaction":
+            from joyhousebot.agent.memory_compaction import run_memory_compaction
+            try:
+                result = await run_memory_compaction(
+                    agent.workspace,
+                    agent.provider,
+                    agent.model,
+                    config=getattr(agent, "config", None),
+                )
+                return result
+            except Exception as e:
+                raise
         response = await agent.process_direct(
             job.payload.message,
             session_key=f"cron:{job.id}",
@@ -818,10 +829,12 @@ def agent(
         return console.status("[dim]joyhousebot is thinking...[/dim]", spinner="dots")
 
     if message:
-        # Single message mode
+        # Single message mode: 每次用独立 session，避免沿用旧会话里“API 有问题”的上下文导致模型继续提 troubleshooting
+        import time
+        oneshot_session = f"{session_id}:{int(time.time() * 1000)}" if session_id == "cli:direct" else session_id
         async def run_once():
             with _thinking_ctx():
-                response = await agent_loop.process_direct(message, session_id)
+                response = await agent_loop.process_direct(message, oneshot_session)
             _print_agent_response(response, render_markdown=markdown)
             await agent_loop.close_mcp()
         

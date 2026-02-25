@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface AgentInfo {
@@ -38,13 +40,13 @@ export interface AgentsListResponse {
 }
 
 export async function getAgent(): Promise<AgentResponse> {
-  const res = await fetch(`${API_BASE}/agent`)
+  const res = await apiFetch(`${API_BASE}/agent`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function getAgents(): Promise<AgentsListResponse> {
-  const res = await fetch(`${API_BASE}/agents`)
+  const res = await apiFetch(`${API_BASE}/agents`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -59,11 +61,43 @@ export interface AgentPatchResponse {
 }
 
 export async function patchAgent(agentId: string, body: AgentPatchBody): Promise<AgentPatchResponse> {
-  const res = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}`, {
+  const res = await apiFetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export interface AgentFile {
+  name: string
+  path: string
+  size: number
+  updatedAtMs: number
+  mtimeMs: number
+}
+
+export interface AgentFilesResponse {
+  agentId: string
+  workspace: string
+  files: AgentFile[]
+}
+
+export async function getAgentFiles(agentId: string): Promise<AgentFilesResponse> {
+  const res = await apiFetch(`${API_BASE}/agent/files?agentId=${encodeURIComponent(agentId)}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export interface AgentFileContentResponse {
+  agentId: string
+  path: string
+  content?: string
+}
+
+export async function getAgentFile(agentId: string, path: string): Promise<AgentFileContentResponse> {
+  const res = await apiFetch(`${API_BASE}/agent/file?agentId=${encodeURIComponent(agentId)}&path=${encodeURIComponent(path)}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }

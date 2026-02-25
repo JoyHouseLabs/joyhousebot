@@ -5,6 +5,7 @@ from pathlib import Path
 
 from joyhousebot.agent.memory import (
     MemoryStore,
+    safe_scope_key,
     L0_ABSTRACT_FILENAME,
     INSIGHTS_DIR,
     LESSONS_DIR,
@@ -56,3 +57,75 @@ def test_get_memory_context_with_l0_truncates_long_l0(tmp_path: Path) -> None:
     ctx = store.get_memory_context_with_l0(max_l0_chars=500)
     assert "(truncated)" in ctx
     assert "User prefers short answers" in ctx
+
+
+def test_append_history_trims_when_max_entries_set(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.ensure_memory_structure()
+    for i in range(5):
+        store.append_history(f"[2026-01-0{i+1} 10:00] Entry {i+1}.", max_entries=0)
+    content = store.history_file.read_text()
+    blocks = [b for b in content.split("\n\n") if b.strip()]
+    assert len(blocks) == 5
+    store.append_history("[2026-01-06 10:00] Entry 6.", max_entries=3)
+    content = store.history_file.read_text()
+    blocks = [b for b in content.split("\n\n") if b.strip()]
+    assert len(blocks) == 3
+    assert "Entry 4" in content and "Entry 5" in content and "Entry 6" in content
+    assert "Entry 1" not in content
+
+
+def test_read_daily_logs_today_yesterday(tmp_path: Path) -> None:
+    from datetime import date, timedelta
+    store = MemoryStore(tmp_path)
+    store.ensure_memory_structure()
+    today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    store.append_l2_daily(today, "Today: shipped feature X.")
+    store.append_l2_daily(yesterday, "Yesterday: discussed API design.")
+    combined = store.read_daily_logs_today_yesterday()
+    assert "Today: shipped feature X" in combined
+    assert "Yesterday: discussed API design" in combined
+
+
+def test_safe_scope_key() -> None:
+    assert safe_scope_key("session_abc") == "session_abc"
+    assert safe_scope_key("user:123") == "user_123"
+    assert safe_scope_key("") == ""
+    assert safe_scope_key("..") == ""
+    assert ".." not in safe_scope_key("a:b:c")
+    assert "/" not in safe_scope_key("a/b")
+
+
+def test_memory_store_with_scope_key_uses_subdir(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path, scope_key="session_1")
+    store.ensure_memory_structure()
+    assert store.memory_dir == tmp_path / "memory" / "session_1"
+    assert store.memory_file == store.memory_dir / "MEMORY.md"
+    store.write_long_term("- [P0] Session-specific fact.")
+    assert "Session-specific fact" in store.read_long_term()
+
+
+def test_write_long_term_with_updated_at(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.ensure_memory_structure()
+    store.write_long_term("- [P0] Fact.", updated_at="2026-02-25T12:00:00Z")
+    raw = store.read_long_term()
+    assert "updated_at=2026-02-25" in raw
+    assert "[P0] Fact" in raw
+
+
+def test_get_memory_context_empty(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.ensure_memory_structure()
+    assert store.get_memory_context() == ""
+
+
+def test_get_memory_context_with_l0_empty_l0(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path)
+    store.ensure_memory_structure()
+    store.write_long_term("- [P0] Only long-term.")
+    ctx = store.get_memory_context_with_l0()
+    assert "Long-term Memory" in ctx
+    assert "Only long-term" in ctx
+    assert "memory index" in ctx or ".abstract" in ctx or "active topics" in ctx

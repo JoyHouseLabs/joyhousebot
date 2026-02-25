@@ -39,15 +39,13 @@ def get_data_dir() -> Path:
 def load_config(config_path: Path | None = None) -> Config:
     """
     Load configuration from file or create default.
-    
-    Args:
-        config_path: Optional path to config file. Uses default if not provided.
-    
-    Returns:
-        Loaded configuration object.
+
+    When using the default config path (~/.joyhousebot/config.json) and the file
+    does not exist, the directory is created and a default config is written
+    (first-run init after pip install). Other paths are not auto-created.
     """
     path = config_path or get_config_path()
-    
+
     if path.exists():
         try:
             with open(path) as f:
@@ -55,14 +53,30 @@ def load_config(config_path: Path | None = None) -> Config:
             data = _migrate_config(data)
             cfg = Config.model_validate(convert_keys(data))
             _apply_config_env_vars(cfg)
+            _fill_provider_api_keys_from_env(cfg)
             return cfg
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(
                 f"Failed to load config from {path}: {e}. "
                 "Fix the file or remove it to regenerate defaults."
             ) from e
-    
-    return Config()
+
+    # No file: for default path only, write default config then load (first-run init).
+    default_path = get_config_path()
+    if path == default_path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_config(Config(), path)
+        with open(path) as f:
+            data = json.load(f)
+        data = _migrate_config(data)
+        cfg = Config.model_validate(convert_keys(data))
+        _apply_config_env_vars(cfg)
+        _fill_provider_api_keys_from_env(cfg)
+        return cfg
+
+    cfg = Config()
+    _fill_provider_api_keys_from_env(cfg)
+    return cfg
 
 
 def _apply_config_env_vars(cfg: Config) -> None:
@@ -72,6 +86,23 @@ def _apply_config_env_vars(cfg: Config) -> None:
     for key, value in cfg.env.vars.items():
         if isinstance(key, str) and isinstance(value, str):
             os.environ.setdefault(key, value)
+
+
+def _fill_provider_api_keys_from_env(cfg: Config) -> None:
+    """当配置里某 provider 的 api_key 为空时，用对应环境变量填充（与直接跑脚本时行为一致）。"""
+    from joyhousebot.providers.registry import PROVIDERS
+    for spec in PROVIDERS:
+        if not spec.env_key:
+            continue
+        p = getattr(cfg.providers, spec.name, None)
+        if p is None:
+            continue
+        existing = (p.api_key or "").strip()
+        if existing:
+            continue
+        env_val = (os.environ.get(spec.env_key) or "").strip()
+        if env_val:
+            p.api_key = env_val
 
 
 def _apply_openclaw_models_providers(data: dict[str, Any]) -> None:
@@ -127,6 +158,7 @@ def load_config_from_openclaw_file(path: Path) -> Config:
     data = {k: v for k, v in data.items() if k in allowed}
     cfg = Config.model_validate(data)
     _apply_config_env_vars(cfg)
+    _fill_provider_api_keys_from_env(cfg)
     return cfg
 
 

@@ -19,7 +19,7 @@ def _get_skills_loader():
     config_path = get_config_path()
     if config_path.exists():
         config = load_config(config_path)
-        workspace = config.workspace_path()
+        workspace = config.workspace_path
     else:
         workspace = get_workspace_path()
     return SkillsLoader(workspace, BUILTIN_SKILLS_DIR)

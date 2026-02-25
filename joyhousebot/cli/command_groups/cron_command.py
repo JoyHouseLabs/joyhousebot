@@ -55,13 +55,14 @@ def register_cron_commands(app: typer.Typer, console: Console) -> None:
     @cron_app.command("add")
     def cron_add(
         name: str = typer.Option(..., "--name", "-n", help="Job name"),
-        message: str = typer.Option(..., "--message", "-m", help="Message for agent"),
+        message: str = typer.Option("", "--message", "-m", help="Message for agent (optional when --kind memory_compaction)"),
         every: int = typer.Option(None, "--every", "-e", help="Run every N seconds"),
         cron_expr: str = typer.Option(None, "--cron", "-c", help="Cron expression (e.g. '0 9 * * *')"),
         at: str = typer.Option(None, "--at", help="Run once at time (ISO format)"),
         deliver: bool = typer.Option(False, "--deliver", "-d", help="Deliver response to channel"),
         to: str = typer.Option(None, "--to", help="Recipient for delivery"),
         channel: str = typer.Option(None, "--channel", help="Channel for delivery (e.g. 'telegram', 'whatsapp')"),
+        kind: str = typer.Option("agent_turn", "--kind", "-k", help="Payload kind: agent_turn (send message to agent) or memory_compaction (L2->L1->L0)"),
     ) -> None:
         """Add a scheduled job."""
         from joyhousebot.config.loader import get_data_dir
@@ -81,15 +82,21 @@ def register_cron_commands(app: typer.Typer, console: Console) -> None:
             console.print("[red]Error: Must specify --every, --cron, or --at[/red]")
             raise typer.Exit(1)
 
+        payload_kind = "memory_compaction" if (kind or "").strip().lower() == "memory_compaction" else "agent_turn"
+        if payload_kind == "agent_turn" and not (message or "").strip():
+            console.print("[red]Error: --message is required when kind is agent_turn[/red]")
+            raise typer.Exit(1)
+
         store_path = get_data_dir() / "cron" / "jobs.json"
         service = CronService(store_path)
         job = service.add_job(
             name=name,
             schedule=schedule,
-            message=message,
+            message=message or "",
             deliver=deliver,
             to=to,
             channel=channel,
+            payload_kind=payload_kind,
         )
         console.print(f"[green]✓[/green] Added job '{job.name}' ({job.id})")
 

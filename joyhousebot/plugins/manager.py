@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from dataclasses import asdict
@@ -15,6 +16,11 @@ from .bridge.manager import BridgePluginManager
 from .core.contracts import BridgeRuntime, NativeRuntime
 from .core.types import PluginHostError, PluginRecord, PluginSnapshot
 from .native.loader import NativePluginLoader, NativeRegistry
+from joyhousebot.utils.exceptions import (
+    PluginError,
+    sanitize_error_message,
+    classify_exception,
+)
 
 _singleton_lock = threading.Lock()
 _singleton: "PluginManager | None" = None
@@ -59,15 +65,26 @@ class PluginManager:
                 bridge_error: Exception | None = None
                 try:
                     bridge_snapshot = self.bridge.load(workspace_dir=workspace_dir, config=config, reload=reload)
+                except PluginHostError as exc:
+                    bridge_error = exc
+                    logger.error(f"Bridge plugin load error [{exc.code}]: {exc.message}")
+                except FileNotFoundError as exc:
+                    bridge_error = exc
+                    logger.error(f"Bridge plugin directory not found: {sanitize_error_message(str(exc))}")
+                except PermissionError as exc:
+                    bridge_error = exc
+                    logger.error(f"Bridge plugin permission denied: {sanitize_error_message(str(exc))}")
                 except Exception as exc:
                     bridge_error = exc
+                    code, _, _ = classify_exception(exc)
+                    logger.error(f"Bridge plugin load failed [{code}]: {sanitize_error_message(str(exc))}")
                 self.native_registry = self.native.load(workspace_dir=workspace_dir, config=config)
                 if bridge_snapshot is None and bridge_error and not self.native_registry.records:
                     logger.warning("Bridge plugin load failed: {}", bridge_error)
                 if bridge_snapshot is None and bridge_error and not self.native_registry.records:
                     if isinstance(bridge_error, PluginHostError):
                         raise bridge_error
-                    raise PluginHostError("BRIDGE_LOAD_FAILED", str(bridge_error))
+                    raise PluginHostError("BRIDGE_LOAD_FAILED", sanitize_error_message(str(bridge_error)))
                 self.snapshot = self._merge_snapshots(workspace_dir, bridge_snapshot, self.native_registry)
             return self.snapshot
 
@@ -141,10 +158,26 @@ class PluginManager:
             )
         try:
             return self.client.http_dispatch(request)
-        except Exception as exc:
+        except PluginHostError as exc:
             return {
                 "ok": False,
-                "error": {"code": "UNAVAILABLE", "message": f"plugin http dispatch unavailable: {exc}"},
+                "error": {"code": exc.code, "message": exc.message},
+            }
+        except asyncio.TimeoutError:
+            return {
+                "ok": False,
+                "error": {"code": "TIMEOUT", "message": "plugin http dispatch timed out"},
+            }
+        except ConnectionError as exc:
+            return {
+                "ok": False,
+                "error": {"code": "CONNECTION_ERROR", "message": f"connection failed: {sanitize_error_message(str(exc))}"},
+            }
+        except Exception as exc:
+            code, _, _ = classify_exception(exc)
+            return {
+                "ok": False,
+                "error": {"code": code, "message": f"plugin http dispatch failed: {sanitize_error_message(str(exc))}"},
             }
 
     def skills_dirs(self) -> list[str]:
@@ -230,8 +263,15 @@ class PluginManager:
             if isinstance(out, dict) and out.get("ok") is False and "error" in out:
                 return {"ok": False, "error": {"code": "BRIDGE_TOOL_ERROR", "message": str(out.get("error", ""))}}
             return {"ok": True, "plugin_id": pid, "tool_name": resolved_name, "result": out}
+        except PluginHostError as exc:
+            return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": {"code": "TIMEOUT", "message": "plugin tool invocation timed out"}}
+        except ConnectionError as exc:
+            return {"ok": False, "error": {"code": "CONNECTION_ERROR", "message": f"connection failed: {sanitize_error_message(str(exc))}"}}
         except Exception as exc:
-            return {"ok": False, "error": {"code": "UNAVAILABLE", "message": f"plugin tool unavailable: {exc}"}}
+            code, _, _ = classify_exception(exc)
+            return {"ok": False, "error": {"code": code, "message": f"plugin tool unavailable: {sanitize_error_message(str(exc))}"}}
 
     def native_runtime_report(self) -> dict[str, Any]:
         totals = dict(self._native_runtime_stats.get("totals", {}))

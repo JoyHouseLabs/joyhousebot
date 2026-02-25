@@ -7,6 +7,7 @@ from joyhousebot.config.loader import (
     _apply_config_env_vars,
     _migrate_config,
     convert_keys,
+    load_config,
     load_config_from_openclaw_file,
 )
 from joyhousebot.config.schema import Config, EnvConfig
@@ -156,3 +157,31 @@ def test_convert_keys_env_vars_keys_preserved() -> None:
     converted = convert_keys(data)
     assert converted.get("env") is not None
     assert converted["env"].get("vars") == {"API_KEY": "secret", "FOO_BAR": "baz"}
+
+
+# --- load_config first-run init (default path only) ---
+
+
+def test_load_config_creates_default_config_on_first_run(tmp_path: Path, monkeypatch: object) -> None:
+    """When default config path does not exist, load_config creates ~/.joyhousebot and writes default config."""
+    default_cfg = tmp_path / "config.json"
+    monkeypatch.setattr("joyhousebot.config.loader.get_config_path", lambda: default_cfg)
+    assert not default_cfg.exists()
+    cfg = load_config()
+    assert default_cfg.exists()
+    assert cfg is not None
+    assert default_cfg.parent == tmp_path
+    # Reload from file and ensure it matches schema (has expected top-level keys).
+    cfg2 = load_config(default_cfg)
+    assert hasattr(cfg2, "agents")
+    assert hasattr(cfg2, "gateway")
+
+
+def test_load_config_non_default_path_returns_default_object_without_writing(tmp_path: Path) -> None:
+    """When a non-default path does not exist, load_config returns Config() and does not create the file."""
+    other = tmp_path / "other.json"
+    assert not other.exists()
+    cfg = load_config(other)
+    assert not other.exists()
+    assert cfg is not None
+    assert hasattr(cfg, "agents")

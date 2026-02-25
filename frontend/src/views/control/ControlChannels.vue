@@ -14,7 +14,10 @@
           :class="{ enabled: ch.enabled, running: ch.running }"
         >
           <template #header>
-            <span class="channel-name">{{ channelLabel(ch.name) }}</span>
+            <div class="channel-header-title">
+              <span class="channel-name">{{ channelLabel(ch.name) }}</span>
+              <span class="channel-id" :title="ch.name">{{ ch.name }}</span>
+            </div>
             <n-tag :type="ch.running ? 'success' : ch.enabled ? 'warning' : 'default'" size="small" round>
               {{ ch.running ? '运行中' : ch.enabled ? '已启用' : '未启用' }}
             </n-tag>
@@ -53,16 +56,36 @@ const channelLabels: Record<string, string> = {
   mochat: 'Mochat',
 }
 
-function channelLabel(name: string) {
+function channelLabel(name: string | undefined) {
+  if (name == null || name === '') return ''
   return channelLabels[name] ?? name
+}
+
+/** 后端 channels.status 可能返回 channels 为对象（name -> meta）或数组；统一为 { name, enabled, running }[] */
+function normalizeChannelsList(res: unknown): ChannelStatus[] {
+  const raw = (res as { channels?: ChannelStatus[] | Record<string, { configured?: boolean; enabled?: boolean; running?: boolean }>; channelOrder?: string[] })?.channels
+  const order = (res as { channelOrder?: string[] })?.channelOrder
+  if (Array.isArray(raw)) return raw
+  if (raw && typeof raw === 'object') {
+    const names = order && Array.isArray(order) ? order : Object.keys(raw)
+    return names.map((name) => {
+      const meta = (raw as Record<string, { configured?: boolean; enabled?: boolean; running?: boolean }>)[name]
+      return {
+        name,
+        enabled: Boolean(meta?.configured ?? meta?.enabled),
+        running: Boolean(meta?.running),
+      }
+    })
+  }
+  return []
 }
 
 async function loadChannels() {
   if (!gateway?.request) return
   channelsLoading.value = true
   try {
-    const res = await gateway.request<{ ok: boolean; channels: ChannelStatus[] }>('channels.status')
-    channelsList.value = res?.channels ?? []
+    const res = await gateway.request<unknown>('channels.status')
+    channelsList.value = normalizeChannelsList(res)
   } catch (e) {
     message.error(String(e))
   } finally {
@@ -105,8 +128,20 @@ watch(() => gateway?.connected, (connected) => { if (connected) void loadChannel
   font-weight: 600;
   font-size: 13px;
 }
+.channel-header-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .channel-name {
+  font-size: 13px;
   text-transform: capitalize;
+}
+.channel-id {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted, #888);
+  text-transform: lowercase;
 }
 .channel-meta {
   display: flex;

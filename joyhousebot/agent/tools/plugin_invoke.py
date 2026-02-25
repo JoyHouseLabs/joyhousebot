@@ -9,17 +9,17 @@ from joyhousebot.agent.tools.base import Tool
 
 
 class PluginInvokeTool(Tool):
-    """Call a plugin tool by plugin_id and tool_name. Uses plugin.invoke contract."""
+    """Call a plugin tool by plugin_id and tool_name. Uses plugin_invoke contract."""
 
     @property
     def name(self) -> str:
-        return "plugin.invoke"
+        return "plugin_invoke"
 
     @property
     def description(self) -> str:
         return (
             "Invoke a plugin tool. Use when a skill or user asks to use plugin capabilities "
-            "(e.g. library.create_book, library.list_books). Provide plugin_id, tool_name, and optional arguments."
+            "(e.g. my_plugin.create_item, my_plugin.list_items). Provide plugin_id, tool_name, and optional arguments."
         )
 
     @property
@@ -29,11 +29,11 @@ class PluginInvokeTool(Tool):
             "properties": {
                 "plugin_id": {
                     "type": "string",
-                    "description": "Plugin ID (e.g. library, native.hello)",
+                    "description": "Plugin ID (e.g. my_plugin, native.hello)",
                 },
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool name as registered (e.g. create_book or library.create_book)",
+                    "description": "Tool name as registered (e.g. create_item or my_plugin.create_item)",
                 },
                 "arguments": {
                     "type": "object",

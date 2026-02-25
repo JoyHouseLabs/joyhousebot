@@ -21,11 +21,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { NTag } from 'naive-ui'
-import { useGateway, GatewayKey } from '../../composables/useGateway'
-import { provide } from 'vue'
+import { useGatewayInject } from '../../composables/useGateway'
 
-const gateway = useGateway()
-provide(GatewayKey, gateway)
+const gateway = useGatewayInject()
+if (!gateway) {
+  throw new Error('ControlLayout requires GatewayKey from ShellLayout')
+}
 
 const showStatusBar = computed(() => true)
 

@@ -56,6 +56,7 @@
             <ConfigMessages v-else-if="activeKey === 'messages'" :config="local" />
             <ConfigCommands v-else-if="activeKey === 'commands'" :config="local" />
             <ConfigEnv v-else-if="activeKey === 'env'" :config="local" />
+            <ConfigCloudConnect v-else-if="activeKey === 'cloud_connect'" :config="local" />
           </div>
         </main>
       </div>
@@ -86,6 +87,7 @@ import {
   ConfigMessages,
   ConfigCommands,
   ConfigEnv,
+  ConfigCloudConnect,
   CONFIG_CATEGORIES,
 } from './config'
 import type { ConfigCategoryKey } from './config/types'

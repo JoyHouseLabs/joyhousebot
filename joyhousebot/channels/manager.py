@@ -11,6 +11,11 @@ from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.bus.queue import MessageBus
 from joyhousebot.channels.base import BaseChannel
 from joyhousebot.config.schema import Config
+from joyhousebot.utils.exceptions import (
+    ChannelError,
+    sanitize_error_message,
+    classify_exception,
+)
 
 
 class ChannelManager:
@@ -154,8 +159,17 @@ class ChannelManager:
         """Start a channel and log any exceptions."""
         try:
             await channel.start()
+        except ChannelError as e:
+            logger.error(f"Channel {name} error [{e.code}]: {e.message}")
+        except asyncio.TimeoutError:
+            logger.error(f"Channel {name}: connection timed out")
+        except ConnectionError as e:
+            logger.error(f"Channel {name}: connection failed - {sanitize_error_message(str(e))}")
+        except PermissionError as e:
+            logger.error(f"Channel {name}: permission denied - {sanitize_error_message(str(e))}")
         except Exception as e:
-            logger.error(f"Failed to start channel {name}: {e}")
+            code, category, _ = classify_exception(e)
+            logger.error(f"Failed to start channel {name} [{code}]: {sanitize_error_message(str(e))}")
 
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
@@ -179,7 +193,6 @@ class ChannelManager:
         """Stop all channels and the dispatcher."""
         logger.info("Stopping all channels...")
         
-        # Stop dispatcher
         if self._dispatch_task:
             self._dispatch_task.cancel()
             try:
@@ -187,13 +200,17 @@ class ChannelManager:
             except asyncio.CancelledError:
                 pass
         
-        # Stop all channels
         for name, channel in self.channels.items():
             try:
                 await channel.stop()
                 logger.info(f"Stopped {name} channel")
+            except ChannelError as e:
+                logger.error(f"Channel {name} stop error [{e.code}]: {e.message}")
+            except asyncio.TimeoutError:
+                logger.error(f"Channel {name}: stop timed out")
             except Exception as e:
-                logger.error(f"Error stopping {name}: {e}")
+                code, _, _ = classify_exception(e)
+                logger.error(f"Error stopping {name} [{code}]: {sanitize_error_message(str(e))}")
     
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""
@@ -210,8 +227,15 @@ class ChannelManager:
                 if channel:
                     try:
                         await channel.send(msg)
+                    except ChannelError as e:
+                        logger.error(f"Channel {msg.channel} send error [{e.code}]: {e.message}")
+                    except asyncio.TimeoutError:
+                        logger.error(f"Channel {msg.channel}: send timed out")
+                    except ConnectionError as e:
+                        logger.error(f"Channel {msg.channel}: connection lost - {sanitize_error_message(str(e))}")
                     except Exception as e:
-                        logger.error(f"Error sending to {msg.channel}: {e}")
+                        code, _, _ = classify_exception(e)
+                        logger.error(f"Error sending to {msg.channel} [{code}]: {sanitize_error_message(str(e))}")
                 else:
                     logger.warning(f"Unknown channel: {msg.channel}")
                     

@@ -8,6 +8,7 @@ import sys
 import webbrowser
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
@@ -43,9 +44,13 @@ def register_runtime_commands(
 
     @app.command("dashboard")
     def dashboard_open() -> None:
-        """Open the local control UI in system browser."""
+        """Open the local control UI in system browser. If gateway.control_token is set, appends ?token=... so the UI can authenticate."""
         base = get_gateway_base_url()
-        url = f"{base}/"
+        url = f"{base}/ui"
+        config = load_config()
+        token = (getattr(config.gateway, "control_token", None) or "").strip()
+        if token:
+            url = f"{url}?token={quote(token, safe='')}"
         opened = webbrowser.open(url)
         if opened:
             console.print(f"[green]✓[/green] Opened {url}")
@@ -127,6 +132,27 @@ def register_runtime_commands(
 
     reset_app = typer.Typer(help="Reset local config/state")
     app.add_typer(reset_app, name="reset")
+
+    @reset_app.command("sessions")
+    def reset_sessions(
+        yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+    ) -> None:
+        """Clear all conversation session history (plugin_invoke migration, DeepSeek tool-name fix)."""
+        data_dir = get_data_dir()
+        sessions_dir = data_dir / "sessions"
+        if not sessions_dir.exists() or not sessions_dir.is_dir():
+            console.print("[dim]No sessions directory found. Nothing to clear.[/dim]")
+            return
+        count = len(list(sessions_dir.glob("*.jsonl"))) if sessions_dir.exists() else 0
+        if count == 0:
+            console.print("[dim]No session files. Nothing to clear.[/dim]")
+            return
+        if not yes:
+            if not typer.confirm(f"Will remove {count} session(s) from {sessions_dir}. Continue?"):
+                raise typer.Exit(0)
+        shutil.rmtree(sessions_dir)
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"[green]✓[/green] Cleared {count} session(s). Fresh sessions will be created on next chat.")
 
     @reset_app.command("all")
     def reset_all(

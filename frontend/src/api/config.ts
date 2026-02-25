@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface WalletData {
@@ -72,7 +74,7 @@ export interface ConfigUpdateBody {
 }
 
 export async function getConfig(): Promise<ConfigResponse> {
-  const res = await fetch(`${API_BASE}/config`)
+  const res = await apiFetch(`${API_BASE}/config`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -84,7 +86,7 @@ export interface ConfigUpdateResponse {
 }
 
 export async function updateConfig(body: ConfigUpdateBody): Promise<ConfigUpdateResponse> {
-  const res = await fetch(`${API_BASE}/config`, {
+  const res = await apiFetch(`${API_BASE}/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

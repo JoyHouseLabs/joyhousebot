@@ -1,0 +1,87 @@
+name: RPC Compatibility Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      run_strict:
+        description: "Run strict nightly-quality gate"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "30 2 * * *"
+
+jobs:
+  required-gate:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout joyhousebot
+        uses: actions/checkout@v4
+        with:
+          path: joyhousebot
+
+      - name: Checkout openclaw reference
+        uses: actions/checkout@v4
+        with:
+          repository: openclaw/openclaw
+          path: openclaw
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: joyhousebot
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run pre-release checks
+        working-directory: joyhousebot
+        env:
+          OPENCLAW_ROOT: ${{ github.workspace }}/openclaw
+        run: |
+          bash scripts/pre_release_check.sh
+
+  strict-nightly:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_strict == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout joyhousebot
+        uses: actions/checkout@v4
+        with:
+          path: joyhousebot
+
+      - name: Checkout openclaw reference
+        uses: actions/checkout@v4
+        with:
+          repository: openclaw/openclaw
+          path: openclaw
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: joyhousebot
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run strict pre-release checks
+        working-directory: joyhousebot
+        env:
+          OPENCLAW_ROOT: ${{ github.workspace }}/openclaw
+          FULL_TESTS: "1"
+          FULL_LINTS: "1"
+          STRICT_LINT: "1"
+        run: |
+          bash scripts/pre_release_check.sh

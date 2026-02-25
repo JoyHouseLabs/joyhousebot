@@ -22,7 +22,7 @@ def should_run_setup_host(requirements_report: dict[str, Any]) -> bool:
     return (
         bool(checks.get("openclawDirExists"))
         and bool(checks.get("openclawPackageJsonExists"))
-        and not bool(checks.get("openclawDistLoaderExists"))
+        and not bool(checks.get("openclawLoaderAvailable"))
     )
 
 

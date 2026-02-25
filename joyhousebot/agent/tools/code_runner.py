@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -11,8 +12,15 @@ from loguru import logger
 from joyhousebot.agent.tools.base import Tool
 from joyhousebot.agent.tools.code_backends.base import CodeBackend, RunResult
 from joyhousebot.agent.tools.code_backends.claude_code_backend import ClaudeCodeBackend
+from joyhousebot.utils.exceptions import (
+    ToolError,
+    TimeoutError,
+    ValidationError,
+    ErrorCategory,
+    sanitize_error_message,
+    classify_exception,
+)
 
-# Default timeout for approval request when require_approval is True (ms).
 DEFAULT_APPROVAL_TIMEOUT_MS = 120_000
 
 
@@ -109,6 +117,10 @@ class CodeRunnerTool(Tool):
     ) -> str:
         execution_stream_callback = kwargs.pop("execution_stream_callback", None)
 
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValidationError("prompt is required", field="prompt")
+
         backend_id = (backend or self._default_backend).strip().lower()
         mode_val = (mode or self._default_mode).strip().lower()
         if mode_val not in ("host", "container", "auto"):
@@ -136,7 +148,7 @@ class CodeRunnerTool(Tool):
 
         b = _get_backend(backend_id, claude_command=self._claude_code_command, timeout_default=self._timeout)
         if not b:
-            return f"Error: Unknown backend '{backend_id}'. Supported: claude_code."
+            raise ValidationError(f"Unknown backend '{backend_id}'. Supported: claude_code.", field="backend")
 
         output_callback = None
         if execution_stream_callback:
@@ -149,15 +161,27 @@ class CodeRunnerTool(Tool):
 
             output_callback = _output_cb
 
-        result = await b.run(
-            prompt=prompt,
-            working_dir=cwd,
-            timeout=effective_timeout,
-            mode=mode_val,
-            container_image=self._container_image,
-            container_workspace_mount=self._container_workspace_mount or cwd or "",
-            container_user=self._container_user,
-            container_network=self._container_network,
-            output_callback=output_callback,
-        )
-        return result.to_display_string()
+        try:
+            result = await b.run(
+                prompt=prompt,
+                working_dir=cwd,
+                timeout=effective_timeout,
+                mode=mode_val,
+                container_image=self._container_image,
+                container_workspace_mount=self._container_workspace_mount or cwd or "",
+                container_user=self._container_user,
+                container_network=self._container_network,
+                output_callback=output_callback,
+            )
+            return result.to_display_string()
+        except asyncio.TimeoutError:
+            raise TimeoutError("code_runner", effective_timeout)
+        except FileNotFoundError as e:
+            raise ToolError(self.name, f"Working directory not found: {cwd}")
+        except PermissionError as e:
+            raise ToolError(self.name, f"Permission denied: {sanitize_error_message(str(e))}")
+        except Exception as e:
+            code, category, _ = classify_exception(e)
+            sanitized = sanitize_error_message(str(e))
+            logger.error(f"Code runner error [{code}]: {sanitized}")
+            raise ToolError(self.name, sanitized, is_recoverable=(category == ErrorCategory.RECOVERABLE))

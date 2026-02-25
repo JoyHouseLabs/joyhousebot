@@ -29,6 +29,7 @@
         <n-button quaternary size="small" @click="load">刷新</n-button>
         <n-button type="primary" size="small" @click="confirmRecreate(false)">全部重建</n-button>
         <n-button size="small" @click="confirmRecreate(true)">仅重建浏览器容器</n-button>
+        <span class="sandbox-toolbar-hint">重建 = 移除容器，下次使用浏览器能力时会自动新建</span>
       </div>
       <n-data-table
         :columns="columns"
@@ -91,8 +92,8 @@ async function load() {
 function confirmRecreate(browserOnly: boolean) {
   const title = browserOnly ? '仅重建浏览器容器' : '全部重建沙箱容器'
   const content = browserOnly
-    ? '将移除所有带 browser 标签的沙箱容器，确定继续？'
-    : '将移除当前所有沙箱容器，确定继续？'
+    ? '将移除所有带 browser 标签的沙箱容器（下次使用浏览器能力时会自动新建）。确定继续？'
+    : '将移除当前所有沙箱容器（下次执行沙箱任务时会自动新建）。确定继续？'
   dialog.warning({
     title,
     content,
@@ -139,8 +140,14 @@ onMounted(load)
 }
 .sandbox-toolbar {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.sandbox-toolbar-hint {
+  font-size: 12px;
+  color: var(--text-muted, #666);
 }
 .sandbox-table {
   margin-top: 8px;

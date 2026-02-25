@@ -23,9 +23,8 @@ class OpenAppTool(Tool):
     def description(self) -> str:
         return (
             "Open a domain application for the user. Use this when the user wants to use "
-            "library (books, tags, search), or any other installed app. Do not perform "
-            "domain actions (e.g. add book, list books) yourself; open the app and let "
-            "the user do it there. Parameters: app_id (required, e.g. 'library'), route "
+            "an installed app. Do not perform domain actions yourself; open the app and let "
+            "the user do it there. Parameters: app_id (required, e.g. 'my_app'), route "
             "(optional, app-internal path like '/add'), params (optional object for the app)."
         )
 
@@ -36,7 +35,7 @@ class OpenAppTool(Tool):
             "properties": {
                 "app_id": {
                     "type": "string",
-                    "description": "Application ID (e.g. 'library'). Required.",
+                    "description": "Application ID (e.g. from installed apps). Required.",
                 },
                 "route": {
                     "type": "string",
@@ -66,16 +65,20 @@ class OpenAppTool(Tool):
         route = (route or "").strip() or None
         params = params if isinstance(params, dict) else {}
         navigate_to = f"/app/{app_id}"
+        app_link = f"/plugins-apps/{app_id}/index.html"
         if route:
             if route.startswith("#"):
                 navigate_to += route
+                app_link += route
             else:
                 navigate_to += "?route=" + quote(route)
+                app_link += "?route=" + quote(route)
         out = {
             "ok": True,
             "app_id": app_id,
             "route": route,
             "params": params,
             "navigate_to": navigate_to,
+            "app_link": app_link,
         }
         return json.dumps(out, ensure_ascii=False)

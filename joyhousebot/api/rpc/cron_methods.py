@@ -93,6 +93,10 @@ async def try_handle_cron_method(
 def build_cron_add_args(params: dict[str, Any]) -> dict[str, Any]:
     """Build normalized arguments for CronJobCreate and CronScheduleBody."""
     schedule = params.get("schedule") or {}
+    payload = params.get("payload") or {}
+    payload_kind = str(payload.get("kind") or params.get("payload_kind") or "agent_turn")
+    if payload_kind not in ("agent_turn", "memory_compaction", "system_event"):
+        payload_kind = "agent_turn"
     return {
         "name": str(params.get("name") or ""),
         "schedule": {
@@ -103,12 +107,13 @@ def build_cron_add_args(params: dict[str, Any]) -> dict[str, Any]:
             "expr": schedule.get("expr"),
             "tz": schedule.get("tz"),
         },
-        "message": str((params.get("payload") or {}).get("message") or params.get("message") or ""),
+        "message": str(payload.get("message") or params.get("message") or ""),
         "deliver": bool(params.get("deliver", False)),
         "channel": params.get("channel"),
         "to": params.get("to"),
         "delete_after_run": bool(params.get("delete_after_run", False)),
         "agent_id": params.get("agent_id") or params.get("agentId"),
+        "payload_kind": payload_kind,
     }
 
 
@@ -120,7 +125,7 @@ def build_cron_add_body_from_params(
 ) -> Any:
     """Build CronJobCreate instance from RPC params."""
     add_args = build_cron_add_args(params)
-    return cron_job_create_cls(
+    kwargs = dict(
         name=add_args["name"],
         schedule=cron_schedule_body_cls(**add_args["schedule"]),
         message=add_args["message"],
@@ -130,6 +135,9 @@ def build_cron_add_body_from_params(
         delete_after_run=add_args["delete_after_run"],
         agent_id=add_args["agent_id"],
     )
+    if "payload_kind" in add_args:
+        kwargs["payload_kind"] = add_args["payload_kind"]
+    return cron_job_create_cls(**kwargs)
 
 
 def build_cron_patch_body_from_params(

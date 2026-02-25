@@ -20,11 +20,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 from joyhousebot.agent.tools.base import Tool
+from joyhousebot.utils.exceptions import (
+    ToolError,
+    TimeoutError,
+    sanitize_error_message,
+)
+
+
+_MAX_OUTPUT_LENGTH = 10000
 
 
 class ExecTool(Tool):
     """Tool to execute shell commands (direct or Docker backend with fallback)."""
-    
+
     def __init__(
         self,
         timeout: int = 60,
@@ -50,27 +58,27 @@ class ExecTool(Tool):
         self.container_network = container_network or "none"
         self.get_skill_env = get_skill_env
         self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",              # del /f, del /q
-            r"\brmdir\s+/s\b",               # rmdir /s
-            r"\b(format|mkfs|diskpart)\b",   # disk operations
-            r"\bdd\s+if=",                   # dd
-            r">\s*/dev/sd",                  # write to disk
-            r"\b(shutdown|reboot|poweroff)\b",  # system power
-            r":\(\)\s*\{.*\};\s*:",          # fork bomb
+            r"\brm\s+-[rf]{1,2}\b",
+            r"\bdel\s+/[fq]\b",
+            r"\brmdir\s+/s\b",
+            r"\b(format|mkfs|diskpart)\b",
+            r"\bdd\s+if=",
+            r">\s*/dev/sd",
+            r"\b(shutdown|reboot|poweroff)\b",
+            r":\(\)\s*\{.*\};\s*:",
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
         self._shell_metachar_pattern = re.compile(r"[|&;<>()`$]")
-    
+
     @property
     def name(self) -> str:
         return "exec"
-    
+
     @property
     def description(self) -> str:
         return "Execute a shell command and return its output. Use with caution."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -87,53 +95,63 @@ class ExecTool(Tool):
             },
             "required": ["command"]
         }
-    
+
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
-        
+
         if self.container_enabled:
             result, fallback_reason = await self._execute_docker_or_fallback(command, cwd)
             if fallback_reason:
                 result = (result or "(no output)").rstrip() + f"\n[Sandbox fallback: {fallback_reason}]"
             return result
-        
+
         return await self._execute_direct(command, cwd)
-    
+
     async def _execute_docker_or_fallback(self, command: str, cwd: str) -> tuple[str, str | None]:
         """Try Docker backend; on failure fall back to direct and return (output, fallback_reason)."""
         from joyhousebot.sandbox.docker_backend import is_docker_available, run_in_container
-        
-        if not await is_docker_available():
+
+        try:
+            if not await is_docker_available():
+                out = await self._execute_direct(command, cwd)
+                return out, "Docker unavailable; ran in host"
+        except Exception as e:
             out = await self._execute_direct(command, cwd)
-            return out, "Docker unavailable; ran in host"
-        
+            return out, f"Docker check failed ({sanitize_error_message(str(e))}); ran in host"
+
         workspace_host = self.container_workspace_mount or cwd
-        out, exit_code, err = await run_in_container(
-            command=command,
-            cwd=cwd,
-            timeout_seconds=self.timeout,
-            image=self.container_image,
-            workspace_host_path=workspace_host,
-            workspace_container_path="/workspace",
-            user=self.container_user,
-            network=self.container_network,
-            shell_mode=self.shell_mode,
-        )
-        if err is None:
-            # Success
-            if exit_code != 0:
-                out = (out or "").rstrip() + f"\nExit code: {exit_code}"
-            return (out or "(no output)").rstrip(), None
-        # Docker failed: fallback to direct
+        try:
+            out, exit_code, err = await run_in_container(
+                command=command,
+                cwd=cwd,
+                timeout_seconds=self.timeout,
+                image=self.container_image,
+                workspace_host_path=workspace_host,
+                workspace_container_path="/workspace",
+                user=self.container_user,
+                network=self.container_network,
+                shell_mode=self.shell_mode,
+            )
+            if err is None:
+                if exit_code != 0:
+                    out = (out or "").rstrip() + f"\nExit code: {exit_code}"
+                return (out or "(no output)").rstrip(), None
+        except asyncio.TimeoutError:
+            return f"Error: Command timed out after {self.timeout} seconds", "Container timeout"
+        except Exception as e:
+            sanitized = sanitize_error_message(str(e))
+
         try:
             direct_out = await self._execute_direct(command, cwd)
-            return direct_out, f"Docker failed ({err}); ran in host"
+            return direct_out, f"Docker failed ({sanitized}); ran in host"
+        except asyncio.TimeoutError:
+            return f"Error: Command timed out after {self.timeout} seconds", "Direct timeout after Docker failed"
         except Exception as e:
-            return f"Error: {e}\n[Docker had failed: {err}]", "Docker failed then direct failed"
-    
+            return f"Error: {sanitize_error_message(str(e))}\n[Docker had failed: {sanitized}]", "Both Docker and direct failed"
+
     def _build_env_for_cwd(self, cwd: str) -> dict[str, str]:
         """Build environment for subprocess: current env + per-skill env when cwd is under workspace/skills/<name>."""
         env = dict(os.environ)
@@ -148,7 +166,6 @@ class ExecTool(Tool):
         run_env = self._build_env_for_cwd(cwd)
         try:
             if self.shell_mode:
-                # Run via shell so piping (|), redirects (>), chaining (;) work (OpenClaw-aligned).
                 shell = os.environ.get("SHELL", "/bin/sh")
                 if shell.endswith("fish"):
                     shell = "/bin/sh"
@@ -172,7 +189,7 @@ class ExecTool(Tool):
                     cwd=cwd,
                     env=run_env,
                 )
-            
+
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
@@ -181,7 +198,7 @@ class ExecTool(Tool):
             except asyncio.TimeoutError:
                 process.kill()
                 return f"Error: Command timed out after {self.timeout} seconds"
-            
+
             output_parts = []
             if stdout:
                 output_parts.append(stdout.decode("utf-8", errors="replace"))
@@ -192,12 +209,19 @@ class ExecTool(Tool):
             if process.returncode != 0:
                 output_parts.append(f"\nExit code: {process.returncode}")
             result = "\n".join(output_parts) if output_parts else "(no output)"
-            max_len = 10000
-            if len(result) > max_len:
-                result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
+            if len(result) > _MAX_OUTPUT_LENGTH:
+                result = result[:_MAX_OUTPUT_LENGTH] + f"\n... (truncated, {len(result) - _MAX_OUTPUT_LENGTH} more chars)"
             return result
+        except FileNotFoundError as e:
+            return f"Error: Command not found: {shlex.split(command)[0] if command else 'unknown'}"
+        except PermissionError:
+            return "Error: Permission denied"
+        except asyncio.TimeoutError:
+            return f"Error: Command timed out after {self.timeout} seconds"
+        except OSError as e:
+            return f"Error: {sanitize_error_message(str(e))}"
         except Exception as e:
-            return f"Error executing command: {str(e)}"
+            return f"Error executing command: {sanitize_error_message(str(e))}"
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard: deny_patterns, allowlist (allow_patterns), and when restrict_to_workspace
@@ -234,9 +258,6 @@ class ExecTool(Tool):
                 return "Error: Command blocked by safety guard (working_dir outside allowed root)"
 
             win_paths = re.findall(r"[A-Za-z]:\\[^\\\"']+", cmd)
-            # Only match absolute paths — avoid false positives on relative
-            # paths like ".venv/bin/python" where "/bin/python" would be
-            # incorrectly extracted by the old pattern.
             posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
 
             for raw in win_paths + posix_paths:
@@ -251,4 +272,3 @@ class ExecTool(Tool):
                         return "Error: Command blocked by safety guard (path outside working dir)"
 
         return None
-

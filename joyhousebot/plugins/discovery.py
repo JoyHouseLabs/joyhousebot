@@ -84,8 +84,8 @@ def get_installed_apps_for_agent(workspace: Path, config: Any) -> list[dict[str,
 
 def get_plugin_tool_names_for_agent() -> list[str]:
     """
-    Return list of plugin tool names (e.g. library.create_book) from loaded plugins.
-    Use only these names with plugin.invoke; do not guess tool_name.
+    Return list of plugin tool names (e.g. my_plugin.create_item) from loaded plugins.
+    Use only these names with plugin_invoke; do not guess tool_name.
     """
     try:
         from joyhousebot.plugins.manager import get_plugin_manager

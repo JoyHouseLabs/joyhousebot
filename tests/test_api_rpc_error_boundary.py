@@ -35,7 +35,7 @@ def test_unhandled_exception_result_logs_and_maps():
     res = unhandled_exception_result(
         method="abc",
         exc=RuntimeError("boom"),
-        log_exception=lambda fmt, m: calls.append((fmt, m)),
+        log_exception=lambda fmt, m, code, msg: calls.append((fmt, m, code, msg)),
         rpc_error=_rpc_error,
     )
     assert res[0] is False

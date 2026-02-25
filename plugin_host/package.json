@@ -6,5 +6,8 @@
   "description": "Node sidecar for OpenClaw plugin compatibility",
   "scripts": {
     "host": "node ./src/host.mjs"
+  },
+  "dependencies": {
+    "tsx": "^4.19.0"
   }
 }

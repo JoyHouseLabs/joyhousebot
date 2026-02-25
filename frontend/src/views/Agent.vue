@@ -67,10 +67,33 @@
             </n-tab-pane>
             <n-tab-pane name="files" tab="Files">
               <div class="tab-section">
-                <h3 class="tab-section-title">Core Files</h3>
-                <p class="tab-section-desc">Bootstrap persona, identity, and tool guidance.</p>
-                <p class="tab-section-meta">Workspace: <code>{{ selectedAgent.workspace }}</code></p>
-                <n-alert type="info" class="tab-stub">Workspace 核心文件（如 AGENTS.md、SOUL.md、IDENTITY.md）需在配置目录或文件系统中编辑。</n-alert>
+                <div class="files-header">
+                  <div>
+                    <h3 class="tab-section-title">Core Files</h3>
+                    <p class="tab-section-desc">Workspace: <code>{{ selectedAgent.workspace }}</code></p>
+                  </div>
+                  <n-button size="small" quaternary @click="loadFiles" :loading="filesLoading">刷新</n-button>
+                </div>
+                <template v-if="filesLoading">
+                  <div class="files-loading">
+                    <n-spin size="medium" />
+                  </div>
+                </template>
+                <template v-else-if="files.length">
+                  <div class="files-list">
+                    <div v-for="file in files" :key="file.path" class="file-item">
+                      <div class="file-item-icon">📄</div>
+                      <div class="file-item-body">
+                        <div class="file-item-name">{{ file.name }}</div>
+                        <div class="file-item-meta">
+                          <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                          <span class="file-time">{{ formatTime(file.updatedAtMs) }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <n-empty v-else description="暂无文件" size="small" />
               </div>
             </n-tab-pane>
             <n-tab-pane name="tools" tab="Tools">
@@ -167,13 +190,16 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { getAgents, patchAgent, type AgentListItem } from '../api/agent'
+import { getAgents, patchAgent, type AgentListItem, getAgentFiles, type AgentFile } from '../api/agent'
 import { getSkills, patchSkill, type SkillItem } from '../api/skills'
 
 const loading = ref(true)
 const agents = ref<AgentListItem[]>([])
 const selectedAgent = ref<AgentListItem | null>(null)
 const activeTab = ref<string>('overview')
+
+const files = ref<AgentFile[]>([])
+const filesLoading = ref(false)
 
 const skillsList = ref<SkillItem[]>([])
 const skillsLoading = ref(false)
@@ -256,6 +282,7 @@ async function disableAllSkills() {
 
 watch(activeTab, (tab) => {
   if (tab === 'skills') loadSkills()
+  if (tab === 'files' && selectedAgent.value) loadFiles()
 })
 
 async function load() {
@@ -273,7 +300,43 @@ async function load() {
   }
 }
 
+async function loadFiles() {
+  if (!selectedAgent.value) return
+  filesLoading.value = true
+  try {
+    const res = await getAgentFiles(selectedAgent.value.id)
+    files.value = res.ok && Array.isArray(res.files) ? res.files : []
+  } catch {
+    files.value = []
+  } finally {
+    filesLoading.value = false
+  }
+}
+
 onMounted(load)
+
+function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i]
+}
+
+function formatTime(ms: number): string {
+  const date = new Date(ms)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+  const seconds = Math.floor(diff / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+
+  if (days > 0) return `${days}天前`
+  if (hours > 0) return `${hours}小时前`
+  if (minutes > 0) return `${minutes}分钟前`
+  return `${seconds}秒前`
+}
 </script>
 
 <style scoped>
@@ -487,6 +550,77 @@ onMounted(load)
 }
 .tab-stub {
   max-width: 560px;
+}
+
+.files-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.files-loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.file-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-subtle);
+}
+
+.file-item-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.file-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.file-item-name {
+  font-weight: 500;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-item-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.file-size {
+  font-family: monospace;
 }
 .tab-link {
   color: var(--accent);

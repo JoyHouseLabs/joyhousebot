@@ -19,13 +19,20 @@ from loguru import logger
 from joyhousebot.bus.events import InboundMessage, OutboundMessage
 from joyhousebot.bus.queue import MessageBus
 from joyhousebot.providers.base import LLMProvider, LLMResponse
+from joyhousebot.utils.exceptions import (
+    LLMError,
+    sanitize_error_message,
+    classify_exception,
+    ErrorCategory,
+)
 from joyhousebot.agent.context import ContextBuilder
 from joyhousebot.agent.tools.registry import ToolRegistry
 from joyhousebot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from joyhousebot.agent.tools.shell import ExecTool
 from joyhousebot.agent.tools.web import WebSearchTool, WebFetchTool
-from joyhousebot.agent.tools.ingest import IngestTool
 from joyhousebot.agent.tools.retrieve import RetrieveTool
+from joyhousebot.agent.tools.fetch_url_to_knowledgebase import FetchUrlToKnowledgebaseTool
+from joyhousebot.agent.tools.memory_get import MemoryGetTool
 from joyhousebot.agent.tools.message import MessageTool
 from joyhousebot.agent.tools.spawn import SpawnTool
 from joyhousebot.agent.tools.cron import CronTool
@@ -54,8 +61,8 @@ def _make_get_skill_env(workspace: Path) -> Callable[[str], dict[str, str]]:
 
     def get_skill_env(cwd: str) -> dict[str, str]:
         try:
-            from joyhousebot.config.loader import load_config
-            config = load_config()
+            from joyhousebot.config.access import get_config
+            config = get_config()
             c = Path(cwd).expanduser().resolve()
             rel = c.relative_to(skills_root)
             skill_name = rel.parts[0] if rel.parts else None
@@ -114,6 +121,8 @@ class AgentLoop:
         exec_approval_request: Any = None,
         approval_resolve_fn: Callable[[str, str], Awaitable[tuple[bool, str]]] | None = None,
         transcribe_provider: Any = None,
+        mcp_memory_search_callable: Any = None,
+        mcp_knowledge_search_callable: Any = None,
     ):
         from joyhousebot.config.schema import ExecToolConfig
         from joyhousebot.cron.service import CronService
@@ -165,6 +174,8 @@ class AgentLoop:
         self._node_invoke_runner = node_invoke_runner
         self._exec_approval_request = exec_approval_request
         self._approval_resolve_fn = approval_resolve_fn
+        self._mcp_memory_search_callable = mcp_memory_search_callable
+        self._mcp_knowledge_search_callable = mcp_knowledge_search_callable
         self._current_session_key: str = ""
         self._register_default_tools()
 
@@ -326,7 +337,6 @@ class AgentLoop:
                 )
                 if use_stream and hasattr(runtime_provider, "chat_stream"):
                     response: LLMResponse | None = None
-                    # Buffer deltas for first candidate; only flush to user if we succeed (avoid showing error when fallback will run)
                     stream_buffer: list[str] = []
                     try:
                         async for kind, data in runtime_provider.chat_stream(
@@ -338,18 +348,25 @@ class AgentLoop:
                         ):
                             if kind == "delta" and isinstance(data, str):
                                 stream_buffer.append(data)
+                                if stream_callback is not None:
+                                    await stream_callback(data)
                             elif kind == "done" and data is not None:
                                 response = data
                                 break
+                    except asyncio.TimeoutError:
+                        response = LLMResponse(content="Stream timeout", finish_reason="error")
+                        logger.warning(f"Stream timeout for model {candidate}")
+                    except ConnectionError as e:
+                        response = LLMResponse(content=f"Connection error: {sanitize_error_message(str(e))}", finish_reason="error")
+                        logger.error(f"Stream connection error for model {candidate}")
                     except Exception as e:
-                        response = LLMResponse(content=f"Stream error: {e}", finish_reason="error")
+                        code, _, _ = classify_exception(e)
+                        sanitized = sanitize_error_message(str(e))
+                        response = LLMResponse(content=f"Stream error [{code}]: {sanitized}", finish_reason="error")
+                        logger.error(f"Stream error [{code}] for model {candidate}: {sanitized}")
                     if response is None:
                         response = LLMResponse(content="Stream ended without response", finish_reason="error")
                     stream_used = True
-                    # Only forward buffered deltas to user if this candidate succeeded
-                    if response.finish_reason != "error" and stream_callback is not None:
-                        for chunk in stream_buffer:
-                            await stream_callback(chunk)
                 else:
                     response = await runtime_provider.chat(
                         messages=messages,
@@ -366,6 +383,34 @@ class AgentLoop:
                     if candidate != primary_model:
                         logger.warning(f"Model fallback selected: {primary_model} -> {candidate}")
                     return response, candidate
+                # DeepSeek occasionally reports invalid tools name on long legacy sessions.
+                # Retry once with a shorter context (keep system + most recent turns).
+                err_text = str(response.content or "")
+                if (
+                    "invalid 'tools[" in err_text.lower()
+                    and "function.name" in err_text.lower()
+                    and len(messages) > 8
+                ):
+                    compact_messages: list[dict[str, Any]] = []
+                    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+                        compact_messages.append(messages[0])
+                    recent = [m for m in messages[-6:] if isinstance(m, dict)]
+                    compact_messages.extend(recent)
+                    try:
+                        retry_response = await runtime_provider.chat(
+                            messages=compact_messages,
+                            tools=tools,
+                            model=candidate,
+                            temperature=self.temperature,
+                            max_tokens=self.max_tokens,
+                        )
+                        if retry_response.finish_reason != "error":
+                            logger.warning(
+                                "Recovered from provider tool-name validation error by using compact history"
+                            )
+                            return retry_response, candidate
+                    except Exception:
+                        pass
                 last_response = response
                 reason = str(response.error_kind or "").strip() or classify_failover_reason(response.content or "")
                 if profile_id and self.config is not None:
@@ -426,9 +471,15 @@ class AgentLoop:
         self.tools.register(WebSearchTool(api_key=self.brave_api_key), optional=True)
         self.tools.register(WebFetchTool(), optional=True)
 
-        # Ingest tool (PDF, URL, image, youtube -> knowledge base; local/cloud per tools.ingest config)
-        self.tools.register(IngestTool(workspace=self.workspace, transcribe_provider=self.transcribe_provider, config=self.config))
-        self.tools.register(RetrieveTool(workspace=self.workspace, config=self.config))
+        # Knowledge base: retrieve (index from pipeline); optional fetch URL into knowledgebase; optional QMD for knowledge/memory
+        self.tools.register(RetrieveTool(
+            workspace=self.workspace,
+            config=self.config,
+            mcp_memory_search_callable=self._mcp_memory_search_callable,
+            mcp_knowledge_search_callable=self._mcp_knowledge_search_callable,
+        ))
+        self.tools.register(FetchUrlToKnowledgebaseTool(workspace=self.workspace, config=self.config), optional=True)
+        self.tools.register(MemoryGetTool(workspace=self.workspace))
 
         # Message tool
         message_tool = MessageTool(send_callback=self.bus.publish_outbound)
@@ -480,20 +531,117 @@ class AgentLoop:
             from joyhousebot.agent.tools.canvas import CanvasTool
             self.tools.register(CanvasTool(node_invoke_runner=self._node_invoke_runner))
 
-        # App-first: domain actions (e.g. library) are done in App; Agent only uses open_app.
+        # App-first: domain actions are done in App; Agent only uses open_app.
         self.tools.register(OpenAppTool())
-        # Plugin tools: Agent calls plugin capabilities via plugin.invoke.
+        # Plugin tools: Agent calls plugin capabilities via plugin_invoke.
         self.tools.register(PluginInvokeTool())
 
+        # Knowledge pipeline: source dir (knowledgebase) -> convert to markdown -> processed -> FTS5
+        self._knowledge_queue: Any = None
+        self._knowledge_watcher_thread: Any = None
+        if self.config and getattr(getattr(self.config, "tools", None), "knowledge_pipeline", None):
+            kp = self.config.tools.knowledge_pipeline
+            source_dir = self.workspace / getattr(kp, "knowledge_source_dir", "knowledgebase")
+            processed_dir = self.workspace / getattr(kp, "knowledge_processed_dir", "knowledge/processed")
+            from joyhousebot.services.knowledge_pipeline import (
+                KnowledgePipelineQueue,
+                start_watcher,
+                sync_processed_dir_to_store,
+            )
+            ingest_cfg = getattr(self.config.tools, "ingest", None)
+            self._knowledge_queue = KnowledgePipelineQueue(
+                self.workspace,
+                source_dir,
+                processed_dir,
+                ingest_config=ingest_cfg,
+                pipeline_config=kp,
+            )
+            chunk_sz = getattr(kp, "convert_chunk_size", 1200)
+            chunk_ol = getattr(kp, "convert_chunk_overlap", 200)
+            n = sync_processed_dir_to_store(self.workspace, processed_dir, chunk_size=chunk_sz, chunk_overlap=chunk_ol)
+            if n > 0:
+                logger.debug(f"Knowledge pipeline: synced {n} processed files to index")
+            self._knowledge_queue.start()
+            self._knowledge_watcher_thread = start_watcher(
+                self.workspace, source_dir, processed_dir, self._knowledge_queue, config=self.config
+            )
+
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
+        """Connect to configured MCP servers (one-time, lazy). Inject QMD memory/knowledge callables into retrieve if present."""
         if self._mcp_connected or not self._mcp_servers:
             return
         self._mcp_connected = True
-        from joyhousebot.agent.tools.mcp import connect_mcp_servers
+        from joyhousebot.agent.tools.mcp import MCPToolWrapper, connect_mcp_servers
         self._mcp_stack = AsyncExitStack()
         await self._mcp_stack.__aenter__()
         await connect_mcp_servers(self._mcp_servers, self.tools, self._mcp_stack)
+        # Inject QMD (or any MCP) memory_search / knowledge_search callables into retrieve tool
+        retrieve_tool = self.tools.get("retrieve")
+        if retrieve_tool and hasattr(retrieve_tool, "set_mcp_memory_search_callable") and hasattr(retrieve_tool, "set_mcp_knowledge_search_callable"):
+            for _name, tool in getattr(self.tools, "_tools", {}).items():
+                if not isinstance(tool, MCPToolWrapper):
+                    continue
+                orig = getattr(tool, "_original_name", "")
+                session = getattr(tool, "_session", None)
+                if not session or not orig:
+                    continue
+                if orig == "memory_search":
+                    def _make_memory_callable(sess, tool_name):
+                        async def _call(query: str, top_k: int):
+                            result = await sess.call_tool(tool_name, arguments={"query": query, "top_k": top_k})
+                            text = "".join(getattr(b, "text", "") or "" for b in result.content)
+                            try:
+                                data = json.loads(text) if text.strip() else {}
+                                hits = data.get("hits", data) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                                return hits if isinstance(hits, list) else []
+                            except Exception:
+                                return []
+                        return _call
+                    retrieve_tool.set_mcp_memory_search_callable(_make_memory_callable(session, orig))
+                elif orig == "knowledge_search":
+                    def _make_knowledge_callable(sess, tool_name):
+                        async def _call(query: str, top_k: int):
+                            result = await sess.call_tool(tool_name, arguments={"query": query, "top_k": top_k})
+                            text = "".join(getattr(b, "text", "") or "" for b in result.content)
+                            try:
+                                data = json.loads(text) if text.strip() else {}
+                                hits = data.get("hits", data) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                                return hits if isinstance(hits, list) else []
+                            except Exception:
+                                return []
+                        return _call
+                    retrieve_tool.set_mcp_knowledge_search_callable(_make_knowledge_callable(session, orig))
+
+    def _resolve_memory_scope_key(
+        self,
+        session_key: str,
+        sender_id: str = "",
+        metadata: dict | None = None,
+    ) -> str | None:
+        """Resolve memory scope key from config. Returns None for shared, else scope_key (session or user)."""
+        if not self.config:
+            return None
+        retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
+        if not retrieval:
+            return None
+        scope = getattr(retrieval, "memory_scope", "shared") or "shared"
+        if scope == "shared":
+            return None
+        if scope == "session":
+            return session_key
+        if scope == "user":
+            from_id = getattr(retrieval, "memory_user_id_from", "sender_id") or "sender_id"
+            meta_key = getattr(retrieval, "memory_user_id_metadata_key", "user_id") or "user_id"
+            meta = metadata or {}
+            if from_id == "metadata":
+                user_id = (meta.get(meta_key) or "").strip() if isinstance(meta.get(meta_key), str) else ""
+            else:
+                user_id = (sender_id or "").strip()
+            if not user_id:
+                user_id = session_key.split(":", 1)[-1] if ":" in session_key else session_key
+            channel = session_key.split(":", 1)[0] if ":" in session_key else "unknown"
+            return f"{channel}:{user_id}"
+        return None
 
     def _set_tool_context(self, channel: str, chat_id: str) -> None:
         """Update context for all tools that need routing info."""
@@ -509,13 +657,22 @@ class AgentLoop:
             if isinstance(cron_tool, CronTool):
                 cron_tool.set_context(channel, chat_id)
 
+    def _set_memory_scope(self, scope_key: str | None) -> None:
+        """Set memory scope for retrieve and memory_get tools (per-session/per-user isolation)."""
+        if retrieve_tool := self.tools.get("retrieve"):
+            if hasattr(retrieve_tool, "set_memory_scope"):
+                retrieve_tool.set_memory_scope(scope_key)
+        if memory_get_tool := self.tools.get("memory_get"):
+            if hasattr(memory_get_tool, "set_memory_scope"):
+                memory_get_tool.set_memory_scope(scope_key)
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         stream_callback: Callable[[str], Awaitable[None]] | None = None,
         execution_stream_callback: Callable[[str, dict], Awaitable[None]] | None = None,
         check_abort_requested: Callable[[str], bool] | None = None,
-    ) -> tuple[str | None, list[str], bool]:
+    ) -> tuple[str | None, list[str], bool, LLMResponse | None]:
         """
         Run the agent iteration loop.
 
@@ -523,14 +680,15 @@ class AgentLoop:
             initial_messages: Starting messages for the LLM conversation.
             stream_callback: If set and provider supports chat_stream, called with each content delta.
             execution_stream_callback: If set, called with (event_type, payload) for llm_delta, tool_start, tool_output, tool_end, final.
-            check_abort_requested: If set, called at start of each iteration with current run_id; when True, loop breaks and returns (None, tools_used, True).
+            check_abort_requested: If set, called at start of each iteration with current run_id; when True, loop breaks and returns (None, tools_used, True, None).
 
         Returns:
-            Tuple of (final_content, list_of_tools_used, aborted).
+            Tuple of (final_content, list_of_tools_used, aborted, last_response for usage persistence).
         """
         messages = initial_messages
         iteration = 0
         final_content = None
+        last_response: LLMResponse | None = None
         tools_used: list[str] = []
         active_model = self.model
 
@@ -547,7 +705,7 @@ class AgentLoop:
                 from joyhousebot.services.chat.trace_context import trace_run_id
                 run_id = trace_run_id.get() or ""
                 if run_id and check_abort_requested(run_id):
-                    return (None, tools_used, True)
+                    return (None, tools_used, True, None)
 
             logger.debug(f"Calling LLM (iteration {iteration}), model={active_model}, messages={len(messages)}")
             use_stream = (
@@ -562,6 +720,7 @@ class AgentLoop:
                 stream_callback=_stream_cb if use_stream else None,
                 allow_stream=use_stream,
             )
+            last_response = response
             active_model = used_model
             logger.debug(
                 f"LLM response: has_tool_calls={response.has_tool_calls}, content_len={len(response.content or '')}"
@@ -635,7 +794,7 @@ class AgentLoop:
         if execution_stream_callback and final_content is not None:
             await execution_stream_callback("final", {"content": final_content})
 
-        return final_content, tools_used, False
+        return final_content, tools_used, False, last_response
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -653,12 +812,34 @@ class AgentLoop:
                     response = await self._process_message(msg)
                     if response:
                         await self.bus.publish_outbound(response)
-                except Exception as e:
-                    logger.exception(f"Error processing message: {e}")
+                except LLMError as e:
+                    logger.error(f"LLM error processing message: {e.code} - {e.message}")
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,
-                        content=f"Sorry, I encountered an error: {str(e)}"
+                        content=f"Sorry, I encountered an LLM error: {e.message}"
+                    ))
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout processing message")
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Sorry, the request timed out. Please try again."
+                    ))
+                except ConnectionError as e:
+                    logger.error(f"Connection error: {sanitize_error_message(str(e))}")
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Sorry, there was a connection error. Please try again later."
+                    ))
+                except Exception as e:
+                    code, category, _ = classify_exception(e)
+                    logger.exception(f"Unexpected error [{code}] processing message")
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="Sorry, I encountered an unexpected error. Please try again."
                     ))
             except asyncio.TimeoutError:
                 continue
@@ -708,6 +889,13 @@ class AgentLoop:
         key = session_key or msg.session_key
         self._current_session_key = key
         session = self.sessions.get_or_create(key)
+        scope_key = self._resolve_memory_scope_key(key, getattr(msg, "sender_id", "") or "", getattr(msg, "metadata", None) or {})
+        if scope_key:
+            retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None) if self.config else None
+            if retrieval and getattr(retrieval, "memory_scope", "shared") == "user":
+                session.metadata["last_memory_scope_key"] = scope_key
+        self._set_tool_context(msg.channel, msg.chat_id)
+        self._set_memory_scope(scope_key)
         
         # Handle slash commands (only when config.commands.native is not False)
         cmd = msg.content.strip().lower()
@@ -762,7 +950,6 @@ class AgentLoop:
         if len(session.messages) > self.memory_window:
             asyncio.create_task(self._consolidate_memory(session))
 
-        self._set_tool_context(msg.channel, msg.chat_id)
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
@@ -770,8 +957,9 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             max_context_tokens=self.max_context_tokens,
+            scope_key=scope_key,
         )
-        final_content, tools_used, aborted = await self._run_agent_loop(
+        final_content, tools_used, aborted, last_response = await self._run_agent_loop(
             initial_messages,
             stream_callback=stream_callback,
             execution_stream_callback=execution_stream_callback,
@@ -810,8 +998,10 @@ class AgentLoop:
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
         
         session.add_message("user", msg.content)
-        session.add_message("assistant", final_content,
-                            tools_used=tools_used if tools_used else None)
+        usage_kw: dict[str, Any] = {"tools_used": tools_used if tools_used else None}
+        if last_response and last_response.usage:
+            usage_kw["usage"] = dict(last_response.usage)
+        session.add_message("assistant", final_content, **usage_kw)
         self.sessions.save(session)
         
         reply_to: str | None = None
@@ -847,21 +1037,31 @@ class AgentLoop:
         
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
+        scope_key = self._resolve_memory_scope_key(
+            session_key,
+            getattr(msg, "sender_id", "") or "",
+            getattr(msg, "metadata", None) or {},
+        )
         self._set_tool_context(origin_channel, origin_chat_id)
+        self._set_memory_scope(scope_key)
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
             channel=origin_channel,
             chat_id=origin_chat_id,
             max_context_tokens=self.max_context_tokens,
+            scope_key=scope_key,
         )
-        final_content, _, _ = await self._run_agent_loop(initial_messages)
+        final_content, _, _, last_response = await self._run_agent_loop(initial_messages)
 
         if final_content is None:
             final_content = "Background task completed."
 
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
-        session.add_message("assistant", final_content)
+        usage_kw: dict[str, Any] = {}
+        if last_response and last_response.usage:
+            usage_kw["usage"] = dict(last_response.usage)
+        session.add_message("assistant", final_content, **usage_kw)
         self.sessions.save(session)
         
         return OutboundMessage(
@@ -877,7 +1077,16 @@ class AgentLoop:
             archive_all: If True, clear all messages and reset session (for /new command).
                        If False, only write to files without modifying session.
         """
-        memory = MemoryStore(self.workspace)
+        scope_key = None
+        if self.config:
+            retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
+            if retrieval:
+                mode = getattr(retrieval, "memory_scope", "shared") or "shared"
+                if mode == "session":
+                    scope_key = session.key
+                elif mode == "user":
+                    scope_key = (session.metadata or {}).get("last_memory_scope_key") or session.key
+        memory = MemoryStore(self.workspace, scope_key=scope_key)
         memory.ensure_memory_structure()
 
         if archive_all:
@@ -914,11 +1123,55 @@ class AgentLoop:
         else:
             current_memory = raw_memory
 
-        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with exactly two keys:
+        # Optional OpenClaw-style memory flush: one LLM call to capture durable notes before consolidation
+        flush_enabled = False
+        flush_system = ""
+        flush_prompt = ""
+        try:
+            from joyhousebot.config.access import get_config
+            cfg = get_config()
+            retrieval = getattr(getattr(cfg, "tools", None), "retrieval", None)
+            if retrieval is not None:
+                flush_enabled = getattr(retrieval, "memory_flush_before_consolidation", False)
+                flush_system = getattr(retrieval, "memory_flush_system_prompt", "") or "Session nearing compaction. Output only valid JSON."
+                flush_prompt = getattr(retrieval, "memory_flush_prompt", "") or "Write any lasting notes: return JSON with optional keys daily_log_entry and memory_additions. If nothing to store, return {}."
+        except Exception:
+            pass
+        if flush_enabled and flush_prompt:
+            try:
+                flush_user = f"{flush_prompt}\n\n## Recent conversation\n{conversation[:4000]}"
+                flush_response = await self.provider.chat(
+                    messages=[
+                        {"role": "system", "content": flush_system},
+                        {"role": "user", "content": flush_user},
+                    ],
+                    model=self.model,
+                )
+                flush_text = (flush_response.content or "").strip()
+                if flush_text.startswith("```"):
+                    flush_text = flush_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                if flush_text:
+                    flush_result = json_repair.loads(flush_text)
+                    if isinstance(flush_result, dict):
+                        if isinstance(flush_result.get("daily_log_entry"), str) and flush_result["daily_log_entry"].strip():
+                            date_str = datetime.now(timezone.utc).date().isoformat()
+                            memory.append_l2_daily(date_str, flush_result["daily_log_entry"].strip())
+                        if isinstance(flush_result.get("memory_additions"), str) and flush_result["memory_additions"].strip():
+                            raw_memory = memory.read_long_term()
+                            body = raw_memory.split(" -->", 1)[-1].lstrip("\n") if (raw_memory.startswith("<!-- updated_at=") and " -->" in raw_memory) else raw_memory
+                            memory.write_long_term(body.rstrip() + "\n\n" + flush_result["memory_additions"].strip(), updated_at=datetime.now(timezone.utc).isoformat())
+                            raw_memory = memory.read_long_term()
+                            current_memory = raw_memory.split(" -->", 1)[-1].lstrip("\n") if (raw_memory.startswith("<!-- updated_at=") and " -->" in raw_memory) else raw_memory
+            except Exception as e:
+                logger.debug(f"Memory flush before consolidation skipped: {e}")
 
-1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later. This will be appended to HISTORY.md and can be used as L2 raw material; new facts should also be written to daily log (L2) conceptually; periodic compaction from L2 to L1 (insights/lessons) and refresh of .abstract (L0) is done separately.
+        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with these keys:
 
-2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged. If any existing long-term fact has been superseded or invalidated by this conversation, do not silently remove it; keep or briefly mention the old conclusion and add a clear new conclusion that explicitly supersedes it (e.g. "Previously: X. Now: Y." or "Supersedes: …"). You may tag items with [P0] (permanent), [P1] (e.g. 90-day), [P2] (e.g. 30-day) for lifecycle; .abstract (L0) is the primary routing entry for retrieval—when summarizing many topics, consider that L0 should list active topics and retrieval hints.
+1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by grep search later. This will be appended to HISTORY.md and to memory/YYYY-MM-DD.md (daily log).
+
+2. "memory_update": The updated long-term memory content. Add any new facts: user location, preferences, personal info, habits, project context, technical decisions, tools/services used. If nothing new, return the existing content unchanged. If any existing long-term fact has been superseded or invalidated by this conversation, do not silently remove it; keep or briefly mention the old conclusion and add a clear new conclusion that explicitly supersedes it (e.g. "Previously: X. Now: Y." or "Supersedes: …"). You may tag items with [P0] (permanent), [P1] (e.g. 90-day), [P2] (e.g. 30-day) for lifecycle.
+
+3. "l0_update" (optional): If you have a concise summary of active topics and retrieval hints (about 100–300 tokens), set this to the content for memory/.abstract. Omit the key or set to null if not needed.
 
 ## Current Long-term Memory
 {current_memory or "(empty)"}
@@ -947,19 +1200,41 @@ Respond with ONLY valid JSON, no markdown fences."""
                 logger.warning(f"Memory consolidation: unexpected response type, skipping. Response: {text[:200]}")
                 return
 
+            history_max_entries = 0
+            try:
+                from joyhousebot.config.access import get_config
+                cfg = get_config()
+                retrieval = getattr(getattr(cfg, "tools", None), "retrieval", None)
+                if retrieval is not None:
+                    history_max_entries = getattr(retrieval, "history_max_entries", 0) or 0
+            except Exception:
+                pass
+
             if entry := result.get("history_entry"):
-                memory.append_history(entry)
+                memory.append_history(entry, max_entries=history_max_entries)
+                date_str = datetime.now(timezone.utc).date().isoformat()
+                memory.append_l2_daily(date_str, entry)
             if update := result.get("memory_update"):
                 if update != current_memory:
                     memory.write_long_term(update, updated_at=datetime.now(timezone.utc).isoformat())
+            if l0_update := result.get("l0_update"):
+                if isinstance(l0_update, str) and l0_update.strip():
+                    memory.update_l0_abstract(l0_update.strip())
 
             if archive_all:
                 session.last_consolidated = 0
             else:
                 session.last_consolidated = len(session.messages) - keep_count
             logger.info(f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Memory consolidation JSON parse error: {e}")
+        except LLMError as e:
+            logger.error(f"Memory consolidation LLM error [{e.code}]: {e.message}")
+        except ConnectionError as e:
+            logger.error(f"Memory consolidation connection error: {sanitize_error_message(str(e))}")
         except Exception as e:
-            logger.error(f"Memory consolidation failed: {e}")
+            code, category, _ = classify_exception(e)
+            logger.error(f"Memory consolidation failed [{code}]: {sanitize_error_message(str(e))}")
 
     async def process_direct(
         self,

@@ -75,6 +75,12 @@ class RetrievalStore:
             )
             conn.commit()
 
+    def delete_by_doc_id(self, doc_id: str) -> None:
+        """Remove all chunks for a document (e.g. before re-indexing)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM knowledge WHERE doc_id = ?", (doc_id,))
+            conn.commit()
+
     def index_doc(self, doc_id: str, source_type: str, source_url: str, title: str, file_path: str, chunks: list[dict]) -> None:
         """Index all chunks of a document. chunks: list of {text, page}."""
         for i, c in enumerate(chunks):

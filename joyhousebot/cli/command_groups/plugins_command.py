@@ -67,13 +67,14 @@ def _format_checks_table(console: Console, report: dict[str, Any]) -> None:
     table.add_column("Check", style="cyan")
     table.add_column("Value")
     table.add_column("Status")
+    loader_path = paths.get("openclawDistLoader") or paths.get("openclawSrcLoader") or ""
     rows = [
         ("node", bins.get("node", ""), bool(checks.get("nodeAvailable"))),
         ("pnpm", bins.get("pnpm", ""), bool(checks.get("pnpmAvailable"))),
         ("npm", bins.get("npm", ""), bool(checks.get("npmAvailable"))),
         ("openclaw dir", paths.get("openclawDir", ""), bool(checks.get("openclawDirExists"))),
         ("openclaw package.json", paths.get("openclawPackageJson", ""), bool(checks.get("openclawPackageJsonExists"))),
-        ("openclaw dist loader", paths.get("openclawDistLoader", ""), bool(checks.get("openclawDistLoaderExists"))),
+        ("openclaw loader", loader_path, bool(checks.get("openclawLoaderAvailable"))),
         ("host script", paths.get("hostScript", ""), bool(checks.get("hostScriptExists"))),
     ]
     for name, value, ok in rows:

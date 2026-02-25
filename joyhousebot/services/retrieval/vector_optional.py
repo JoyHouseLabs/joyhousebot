@@ -52,6 +52,25 @@ def get_embedding_provider(config: Any):  # -> LiteLLMEmbeddingProvider | None
     return LiteLLMEmbeddingProvider(model=model, provider=provider, api_key=api_key)
 
 
+def get_memory_embedding_provider(config: Any):  # -> LiteLLMEmbeddingProvider | None
+    """Return embedding provider for memory: re-ranking (memory_vector_enabled) or sqlite_vector backend."""
+    if config is None:
+        return None
+    retrieval = getattr(config.tools, "retrieval", None)
+    if retrieval is None:
+        return None
+    backend = (getattr(retrieval, "memory_backend", "builtin") or "builtin").strip().lower()
+    use_vector = getattr(retrieval, "memory_vector_enabled", False) or backend in ("sqlite_vector", "auto")
+    if not use_vector:
+        return None
+    model = (getattr(retrieval, "embedding_model", "") or "").strip()
+    if not model:
+        return None
+    provider = (getattr(retrieval, "embedding_provider", "") or "openai").strip() or "openai"
+    api_key = _get_embedding_api_key(config, provider)
+    return LiteLLMEmbeddingProvider(model=model, provider=provider, api_key=api_key)
+
+
 def get_vector_store(workspace: Path, config: Any):  # -> ChromaVectorStore | None
     """Return configured vector store or None if not configured."""
     if config is None:

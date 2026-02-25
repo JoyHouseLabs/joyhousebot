@@ -114,7 +114,7 @@ pip install --upgrade joyhousebot-ai
 
 For Node.js dependencies (WhatsApp bridge):
 ```bash
-cd bridge
+cd bridges/whatsapp
 npm audit
 npm audit fix
 ```

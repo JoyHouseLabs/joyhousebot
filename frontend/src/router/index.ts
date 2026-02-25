@@ -13,6 +13,7 @@ import ControlQueue from '../views/control/ControlQueue.vue'
 import ControlTraces from '../views/control/ControlTraces.vue'
 import ControlDevices from '../views/control/ControlDevices.vue'
 import ControlApprovals from '../views/control/ControlApprovals.vue'
+import ControlUsage from '../views/control/ControlUsage.vue'
 import Agent from '../views/Agent.vue'
 import Skills from '../views/Skills.vue'
 import Workspace from '../views/Workspace.vue'
@@ -37,6 +38,7 @@ const router = createRouter({
           { path: 'instances', name: 'ControlInstances', component: ControlInstances },
           { path: 'cron', name: 'ControlCron', component: ControlCron },
           { path: 'cron/new', name: 'ControlCronNew', component: ControlCronNew },
+          { path: 'usage', name: 'ControlUsage', component: ControlUsage },
           { path: 'devices', name: 'ControlDevices', component: ControlDevices },
           { path: 'approvals', name: 'ControlApprovals', component: ControlApprovals },
           { path: 'sandbox', name: 'ControlSandbox', component: ControlSandbox },
@@ -45,7 +47,7 @@ const router = createRouter({
       { path: 'agent', name: 'Agent', component: Agent },
       { path: 'skills', name: 'Skills', component: Skills },
       { path: 'app', name: 'AppHost', component: AppHost },
-      { path: 'app/:appId', name: 'App', component: AppHost },
+      { path: 'app/:appId', name: 'App', redirect: '/app' },
       { path: 'config', name: 'Config', component: Config },
     ] },
   ],

@@ -67,7 +67,19 @@ async def _delete_session(_key: str, agent_id=None):
 
 
 def _empty_usage_totals():
-    return {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": 0}
+    return {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "totalCost": 0,
+        "inputCost": 0,
+        "outputCost": 0,
+        "cacheReadCost": 0,
+        "cacheWriteCost": 0,
+        "missingCostEntries": 0,
+    }
 
 
 def _session_usage_entry(key: str, messages: list[dict]):
@@ -79,7 +91,12 @@ def _session_usage_entry(key: str, messages: list[dict]):
             "cacheRead": 0,
             "cacheWrite": 0,
             "totalTokens": 3,
-            "cost": 0,
+            "totalCost": 0,
+            "inputCost": 0,
+            "outputCost": 0,
+            "cacheReadCost": 0,
+            "cacheWriteCost": 0,
+            "missingCostEntries": 0,
             "messageCounts": {"total": len(messages), "user": 1, "assistant": 1, "toolCalls": 0, "toolResults": 0, "errors": 0},
         },
     }

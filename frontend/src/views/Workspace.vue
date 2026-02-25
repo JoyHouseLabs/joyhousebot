@@ -2,7 +2,7 @@
   <div class="workspace-page">
     <div class="workspace-header">
       <h1 class="workspace-title">编程</h1>
-      <p class="workspace-subtitle">实时查看 Agent 执行与代码输出</p>
+      <p class="workspace-subtitle">与 Agent 对话并查看回复</p>
       <div class="workspace-status">
         <span class="status-dot" :class="{ connected: wsConnected }" />
         {{ wsConnected ? '已连接' : '未连接' }}
@@ -54,32 +54,18 @@
           </n-button>
         </div>
       </div>
-      <div class="workspace-exec">
-        <div class="exec-header">执行输出</div>
-        <div class="exec-terminal" ref="terminalEl">
-          <div v-if="execLines.length === 0" class="exec-placeholder">工具与代码输出将在此实时显示</div>
-          <div v-for="(line, i) in execLines" :key="i" class="exec-line" :class="[line.type, line.stream]">
-            <span v-if="line.type === 'tool_start'" class="exec-prefix">▶</span>
-            <span v-else-if="line.type === 'tool_output'" class="exec-prefix" :class="line.stream">{{ line.stream === 'stderr' ? '◆' : '●' }}</span>
-            <span v-else-if="line.type === 'tool_end'" class="exec-prefix">✓</span>
-            <span class="exec-text" :class="line.stream">{{ line.text }}</span>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { NInput, NButton, useMessage } from 'naive-ui'
 import { transcribeAudio } from '../api/transcribe'
 import { normalizeApiError } from '../api/error'
 import { useVoiceRecorder } from '../composables/useVoiceRecorder'
 
 const message = useMessage()
-const router = useRouter()
 const SESSION_ID = 'ui:workspace'
 const AGENT_ID = 'default'
 
@@ -92,9 +78,7 @@ const { recording, startRecording, stopRecording } = useVoiceRecorder()
 const streamingContent = ref<string | null>(null)
 const replyDone = ref(true)
 const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
-const execLines = ref<{ type: 'tool_start' | 'tool_output' | 'tool_end'; text: string; stream?: string }[]>([])
 const messagesEl = ref<HTMLElement | null>(null)
-const terminalEl = ref<HTMLElement | null>(null)
 
 let ws: WebSocket | null = null
 let currentReply = ''
@@ -120,25 +104,15 @@ function connect() {
           if (streamingContent.value === null) streamingContent.value = ''
           streamingContent.value += payload.content
           currentReply += payload.content
-        } else if (event === 'tool_start') {
-          const name = (typeof payload?.tool === 'string' && payload.tool) ? payload.tool : '(unknown tool)'
-          const args = payload?.args != null && typeof payload.args === 'object' && !Array.isArray(payload.args)
-            ? JSON.stringify(payload.args) : ''
-          execLines.value.push({ type: 'tool_start', text: args ? `${name} ${args}` : name })
-          scrollTerminal()
-        } else if (event === 'tool_output' && payload?.text !== undefined) {
-          const stream = payload.stream === 'stderr' ? 'stderr' : 'stdout'
-          execLines.value.push({ type: 'tool_output', text: payload.text, stream })
-          scrollTerminal()
         } else if (event === 'tool_end') {
           const r = payload?.result
-          const text = typeof r === 'string' ? r : (r != null ? JSON.stringify(r) : '')
-          execLines.value.push({ type: 'tool_end', text: text || 'done' })
-          scrollTerminal()
           if (payload?.tool === 'open_app' && typeof r === 'string') {
             try {
-              const out = JSON.parse(r) as { ok?: boolean; navigate_to?: string }
-              if (out?.ok && out?.navigate_to) router.push(out.navigate_to)
+              const out = JSON.parse(r) as { ok?: boolean; navigate_to?: string; app_link?: string }
+              if (out?.ok) {
+                const url = out.app_link || out.navigate_to
+                if (url) window.open(url, '_blank', 'noopener,noreferrer')
+              }
             } catch (_) {}
           }
         } else if (event === 'final' && payload?.content !== undefined) {
@@ -151,8 +125,6 @@ function connect() {
           scrollMessages()
         }
       } else if (data.type === 'error') {
-        execLines.value.push({ type: 'tool_end', text: `Error: ${data.error ?? 'unknown'}` })
-        scrollTerminal()
         loading.value = false
         if (currentReply) messages.value.push({ role: 'assistant', content: currentReply })
         streamingContent.value = null
@@ -165,12 +137,6 @@ function connect() {
 function scrollMessages() {
   nextTick(() => {
     if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
-  })
-}
-
-function scrollTerminal() {
-  nextTick(() => {
-    if (terminalEl.value) terminalEl.value.scrollTop = terminalEl.value.scrollHeight
   })
 }
 
@@ -299,7 +265,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-right: 1px solid var(--n-border-color, #e0e0e0);
 }
 .workspace-messages {
   flex: 1;
@@ -346,51 +311,5 @@ onUnmounted(() => {
 }
 .voice-file-input {
   display: none;
-}
-.workspace-exec {
-  width: 420px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--n-color-target, #1e1e1e);
-}
-.exec-header {
-  flex-shrink: 0;
-  padding: 8px 12px;
-  font-size: 0.75rem;
-  color: var(--n-text-color-3, #999);
-  border-bottom: 1px solid rgba(255,255,255,0.1);
-}
-.exec-terminal {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.45;
-  color: #d4d4d4;
-}
-.exec-placeholder {
-  color: #6e6e6e;
-  font-size: 0.875rem;
-}
-.exec-line {
-  margin-bottom: 2px;
-  word-break: break-all;
-}
-.exec-prefix {
-  margin-right: 8px;
-  color: #858585;
-}
-.exec-prefix.stderr {
-  color: #f48771;
-}
-.exec-line.tool_output .exec-text {
-  white-space: pre-wrap;
-}
-.exec-text.stderr,
-.exec-prefix.stderr {
-  color: #f48771;
 }
 </style>

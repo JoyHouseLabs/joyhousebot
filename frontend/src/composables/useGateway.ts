@@ -4,14 +4,25 @@
 
 import { ref, shallowRef, onMounted, onUnmounted, inject, type InjectionKey } from 'vue'
 import { GatewayClient, buildGatewayUrl, type GatewayHelloOk, type GatewayEventFrame } from '../services/gateway-client'
+import { getControlToken } from '../api/http'
 
-const defaultToken = typeof import.meta !== 'undefined' && import.meta.env?.VITE_GATEWAY_TOKEN
+const envGatewayToken = typeof import.meta !== 'undefined' && import.meta.env?.VITE_GATEWAY_TOKEN
   ? String(import.meta.env.VITE_GATEWAY_TOKEN)
   : undefined
 
+/** 解析得到的 token：优先 options.token，其次 URL ?token=，最后环境变量 */
+function resolveToken(optionsToken?: string): string | undefined {
+  if (optionsToken != null && optionsToken !== '') return optionsToken
+  const fromUrl = getControlToken()
+  if (fromUrl) return fromUrl
+  return envGatewayToken
+}
+
+export type GatewayEventCallback = (payload: unknown) => void
+
 export function useGateway(options?: { url?: string; token?: string; password?: string }) {
   const url = options?.url ?? buildGatewayUrl()
-  const token = options?.token ?? defaultToken
+  const token = resolveToken(options?.token)
   const password = options?.password
 
   const connected = ref(false)
@@ -19,10 +30,24 @@ export function useGateway(options?: { url?: string; token?: string; password?: 
   const lastError = ref<string | null>(null)
   const client = shallowRef<GatewayClient | null>(null)
 
+  const eventHandlers = new Map<string, Set<GatewayEventCallback>>()
+
   function onClose(info: { code: number; reason: string }) {
     connected.value = false
     if (info.code !== 1000 && info.reason) {
       lastError.value = info.reason
+    }
+  }
+
+  function subscribe(event: string, callback: GatewayEventCallback): () => void {
+    let set = eventHandlers.get(event)
+    if (!set) {
+      set = new Set()
+      eventHandlers.set(event, set)
+    }
+    set.add(callback)
+    return () => {
+      set?.delete(callback)
     }
   }
 
@@ -39,8 +64,18 @@ export function useGateway(options?: { url?: string; token?: string; password?: 
         connected.value = true
         lastError.value = null
       },
-      onEvent: (_evt: GatewayEventFrame) => {
-        // Consumers can subscribe via client ref or a separate event bus
+      onEvent: (evt: GatewayEventFrame) => {
+        const name = evt.event
+        const handlers = eventHandlers.get(name)
+        if (handlers) {
+          for (const cb of handlers) {
+            try {
+              cb(evt.payload)
+            } catch (err) {
+              console.error(`[gateway] ${name} handler error:`, err)
+            }
+          }
+        }
       },
       onClose,
     })
@@ -87,6 +122,7 @@ export function useGateway(options?: { url?: string; token?: string; password?: 
     hello,
     lastError,
     request,
+    subscribe,
     start,
     stop,
   }

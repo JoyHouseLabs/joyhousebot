@@ -27,12 +27,13 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
     
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(self, skill_names: list[str] | None = None, scope_key: str | None = None) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
         
         Args:
             skill_names: Optional list of skills to include.
+            scope_key: When set, use per-session/per-user memory (memory/<scope_key>/); else shared memory.
         
         Returns:
             Complete system prompt.
@@ -47,8 +48,8 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
         
-        # Memory context: legacy = MEMORY.md only; with memory_use_l0 = L0 + MEMORY.md
-        memory = self._get_memory_context()
+        # Memory context: legacy = MEMORY.md only; with memory_use_l0 = L0 + MEMORY.md; scope_key => scoped memory
+        memory = self._get_memory_context(scope_key=scope_key)
         if memory:
             parts.append(f"# Memory\n\n{memory}")
         
@@ -74,7 +75,7 @@ Skills with available="false" need dependencies installed first - you can try in
 
 {skills_summary}""")
 
-        # Installed Apps and Plugin Tools (so agent knows what app_id / plugin.invoke tool_name to use)
+        # Installed Apps and Plugin Tools (so agent knows what app_id / plugin_invoke tool_name to use)
         installed_apps = self._get_installed_apps_for_context()
         if installed_apps:
             lines = [
@@ -94,29 +95,38 @@ Skills with available="false" need dependencies installed first - you can try in
         if plugin_tools:
             parts.append(
                 "# Plugin Tools\n\n"
-                "Use plugin.invoke with these tool names; do not guess. "
+                "Use plugin_invoke with these tool names; do not guess. "
                 "Available: " + ", ".join(plugin_tools)
             )
 
         return "\n\n---\n\n".join(parts)
 
-    def _get_memory_context(self) -> str:
-        """Resolve memory block: config.memory_use_l0 -> L0 + MEMORY.md; else MEMORY.md only. Optionally add memory_first hint."""
+    def _get_memory_context(self, scope_key: str | None = None) -> str:
+        """Resolve memory block: config.memory_use_l0 -> L0 + MEMORY.md; else MEMORY.md only.
+        Optionally add today+yesterday daily logs (memory_include_daily_in_context) and memory_first hint.
+        When scope_key is set, use MemoryStore(workspace, scope_key) for per-session/per-user memory."""
         use_l0 = False
         memory_first = False
+        include_daily = False
         try:
-            from joyhousebot.config.loader import load_config
-            config = load_config()
+            from joyhousebot.config.access import get_config
+            config = get_config()
             retrieval = getattr(getattr(config, "tools", None), "retrieval", None)
             if retrieval is not None:
                 use_l0 = getattr(retrieval, "memory_use_l0", False)
                 memory_first = getattr(retrieval, "memory_first", False)
+                include_daily = getattr(retrieval, "memory_include_daily_in_context", False)
         except Exception:
             pass
+        store = MemoryStore(self.workspace, scope_key=scope_key) if scope_key else self.memory
         if use_l0:
-            memory = self.memory.get_memory_context_with_l0()
+            memory = store.get_memory_context_with_l0()
         else:
-            memory = self.memory.get_memory_context()
+            memory = store.get_memory_context()
+        if include_daily:
+            daily = store.read_daily_logs_today_yesterday()
+            if daily:
+                memory = (memory + "\n\n## Recent daily log (today + yesterday)\n\n" + daily) if memory else ("## Recent daily log (today + yesterday)\n\n" + daily)
         if memory and memory_first:
             memory = memory + "\n\nWhen answering, consider consulting memory first: read memory/.abstract or use retrieve(scope=\"memory\", query=...) before searching the knowledge base."
         return memory
@@ -124,8 +134,8 @@ Skills with available="false" need dependencies installed first - you can try in
     def _get_enabled_skill_names(self) -> set[str] | None:
         """Get set of enabled skill names from config (None = all enabled)."""
         try:
-            from joyhousebot.config.loader import load_config
-            config = load_config()
+            from joyhousebot.config.access import get_config
+            config = get_config()
             entries = getattr(config, "skills", None) and getattr(config.skills, "entries", None) or {}
             if not entries:
                 return None
@@ -137,8 +147,8 @@ Skills with available="false" need dependencies installed first - you can try in
         """Get enabled plugin apps for agent context (app_id, name, route)."""
         try:
             from joyhousebot.plugins.discovery import get_installed_apps_for_agent
-            from joyhousebot.config.loader import load_config
-            config = load_config()
+            from joyhousebot.config.access import get_config
+            config = get_config()
             return get_installed_apps_for_agent(self.workspace, config)
         except Exception:
             return []
@@ -180,6 +190,7 @@ You are joyhousebot, a helpful AI assistant. You have access to tools that allow
 Your workspace is at: {workspace_path}
 - Long-term memory: {workspace_path}/memory/MEMORY.md
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
+- Knowledge base: put PDF/text/image files in {workspace_path}/knowledgebase; they are converted and indexed. Use retrieve(scope="knowledge", query=...) to search. For web pages, fetch content into knowledgebase first (e.g. with a fetch tool), then it will be processed.
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
@@ -249,6 +260,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         channel: str | None = None,
         chat_id: str | None = None,
         max_context_tokens: int | None = None,
+        scope_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -261,6 +273,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
             max_context_tokens: When set, trim history from front so total history tokens <= this (in addition to memory_window).
+            scope_key: When set, use per-session/per-user memory for system prompt.
 
         Returns:
             List of messages including system prompt.
@@ -268,7 +281,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         messages = []
 
         # System prompt
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(skill_names=skill_names, scope_key=scope_key)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

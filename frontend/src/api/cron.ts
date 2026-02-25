@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface CronSchedule {
@@ -44,7 +46,7 @@ export interface CronListResponse {
 }
 
 export async function listCronJobs(includeDisabled = true): Promise<CronListResponse> {
-  const res = await fetch(`${API_BASE}/cron/jobs?include_disabled=${includeDisabled}`)
+  const res = await apiFetch(`${API_BASE}/cron/jobs?include_disabled=${includeDisabled}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -72,7 +74,7 @@ export interface CronJobCreateBody {
 }
 
 export async function addCronJob(body: CronJobCreateBody): Promise<{ ok: boolean; job: CronJobItem }> {
-  const res = await fetch(`${API_BASE}/cron/jobs`, {
+  const res = await apiFetch(`${API_BASE}/cron/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -82,7 +84,7 @@ export async function addCronJob(body: CronJobCreateBody): Promise<{ ok: boolean
 }
 
 export async function patchCronJob(jobId: string, enabled: boolean): Promise<{ ok: boolean; job: CronJobItem }> {
-  const res = await fetch(`${API_BASE}/cron/jobs/${encodeURIComponent(jobId)}`, {
+  const res = await apiFetch(`${API_BASE}/cron/jobs/${encodeURIComponent(jobId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
@@ -92,13 +94,13 @@ export async function patchCronJob(jobId: string, enabled: boolean): Promise<{ o
 }
 
 export async function deleteCronJob(jobId: string): Promise<{ ok: boolean; removed: boolean }> {
-  const res = await fetch(`${API_BASE}/cron/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' })
+  const res = await apiFetch(`${API_BASE}/cron/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function runCronJob(jobId: string, force = false): Promise<{ ok: boolean; message: string }> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/cron/jobs/${encodeURIComponent(jobId)}/run?force=${force}`,
     { method: 'POST' }
   )

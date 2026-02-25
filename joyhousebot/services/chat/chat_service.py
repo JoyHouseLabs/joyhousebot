@@ -25,6 +25,7 @@ async def try_handle_chat_runtime(
     now_ms: Callable[[], int],
     emit_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     fanout_chat_to_subscribed_nodes: Callable[[str, dict[str, Any]], Awaitable[None]],
+    broadcast_rpc_event: Callable[[str, Any, set[str] | None], Awaitable[None]] | None = None,
     lane_can_run: Callable[[str], bool] | None = None,
     lane_enqueue: Callable[[str, str, dict[str, Any]], str] | None = None,
     persist_trace: Callable[[str, str, str, str | None], None] | None = None,
@@ -43,6 +44,7 @@ async def try_handle_chat_runtime(
             now_ms=now_ms,
             emit_event=emit_event,
             fanout_chat_to_subscribed_nodes=fanout_chat_to_subscribed_nodes,
+            broadcast_rpc_event=broadcast_rpc_event,
             lane_can_run=lane_can_run,
             lane_enqueue=lane_enqueue,
             persist_trace=persist_trace,
@@ -75,6 +77,7 @@ async def _chat_send_or_agent(
     now_ms: Callable[[], int],
     emit_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     fanout_chat_to_subscribed_nodes: Callable[[str, dict[str, Any]], Awaitable[None]],
+    broadcast_rpc_event: Callable[[str, Any, set[str] | None], Awaitable[None]] | None = None,
     lane_can_run: Callable[[str], bool] | None = None,
     lane_enqueue: Callable[[str, str, dict[str, Any]], str] | None = None,
     persist_trace: Callable[[str, str, str, str | None], None] | None = None,
@@ -120,16 +123,16 @@ async def _chat_send_or_agent(
     async def _run_agent_job() -> None:
         from joyhousebot.services.chat.trace_context import trace_run_id, trace_session_key
 
+        initial_delta = {
+            "runId": run_id,
+            "sessionKey": session_id,
+            "state": "delta",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+        }
         if emit_event:
-            await emit_event(
-                "chat",
-                {
-                    "runId": run_id,
-                    "sessionKey": session_id,
-                    "state": "delta",
-                    "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
-                },
-            )
+            await emit_event("chat", initial_delta)
+        if broadcast_rpc_event:
+            await broadcast_rpc_event("chat", initial_delta, None)
         token_run = trace_run_id.set(run_id)
         token_session = trace_session_key.set(session_id)
         try:
@@ -138,19 +141,16 @@ async def _chat_send_or_agent(
                 complete_agent_job(run_id, status="aborted")
                 if persist_trace:
                     persist_trace(run_id, session_id, "aborted", None)
+                aborted_payload = {"runId": run_id, "sessionKey": session_id, "state": "aborted"}
                 if emit_event:
-                    await emit_event(
-                        "chat",
-                        {"runId": run_id, "sessionKey": session_id, "state": "aborted"},
-                    )
+                    await emit_event("chat", aborted_payload)
+                if broadcast_rpc_event:
+                    await broadcast_rpc_event("chat", aborted_payload, None)
                 await fanout_chat_to_subscribed_nodes(
                     session_key=session_id,
                     payload={"runId": run_id, "sessionKey": session_id, "state": "aborted"},
                 )
                 return
-            complete_agent_job(run_id, status="ok")
-            if persist_trace:
-                persist_trace(run_id, session_id, "ok", None)
             final_payload = {
                 "runId": run_id,
                 "sessionKey": session_id,
@@ -160,18 +160,23 @@ async def _chat_send_or_agent(
                     "content": [{"type": "text", "text": payload.get("response", "")}],
                 },
             }
+            complete_agent_job(run_id, status="ok", result=final_payload)
+            if persist_trace:
+                persist_trace(run_id, session_id, "ok", None)
             if emit_event:
                 await emit_event("chat", final_payload)
+            if broadcast_rpc_event:
+                await broadcast_rpc_event("chat", final_payload, None)
             await fanout_chat_to_subscribed_nodes(session_key=session_id, payload=final_payload)
         except Exception as exc:
-            complete_agent_job(run_id, status="error", error=str(exc))
+            error_payload = {"runId": run_id, "sessionKey": session_id, "state": "error", "error": str(exc)}
+            complete_agent_job(run_id, status="error", error=str(exc), result=None)
             if persist_trace:
                 persist_trace(run_id, session_id, "error", str(exc))
             if emit_event:
-                await emit_event(
-                    "chat",
-                    {"runId": run_id, "sessionKey": session_id, "state": "error", "error": str(exc)},
-                )
+                await emit_event("chat", error_payload)
+            if broadcast_rpc_event:
+                await broadcast_rpc_event("chat", error_payload, None)
         finally:
             trace_run_id.reset(token_run)
             trace_session_key.reset(token_session)
@@ -181,7 +186,7 @@ async def _chat_send_or_agent(
         snapshot = await wait_agent_job(run_id, timeout_ms=max(0, timeout_ms))
         if not snapshot:
             return {"runId": run_id, "status": "timeout"}
-        return {
+        out = {
             "runId": run_id,
             "status": snapshot.get("status"),
             "startedAt": snapshot.get("startedAt"),
@@ -189,6 +194,11 @@ async def _chat_send_or_agent(
             "error": snapshot.get("error"),
             "sessionKey": session_id,
         }
+        if snapshot.get("state"):
+            out["state"] = snapshot["state"]
+        if snapshot.get("message") is not None:
+            out["message"] = snapshot["message"]
+        return out
     ack_status = "started" if method == "chat.send" else "accepted"
     return {"status": ack_status, "ok": True, "runId": run_id, "sessionKey": session_id, "acceptedAt": now_ms()}
 
@@ -274,6 +284,7 @@ async def run_agent_job_with_params(
     complete_agent_job: Callable[..., None],
     emit_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     fanout_chat_to_subscribed_nodes: Callable[[str, dict[str, Any]], Awaitable[None]],
+    broadcast_rpc_event: Callable[[str, Any, set[str] | None], Awaitable[None]] | None = None,
     persist_trace: Callable[[str, str, str, str | None], None] | None = None,
 ) -> None:
     """Run one agent job from a dequeued lane item (runId, sessionKey, params). Used after lane_dequeue_next."""
@@ -285,25 +296,22 @@ async def run_agent_job_with_params(
     if not message:
         complete_agent_job(run_id, status="error", error="queued item missing message")
         return
+    initial_delta = {
+        "runId": run_id,
+        "sessionKey": session_id,
+        "state": "delta",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+    }
     if emit_event:
-        await emit_event(
-            "chat",
-            {
-                "runId": run_id,
-                "sessionKey": session_id,
-                "state": "delta",
-                "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
-            },
-        )
+        await emit_event("chat", initial_delta)
+    if broadcast_rpc_event:
+        await broadcast_rpc_event("chat", initial_delta, None)
     from joyhousebot.services.chat.trace_context import trace_run_id, trace_session_key
 
     token_run = trace_run_id.set(run_id)
     token_session = trace_session_key.set(session_id)
     try:
         payload = await chat(chat_message_cls(message=message, session_id=session_id, agent_id=agent_id))
-        complete_agent_job(run_id, status="ok")
-        if persist_trace:
-            persist_trace(run_id, session_id, "ok", None)
         final_payload = {
             "runId": run_id,
             "sessionKey": session_id,
@@ -313,18 +321,23 @@ async def run_agent_job_with_params(
                 "content": [{"type": "text", "text": payload.get("response", "")}],
             },
         }
+        complete_agent_job(run_id, status="ok", result=final_payload)
+        if persist_trace:
+            persist_trace(run_id, session_id, "ok", None)
         if emit_event:
             await emit_event("chat", final_payload)
+        if broadcast_rpc_event:
+            await broadcast_rpc_event("chat", final_payload, None)
         await fanout_chat_to_subscribed_nodes(session_key=session_id, payload=final_payload)
     except Exception as exc:
-        complete_agent_job(run_id, status="error", error=str(exc))
+        error_payload = {"runId": run_id, "sessionKey": session_id, "state": "error", "error": str(exc)}
+        complete_agent_job(run_id, status="error", error=str(exc), result=None)
         if persist_trace:
             persist_trace(run_id, session_id, "error", str(exc))
         if emit_event:
-            await emit_event(
-                "chat",
-                {"runId": run_id, "sessionKey": session_id, "state": "error", "error": str(exc)},
-            )
+            await emit_event("chat", error_payload)
+        if broadcast_rpc_event:
+            await broadcast_rpc_event("chat", error_payload, None)
     finally:
         trace_run_id.reset(token_run)
         trace_session_key.reset(token_session)

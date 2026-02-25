@@ -1209,7 +1209,7 @@ wheels = [
 ]
 
 [[package]]
-name = "joyhousebot-ai"
+name = "joyhousebot"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
@@ -1240,6 +1240,7 @@ dependencies = [
     { name = "socksio" },
     { name = "typer" },
     { name = "uvicorn" },
+    { name = "watchfiles" },
     { name = "websocket-client" },
     { name = "websockets" },
 ]
@@ -1290,6 +1291,7 @@ requires-dist = [
     { name = "socksio", specifier = ">=1.0.0" },
     { name = "typer", specifier = ">=0.9.0" },
     { name = "uvicorn", specifier = ">=0.23.0" },
+    { name = "watchfiles", specifier = ">=0.21.0" },
     { name = "websocket-client", specifier = ">=1.6.0" },
     { name = "websockets", specifier = ">=12.0" },
     { name = "yt-dlp", marker = "extra == 'youtube'", specifier = ">=2024.0.0" },

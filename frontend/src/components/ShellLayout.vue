@@ -13,6 +13,9 @@
         </div>
       </div>
       <div class="topbar-right">
+        <n-tag :type="gateway.connected ? 'success' : 'error'" size="small" round class="topbar-ws-status">
+          {{ gateway.connected ? 'WS 已连接' : 'WS 未连接' }}
+        </n-tag>
         <n-button quaternary circle size="small" @click="toggleTheme" :title="theme === 'dark' ? '切换到浅色' : '切换到深色'">
           <template #icon>
             <span class="theme-icon" v-html="theme === 'dark' ? sunSvg : moonSvg" />
@@ -29,15 +32,21 @@
               <span class="nav-item-icon" v-html="iconChat" />
               <span class="nav-item-text">对话</span>
             </router-link>
-            <router-link to="/workspace" class="nav-item" :class="{ active: activeKey === 'workspace' }" title="编程">
-              <span class="nav-item-icon" v-html="iconWorkspace" />
-              <span class="nav-item-text">编程</span>
-            </router-link>
           </nav>
         </div>
-        <div class="nav-group">
-          <div class="nav-label">控制</div>
-          <nav class="nav-group__items">
+        <div class="nav-group nav-group--collapsible">
+          <button
+            type="button"
+            class="nav-group-head"
+            :class="{ expanded: controlExpanded, active: isControlSectionActive }"
+            :title="controlExpanded ? '收起控制菜单' : '展开控制菜单'"
+            @click="toggleControlExpanded"
+          >
+            <span class="nav-group-head-icon" v-html="iconControl" />
+            <span class="nav-group-head-label">控制</span>
+            <span class="nav-group-head-chevron" v-html="controlExpanded ? iconChevronDown : iconChevronRight" />
+          </button>
+          <nav v-show="controlExpanded" class="nav-group__items">
             <router-link to="/control/overview" class="nav-item" :class="{ active: controlSection === 'overview' }" title="概览">
               <span class="nav-item-icon" v-html="iconControl" />
               <span class="nav-item-text">概览</span>
@@ -62,6 +71,10 @@
               <span class="nav-item-icon" v-html="iconCron" />
               <span class="nav-item-text">定时任务</span>
             </router-link>
+            <router-link to="/control/usage" class="nav-item" :class="{ active: controlSection === 'usage' }" title="用量统计">
+              <span class="nav-item-icon" v-html="iconTraces" />
+              <span class="nav-item-text">用量</span>
+            </router-link>
             <router-link to="/control/devices" class="nav-item" :class="{ active: controlSection === 'devices' }" title="设备配对">
               <span class="nav-item-icon" v-html="iconControl" />
               <span class="nav-item-text">设备配对</span>
@@ -74,11 +87,6 @@
               <span class="nav-item-icon" v-html="iconSandbox" />
               <span class="nav-item-text">沙箱</span>
             </router-link>
-          </nav>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">Agent</div>
-          <nav class="nav-group__items">
             <router-link to="/agent" class="nav-item" :class="{ active: activeKey === 'agent' }" title="Agents">
               <span class="nav-item-icon" v-html="iconAgent" />
               <span class="nav-item-text">Agents</span>
@@ -88,13 +96,9 @@
               <span class="nav-item-text">技能</span>
             </router-link>
             <router-link to="/app" class="nav-item" :class="{ active: activeKey === 'app' }" title="应用">
+              <span class="nav-item-icon" v-html="iconApp" />
               <span class="nav-item-text">应用</span>
             </router-link>
-          </nav>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">设置</div>
-          <nav class="nav-group__items">
             <router-link to="/config" class="nav-item" :class="{ active: activeKey === 'config' }" title="配置">
               <span class="nav-item-icon" v-html="iconConfig" />
               <span class="nav-item-text">配置</span>
@@ -117,9 +121,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, provide } from 'vue'
 import { useRoute } from 'vue-router'
-import { NButton } from 'naive-ui'
+import { NButton, NTag } from 'naive-ui'
+import { useGateway, GatewayKey } from '../composables/useGateway'
+
+const gateway = useGateway()
+provide(GatewayKey, gateway)
 
 const sunSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>'
 const moonSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
@@ -136,12 +144,16 @@ const iconCron = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"
 const iconSandbox = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>'
 const iconAgent = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect x="2" y="14" width="8" height="8" rx="1"/><path d="M12 8h4a2 2 0 0 1 2 2v10"/><path d="M12 8v12"/></svg>'
 const iconSkills = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>'
+const iconApp = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>'
 const iconChevronLeft = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>'
 const iconChevronRight = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>'
+const iconChevronDown = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>'
 
 const route = useRoute()
 const collapsed = ref(false)
 const STORAGE_KEY = 'joyhousebot-ui-nav-collapsed'
+const CONTROL_EXPANDED_KEY = 'joyhousebot-ui-control-expanded'
+const controlExpanded = ref(true)
 
 function loadCollapsed() {
   try {
@@ -158,7 +170,25 @@ function toggleCollapsed() {
   collapsed.value = !collapsed.value
   saveCollapsed()
 }
-onMounted(loadCollapsed)
+function loadControlExpanded() {
+  try {
+    const v = localStorage.getItem(CONTROL_EXPANDED_KEY)
+    if (v !== null) controlExpanded.value = v === '1'
+  } catch (_) {}
+}
+function saveControlExpanded() {
+  try {
+    localStorage.setItem(CONTROL_EXPANDED_KEY, controlExpanded.value ? '1' : '0')
+  } catch (_) {}
+}
+function toggleControlExpanded() {
+  controlExpanded.value = !controlExpanded.value
+  saveControlExpanded()
+}
+onMounted(() => {
+  loadCollapsed()
+  loadControlExpanded()
+})
 const activeKey = computed(() => {
   const p = route.path.replace(/\/$/, '') || ''
   if (p === '/chat') return 'chat'
@@ -170,6 +200,10 @@ const activeKey = computed(() => {
   if (p === '/config') return 'config'
   return 'chat'
 })
+const isControlSectionActive = computed(() => {
+  const k = activeKey.value
+  return k === 'control' || k === 'agent' || k === 'skills' || k === 'app' || k === 'config'
+})
 const controlSection = computed(() => {
   const p = route.path.replace(/\/$/, '') || ''
   if (p === '/control/overview') return 'overview'
@@ -178,6 +212,7 @@ const controlSection = computed(() => {
   if (p === '/control/traces') return 'traces'
   if (p === '/control/instances') return 'instances'
   if (p.startsWith('/control/cron')) return 'cron'
+  if (p === '/control/usage') return 'usage'
   if (p === '/control/devices') return 'devices'
   if (p === '/control/approvals') return 'approvals'
   if (p === '/control/sandbox') return 'sandbox'
@@ -215,7 +250,10 @@ const logoSrc = import.meta.env.BASE_URL + 'joyhouse.png'
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+.topbar-ws-status {
+  flex-shrink: 0;
 }
 .theme-icon {
   display: inline-flex;
@@ -267,5 +305,53 @@ const logoSrc = import.meta.env.BASE_URL + 'joyhouse.png'
 .collapse-icon :deep(svg) {
   width: 18px;
   height: 18px;
+}
+.nav-group--collapsible .nav-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color);
+  font-size: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.nav-group--collapsible .nav-group-head:hover {
+  background: var(--bg-hover);
+}
+.nav-group--collapsible .nav-group-head.active {
+  color: var(--text-strong);
+  background: var(--accent-subtle);
+}
+.nav-group-head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.nav-group-head-icon :deep(svg) {
+  width: 20px;
+  height: 20px;
+}
+.nav-group-head-label {
+  flex: 1;
+}
+.nav-group-head-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.nav-group-head-chevron :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+.nav-group--collapsible .nav-group__items {
+  padding-left: 0.25rem;
 }
 </style>

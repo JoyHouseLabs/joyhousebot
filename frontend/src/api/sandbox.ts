@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface SandboxContainerItem {
@@ -16,7 +18,7 @@ export interface SandboxContainersResponse {
 export async function listSandboxContainers(
   browserOnly = false
 ): Promise<SandboxContainersResponse> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/sandbox/containers?browser_only=${browserOnly}`
   )
   if (!res.ok) throw new Error(await res.text())
@@ -49,7 +51,7 @@ export async function getSandboxExplain(
   if (session) params.set('session', session)
   if (agent) params.set('agent', agent)
   const qs = params.toString()
-  const res = await fetch(`${API_BASE}/sandbox/explain${qs ? `?${qs}` : ''}`)
+  const res = await apiFetch(`${API_BASE}/sandbox/explain${qs ? `?${qs}` : ''}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -80,7 +82,7 @@ export interface SandboxRecreateResponse {
 export async function sandboxRecreate(
   body: SandboxRecreateBody
 ): Promise<SandboxRecreateResponse> {
-  const res = await fetch(`${API_BASE}/sandbox/recreate`, {
+  const res = await apiFetch(`${API_BASE}/sandbox/recreate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

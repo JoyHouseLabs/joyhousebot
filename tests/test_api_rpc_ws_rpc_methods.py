@@ -116,7 +116,7 @@ async def test_run_rpc_ws_loop_processes_presence_and_request():
     async def _emit(_event, _payload):
         return None
 
-    async def _handle_rpc_request(_frame, _client, _key, _emit_event):
+    async def _handle_rpc_request(_frame, _client, _key, _emit_event, _client_host=None):
         return True, {"ok": True}, None
 
     async def _postprocess(**kwargs):

@@ -16,6 +16,7 @@ export type ConfigCategoryKey =
   | 'messages'
   | 'commands'
   | 'env'
+  | 'cloud_connect'
 
 export interface ConfigCategoryItem {
   key: ConfigCategoryKey
@@ -39,6 +40,7 @@ export const CONFIG_CATEGORIES: ConfigCategoryItem[] = [
   { key: 'messages', label: '消息行为' },
   { key: 'commands', label: '命令' },
   { key: 'env', label: '环境变量' },
+  { key: 'cloud_connect', label: '云端连接' },
 ]
 
 export type { ConfigData }

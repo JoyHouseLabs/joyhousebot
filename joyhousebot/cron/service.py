@@ -265,17 +265,19 @@ class CronService:
         self,
         name: str,
         schedule: CronSchedule,
-        message: str,
+        message: str = "",
         deliver: bool = False,
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
         agent_id: str | None = None,
+        payload_kind: str = "agent_turn",
     ) -> CronJob:
-        """Add a new job (agent_id=None uses default agent)."""
+        """Add a new job (agent_id=None uses default agent). payload_kind: agent_turn | memory_compaction."""
         store = self._load_store()
         now = _now_ms()
-        
+        kind = payload_kind if payload_kind in ("agent_turn", "memory_compaction", "system_event") else "agent_turn"
+
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=name,
@@ -283,7 +285,7 @@ class CronService:
             agent_id=agent_id,
             schedule=schedule,
             payload=CronPayload(
-                kind="agent_turn",
+                kind=kind,
                 message=message,
                 deliver=deliver,
                 channel=channel,

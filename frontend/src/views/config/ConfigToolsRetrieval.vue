@@ -25,6 +25,30 @@
           @update:value="(v) => retrieval && ((retrieval as Record<string, unknown>).memory_backend = v)"
         />
       </n-form-item>
+      <n-form-item label="知识库检索后端">
+        <n-select
+          :value="(retrieval && 'knowledge_backend' in retrieval ? retrieval.knowledge_backend : 'builtin') as string"
+          :options="knowledgeBackendOptions"
+          placeholder="builtin"
+          style="width: 100%"
+          @update:value="(v) => retrieval && ((retrieval as Record<string, unknown>).knowledge_backend = v)"
+        />
+        <span class="form-hint">builtin=FTS5+Chroma；qmd/auto=QMD MCP（需提供 knowledge_search 工具）</span>
+      </n-form-item>
+      <n-form-item label="同步到 QMD 索引">
+        <n-switch
+          :value="Boolean(retrieval && retrieval.knowledge_qmd_sync_enabled)"
+          @update:value="(v) => retrieval && ((retrieval as Record<string, unknown>).knowledge_qmd_sync_enabled = v)"
+        />
+        <span class="form-hint">开启后 pipeline 索引完成后 POST 到下方 URL</span>
+      </n-form-item>
+      <n-form-item label="QMD 同步 URL" v-if="retrieval?.knowledge_qmd_sync_enabled">
+        <n-input
+          v-model:value="retrieval.knowledge_qmd_sync_url"
+          placeholder="http://localhost:8181/index 或 QMD 索引接口"
+          style="width: 100%"
+        />
+      </n-form-item>
       <n-form-item label="系统提示使用 L0">
         <n-switch
           :value="Boolean(retrieval && retrieval.memory_use_l0)"
@@ -59,9 +83,16 @@ import type { ConfigData } from '../../api/config'
 const props = defineProps<{ config: ConfigData | null }>()
 
 const memoryBackendOptions = [
-  { label: 'builtin', value: 'builtin' },
-  { label: 'mcp_qmd', value: 'mcp_qmd' },
-  { label: 'auto', value: 'auto' },
+  { label: 'builtin（grep）', value: 'builtin' },
+  { label: 'mcp_qmd（QMD MCP）', value: 'mcp_qmd' },
+  { label: 'sqlite_vector（SQLite+向量）', value: 'sqlite_vector' },
+  { label: 'auto（QMD → sqlite_vector → grep）', value: 'auto' },
+]
+
+const knowledgeBackendOptions = [
+  { label: 'builtin（FTS5+Chroma）', value: 'builtin' },
+  { label: 'qmd（QMD MCP）', value: 'qmd' },
+  { label: 'auto（先 QMD 再 builtin）', value: 'auto' },
 ]
 
 const retrieval = computed(() => {

@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface SkillItem {
@@ -14,13 +16,13 @@ export interface SkillsResponse {
 }
 
 export async function getSkills(): Promise<SkillsResponse> {
-  const res = await fetch(`${API_BASE}/skills`)
+  const res = await apiFetch(`${API_BASE}/skills`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function patchSkill(name: string, enabled: boolean): Promise<{ ok: boolean; name: string; enabled: boolean }> {
-  const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, {
+  const res = await apiFetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),

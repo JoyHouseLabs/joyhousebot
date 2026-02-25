@@ -3,6 +3,8 @@
  * Control pages use WS RPC via useGateway/gateway-client; these fetch() helpers
  * are kept for type definitions and non-control / fallback use only.
  */
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface ControlOverview {
@@ -25,7 +27,7 @@ export interface ControlOverview {
 }
 
 export async function getOverview(): Promise<ControlOverview> {
-  const res = await fetch(`${API_BASE}/control/overview`)
+  const res = await apiFetch(`${API_BASE}/control/overview`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -42,7 +44,7 @@ export interface ControlChannelsResponse {
 }
 
 export async function getChannels(): Promise<ControlChannelsResponse> {
-  const res = await fetch(`${API_BASE}/control/channels`)
+  const res = await apiFetch(`${API_BASE}/control/channels`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -66,7 +68,7 @@ export interface ControlPresenceResponse {
 }
 
 export async function getPresence(): Promise<ControlPresenceResponse> {
-  const res = await fetch(`${API_BASE}/control/presence`)
+  const res = await apiFetch(`${API_BASE}/control/presence`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -94,7 +96,7 @@ export interface ControlQueueResponse {
 }
 
 export async function getQueueMetrics(): Promise<ControlQueueResponse> {
-  const res = await fetch(`${API_BASE}/control/queue`)
+  const res = await apiFetch(`${API_BASE}/control/queue`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -139,13 +141,13 @@ export async function getTraces(params?: {
   if (params?.cursor) sp.set('cursor', params.cursor)
   const q = sp.toString()
   const url = `${API_BASE}/traces${q ? `?${q}` : ''}`
-  const res = await fetch(url)
+  const res = await apiFetch(url)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function getTrace(traceId: string): Promise<TraceDetail> {
-  const res = await fetch(`${API_BASE}/traces/${encodeURIComponent(traceId)}`)
+  const res = await apiFetch(`${API_BASE}/traces/${encodeURIComponent(traceId)}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }

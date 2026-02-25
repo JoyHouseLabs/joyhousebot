@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface TranscribeResponse {
@@ -17,7 +19,7 @@ export async function transcribeAudio(
   const name = filename ?? (file instanceof File ? file.name : 'recording.webm')
   formData.append('file', file, name)
 
-  const res = await fetch(`${API_BASE}/transcribe`, {
+  const res = await apiFetch(`${API_BASE}/transcribe`, {
     method: 'POST',
     body: formData,
   })

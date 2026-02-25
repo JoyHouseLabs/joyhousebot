@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from joyhousebot.cli.services.protocol_service import ProtocolService
-from joyhousebot.cli.shared.http_utils import get_gateway_base_url, http_json
+from joyhousebot.cli.shared.http_utils import get_gateway_base_url, get_http_api_headers, http_json
 from joyhousebot.config.loader import load_config
 from joyhousebot.utils.helpers import get_workspace_path
 
@@ -41,22 +41,29 @@ def register_comms_commands(app: typer.Typer, console: Console) -> None:
                 "message": message,
                 "reply_to": reply_to or None,
             }
+            api_headers = get_http_api_headers()
             try:
-                response = http_json("POST", f"{base}/message/send", payload=payload, timeout=15.0)
+                response = http_json(
+                    "POST", f"{base}/api/message/send", payload=payload, timeout=15.0, headers=api_headers
+                )
             except RuntimeError as exc:
                 if "404" in str(exc):
                     console.print("[yellow]Gateway does not support /message/send yet, fallback to /chat.[/yellow]")
                     payload = {"message": message, "session_id": session}
                     if agent_id:
                         payload["agent_id"] = agent_id
-                    response = http_json("POST", f"{base}/chat", payload=payload, timeout=30.0)
+                    response = http_json(
+                        "POST", f"{base}/api/chat", payload=payload, timeout=30.0, headers=api_headers
+                    )
                 else:
                     raise
         else:
             payload = {"message": message, "session_id": session}
             if agent_id:
                 payload["agent_id"] = agent_id
-            response = http_json("POST", f"{base}/chat", payload=payload, timeout=30.0)
+            response = http_json(
+                "POST", f"{base}/api/chat", payload=payload, timeout=30.0, headers=get_http_api_headers()
+            )
         console.print(json.dumps(response, indent=2, ensure_ascii=False))
 
     sessions_app = typer.Typer(help="List stored conversation sessions")

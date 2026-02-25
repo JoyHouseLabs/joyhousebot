@@ -50,9 +50,9 @@ frontend/.env
 frontend/.env.local
 frontend/.env.*.local
 frontend/components.d.ts
-bridge/.env
-bridge/.env.local
-bridge/.env.*.local
+bridges/whatsapp/.env
+bridges/whatsapp/.env.local
+bridges/whatsapp/.env.*.local
 
 # IDE / OS
 .idea/

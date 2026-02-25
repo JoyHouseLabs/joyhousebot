@@ -1,3 +1,5 @@
+import { apiFetch } from './http'
+
 const API_BASE = '/api'
 
 export interface SessionItem {
@@ -31,21 +33,21 @@ function _agentQuery(agentId?: string | null): string {
 }
 
 export async function getSessions(agentId?: string | null): Promise<SessionsResponse> {
-  const res = await fetch(`${API_BASE}/sessions${_agentQuery(agentId)}`)
+  const res = await apiFetch(`${API_BASE}/sessions${_agentQuery(agentId)}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function getSessionHistory(sessionKey: string, agentId?: string | null): Promise<SessionHistoryResponse> {
   const keyEnc = encodeURIComponent(sessionKey)
-  const res = await fetch(`${API_BASE}/sessions/${keyEnc}/history${_agentQuery(agentId)}`)
+  const res = await apiFetch(`${API_BASE}/sessions/${keyEnc}/history${_agentQuery(agentId)}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
 
 export async function deleteSession(sessionKey: string, agentId?: string | null): Promise<{ ok: boolean; removed: boolean }> {
   const keyEnc = encodeURIComponent(sessionKey)
-  const res = await fetch(`${API_BASE}/sessions/${keyEnc}${_agentQuery(agentId)}`, { method: 'DELETE' })
+  const res = await apiFetch(`${API_BASE}/sessions/${keyEnc}${_agentQuery(agentId)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }

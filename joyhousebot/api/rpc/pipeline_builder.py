@@ -113,6 +113,7 @@ def _build_control_plane_handlers(
             now_ms=ctx.now_ms,
             emit_event=ctx.emit_event,
             fanout_chat_to_subscribed_nodes=ctx.fanout_chat_to_subscribed_nodes,
+            broadcast_rpc_event=getattr(ctx, "broadcast_rpc_event", None),
             lane_can_run=getattr(ctx, "lane_can_run", None),
             lane_enqueue=getattr(ctx, "lane_enqueue", None),
             persist_trace=getattr(ctx, "persist_trace", None),

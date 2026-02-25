@@ -7,7 +7,7 @@ from joyhousebot.services.plugins.doctor_service import (
 
 class _Client:
     def requirements_report(self):
-        return {"checks": {"openclawDirExists": True, "openclawPackageJsonExists": True, "openclawDistLoaderExists": False}}
+        return {"checks": {"openclawDirExists": True, "openclawPackageJsonExists": True, "openclawLoaderAvailable": False}}
 
 
 class _Manager:
