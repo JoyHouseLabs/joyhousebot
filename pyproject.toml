@@ -20,16 +20,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-homepage = "https://joyhousebot.com"
-repository = "https://github.com/joyhousebot/joyhousebot"
-documentation = "https://github.com/joyhousebot/joyhousebot#readme"
-
-[project.urls]
-Homepage = "https://joyhousebot.com"
-Repository = "https://github.com/joyhousebot/joyhousebot"
-Documentation = "https://github.com/joyhousebot/joyhousebot/tree/main/docs"
-Issues = "https://github.com/joyhousebot/joyhousebot/issues"
-
 dependencies = [
     "typer>=0.9.0",
     "litellm>=1.0.0",
@@ -76,6 +66,12 @@ retrieval = [
     "chromadb>=0.4.0",
 ]
 
+[project.urls]
+Homepage = "https://joyhousebot.com"
+Repository = "https://github.com/JoyHouseLabs/joyhousebot"
+Documentation = "https://github.com/JoyHouseLabs/joyhousebot/tree/main/docs"
+Issues = "https://github.com/JoyHouseLabs/joyhousebot/issues"
+
 [project.scripts]
 joyhousebot = "joyhousebot.cli.commands:app"
 
@@ -89,7 +85,6 @@ packages = ["joyhousebot"]
 [tool.hatch.build.targets.wheel.sources]
 "joyhousebot" = "joyhousebot"
 
-# Include non-Python files in skills
 [tool.hatch.build]
 include = [
     "joyhousebot/**/*.py",
