@@ -113,6 +113,16 @@ async def try_handle_pairing_method(
             return True, {"token": token, "deviceId": device_id, "role": role, "scopes": scopes}, None
         return False, None, rpc_error("INVALID_REQUEST", "device not paired", None)
 
+    if method == "device.pair.remove":
+        device_id = str(params.get("deviceId") or "").strip()
+        if not device_id:
+            return False, None, rpc_error("INVALID_REQUEST", "deviceId required", None)
+        pairs = load_persistent_state("rpc.device_pairs", {"pending": [], "paired": []})
+        pending = [row for row in pairs.get("pending", []) if str(row.get("deviceId")) != device_id]
+        paired = [row for row in pairs.get("paired", []) if str(row.get("deviceId")) != device_id]
+        save_persistent_state("rpc.device_pairs", {"pending": pending, "paired": paired})
+        return True, {"ok": True, "deviceId": device_id}, None
+
     if method == "device.token.revoke":
         device_id = str(params.get("deviceId") or "").strip()
         role = str(params.get("role") or "operator").strip() or "operator"

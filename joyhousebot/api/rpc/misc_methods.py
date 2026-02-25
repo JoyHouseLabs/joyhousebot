@@ -98,5 +98,11 @@ async def try_handle_misc_method(
         create_task(run_update_install())
         return True, {"ok": True, "started": True, "status": current}, None
 
+    if method == "doctor.memory.status":
+        return True, {"ok": True, "status": "healthy", "message": "memory diagnostics not implemented"}, None
+
+    if method == "push.test":
+        return True, {"ok": True, "delivered": False, "message": "push notifications not configured"}, None
+
     return None
 
