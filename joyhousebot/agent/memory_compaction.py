@@ -152,6 +152,9 @@ Respond with ONLY valid JSON."""
                 continue
 
     l1_block = "\n\n".join(l1_parts[:max_l1_files_for_l0]).strip()
+    recent_section = (
+        "## Recent insights / lessons\n" + l1_block[:3000] if l1_block else ""
+    )
     prompt_l0 = f"""Given the long-term memory and recent insights/lessons below, produce a short memory index (about 100-300 tokens) for retrieval.
 
 Use exactly this structure (keep the headers):
@@ -167,7 +170,7 @@ Use exactly this structure (keep the headers):
 ## Long-term memory (excerpt)
 {memory_body[:4000] or "(empty)"}
 
-{f"## Recent insights / lessons\n{l1_block[:3000]}" if l1_block else ""}
+{recent_section}
 
 Respond with ONLY the memory index text (no JSON, no extra commentary)."""
 

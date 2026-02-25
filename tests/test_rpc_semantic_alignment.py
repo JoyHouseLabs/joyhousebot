@@ -17,6 +17,7 @@ async def _rpc_call(client: RpcClientState, method: str, params: dict | None = N
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_pairing
 async def test_chat_send_returns_started_then_agent_wait_gets_final(monkeypatch):
     old = dict(app_state)
     try:
@@ -99,6 +100,7 @@ async def test_agent_and_chat_ack_semantics_inflight(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_pairing
 async def test_chat_send_expect_final_returns_final_payload(monkeypatch):
     old = dict(app_state)
     try:
@@ -156,6 +158,7 @@ async def test_auth_profiles_status_returns_cooldown_observability(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_pairing
 async def test_connect_snapshot_includes_auth_alerts(monkeypatch):
     old = dict(app_state)
     try:
@@ -376,6 +379,7 @@ async def test_actions_validate_batch_lifecycle_rpc_method():
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_pairing
 async def test_rpc_e2e_connect_status_actions_validate_lifecycle():
     old = dict(app_state)
     try:

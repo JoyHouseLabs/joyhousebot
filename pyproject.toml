@@ -124,4 +124,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "e2e: end-to-end tests (e.g. real browser); run with pytest -m e2e",
+    "requires_pairing: requires device pairing / full runtime (skipped in CI)",
 ]

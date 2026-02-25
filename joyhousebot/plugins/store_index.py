@@ -40,9 +40,11 @@ class StoreIndex:
 def _parse_compatibility(raw: Any) -> Compatibility | None:
     if not isinstance(raw, dict):
         return None
+    raw_runtime = raw.get("runtime")
+    runtime_list = [str(x) for x in raw_runtime] if isinstance(raw_runtime, list) else []
     return Compatibility(
         min_platform_version=str(raw.get("min_platform_version") or ""),
-        runtime=[str(x) for x in raw.get("runtime") or [] if isinstance(raw.get("runtime"), list) else []],
+        runtime=runtime_list,
     )
 
 

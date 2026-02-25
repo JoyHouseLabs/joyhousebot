@@ -69,7 +69,18 @@ async def _rpc_call(client: RpcClientState, method: str, params: dict | None = N
     )
 
 
-async def run_runtime_smoke() -> list[str]:
+def _is_not_paired_error(err) -> bool:
+    """True if error indicates device is not paired (e.g. in CI)."""
+    if isinstance(err, dict):
+        if err.get("code") == "NOT_PAIRED":
+            return True
+        msg = str(err.get("message", "")).lower()
+        if "device identity" in msg or "not paired" in msg:
+            return True
+    return False
+
+
+async def run_runtime_smoke() -> tuple[list[str], bool]:
     errors: list[str] = []
     cfg = load_config()
     app_state["config"] = cfg
@@ -118,6 +129,9 @@ async def run_runtime_smoke() -> list[str]:
     fresh = RpcClientState()
     ok, payload, err = await _rpc_call(fresh, "connect", {"role": "operator", "scopes": ["operator.read"], "clientId": "smoke-connect"})
     if not ok:
+        if _is_not_paired_error(err):
+            # CI / unpaired environment: skip connect and downstream checks that require device identity
+            return errors, True
         errors.append(f"connect failed: {err}")
     else:
         snap = payload.get("snapshot") if isinstance(payload, dict) else {}
@@ -128,11 +142,11 @@ async def run_runtime_smoke() -> list[str]:
         if not isinstance(snap.get("alertsLifecycle"), dict):
             errors.append("connect snapshot missing alertsLifecycle")
 
-    ok, _, err = await _rpc_call(node, "node.event", {"event": "chat.subscribe", "payload": {"sessionKey": "main"}})
-    if not ok:
-        errors.append(f"node.event(chat.subscribe) failed: {err}")
+        ok, _, err = await _rpc_call(node, "node.event", {"event": "chat.subscribe", "payload": {"sessionKey": "main"}})
+        if not ok:
+            errors.append(f"node.event(chat.subscribe) failed: {err}")
 
-    return errors
+    return errors, False
 
 
 def main() -> int:
@@ -157,7 +171,9 @@ def main() -> int:
         print(f"  MISSING: {item}")
     print(f"extra methods: {len(extra)}")
 
-    runtime_errors = asyncio.run(run_runtime_smoke())
+    runtime_errors, skipped = asyncio.run(run_runtime_smoke())
+    if skipped:
+        print("runtime smoke skipped (no device paired)")
     if runtime_errors:
         print("runtime smoke errors:")
         for err in runtime_errors:
