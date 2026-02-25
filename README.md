@@ -71,6 +71,97 @@ flowchart TD
 
 不使用 WhatsApp 且不使用 OpenClaw 插件时无需安装 Node。
 
+## 本地开发与调试
+
+### 环境准备
+
+```bash
+# 克隆仓库
+git clone https://github.com/JoyHouseLabs/joyhousebot.git
+cd joyhousebot
+
+# 安装 Python 依赖（推荐使用 uv）
+pip install uv
+uv sync
+
+# 或使用 pip 可编辑安装
+pip install -e ".[dev]"
+```
+
+### 启动后端
+
+```bash
+# 启动网关服务（包含 HTTP/WebSocket API、通道、定时任务）
+uv run joyhousebot gateway --port 18790
+
+# 或直接运行
+joyhousebot gateway --port 18790
+```
+
+网关启动后：
+- HTTP API：`http://localhost:18790/api/...`
+- WebSocket RPC：`ws://localhost:18790/ws/rpc`
+- WebSocket Chat：`ws://localhost:18790/ws/chat`
+- 内置 UI：`http://localhost:18790/ui/`
+
+### 启动前端开发服务器
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+开发时 Vite 会代理 `/config`、`/health`、`/chat`、`/v1` 等请求到 `http://127.0.0.1:18790`。请确保后端已启动。
+
+前端开发服务器地址：`http://localhost:5174/ui/`
+
+**一键启动前后端**（需安装 concurrently）：
+
+```bash
+cd frontend
+npm run dev:full
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
+uv run pytest
+
+# 运行单个测试文件
+uv run pytest tests/test_agent_memory.py
+
+# 运行 e2e 测试（需要完整运行环境）
+uv run pytest -m e2e
+
+# 跳过需要配对的测试
+uv run pytest -m "not requires_pairing"
+```
+
+### 代码检查
+
+```bash
+# Ruff lint
+uv run ruff check joyhousebot/ tests/ scripts/
+
+# 自动修复
+uv run ruff check --fix joyhousebot/ tests/ scripts/
+```
+
+### 构建与打包
+
+```bash
+# 仅构建前端并复制到 static/ui
+./scripts/build-ui.sh
+
+# 构建前端 + 打包 Python wheel
+./scripts/build-and-package.sh
+
+# 构建后安装到本地
+./scripts/build-and-package.sh --install
+```
+
 ## 快速开始
 
 **首次运行**（如 `pip install joyhousebot` 后）：任意命令首次加载配置时，若 `~/.joyhousebot/config.json` 不存在，会自动创建目录并写入一份默认配置（与当前 schema 一致），无需手动拷贝。
