@@ -1,10 +1,10 @@
 # joyhousebot
 
 <p align="center">
-  <img src="joyhousebot_logo.png" alt="joyhousebot logo" width="240" />
+  <img src="joyhouse.png" alt="joyhousebot logo" width="240" />
 </p>
 
-官网：<https://joyhouselabs.com>
+官网：<https://joyhousebot.com>
 
 Python 版 [OpenClaw](https://github.com/openclaw/openclaw) 兼容的轻量级 agentic 应用基座。支持多通道、多 Agent、插件与配置驱动，内置知识库构建、沙箱执行、统一异常处理等能力。
 
