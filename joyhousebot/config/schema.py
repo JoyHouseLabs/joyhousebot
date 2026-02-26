@@ -447,6 +447,7 @@ class KnowledgePipelineConfig(BaseModel):
     knowledge_source_dir: str = "knowledgebase"  # Where to watch for new files (PDF, URL-dumped, etc.)
     knowledge_processed_dir: str = "knowledge/processed"  # Where converted .md and metadata go; only this is indexed
     watch_enabled: bool = True  # When True, watch source dir and enqueue new files
+    subprocess_enabled: bool = True  # When True, run knowledge pipeline in subprocess to avoid blocking startup
     convert_chunk_size: int = 1200
     convert_chunk_overlap: int = 200
 

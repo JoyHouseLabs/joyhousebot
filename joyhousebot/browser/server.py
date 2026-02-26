@@ -240,26 +240,35 @@ def create_browser_app(
     @app.post("/screenshot")
     async def screenshot(request: Request) -> dict:
         state = get_browser_state()
-        tab = state.get_tab_info(None)
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        target_id = (body.get("targetId") or "").strip() or None
+        tab = state.get_tab_info(target_id)
         if not tab:
             return JSONResponse({"error": "no tab available"}, status_code=409)
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
         full_page = bool(body.get("fullPage"))
         img_type = "jpeg" if body.get("type") == "jpeg" else "png"
         ext = ".jpg" if img_type == "jpeg" else ".png"
         out_path = _media_dir() / f"screenshot-{id(tab.page)}{ext}"
-        await tab.page.screenshot(path=str(out_path), full_page=full_page, type=img_type)
-        return {"ok": True, "path": str(out_path), "targetId": tab.target_id}
+        try:
+            await tab.page.screenshot(path=str(out_path), full_page=full_page, type=img_type)
+            return {"ok": True, "path": str(out_path), "targetId": tab.target_id, "url": tab.url or tab.page.url}
+        except Exception as e:
+            return JSONResponse({"error": f"screenshot failed: {e}"}, status_code=500)
 
     @app.post("/pdf")
     async def pdf(request: Request) -> dict:
         state = get_browser_state()
-        tab = state.get_tab_info(None)
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        target_id = (body.get("targetId") or "").strip() or None
+        tab = state.get_tab_info(target_id)
         if not tab:
             return JSONResponse({"error": "no tab available"}, status_code=409)
         out_path = _media_dir() / f"page-{id(tab.page)}.pdf"
-        await tab.page.pdf(path=str(out_path))
-        return {"ok": True, "path": str(out_path), "targetId": tab.target_id, "url": tab.url}
+        try:
+            await tab.page.pdf(path=str(out_path))
+            return {"ok": True, "path": str(out_path), "targetId": tab.target_id, "url": tab.url or tab.page.url}
+        except Exception as e:
+            return JSONResponse({"error": f"pdf failed: {e}"}, status_code=500)
 
     @app.get("/console")
     async def console(request: Request) -> dict:

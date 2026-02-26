@@ -71,31 +71,31 @@ def register_config_commands(app: typer.Typer, console: Console) -> None:
     def config_migrate_from_openclaw(
         openclaw_dir: str = typer.Argument(
             None,
-            help="OpenClaw 状态目录，内含 openclaw.json；默认 ~/.openclaw",
+            help="OpenClaw state directory containing openclaw.json; default is ~/.openclaw",
         ),
         dry_run: bool = typer.Option(
             False,
             "--dry-run",
-            help="仅校验并打印将要写入的配置摘要，不写入 joyhousebot 配置",
+            help="Validate only and print summary of configuration to be written, without writing joyhousebot config",
         ),
     ) -> None:
-        """从 OpenClaw 配置目录读取 openclaw.json，迁移为 joyhousebot 配置并写入 ~/.joyhousebot/config.json。
-        会将 OpenClaw 的 models.providers.*.baseUrl 映射到 joyhousebot 的 providers（如 zai -> zhipu.api_base）；
-        迁移后请检查并补填各 provider 的 api_key（OpenClaw 的 API 密钥通常在 auth/credentials 中，需手动配置）。"""
+        """Read openclaw.json from OpenClaw config directory, migrate to joyhousebot config and write to ~/.joyhousebot/config.json.
+        OpenClaw's models.providers.*.baseUrl will be mapped to joyhousebot's providers (e.g. zai -> zhipu.api_base);
+        After migration, check and fill in api_key for each provider (OpenClaw API keys are usually in auth/credentials and require manual configuration)."""
         dir_path = (Path(openclaw_dir).expanduser().resolve() if (openclaw_dir and openclaw_dir.strip()) else Path.home() / ".openclaw")
         config_file = dir_path / "openclaw.json"
         if not config_file.exists():
-            console.print(f"[red]未找到 OpenClaw 配置文件:[/red] {config_file}")
-            console.print("请指定包含 openclaw.json 的目录，例如: joyhousebot config migrate-from-openclaw /Users/xxx/.openclaw")
+            console.print(f"[red]OpenClaw configuration file not found:[/red] {config_file}")
+            console.print("Please specify directory containing openclaw.json, e.g.: joyhousebot config migrate-from-openclaw /Users/xxx/.openclaw")
             raise typer.Exit(1)
         try:
             cfg = load_config_from_openclaw_file(config_file)
         except (json.JSONDecodeError, ValueError, FileNotFoundError) as e:
-            console.print(f"[red]解析 OpenClaw 配置失败:[/red] {e}")
+            console.print(f"[red]Failed to parse OpenClaw configuration:[/red] {e}")
             raise typer.Exit(1)
         dest = get_config_path()
         if dry_run:
-            console.print(f"[dim]（dry-run）将写入: {dest}[/dim]")
+            console.print(f"[dim](dry-run) will write to: {dest}[/dim]")
             console.print("[bold]agents.defaults[/bold]:", cfg.agents.defaults.model_dump())
             if cfg.agents.agent_list:
                 console.print("[bold]agents.list[/bold]:", [e.model_dump() for e in cfg.agents.agent_list[:5]], "..." if len(cfg.agents.agent_list) > 5 else "")
@@ -107,10 +107,10 @@ def register_config_commands(app: typer.Typer, console: Console) -> None:
                 console.print("[bold]wizard[/bold]:", cfg.wizard.model_dump())
             if cfg.env is not None:
                 console.print("[bold]env[/bold]:", cfg.env.model_dump())
-            console.print("[green]✓[/green] 校验通过，未写入文件。去掉 --dry-run 可执行迁移。")
+            console.print("[green]✓[/green] Validation passed, file not written. Remove --dry-run to perform migration.")
             return
         save_config(cfg)
-        console.print(f"[green]✓[/green] 已从 [cyan]{config_file}[/cyan] 迁移到 [cyan]{dest}[/cyan]")
+        console.print(f"[green]✓[/green] Migrated from [cyan]{config_file}[/cyan] to [cyan]{dest}[/cyan]")
 
     @app.command("configure")
     def configure() -> None:

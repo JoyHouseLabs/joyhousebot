@@ -115,7 +115,25 @@ flowchart LR
 - **职责**：Pydantic 模型定义（BaseSettings），持久化到 `~/.joyhousebot/config.json`，支持环境变量覆盖。
 - **与各层关系**：AgentLoop 的 model、model_fallbacks、max_iterations、memory_window、max_context_tokens 等来自 AgentDefaults/AgentEntry；ToolRegistry 的 optional_allowlist 来自 ToolsConfig；ExecTool/沙箱使用 ExecToolConfig；ContextBuilder 读取 skills、retrieval（memory_use_l0、memory_first）；MessagesConfig 控制 after_tool_results_prompt、suppress_tool_errors、response_prefix 等。
 
-### 3.7 统一异常处理
+### 3.7 知识库 Pipeline（Knowledge Pipeline）
+
+- **位置**：`joyhousebot/services/knowledge_pipeline/`
+- **职责**：独立子进程监控 agent 知识库目录，自动转换文档并建立 FTS5 索引。
+- **架构设计**：
+  - `pipeline_worker.py`：独立子进程入口，通过环境变量接收配置，启动文件监控和工作线程
+  - `watcher.py`：文件监控线程（使用 watchfiles），监听 `knowledgebase/` 目录变化
+  - `pipeline_queue.py`：任务队列类 `KnowledgePipelineQueue`，异步处理文件转换和索引任务
+  - `converter.py`：文档转换器，支持 PDF（PyPDF2）、TXT、Markdown → 统一 Markdown 格式
+  - `indexer.py`：FTS5 索引器，将转换后的文档索引到 SQLite 数据库
+  - `service.py`：子进程管理，`start_knowledge_pipeline_subprocess()` 和 `stop_knowledge_pipeline_subprocess()`
+- **进程模型**：每个配置了知识库的 agent 都会启动一个独立的 pipeline 子进程，包含：
+  1. 文件监控线程（监听文件变化）
+  2. 工作线程（处理转换和索引）
+  3. 队列（异步任务调度）
+- **与 AgentLoop 集成**：AgentLoop 初始化时调用 `start_knowledge_pipeline_subprocess()` 启动子进程，进程退出时调用 `stop_knowledge_pipeline_subprocess()` 停止子进程
+- **配置**：`tools.knowledge_pipeline` 配置项，包括 `knowledge_source_dir`、`knowledge_processed_dir`、`watch_enabled`、`subprocess_enabled` 等
+
+### 3.8 统一异常处理
 
 - **位置**：`joyhousebot/utils/exceptions.py`
 - **职责**：提供异常类层次、错误分类、敏感信息过滤、工具装饰器等。
@@ -200,3 +218,6 @@ flowchart LR
 - [README](../README.md) — 项目概览与快速开始
 - [异常处理](ERROR_HANDLING.md) — 异常类层次、错误分类、敏感信息过滤
 - [CLI 参考](CLI_REFERENCE.md) — 命令与参数说明
+- [x402 支付协议](zh/X402_PAYMENT_PROTOCOL.md) — HTTP 402 微支付协议
+- [Memory 指南](zh/MEMORY_GUIDE.md) — Memory 命令使用与知识库 Pipeline
+- [Memory vs OpenClaw](zh/MEMORY_VS_OPENCLAW.md) — Memory 系统与 OpenClaw 的对比

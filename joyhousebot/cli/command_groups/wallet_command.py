@@ -16,73 +16,73 @@ def register_wallet_commands(app: typer.Typer, console: Console) -> None:
 
     @wallet_app.command("init")
     def wallet_init(
-        set_default: bool = typer.Option(True, "--set-default/--no-set-default", help="设为默认钱包"),
+        set_default: bool = typer.Option(True, "--set-default/--no-set-default", help="Set as default wallet"),
     ) -> None:
-        """初始化新钱包：生成 EVM 地址与加密私钥（需输入密码，至少 8 位且含大小写）。"""
+        """Initialize a new wallet: generate EVM address and encrypted private key (requires entering password, at least 8 characters with uppercase and lowercase)."""
         from joyhousebot.identity.wallet_store import create_and_save_wallet, validate_wallet_password
 
-        password = getpass.getpass("设置钱包密码（至少8位，须含大小写）: ")
+        password = getpass.getpass("Set wallet password (at least 8 characters, must include uppercase and lowercase): ")
         if not password:
-            raise typer.BadParameter("密码不能为空")
+            raise typer.BadParameter("Password cannot be empty")
         try:
             validate_wallet_password(password)
         except ValueError as e:
             raise typer.BadParameter(str(e))
-        confirm = getpass.getpass("再次输入密码: ")
+        confirm = getpass.getpass("Enter password again: ")
         if password != confirm:
-            raise typer.BadParameter("两次密码不一致")
+            raise typer.BadParameter("Passwords do not match")
         address = create_and_save_wallet(password, set_as_default=set_default)
-        console.print("[green]✓[/green] 钱包已创建")
-        console.print(f"地址: [cyan]{address}[/cyan]")
+        console.print("[green]✓[/green] Wallet created")
+        console.print(f"Address: [cyan]{address}[/cyan]")
         if set_default:
-            console.print("[dim]已设为默认钱包[/dim]")
+            console.print("[dim]Set as default wallet[/dim]")
 
     @wallet_app.command("list")
     def wallet_list() -> None:
-        """列出所有钱包（地址、链、chain_id、是否默认）。"""
+        """List all wallets (address, chain, chain_id, is default)."""
         from joyhousebot.identity.wallet_store import list_wallets
 
         rows = list_wallets()
         if not rows:
-            console.print("[yellow]暂无钱包，使用 joyhousebot wallet init 创建[/yellow]")
+            console.print("[yellow]No wallets yet, create one with joyhousebot wallet init[/yellow]")
             return
-        table = Table(title="钱包列表")
+        table = Table(title="Wallet List")
         table.add_column("ID", style="dim")
-        table.add_column("地址", style="cyan")
-        table.add_column("链")
+        table.add_column("Address", style="cyan")
+        table.add_column("Chain")
         table.add_column("chain_id")
-        table.add_column("默认")
+        table.add_column("Default")
         for r in rows:
             table.add_row(
                 str(r["id"]),
                 r["address"],
                 r["chain"],
                 str(r["chain_id"]),
-                "[green]是[/green]" if r["is_default"] else "否",
+                "[green]Yes[/green]" if r["is_default"] else "No",
             )
         console.print(table)
 
     @wallet_app.command("set-default")
     def wallet_set_default(
-        target: str = typer.Argument(..., help="钱包 ID 或地址（0x...）"),
+        target: str = typer.Argument(..., help="Wallet ID or address (0x...)"),
     ) -> None:
-        """将指定钱包设为默认（后续签名等使用默认钱包）。"""
+        """Set specified wallet as default (used for signing, etc.)."""
         from joyhousebot.identity.wallet_store import set_default_wallet, list_wallets
 
         wallets = list_wallets()
         if not wallets:
-            raise typer.BadParameter("暂无钱包")
+            raise typer.BadParameter("No wallets yet")
         target = target.strip()
         if target.isdigit():
             wid = int(target)
             if not any(w["id"] == wid for w in wallets):
-                raise typer.BadParameter(f"未找到 ID={target} 的钱包")
+                raise typer.BadParameter(f"Wallet with ID={target} not found")
             set_default_wallet(wallet_id=wid)
         else:
             if not any(w["address"] == target for w in wallets):
-                raise typer.BadParameter(f"未找到地址 {target}")
+                raise typer.BadParameter(f"Address {target} not found")
             set_default_wallet(address=target)
-        console.print("[green]✓[/green] 已更新默认钱包")
+        console.print("[green]✓[/green] Default wallet updated")
 
     @wallet_app.command("change-password")
     def wallet_change_password(

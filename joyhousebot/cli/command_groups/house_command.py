@@ -203,7 +203,7 @@ def register_house_commands(app: typer.Typer, console: Console, make_provider: C
 
     @house_app.command("bind")
     def house_bind(
-        user_id: str = typer.Argument(..., help="要绑定到的用户 UUID（可从「我的 House」页复制）"),
+        user_id: str = typer.Argument(..., help="User UUID to bind to (can be copied from \"My House\" page)"),
         server: str = typer.Option("http://127.0.0.1:8000", "--server", help="Backend base URL"),
     ) -> None:
         """Bind current house to user."""
@@ -213,28 +213,28 @@ def register_house_commands(app: typer.Typer, console: Console, make_provider: C
         store = LocalStateStore.default()
         identity = store.get_identity()
         if not identity or not identity.house_id:
-            raise typer.BadParameter("House 未注册，请先执行: joyhousebot house register --server <url>")
+            raise typer.BadParameter("House is not registered. Please run first: joyhousebot house register --server <url>")
         house_id = identity.house_id
         user_id = user_id.strip()
         if not user_id:
-            raise typer.BadParameter("请提供 user_id（用户 UUID）")
+            raise typer.BadParameter("Please provide user_id (user UUID)")
         client = ControlPlaneClient(server)
         try:
             house = client.get_house(house_id)
         except Exception as e:
-            _print_control_plane_warning(console, "获取 House 信息失败", e)
+            _print_control_plane_warning(console, "Failed to get house information", e)
             raise typer.Exit(1) from e
         owner = house.get("owner_user_id") or house.get("ownerUserId")
         if owner:
-            console.print("[red]该 House 已绑定过用户，无法重复绑定。[/red]")
-            console.print(f"当前绑定: [dim]{owner}[/dim]")
+            console.print("[red]This house has already been bound to a user and cannot be bound again.[/red]")
+            console.print(f"Current binding: [dim]{owner}[/dim]")
             raise typer.Exit(1)
         try:
             client.bind_house(house_id=house_id, owner_user_id=user_id)
         except Exception as e:
-            _print_control_plane_warning(console, "绑定失败", e)
+            _print_control_plane_warning(console, "Binding failed", e)
             raise typer.Exit(1) from e
-        console.print("[green]✓[/green] 已绑定到用户")
+        console.print("[green]✓[/green] Bound to user")
         console.print(f"house_id: [cyan]{house_id}[/cyan]")
         console.print(f"user_id:  [cyan]{user_id}[/cyan]")
 

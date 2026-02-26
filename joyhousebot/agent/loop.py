@@ -536,35 +536,52 @@ class AgentLoop:
         # Plugin tools: Agent calls plugin capabilities via plugin_invoke.
         self.tools.register(PluginInvokeTool())
 
+        # x402 payment tools (optional, requires wallet unlock)
+        from joyhousebot.agent.tools.x402_payment import register_x402_tools
+        register_x402_tools(self.tools, enabled=True)
+
         # Knowledge pipeline: source dir (knowledgebase) -> convert to markdown -> processed -> FTS5
+        self._knowledge_subprocess = None
         self._knowledge_queue: Any = None
         self._knowledge_watcher_thread: Any = None
         if self.config and getattr(getattr(self.config, "tools", None), "knowledge_pipeline", None):
             kp = self.config.tools.knowledge_pipeline
             source_dir = self.workspace / getattr(kp, "knowledge_source_dir", "knowledgebase")
             processed_dir = self.workspace / getattr(kp, "knowledge_processed_dir", "knowledge/processed")
-            from joyhousebot.services.knowledge_pipeline import (
-                KnowledgePipelineQueue,
-                start_watcher,
-                sync_processed_dir_to_store,
-            )
-            ingest_cfg = getattr(self.config.tools, "ingest", None)
-            self._knowledge_queue = KnowledgePipelineQueue(
-                self.workspace,
-                source_dir,
-                processed_dir,
-                ingest_config=ingest_cfg,
-                pipeline_config=kp,
-            )
-            chunk_sz = getattr(kp, "convert_chunk_size", 1200)
-            chunk_ol = getattr(kp, "convert_chunk_overlap", 200)
-            n = sync_processed_dir_to_store(self.workspace, processed_dir, chunk_size=chunk_sz, chunk_overlap=chunk_ol)
-            if n > 0:
-                logger.debug(f"Knowledge pipeline: synced {n} processed files to index")
-            self._knowledge_queue.start()
-            self._knowledge_watcher_thread = start_watcher(
-                self.workspace, source_dir, processed_dir, self._knowledge_queue, config=self.config
-            )
+            
+            use_subprocess = getattr(kp, "subprocess_enabled", True)
+            
+            if use_subprocess:
+                from joyhousebot.services.knowledge_pipeline.service import start_knowledge_pipeline_subprocess
+                self._knowledge_subprocess = start_knowledge_pipeline_subprocess(
+                    workspace=str(self.workspace),
+                    source_dir=str(source_dir),
+                    processed_dir=str(processed_dir),
+                    config=self.config,
+                )
+            else:
+                from joyhousebot.services.knowledge_pipeline import (
+                    KnowledgePipelineQueue,
+                    start_watcher,
+                    sync_processed_dir_to_store,
+                )
+                ingest_cfg = getattr(self.config.tools, "ingest", None)
+                self._knowledge_queue = KnowledgePipelineQueue(
+                    self.workspace,
+                    source_dir,
+                    processed_dir,
+                    ingest_config=ingest_cfg,
+                    pipeline_config=kp,
+                )
+                chunk_sz = getattr(kp, "convert_chunk_size", 1200)
+                chunk_ol = getattr(kp, "convert_chunk_overlap", 200)
+                n = sync_processed_dir_to_store(self.workspace, processed_dir, chunk_size=chunk_sz, chunk_overlap=chunk_ol)
+                if n > 0:
+                    logger.debug(f"Knowledge pipeline: synced {n} processed files to index")
+                self._knowledge_queue.start()
+                self._knowledge_watcher_thread = start_watcher(
+                    self.workspace, source_dir, processed_dir, self._knowledge_queue, config=self.config
+                )
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy). Inject QMD memory/knowledge callables into retrieve if present."""
@@ -857,6 +874,18 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+        
+        if self._knowledge_subprocess:
+            from joyhousebot.services.knowledge_pipeline.service import stop_knowledge_pipeline_subprocess
+            stop_knowledge_pipeline_subprocess(self._knowledge_subprocess)
+            self._knowledge_subprocess = None
+        
+        if self._knowledge_watcher_thread and self._knowledge_queue:
+            if self._knowledge_watcher_thread.is_alive():
+                self._knowledge_watcher_thread.join(timeout=5.0)
+            self._knowledge_watcher_thread = None
+            self._knowledge_queue.stop()
+            self._knowledge_queue = None
     
     async def _process_message(
         self,

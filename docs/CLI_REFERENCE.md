@@ -207,6 +207,132 @@ joyhousebot doctor check
 |------------|------|
 | `message`、`sessions`、`memory`、`archive` | 与消息/会话/记忆/归档相关的操作 |
 
+#### message
+
+发送消息或通过指定通道发送。
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--message` / `-m` | — | 消息内容 |
+| `--session` / `-s` | `cli:message` | 会话 ID |
+| `--agent-id` | `""` | 指定 agent |
+| `--channel` | `""` | 通道（如 telegram/whatsapp） |
+| `--target` | `""` | 目标 ID |
+| `--reply-to` | `""` | 回复目标 |
+
+```bash
+joyhousebot message send -m "你好"
+joyhousebot message send -m "你好" --agent-id education
+```
+
+#### sessions
+
+管理会话。
+
+| 子命令 | 说明 |
+|--------|------|
+| `list` | 列出所有会话 |
+| `history` | 查看会话历史 |
+| `delete` | 删除会话 |
+
+```bash
+joyhousebot sessions list
+joyhousebot sessions history <会话ID>
+joyhousebot sessions delete <会话ID>
+```
+
+#### memory
+
+搜索历史记录和清理过期记忆。
+
+**详见**：[Memory 命令使用指南](zh/MEMORY_GUIDE.md)
+
+| 子命令 | 说明 |
+|--------|------|
+| `search` | 搜索 HISTORY.md 中的历史记录 |
+| `janitor` | 扫描并归档过期的 P1/P2 记忆 |
+
+##### memory search
+
+搜索 agent 记忆文件（MEMORY.md、HISTORY.md、.abstract 及 memory/*.md）。
+
+**搜索方式**：grep 风格（正则匹配，不区分大小写）
+
+**搜索范围**：
+- `memory/MEMORY.md` - 长期记忆
+- `memory/HISTORY.md` - 对话历史
+- `memory/.abstract` - 记忆摘要
+- `memory/*.md` - 其他记忆文件（如日期归档）
+- `memory/insights/*.md` - 洞察记录
+- `memory/lessons/*.md` - 经验教训
+
+| 参数/选项 | 默认值 | 说明 |
+|----------|--------|------|
+| `<关键词>` | — | 要搜索的关键词（支持正则） | 必填 |
+| `--agent-id` | `""` | 指定 agent（默认 joy） |
+| `--workspace` | `""` | 覆盖 workspace 路径 |
+| `--limit` | `20` | 最多显示结果数 |
+| `--scope-key` | `""` | 记忆隔离作用域（会话/用户隔离） |
+
+```bash
+# 搜索默认 agent 的记忆
+joyhousebot memory search python
+
+# 搜索特定 agent 的记忆
+joyhousebot memory search 数学 --agent-id education
+joyhousebot memory search 股票 --agent-id finance
+
+# 限制匹配结果数
+joyhousebot memory search hello --limit 5
+
+# 搜索带上下文的结果
+joyhousebot memory search "重要"
+```
+
+输出示例：
+```
+Found 3 match(es):
+
+memory/MEMORY.md:4
+This file stores important information that
+should persist across sessions.
+
+## User Information
+
+- The user is a **philosopher** (important 
+identity to remember)
+
+memory/MEMORY.md:6
+## User Information
+
+- The user is a **philosopher** (important 
+identity to remember)
+
+## Preferences
+```
+
+##### memory janitor
+
+扫描并归档过期的 P1/P2 记忆。
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--dry-run` / `--run` | `--dry-run` | 预览或执行归档 |
+| `--agent-id` | `""` | 指定 agent（默认 joy） |
+| `--workspace` | `""` | 覆盖 workspace 路径 |
+
+```bash
+# 预览将要归档的记忆
+joyhousebot memory janitor
+
+# 预览特定 agent 的归档计划
+joyhousebot memory janitor --agent-id education --dry-run
+
+# 执行归档
+joyhousebot memory janitor --run
+joyhousebot memory janitor --agent-id programming --run
+```
+
 详见 `joyhousebot comms --help`。
 
 ### protocol
@@ -228,7 +354,7 @@ joyhousebot doctor check
 | `sandbox` | `status`、`set`、`list`、`recreate`、`explain` | 沙箱 |
 | `security` | `status`、`scopes-set`、`token-rotate`、`token-revoke`、`audit`、`fix` | 安全 |
 | `acp` | `connect`、`call` | ACP |
-| `dns` | `lookup` | DNS 解析 |
+| `dns` | `lookup`、`setup` | DNS 解析与内网域名配置 |
 
 完整列表与参数请运行：
 

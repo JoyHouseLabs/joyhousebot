@@ -17,6 +17,9 @@
 - **`zh/`** — 中文说明
   - [OpenClaw 插件接入](zh/OPENCLAW_PLUGIN_HOST.md)
   - [记忆 vs OpenClaw](zh/MEMORY_VS_OPENCLAW.md)
+  - [Agent 自主决策配置](zh/AGENT_AUTONOMOUS_DECISION.md)
+  - [DNS 工具使用指南](zh/DNS_GUIDE.md)
+  - [Memory 命令使用指南](zh/MEMORY_GUIDE.md)
 - **`en/`** — English
   - [OpenClaw Plugin Host](en/OPENCLAW_PLUGIN_HOST.md)
 

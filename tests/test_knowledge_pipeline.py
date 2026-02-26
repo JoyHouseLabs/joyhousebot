@@ -14,7 +14,7 @@ from joyhousebot.services.knowledge_pipeline.indexer import (
     index_processed_file,
     sync_processed_dir_to_store,
 )
-from joyhousebot.services.knowledge_pipeline.queue import KnowledgePipelineQueue
+from joyhousebot.services.knowledge_pipeline.pipeline_queue import KnowledgePipelineQueue
 from joyhousebot.services.knowledge_pipeline.watcher import start_watcher
 from joyhousebot.services.retrieval.store import RetrievalStore
 

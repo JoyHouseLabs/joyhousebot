@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -13,6 +14,32 @@ from joyhousebot.cli.services.protocol_service import ProtocolService
 from joyhousebot.cli.shared.http_utils import get_gateway_base_url, get_http_api_headers, http_json
 from joyhousebot.config.loader import load_config
 from joyhousebot.utils.helpers import get_workspace_path
+
+
+def _get_agent_workspace(cfg: Any, agent_id: str) -> Path:
+    """
+    Get workspace path for a specific agent ID.
+    
+    Args:
+        cfg: Configuration object.
+        agent_id: Agent ID to look up.
+    
+    Returns:
+        Path to the agent's workspace directory.
+    
+    Raises:
+        ValueError: If agent_id is not found.
+    """
+    if not agent_id:
+        raise ValueError("agent_id cannot be empty")
+    
+    agent_id = agent_id.strip()
+    for agent in cfg.agents.agent_list:
+        if agent.id == agent_id:
+            return Path(agent.workspace).expanduser()
+    
+    available = ", ".join([a.id for a in cfg.agents.agent_list])
+    raise ValueError(f"Agent '{agent_id}' not found. Available agents: {available}")
 
 
 def register_comms_commands(app: typer.Typer, console: Console) -> None:
@@ -116,40 +143,61 @@ def register_comms_commands(app: typer.Typer, console: Console) -> None:
 
     @memory_app.command("search")
     def memory_search(
-        keyword: str = typer.Argument(..., help="Keyword or phrase to search in HISTORY.md"),
-        workspace: str = typer.Option("", "--workspace", help="Override workspace path"),
-        limit: int = typer.Option(50, "--limit", help="Max matched lines to show"),
+        keyword: str = typer.Argument(..., help="Keyword or phrase to search in memory files"),
+        agent_id: str = typer.Option("", "--agent-id", help="Agent ID to search in (default agent if not specified)"),
+        workspace: str = typer.Option("", "--workspace", help="Override workspace path (takes precedence over --agent-id)"),
+        limit: int = typer.Option(20, "--limit", help="Max results to show"),
+        scope_key: str = typer.Option("", "--scope-key", help="Optional memory scope key (per-session/per-user isolation)"),
     ) -> None:
-        """Search workspace memory/HISTORY.md for previous events."""
+        """Search memory files (MEMORY.md, HISTORY.md, .abstract, and memory/*.md)."""
         if workspace:
             ws = Path(workspace).expanduser()
+        elif agent_id:
+            cfg = load_config()
+            ws = _get_agent_workspace(cfg, agent_id)
         else:
             cfg = load_config()
             ws = get_workspace_path(cfg.agents.defaults.workspace)
-        history = ws / "memory" / "HISTORY.md"
-        if not history.exists():
-            console.print(f"[yellow]HISTORY.md not found:[/yellow] {history}")
+        
+        memory_dir = ws / "memory"
+        if not memory_dir.is_dir():
+            console.print(f"[yellow]Memory directory not found:[/yellow] {memory_dir}")
             raise typer.Exit(1)
-        matches = []
-        for idx, line in enumerate(history.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
-            if keyword.lower() in line.lower():
-                matches.append((idx, line))
-                if len(matches) >= max(1, limit):
-                    break
-        if not matches:
+        
+        from joyhousebot.services.retrieval.memory_search import search_memory_files
+        
+        hits = search_memory_files(
+            workspace=ws,
+            query=keyword,
+            top_k=max(1, limit),
+            scope_key=scope_key or None,
+        )
+        
+        if not hits:
             console.print("No matches.")
             return
-        for idx, line in matches:
-            console.print(f"[cyan]{idx}[/cyan]: {line}")
+        
+        console.print(f"[green]Found {len(hits)} match(es):[/green]\n")
+        for hit in hits:
+            file_path = hit.get("file_path", "")
+            chunk_index = hit.get("chunk_index", 0)
+            content = hit.get("content", "")
+            console.print(f"[cyan bold]{file_path}[/cyan bold][dim]:{chunk_index}[/dim]")
+            console.print(f"[dim]{content}[/dim]")
+            console.print()
 
     @memory_app.command("janitor")
     def memory_janitor_cmd(
         dry_run: bool = typer.Option(True, "--dry-run/--run", help="Dry-run (default) or execute archive"),
-        workspace: str = typer.Option("", "--workspace", help="Override workspace path"),
+        agent_id: str = typer.Option("", "--agent-id", help="Agent ID to clean (default agent if not specified)"),
+        workspace: str = typer.Option("", "--workspace", help="Override workspace path (takes precedence over --agent-id)"),
     ) -> None:
         """Scan MEMORY.md for expired P1/P2 entries; with --run, move them to memory/archive/."""
         if workspace:
             ws = Path(workspace).expanduser()
+        elif agent_id:
+            cfg = load_config()
+            ws = _get_agent_workspace(cfg, agent_id)
         else:
             cfg = load_config()
             ws = get_workspace_path(cfg.agents.defaults.workspace)

@@ -1,7 +1,7 @@
 """CLI commands for joyhousebot.
 
-在整体架构中：CLI 唯一入口，注册顶层命令（onboard、gateway、agent、status）及
-command_groups（config、channels、cron、skills、plugins、house、wallet、runtime、comms、protocol）。
+In the overall architecture: CLI is the single entry point, registering top-level commands (onboard, gateway, agent, status) and
+command_groups (config, channels, cron, skills, plugins, house, wallet, runtime, comms, protocol).
 """
 
 import asyncio
@@ -510,13 +510,13 @@ def gateway(
     host: str = typer.Option("127.0.0.1", "--host", "-h", help="Bind host (API + gateway)"),
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port (HTTP/WebSocket API on this port)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
-    wallet_unlock: bool = typer.Option(False, "--wallet-unlock", help="启动时输入默认钱包密码，解密私钥驻留内存供签名等使用"),
+    wallet_unlock: bool = typer.Option(False, "--wallet-unlock", help="Enter default wallet password at startup to decrypt private key and keep in memory for signing, etc."),
 ):
     """Start the joyhousebot gateway (channels + cron + heartbeat + HTTP/WebSocket API on one port)."""
     if is_port_in_use(host, port):
         console.print(
-            f"[red]端口 {port} 已被占用。[/red] "
-            f"请先关闭占用该端口的进程，或使用 [cyan]--port[/cyan] 指定其他端口（当前: {host}:{port}）。"
+            f"[red]Port {port} is already in use.[/red] "
+            f"Please close the process using this port, or use [cyan]--port[/cyan] to specify another port (current: {host}:{port})."
         )
         raise typer.Exit(1)
 
@@ -714,14 +714,17 @@ def gateway(
     console.print(f"[green]✓[/green] API: http://{host}:{port}/ (GET /health, POST /chat, WS /ws/chat, ...)")
 
     if wallet_unlock:
-        from joyhousebot.identity.wallet_store import get_wallet_address
-        if get_wallet_address():
+        from joyhousebot.identity.wallet_session import WalletSession
+        session = WalletSession.get_instance()
+        if session.has_wallet:
             pwd = getpass.getpass("默认钱包密码（解密后驻留内存供签名）: ")
             if pwd:
-                os.environ["JOYHOUSEBOT_WALLET_PASSWORD"] = pwd
-                console.print("[dim]启动后将解密默认钱包[/dim]")
+                if session.unlock(pwd):
+                    console.print(f"[green]✓[/green] Wallet unlocked: {session.address}")
+                else:
+                    console.print("[red]Failed to unlock wallet (wrong password?)[/red]")
         else:
-            console.print("[yellow]暂无默认钱包，跳过 --wallet-unlock[/yellow]")
+            console.print("[yellow]No default wallet, skipping --wallet-unlock[/yellow]")
 
     async def run():
         try:
@@ -733,7 +736,7 @@ def gateway(
                 api_server.serve(),
             )
         except KeyboardInterrupt:
-            console.print("\nShutting down...")
+            console.print("\n[yellow]Shutting down... (Please wait ~10 seconds for graceful shutdown)[/yellow]")
         finally:
             await default_agent.close_mcp()
             heartbeat.stop()
@@ -745,6 +748,8 @@ def gateway(
             except Exception:
                 pass
             plugin_manager.close()
+            from joyhousebot.identity.wallet_session import get_wallet_session
+            get_wallet_session().lock()
 
     try:
         asyncio.run(run())
@@ -829,7 +834,7 @@ def agent(
         return console.status("[dim]joyhousebot is thinking...[/dim]", spinner="dots")
 
     if message:
-        # Single message mode: 每次用独立 session，避免沿用旧会话里“API 有问题”的上下文导致模型继续提 troubleshooting
+        # Single message mode: Use an independent session each time to avoid inheriting "API has issues" context from old sessions that causes the model to continue troubleshooting
         import time
         oneshot_session = f"{session_id}:{int(time.time() * 1000)}" if session_id == "cli:direct" else session_id
         async def run_once():

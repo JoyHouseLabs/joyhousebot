@@ -1448,7 +1448,7 @@ def _register_phase2_commands(
         _print_json(console, _call_service(console, acp_service.call, method, params_json))
 
     dns_app = typer.Typer(
-        help="DNS 工具：解析主机名到 IP（lookup）、为内网域名生成 zone 配置与 Tailscale/CoreDNS 说明（setup）。"
+        help="DNS tools: resolve hostname to IP (lookup), generate zone config and Tailscale/CoreDNS instructions for internal domain (setup)."
     )
     app.add_typer(dns_app, name="dns")
 
@@ -1459,11 +1459,11 @@ def _register_phase2_commands(
 
     @dns_app.command(
         "setup",
-        help="为指定内网域名生成 DNS zone 配置路径与 Tailscale/CoreDNS 使用说明；可选创建 dns 目录。",
+        help="Generate DNS zone config path and Tailscale/CoreDNS usage instructions for specified internal domain; optionally create dns directory.",
     )
     def dns_setup(
-        domain: str = typer.Option("openclaw.internal", "--domain", help="内网域名"),
-        apply: bool = typer.Option(False, "--apply", help="是否创建 dns 目录"),
-        dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="仅预览不写盘（默认开启）"),
+        domain: str = typer.Option("openclaw.internal", "--domain", help="Internal domain name"),
+        apply: bool = typer.Option(False, "--apply", help="Whether to create dns directory"),
+        dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Preview only without writing (enabled by default)"),
     ) -> None:
         _print_json(console, _call_service(console, dns_service.setup, domain, apply, dry_run))

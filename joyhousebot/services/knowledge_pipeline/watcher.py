@@ -7,7 +7,7 @@ from typing import Any
 from loguru import logger
 
 from joyhousebot.services.knowledge_pipeline.converter import SUPPORTED_EXTENSIONS
-from joyhousebot.services.knowledge_pipeline.queue import KnowledgePipelineQueue
+from joyhousebot.services.knowledge_pipeline.pipeline_queue import KnowledgePipelineQueue
 
 
 def start_watcher(
