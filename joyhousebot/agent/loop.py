@@ -53,6 +53,22 @@ from joyhousebot.agent.auth_profiles import (
     save_profile_usage,
 )
 from joyhousebot.session.manager import Session, SessionManager
+from joyhousebot.plugins.hooks.types import (
+    HookName,
+    HookContext,
+    BeforeToolCallEvent,
+    BeforeToolCallResult,
+    AfterToolCallEvent,
+    MessageReceivedEvent,
+    MessageSendingEvent,
+    MessageSendingResult,
+    MessageSentEvent,
+    SessionStartEvent,
+    SessionEndEvent,
+    BeforeAgentStartEvent,
+    AgentEndEvent,
+)
+from joyhousebot.plugins.hooks.dispatcher import get_hook_dispatcher
 
 def _make_get_skill_env(workspace: Path) -> Callable[[str], dict[str, str]]:
     """Build get_skill_env(cwd) that returns skills.entries.<name>.env when cwd is under workspace/skills/<name> (OpenClaw-aligned)."""
@@ -540,6 +556,13 @@ class AgentLoop:
         from joyhousebot.agent.tools.x402_payment import register_x402_tools
         register_x402_tools(self.tools, enabled=True)
 
+        # Deliberation tool (multi-round progressive analysis)
+        from joyhousebot.agent.tools.deliberate import DeliberateTool
+        self.tools.register(
+            DeliberateTool(workspace_path=self.workspace, config=self.config, provider=self.provider, model=self.model),
+            optional=True,
+        )
+
         # Knowledge pipeline: source dir (knowledgebase) -> convert to markdown -> processed -> FTS5
         self._knowledge_subprocess = None
         self._knowledge_queue: Any = None
@@ -774,6 +797,32 @@ class AgentLoop:
                             messages, tool_call.id, tool_call.name or "", result
                         )
                         continue
+                    
+                    hook_dispatcher = get_hook_dispatcher()
+                    hook_ctx = HookContext(
+                        session_key=getattr(self, "_current_session_key", "") or "",
+                        channel="",
+                    )
+                    
+                    before_event = BeforeToolCallEvent(
+                        tool_name=tool_name,
+                        params=dict(tool_args),
+                    )
+                    before_result = await hook_dispatcher.emit_first_result(
+                        HookName.BEFORE_TOOL_CALL, before_event, hook_ctx
+                    )
+                    
+                    if before_result and isinstance(before_result, BeforeToolCallResult):
+                        if before_result.block:
+                            logger.info(f"Tool {tool_name} blocked by hook: {before_result.block_reason}")
+                            result = before_result.block_reason or "Tool execution blocked by plugin"
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_name, result
+                            )
+                            continue
+                        if before_result.params:
+                            tool_args = before_result.params
+                    
                     tools_used.append(tool_name)
                     args_str = json.dumps(tool_args, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_name}({args_str[:200]})")
@@ -795,6 +844,14 @@ class AgentLoop:
                     if suppress_tool_errors and (result or "").strip().startswith("Error"):
                         logger.debug(f"Tool {tool_name} error (suppressed for user): {result[:300]}")
                         result = "Error: Tool execution failed."
+                    
+                    after_event = AfterToolCallEvent(
+                        tool_name=tool_name,
+                        params=dict(tool_args),
+                        result=result,
+                    )
+                    await hook_dispatcher.emit(HookName.AFTER_TOOL_CALL, after_event, hook_ctx)
+                    
                     preview = (result[:500] + "...") if len(result) > 500 else result
                     logger.debug(f"Tool {tool_name} result (preview): {preview}")
                     messages = self.context.add_tool_result(
@@ -911,6 +968,19 @@ class AgentLoop:
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
             return await self._process_system_message(msg)
+        
+        hook_dispatcher = get_hook_dispatcher()
+        hook_ctx = HookContext(
+            session_key=session_key or msg.session_key,
+            channel=msg.channel,
+        )
+        
+        received_event = MessageReceivedEvent(
+            from_id=msg.sender_id or "",
+            content=msg.content,
+            metadata=dict(msg.metadata) if msg.metadata else {},
+        )
+        await hook_dispatcher.emit(HookName.MESSAGE_RECEIVED, received_event, hook_ctx)
         
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
@@ -1037,13 +1107,38 @@ class AgentLoop:
         if msg.metadata and "message_id" in msg.metadata:
             mid = msg.metadata["message_id"]
             reply_to = str(mid) if mid is not None else None
-        return OutboundMessage(
+        
+        sending_event = MessageSendingEvent(
+            to_id=msg.channel,
+            content=final_content,
+            metadata=dict(msg.metadata) if msg.metadata else {},
+        )
+        sending_result = await hook_dispatcher.emit_first_result(
+            HookName.MESSAGE_SENDING, sending_event, hook_ctx
+        )
+        
+        if sending_result and isinstance(sending_result, MessageSendingResult):
+            if sending_result.cancel:
+                logger.info("Message sending cancelled by hook")
+                return None
+            if sending_result.content is not None:
+                final_content = sending_result.content
+        
+        outbound = OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
             reply_to=reply_to,
-            metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+            metadata=msg.metadata or {},
         )
+        
+        sent_event = MessageSentEvent(
+            to_id=msg.channel,
+            content=final_content,
+        )
+        await hook_dispatcher.emit(HookName.MESSAGE_SENT, sent_event, hook_ctx)
+        
+        return outbound
 
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
