@@ -658,16 +658,19 @@ def gateway(
         config=config,
         force_reload=True,
     )
-    openclaw_dir = (getattr(config.plugins, "openclaw_dir", None) or "").strip() or None
-    plugin_manager = get_plugin_manager(openclaw_dir=openclaw_dir)
+    plugin_manager = get_plugin_manager()
     if plugin_snapshot is not None:
-        try:
-            plugin_manager.start_services()
-        except Exception:
-            pass
-        console.print(f"[green]✓[/green] Plugins loaded: {len(plugin_snapshot.plugins)}")
+        def _start_plugin_services_async():
+            try:
+                plugin_manager.start_services()
+            except Exception:
+                pass
+        import threading
+        plugin_service_thread = threading.Thread(target=_start_plugin_services_async, daemon=True)
+        plugin_service_thread.start()
+        console.print(f"[green]✓[/green] Plugins loaded: {len(plugin_snapshot.plugins)} (services starting in background)")
     else:
-        console.print("[yellow]Plugins unavailable (host not ready); running without plugin runtime[/yellow]")
+        console.print("[yellow]Plugins unavailable; running without plugin runtime[/yellow]")
     
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -789,6 +792,18 @@ def agent(
 
     bus = MessageBus()
     provider = make_provider(config, console)
+
+    from joyhousebot.plugins.manager import initialize_plugins_for_workspace, get_plugin_manager
+    plugin_snapshot = initialize_plugins_for_workspace(
+        workspace=config.workspace_path,
+        config=config,
+        force_reload=False,
+    )
+    plugin_manager = get_plugin_manager()
+    if plugin_snapshot is not None:
+        console.print(f"[green]✓[/green] Plugins loaded: {len(plugin_snapshot.plugins)}")
+    else:
+        console.print("[yellow]Plugins unavailable; plugin_invoke will not work[/yellow]")
 
     if debug:
         logger.remove()

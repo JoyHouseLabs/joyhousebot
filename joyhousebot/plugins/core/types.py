@@ -48,11 +48,10 @@ class PluginRecord:
 
 @dataclass(slots=True)
 class PluginSnapshot:
-    """Snapshot of loaded plugin host state."""
+    """Snapshot of loaded plugin state."""
 
     loaded_at_ms: int
     workspace_dir: str
-    openclaw_dir: str
     plugins: list[PluginRecord] = field(default_factory=list)
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     gateway_methods: list[str] = field(default_factory=list)

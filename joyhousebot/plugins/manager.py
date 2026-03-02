@@ -1,26 +1,19 @@
-"""Singleton manager for bridge + native plugin lifecycle and calls."""
+"""Simplified plugin manager for native Python plugins only."""
 
 from __future__ import annotations
 
-import asyncio
+import json
 import threading
 import time
 from dataclasses import asdict
-import json
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from .bridge.manager import BridgePluginManager
-from .core.contracts import BridgeRuntime, NativeRuntime
-from .core.types import PluginHostError, PluginRecord, PluginSnapshot
+from .core.types import PluginRecord, PluginSnapshot
 from .native.loader import NativePluginLoader, NativeRegistry
-from joyhousebot.utils.exceptions import (
-    PluginError,
-    sanitize_error_message,
-    classify_exception,
-)
+from joyhousebot.utils.exceptions import sanitize_error_message
 
 _singleton_lock = threading.Lock()
 _singleton: "PluginManager | None" = None
@@ -29,207 +22,105 @@ _NATIVE_CIRCUIT_COOLDOWN_SECONDS = 30.0
 
 
 class PluginManager:
-    """Coordinates bridge host loading, native plugins, and dispatch."""
+    """Manages native Python plugins."""
 
-    def __init__(self, openclaw_dir: str | None = None):
-        self.bridge: BridgeRuntime = BridgePluginManager(openclaw_dir=openclaw_dir)
-        # Keep `client` for backward compatibility (`plugins setup-host` uses it).
-        self.client = self.bridge.client
-        self.native: NativeRuntime = NativePluginLoader()
-        self.native_registry: NativeRegistry | None = None
-        self.snapshot: PluginSnapshot | None = None
+    def __init__(self) -> None:
+        self.native: NativePluginLoader = NativePluginLoader()
+        self.registry: NativeRegistry | None = None
         self._lock = threading.RLock()
         self._last_workspace_dir: str | None = None
         self._last_config: dict[str, Any] = {}
         self._runtime_stats_path: Path | None = None
-        self._native_circuit: dict[str, dict[str, Any]] = {}
-        self._native_runtime_stats: dict[str, Any] = {
+        self._circuit: dict[str, dict[str, Any]] = {}
+        self._runtime_stats: dict[str, Any] = {
             "startedAtMs": int(time.time() * 1000),
             "totals": {"calls": 0, "ok": 0, "errors": 0, "timeouts": 0},
             "byKind": {
                 "rpc": {"calls": 0, "ok": 0, "errors": 0, "timeouts": 0},
                 "http": {"calls": 0, "ok": 0, "errors": 0, "timeouts": 0},
                 "cli": {"calls": 0, "ok": 0, "errors": 0, "timeouts": 0},
+                "tool": {"calls": 0, "ok": 0, "errors": 0, "timeouts": 0},
             },
             "recentErrors": [],
         }
 
     def load(self, workspace_dir: str, config: dict[str, Any], reload: bool = False) -> PluginSnapshot:
         with self._lock:
-            if reload or self.snapshot is None:
+            if reload or self.registry is None:
                 self._last_workspace_dir = workspace_dir
                 self._last_config = config
                 self._runtime_stats_path = Path(workspace_dir) / ".joyhouse" / "plugin-runtime-stats.json"
                 self._load_runtime_stats()
-                bridge_snapshot: PluginSnapshot | None = None
-                bridge_error: Exception | None = None
-                try:
-                    bridge_snapshot = self.bridge.load(workspace_dir=workspace_dir, config=config, reload=reload)
-                except PluginHostError as exc:
-                    bridge_error = exc
-                    logger.error(f"Bridge plugin load error [{exc.code}]: {exc.message}")
-                except FileNotFoundError as exc:
-                    bridge_error = exc
-                    logger.error(f"Bridge plugin directory not found: {sanitize_error_message(str(exc))}")
-                except PermissionError as exc:
-                    bridge_error = exc
-                    logger.error(f"Bridge plugin permission denied: {sanitize_error_message(str(exc))}")
-                except Exception as exc:
-                    bridge_error = exc
-                    code, _, _ = classify_exception(exc)
-                    logger.error(f"Bridge plugin load failed [{code}]: {sanitize_error_message(str(exc))}")
-                self.native_registry = self.native.load(workspace_dir=workspace_dir, config=config)
-                if bridge_snapshot is None and bridge_error and not self.native_registry.records:
-                    logger.warning("Bridge plugin load failed: {}", bridge_error)
-                if bridge_snapshot is None and bridge_error and not self.native_registry.records:
-                    if isinstance(bridge_error, PluginHostError):
-                        raise bridge_error
-                    raise PluginHostError("BRIDGE_LOAD_FAILED", sanitize_error_message(str(bridge_error)))
-                self.snapshot = self._merge_snapshots(workspace_dir, bridge_snapshot, self.native_registry)
-            return self.snapshot
+                self.registry = self.native.load(workspace_dir=workspace_dir, config=config)
+                logger.info(f"Loaded {len(self.registry.records)} native plugins")
+            return self._build_snapshot(workspace_dir)
 
-    def status(self) -> PluginSnapshot:
-        with self._lock:
-            bridge_snapshot: PluginSnapshot | None = None
-            try:
-                bridge_snapshot = self.bridge.status()
-            except Exception:
-                bridge_snapshot = None
-            if self._last_workspace_dir:
-                self.native_registry = self.native.load(
-                    workspace_dir=self._last_workspace_dir,
-                    config=self._last_config,
-                )
-            self.snapshot = self._merge_snapshots(self._last_workspace_dir or "", bridge_snapshot, self.native_registry)
-            return self.snapshot
+    def _build_snapshot(self, workspace_dir: str) -> PluginSnapshot:
+        registry = self.registry or NativeRegistry(loaded_at_ms=int(time.time() * 1000))
+        return PluginSnapshot(
+            loaded_at_ms=registry.loaded_at_ms or int(time.time() * 1000),
+            workspace_dir=workspace_dir,
+            plugins=registry.records,
+            diagnostics=registry.diagnostics,
+            gateway_methods=list(dict.fromkeys(registry.gateway_methods)),
+            tool_names=list(dict.fromkeys(registry.tool_names)),
+            service_ids=list(dict.fromkeys(registry.service_ids)),
+            channel_ids=list(dict.fromkeys(registry.channel_ids)),
+            provider_ids=list(dict.fromkeys(registry.provider_ids)),
+            hook_names=list(dict.fromkeys(registry.hook_names)),
+            skills_dirs=list(dict.fromkeys(registry.skills_dirs)),
+        )
+
+    @property
+    def snapshot(self) -> PluginSnapshot | None:
+        if self._last_workspace_dir and self.registry:
+            return self._build_snapshot(self._last_workspace_dir)
+        return None
 
     def list_plugins(self) -> list[dict[str, Any]]:
-        snapshot = self.snapshot or self.status()
-        return [asdict(row) for row in snapshot.plugins]
+        if self.registry is None:
+            return []
+        return [asdict(row) for row in self.registry.records]
 
     def info(self, plugin_id: str) -> dict[str, Any]:
         pid = plugin_id.strip()
-        snapshot = self.snapshot or self.status()
-        for row in snapshot.plugins:
+        if self.registry is None:
+            return {}
+        for row in self.registry.records:
             if row.id == pid or row.name == pid:
                 return asdict(row)
         return {}
 
     def doctor(self) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        try:
-            out["bridge"] = self.client.doctor()
-        except Exception as exc:
-            out["bridge"] = {"ok": False, "error": str(exc)}
         workspace_dir = self._last_workspace_dir or str(Path.cwd())
-        native_report = self.native.doctor(workspace_dir=workspace_dir, config=self._last_config)
-        native_report["runtime"] = self.native_runtime_report()
-        out["native"] = native_report
-        return out
-
-    def native_doctor(self, workspace_dir: str, config: dict[str, Any]) -> dict[str, Any]:
-        report = self.native.doctor(workspace_dir=workspace_dir, config=config)
-        report["runtime"] = self.native_runtime_report()
+        report = self.native.doctor(workspace_dir=workspace_dir, config=self._last_config)
+        report["runtime"] = self.runtime_report()
         return report
 
     def gateway_methods(self) -> list[str]:
-        snapshot = self.snapshot or self.status()
-        return list(dict.fromkeys(snapshot.gateway_methods))
+        if self.registry is None:
+            return []
+        return list(dict.fromkeys(self.registry.gateway_methods))
 
     def invoke_gateway_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        registry = self.native_registry
-        if registry and method in registry.rpc_handlers:
-            return self._invoke_native_guard(
-                kind="rpc",
-                key=method,
-                invoker=lambda: self.native.invoke_rpc(registry, method=method, params=params or {}),
-            )
-        return self.client.invoke_gateway_method(method=method, params=params)
+        if self.registry is None or method not in self.registry.rpc_handlers:
+            return {"ok": False, "error": {"code": "NOT_FOUND", "message": f"Method not found: {method}"}}
+        return self._invoke_guard(
+            kind="rpc",
+            key=method,
+            invoker=lambda: self.native.invoke_rpc(self.registry, method=method, params=params or {}),
+        )
 
-    def http_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
-        registry = self.native_registry
-        path = str(request.get("path") or "").strip()
-        if registry is not None and path in registry.http_handlers:
-            method = str(request.get("method") or "GET").upper()
-            return self._invoke_native_guard(
-                kind="http",
-                key=f"{method} {path}",
-                invoker=lambda: self.native.dispatch_http(registry, request),
-            )
-        try:
-            return self.client.http_dispatch(request)
-        except PluginHostError as exc:
-            return {
-                "ok": False,
-                "error": {"code": exc.code, "message": exc.message},
-            }
-        except asyncio.TimeoutError:
-            return {
-                "ok": False,
-                "error": {"code": "TIMEOUT", "message": "plugin http dispatch timed out"},
-            }
-        except ConnectionError as exc:
-            return {
-                "ok": False,
-                "error": {"code": "CONNECTION_ERROR", "message": f"connection failed: {sanitize_error_message(str(exc))}"},
-            }
-        except Exception as exc:
-            code, _, _ = classify_exception(exc)
-            return {
-                "ok": False,
-                "error": {"code": code, "message": f"plugin http dispatch failed: {sanitize_error_message(str(exc))}"},
-            }
+    def invoke_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if self.registry is None or name not in self.registry.tool_handlers:
+            return {"ok": False, "error": {"code": "NOT_FOUND", "message": f"Tool not found: {name}"}}
+        return self._invoke_guard(
+            kind="tool",
+            key=name,
+            invoker=lambda: self.native.invoke_tool(self.registry, name, args or {}),
+        )
 
-    def skills_dirs(self) -> list[str]:
-        if self.snapshot is not None and self.snapshot.skills_dirs:
-            return self.snapshot.skills_dirs
-        registry = self.native_registry
-        native_dirs = registry.skills_dirs if registry else []
-        bridge_dirs = self.client.skills_dirs()
-        return list(dict.fromkeys([*bridge_dirs, *native_dirs]))
-
-    def channels_list(self) -> list[str]:
-        bridge_rows = self.client.channels_list()
-        native_rows = self.native_registry.channel_ids if self.native_registry else []
-        return list(dict.fromkeys([*bridge_rows, *native_rows]))
-
-    def providers_list(self) -> list[str]:
-        bridge_rows = self.client.providers_list()
-        native_rows = self.native_registry.provider_ids if self.native_registry else []
-        return list(dict.fromkeys([*bridge_rows, *native_rows]))
-
-    def hooks_list(self) -> list[dict[str, Any]]:
-        bridge_hooks = self.client.hooks_list()
-        native_hooks = self.native_registry.hooks if self.native_registry else []
-        return [*bridge_hooks, *native_hooks]
-
-    def cli_commands(self) -> list[str]:
-        snapshot = self.snapshot or self.status()
-        commands: list[str] = []
-        for row in snapshot.plugins:
-            commands.extend([str(x) for x in row.cli_commands])
-        return list(dict.fromkeys(commands))
-
-    def invoke_cli_command(self, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        registry = self.native_registry
-        if registry is not None and command in registry.cli_handlers:
-            return self._invoke_native_guard(
-                kind="cli",
-                key=command,
-                invoker=lambda: self.native.invoke_cli(registry, command=command, payload=payload or {}),
-            )
-        return {
-            "ok": False,
-            "error": {
-                "code": "UNAVAILABLE",
-                "message": f"cli command not available in native runtime: {command}",
-            },
-        }
-
-    def invoke_plugin_tool(
-        self, plugin_id: str, tool_name: str, arguments: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        """Invoke a plugin tool by plugin_id and tool_name. Native first, then bridge fallback."""
+    def invoke_plugin_tool(self, plugin_id: str, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         pid = str(plugin_id or "").strip()
         tname = str(tool_name or "").strip()
         if not pid:
@@ -239,70 +130,92 @@ class PluginManager:
         resolved_name = tname if "." in tname else f"{pid}.{tname}"
         args = dict(arguments or {})
 
-        registry = self.native_registry
-        if registry is not None:
-            for record in registry.records:
+        if self.registry is not None:
+            for record in self.registry.records:
                 if record.id == pid and resolved_name in (record.tool_names or []):
-                    if resolved_name in registry.tool_handlers:
-
+                    if resolved_name in self.registry.tool_handlers:
                         def _invoke() -> dict[str, Any]:
-                            out = self.native.invoke_tool(registry, resolved_name, args)
+                            out = self.native.invoke_tool(self.registry, resolved_name, args)
                             if isinstance(out, dict) and out.get("ok") and "plugin_id" not in out:
                                 out = {"ok": True, "plugin_id": pid, "tool_name": resolved_name, "result": out.get("result")}
                             return out
-
-                        return self._invoke_native_guard(
-                            kind="tool",
-                            key=resolved_name,
-                            invoker=_invoke,
-                        )
+                        return self._invoke_guard(kind="tool", key=resolved_name, invoker=_invoke)
                     break
+        return {"ok": False, "error": {"code": "NOT_FOUND", "message": f"Tool not found: {resolved_name}"}}
 
-        try:
-            out = self.client.invoke_tool(name=resolved_name, args=args)
-            if isinstance(out, dict) and out.get("ok") is False and "error" in out:
-                return {"ok": False, "error": {"code": "BRIDGE_TOOL_ERROR", "message": str(out.get("error", ""))}}
-            return {"ok": True, "plugin_id": pid, "tool_name": resolved_name, "result": out}
-        except PluginHostError as exc:
-            return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
-        except asyncio.TimeoutError:
-            return {"ok": False, "error": {"code": "TIMEOUT", "message": "plugin tool invocation timed out"}}
-        except ConnectionError as exc:
-            return {"ok": False, "error": {"code": "CONNECTION_ERROR", "message": f"connection failed: {sanitize_error_message(str(exc))}"}}
-        except Exception as exc:
-            code, _, _ = classify_exception(exc)
-            return {"ok": False, "error": {"code": code, "message": f"plugin tool unavailable: {sanitize_error_message(str(exc))}"}}
+    def http_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self.registry is None:
+            return {"ok": False, "error": {"code": "NOT_READY", "message": "Plugins not loaded"}}
+        path = str(request.get("path") or "").strip()
+        if path not in self.registry.http_handlers:
+            return {"ok": False, "error": {"code": "NOT_FOUND", "message": f"HTTP path not found: {path}"}}
+        method = str(request.get("method") or "GET").upper()
+        return self._invoke_guard(
+            kind="http",
+            key=f"{method} {path}",
+            invoker=lambda: self.native.dispatch_http(self.registry, request),
+        )
 
-    def native_runtime_report(self) -> dict[str, Any]:
-        totals = dict(self._native_runtime_stats.get("totals", {}))
-        by_kind = self._native_runtime_stats.get("byKind", {})
-        recent_errors = self._native_runtime_stats.get("recentErrors", [])
+    def skills_dirs(self) -> list[str]:
+        if self.registry is None:
+            return []
+        return self.registry.skills_dirs
+
+    def channels_list(self) -> list[str]:
+        if self.registry is None:
+            return []
+        return self.registry.channel_ids
+
+    def providers_list(self) -> list[str]:
+        if self.registry is None:
+            return []
+        return self.registry.provider_ids
+
+    def hooks_list(self) -> list[dict[str, Any]]:
+        if self.registry is None:
+            return []
+        return self.registry.hooks
+
+    def cli_commands(self) -> list[str]:
+        if self.registry is None:
+            return []
+        return self.registry.cli_commands
+
+    def invoke_cli_command(self, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if self.registry is None or command not in self.registry.cli_handlers:
+            return {"ok": False, "error": {"code": "NOT_FOUND", "message": f"CLI command not found: {command}"}}
+        return self._invoke_guard(
+            kind="cli",
+            key=command,
+            invoker=lambda: self.native.invoke_cli(self.registry, command=command, payload=payload or {}),
+        )
+
+    def runtime_report(self) -> dict[str, Any]:
+        totals = dict(self._runtime_stats.get("totals", {}))
+        by_kind = self._runtime_stats.get("byKind", {})
+        recent_errors = self._runtime_stats.get("recentErrors", [])
         now_ms = int(time.time() * 1000)
         cutoff_ms = now_ms - (24 * 60 * 60 * 1000)
-        recent_24h = [
-            row for row in recent_errors if int(row.get("tsMs", 0) or 0) >= cutoff_ms
-        ]
+        recent_24h = [row for row in recent_errors if int(row.get("tsMs", 0) or 0) >= cutoff_ms]
         errors_by_code: dict[str, int] = {}
         for row in recent_24h:
             code = str(row.get("code") or "UNKNOWN")
-            errors_by_code[code] = int(errors_by_code.get(code, 0)) + 1
+            errors_by_code[code] = int(errors_by_code.get(code, 0) + 1)
         calls = int(totals.get("calls", 0) or 0)
         circuit_hits = int(errors_by_code.get("NATIVE_CIRCUIT_OPEN", 0))
         circuit_hit_rate = (circuit_hits / calls) if calls > 0 else 0.0
         open_circuits = []
         now = time.time()
-        for key, state in self._native_circuit.items():
+        for key, state in self._circuit.items():
             open_until = float(state.get("open_until", 0.0) or 0.0)
             if open_until > now:
-                open_circuits.append(
-                    {
-                        "key": key,
-                        "failureStreak": int(state.get("failure_streak", 0) or 0),
-                        "retryAfterSeconds": max(0.0, round(open_until - now, 3)),
-                    }
-                )
+                open_circuits.append({
+                    "key": key,
+                    "failureStreak": int(state.get("failure_streak", 0) or 0),
+                    "retryAfterSeconds": max(0.0, round(open_until - now, 3)),
+                })
         return {
-            "startedAtMs": int(self._native_runtime_stats.get("startedAtMs", 0) or 0),
+            "startedAtMs": int(self._runtime_stats.get("startedAtMs", 0) or 0),
             "totals": totals,
             "byKind": by_kind,
             "openCircuits": open_circuits,
@@ -316,18 +229,18 @@ class PluginManager:
         }
 
     def status_report(self) -> dict[str, Any]:
-        snapshot = self.snapshot or self.status()
+        snapshot = self.snapshot
+        if snapshot is None:
+            return {"ok": False, "error": "Plugins not loaded"}
         by_origin: dict[str, int] = {}
         for row in snapshot.plugins:
             origin = str(row.origin or "unknown")
             by_origin[origin] = int(by_origin.get(origin, 0) + 1)
         errored = len([p for p in snapshot.plugins if p.status == "error"])
         loaded = len([p for p in snapshot.plugins if p.status == "loaded"])
-        runtime = self.native_runtime_report()
         return {
             "ok": True,
             "workspaceDir": snapshot.workspace_dir,
-            "openclawDir": snapshot.openclaw_dir,
             "plugins": {
                 "total": len(snapshot.plugins),
                 "loaded": loaded,
@@ -341,20 +254,15 @@ class PluginManager:
             "providers": len(snapshot.provider_ids),
             "hooks": len(snapshot.hook_names),
             "skillsDirs": len(snapshot.skills_dirs),
-            "nativeRuntime": runtime,
+            "nativeRuntime": self.runtime_report(),
             "tsMs": int(time.time() * 1000),
         }
 
     def start_services(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        try:
-            rows.extend(self.client.start_services())
-        except Exception as exc:
-            rows.append({"id": "bridge", "started": False, "error": str(exc), "runtime": "bridge"})
-        registry = self.native_registry
-        if registry is None:
+        if self.registry is None:
             return rows
-        for service_id, meta in registry.services.items():
+        for service_id, meta in self.registry.services.items():
             if bool(meta.get("started")):
                 rows.append({"id": service_id, "started": True, "error": "", "runtime": "native"})
                 continue
@@ -366,7 +274,7 @@ class PluginManager:
                 rows.append({"id": service_id, "started": True, "error": "", "runtime": "native"})
             except Exception as exc:
                 rows.append({"id": service_id, "started": False, "error": str(exc), "runtime": "native"})
-        for channel_id, meta in registry.channels.items():
+        for channel_id, meta in self.registry.channels.items():
             if bool(meta.get("started")):
                 rows.append({"id": channel_id, "started": True, "error": "", "runtime": "native", "type": "channel"})
                 continue
@@ -382,36 +290,32 @@ class PluginManager:
 
     def stop_services(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        registry = self.native_registry
-        if registry is not None:
-            for channel_id, meta in registry.channels.items():
-                if not bool(meta.get("started")):
-                    rows.append({"id": channel_id, "stopped": True, "error": "", "runtime": "native", "type": "channel"})
-                    continue
-                try:
-                    stop = meta.get("stop")
-                    if callable(stop):
-                        stop()
-                    meta["started"] = False
-                    rows.append({"id": channel_id, "stopped": True, "error": "", "runtime": "native", "type": "channel"})
-                except Exception as exc:
-                    rows.append({"id": channel_id, "stopped": False, "error": str(exc), "runtime": "native", "type": "channel"})
-            for service_id, meta in registry.services.items():
-                if not bool(meta.get("started")):
-                    rows.append({"id": service_id, "stopped": True, "error": "", "runtime": "native"})
-                    continue
-                try:
-                    stop = meta.get("stop")
-                    if callable(stop):
-                        stop()
-                    meta["started"] = False
-                    rows.append({"id": service_id, "stopped": True, "error": "", "runtime": "native"})
-                except Exception as exc:
-                    rows.append({"id": service_id, "stopped": False, "error": str(exc), "runtime": "native"})
-        try:
-            rows.extend(self.client.stop_services())
-        except Exception as exc:
-            rows.append({"id": "bridge", "stopped": False, "error": str(exc), "runtime": "bridge"})
+        if self.registry is None:
+            return rows
+        for channel_id, meta in self.registry.channels.items():
+            if not bool(meta.get("started")):
+                rows.append({"id": channel_id, "stopped": True, "error": "", "runtime": "native", "type": "channel"})
+                continue
+            try:
+                stop = meta.get("stop")
+                if callable(stop):
+                    stop()
+                meta["started"] = False
+                rows.append({"id": channel_id, "stopped": True, "error": "", "runtime": "native", "type": "channel"})
+            except Exception as exc:
+                rows.append({"id": channel_id, "stopped": False, "error": str(exc), "runtime": "native", "type": "channel"})
+        for service_id, meta in self.registry.services.items():
+            if not bool(meta.get("started")):
+                rows.append({"id": service_id, "stopped": True, "error": "", "runtime": "native"})
+                continue
+            try:
+                stop = meta.get("stop")
+                if callable(stop):
+                    stop()
+                meta["started"] = False
+                rows.append({"id": service_id, "stopped": True, "error": "", "runtime": "native"})
+            except Exception as exc:
+                rows.append({"id": service_id, "stopped": False, "error": str(exc), "runtime": "native"})
         return rows
 
     def close(self) -> None:
@@ -419,66 +323,19 @@ class PluginManager:
             self.stop_services()
         except Exception:
             pass
-        self.client.close()
 
-    def _merge_snapshots(
-        self,
-        workspace_dir: str,
-        bridge_snapshot: PluginSnapshot | None,
-        native_registry: NativeRegistry | None,
-    ) -> PluginSnapshot:
-        native_registry = native_registry or NativeRegistry(loaded_at_ms=int(time.time() * 1000))
-        bridge_plugins = bridge_snapshot.plugins if bridge_snapshot else []
-        bridge_diagnostics = bridge_snapshot.diagnostics if bridge_snapshot else []
-        bridge_gateway_methods = bridge_snapshot.gateway_methods if bridge_snapshot else []
-        bridge_tool_names = bridge_snapshot.tool_names if bridge_snapshot else []
-        bridge_service_ids = bridge_snapshot.service_ids if bridge_snapshot else []
-        bridge_channel_ids = bridge_snapshot.channel_ids if bridge_snapshot else []
-        bridge_provider_ids = bridge_snapshot.provider_ids if bridge_snapshot else []
-        bridge_hook_names = bridge_snapshot.hook_names if bridge_snapshot else []
-        bridge_skills = bridge_snapshot.skills_dirs if bridge_snapshot else []
-        return PluginSnapshot(
-            loaded_at_ms=max(
-                bridge_snapshot.loaded_at_ms if bridge_snapshot else 0,
-                native_registry.loaded_at_ms or 0,
-            ),
-            workspace_dir=workspace_dir,
-            openclaw_dir=bridge_snapshot.openclaw_dir if bridge_snapshot else "",
-            plugins=[*bridge_plugins, *native_registry.records],
-            diagnostics=[*bridge_diagnostics, *native_registry.diagnostics],
-            gateway_methods=list(dict.fromkeys([*bridge_gateway_methods, *native_registry.gateway_methods])),
-            tool_names=list(dict.fromkeys([*bridge_tool_names, *native_registry.tool_names])),
-            service_ids=list(dict.fromkeys([*bridge_service_ids, *native_registry.service_ids])),
-            channel_ids=list(dict.fromkeys([*bridge_channel_ids, *native_registry.channel_ids])),
-            provider_ids=list(dict.fromkeys([*bridge_provider_ids, *native_registry.provider_ids])),
-            hook_names=list(dict.fromkeys([*bridge_hook_names, *native_registry.hook_names])),
-            skills_dirs=list(dict.fromkeys([*bridge_skills, *native_registry.skills_dirs])),
-        )
-
-    def _invoke_native_guard(
-        self,
-        *,
-        kind: str,
-        key: str,
-        invoker: Any,
-    ) -> dict[str, Any]:
+    def _invoke_guard(self, *, kind: str, key: str, invoker: Any) -> dict[str, Any]:
         circuit_key = f"{kind}:{key}"
         now = time.time()
-        state = self._native_circuit.setdefault(circuit_key, {"failure_streak": 0, "open_until": 0.0})
+        state = self._circuit.setdefault(circuit_key, {"failure_streak": 0, "open_until": 0.0})
         open_until = float(state.get("open_until", 0.0) or 0.0)
         if open_until > now:
-            self._record_native_call(
-                kind=kind,
-                ok=False,
-                error_code="NATIVE_CIRCUIT_OPEN",
-                error_message=f"native circuit open for {circuit_key}",
-                target=key,
-            )
+            self._record_call(kind=kind, ok=False, error_code="CIRCUIT_OPEN", error_message=f"Circuit open for {circuit_key}", target=key)
             return {
                 "ok": False,
                 "error": {
-                    "code": "NATIVE_CIRCUIT_OPEN",
-                    "message": f"native circuit open for {circuit_key}",
+                    "code": "CIRCUIT_OPEN",
+                    "message": f"Circuit open for {circuit_key}",
                     "data": {"retryAfterSeconds": max(0.0, round(open_until - now, 3))},
                 },
             }
@@ -487,34 +344,20 @@ class PluginManager:
         if bool(result.get("ok")):
             state["failure_streak"] = 0
             state["open_until"] = 0.0
-            self._record_native_call(kind=kind, ok=True, error_code="", error_message="", target=key)
+            self._record_call(kind=kind, ok=True, error_code="", error_message="", target=key)
             return result
-        error_code = str(error_obj.get("code") if isinstance(error_obj, dict) else "NATIVE_ERROR")
-        error_message = str(error_obj.get("message") if isinstance(error_obj, dict) else "native call failed")
+        error_code = str(error_obj.get("code") if isinstance(error_obj, dict) else "ERROR")
+        error_message = str(error_obj.get("message") if isinstance(error_obj, dict) else "Call failed")
         state["failure_streak"] = int(state.get("failure_streak", 0) or 0) + 1
         if state["failure_streak"] >= _NATIVE_CIRCUIT_THRESHOLD:
             state["open_until"] = time.time() + _NATIVE_CIRCUIT_COOLDOWN_SECONDS
-        self._record_native_call(
-            kind=kind,
-            ok=False,
-            error_code=error_code,
-            error_message=error_message,
-            target=key,
-        )
+        self._record_call(kind=kind, ok=False, error_code=error_code, error_message=error_message, target=key)
         return result
 
-    def _record_native_call(
-        self,
-        *,
-        kind: str,
-        ok: bool,
-        error_code: str,
-        error_message: str,
-        target: str,
-    ) -> None:
-        totals = self._native_runtime_stats.setdefault("totals", {})
+    def _record_call(self, *, kind: str, ok: bool, error_code: str, error_message: str, target: str) -> None:
+        totals = self._runtime_stats.setdefault("totals", {})
         totals["calls"] = int(totals.get("calls", 0) or 0) + 1
-        by_kind = self._native_runtime_stats.setdefault("byKind", {})
+        by_kind = self._runtime_stats.setdefault("byKind", {})
         kind_row = by_kind.setdefault(kind, {"calls": 0, "ok": 0, "errors": 0, "timeouts": 0})
         kind_row["calls"] = int(kind_row.get("calls", 0) or 0) + 1
         if ok:
@@ -527,18 +370,9 @@ class PluginManager:
         if "TIMEOUT" in error_code.upper():
             totals["timeouts"] = int(totals.get("timeouts", 0) or 0) + 1
             kind_row["timeouts"] = int(kind_row.get("timeouts", 0) or 0) + 1
-        recent = self._native_runtime_stats.setdefault("recentErrors", [])
-        recent.insert(
-            0,
-            {
-                "tsMs": int(time.time() * 1000),
-                "kind": kind,
-                "target": target,
-                "code": error_code,
-                "message": error_message,
-            },
-        )
-        self._native_runtime_stats["recentErrors"] = recent[:100]
+        recent = self._runtime_stats.setdefault("recentErrors", [])
+        recent.insert(0, {"tsMs": int(time.time() * 1000), "kind": kind, "target": target, "code": error_code, "message": error_message})
+        self._runtime_stats["recentErrors"] = recent[:100]
         self._save_runtime_stats()
 
     def _load_runtime_stats(self) -> None:
@@ -556,9 +390,9 @@ class PluginManager:
         recent_errors = payload.get("recentErrors")
         started_at = payload.get("startedAtMs")
         if isinstance(started_at, int):
-            self._native_runtime_stats["startedAtMs"] = started_at
+            self._runtime_stats["startedAtMs"] = started_at
         if isinstance(totals, dict):
-            self._native_runtime_stats["totals"] = {
+            self._runtime_stats["totals"] = {
                 "calls": int(totals.get("calls", 0) or 0),
                 "ok": int(totals.get("ok", 0) or 0),
                 "errors": int(totals.get("errors", 0) or 0),
@@ -576,22 +410,20 @@ class PluginManager:
                     "errors": int(row.get("errors", 0) or 0),
                     "timeouts": int(row.get("timeouts", 0) or 0),
                 }
-            self._native_runtime_stats["byKind"] = merged
+            self._runtime_stats["byKind"] = merged
         if isinstance(recent_errors, list):
             normalized: list[dict[str, Any]] = []
             for row in recent_errors[:100]:
                 if not isinstance(row, dict):
                     continue
-                normalized.append(
-                    {
-                        "tsMs": int(row.get("tsMs", 0) or 0),
-                        "kind": str(row.get("kind") or ""),
-                        "target": str(row.get("target") or ""),
-                        "code": str(row.get("code") or ""),
-                        "message": str(row.get("message") or ""),
-                    }
-                )
-            self._native_runtime_stats["recentErrors"] = normalized
+                normalized.append({
+                    "tsMs": int(row.get("tsMs", 0) or 0),
+                    "kind": str(row.get("kind") or ""),
+                    "target": str(row.get("target") or ""),
+                    "code": str(row.get("code") or ""),
+                    "message": str(row.get("message") or ""),
+                })
+            self._runtime_stats["recentErrors"] = normalized
 
     def _save_runtime_stats(self) -> None:
         path = self._runtime_stats_path
@@ -600,27 +432,27 @@ class PluginManager:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
-                "startedAtMs": int(self._native_runtime_stats.get("startedAtMs", 0) or 0),
-                "totals": self._native_runtime_stats.get("totals", {}),
-                "byKind": self._native_runtime_stats.get("byKind", {}),
-                "recentErrors": self._native_runtime_stats.get("recentErrors", []),
+                "startedAtMs": int(self._runtime_stats.get("startedAtMs", 0) or 0),
+                "totals": self._runtime_stats.get("totals", {}),
+                "byKind": self._runtime_stats.get("byKind", {}),
+                "recentErrors": self._runtime_stats.get("recentErrors", []),
             }
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
-            return
+            pass
 
 
-def get_plugin_manager(openclaw_dir: str | None = None) -> PluginManager:
+def get_plugin_manager() -> PluginManager:
     """Get or create process-global plugin manager."""
     global _singleton
     with _singleton_lock:
         if _singleton is None:
-            _singleton = PluginManager(openclaw_dir=openclaw_dir)
+            _singleton = PluginManager()
     return _singleton
 
 
 def initialize_plugins_for_workspace(workspace: Path, config: Any, force_reload: bool = False) -> PluginSnapshot | None:
-    """Best-effort plugin host load for gateway and CLI."""
+    """Load native plugins for the given workspace."""
     manager = get_plugin_manager()
     try:
         config_payload = (
@@ -630,10 +462,6 @@ def initialize_plugins_for_workspace(workspace: Path, config: Any, force_reload:
         )
         snapshot = manager.load(workspace_dir=str(workspace), config=config_payload, reload=force_reload)
         return snapshot
-    except PluginHostError as exc:
-        logger.warning("Plugin host unavailable: {}", exc)
-        return None
     except Exception as exc:
-        logger.warning("Failed to initialize plugins: {}", exc)
+        logger.warning("Failed to initialize plugins: {}", sanitize_error_message(str(exc)))
         return None
-

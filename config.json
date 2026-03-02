@@ -247,7 +247,7 @@
   "tools": {
     "web": {
       "search": {
-        "apiKey": "",
+        "apiKey": "xxxxx",
         "maxResults": 5
       }
     },

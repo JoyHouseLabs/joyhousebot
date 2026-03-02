@@ -1,4 +1,4 @@
-"""Plugin invoke tool: unified bridge for Agent to call Native/Bridge plugin tools."""
+"""Plugin invoke tool: call native Python plugin tools."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from joyhousebot.agent.tools.base import Tool
 
 
 class PluginInvokeTool(Tool):
-    """Call a plugin tool by plugin_id and tool_name. Uses plugin_invoke contract."""
+    """Call a native plugin tool by name."""
 
     @property
     def name(self) -> str:
@@ -18,8 +18,9 @@ class PluginInvokeTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Invoke a plugin tool. Use when a skill or user asks to use plugin capabilities "
-            "(e.g. my_plugin.create_item, my_plugin.list_items). Provide plugin_id, tool_name, and optional arguments."
+            "Invoke a registered plugin tool by name. "
+            "Use 'joyhousebot plugins tools' to see available tools. "
+            "Example: tool_name='echo', arguments={'value': 'hello'}"
         )
 
     @property
@@ -27,26 +28,21 @@ class PluginInvokeTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "plugin_id": {
-                    "type": "string",
-                    "description": "Plugin ID (e.g. my_plugin, native.hello)",
-                },
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool name as registered (e.g. create_item or my_plugin.create_item)",
+                    "description": "Tool name (e.g. 'echo', 'greet'). Use 'joyhousebot plugins tools' to see all.",
                 },
                 "arguments": {
                     "type": "object",
-                    "description": "Key-value arguments for the tool",
+                    "description": "Tool arguments as key-value pairs.",
                     "additionalProperties": True,
                 },
             },
-            "required": ["plugin_id", "tool_name"],
+            "required": ["tool_name"],
         }
 
     async def execute(
         self,
-        plugin_id: str,
         tool_name: str,
         arguments: dict[str, Any] | None = None,
         **kwargs: Any,
@@ -54,11 +50,7 @@ class PluginInvokeTool(Tool):
         from joyhousebot.plugins.manager import get_plugin_manager
 
         manager = get_plugin_manager()
-        out = manager.invoke_plugin_tool(
-            plugin_id=plugin_id or "",
-            tool_name=tool_name or "",
-            arguments=arguments,
-        )
+        out = manager.invoke_tool(name=tool_name or "", args=arguments or {})
         try:
             return json.dumps(out, ensure_ascii=False)
         except (TypeError, ValueError):

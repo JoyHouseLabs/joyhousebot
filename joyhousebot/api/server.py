@@ -267,13 +267,12 @@ async def lifespan(app: FastAPI):
         try:
             from joyhousebot.plugins.manager import initialize_plugins_for_workspace, get_plugin_manager
 
-            openclaw_dir = (getattr(config.plugins, "openclaw_dir", None) or "").strip() or None
             app_state["plugin_snapshot"] = initialize_plugins_for_workspace(
                 workspace=config.workspace_path,
                 config=config,
                 force_reload=True,
             )
-            app_state["plugin_manager"] = get_plugin_manager(openclaw_dir=openclaw_dir)
+            app_state["plugin_manager"] = get_plugin_manager()
             if app_state["plugin_snapshot"] is not None:
                 app_state["plugin_manager"].start_services()
         except Exception as plugin_exc:

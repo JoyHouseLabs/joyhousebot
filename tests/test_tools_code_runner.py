@@ -64,10 +64,11 @@ def test_code_runner_tool_validate_params():
 
 def test_code_runner_tool_unknown_backend():
     tool = CodeRunnerTool(default_backend="claude_code")
-    # Backend id from params overrides default; we pass unknown backend via execute
-    result = asyncio.run(tool.execute(prompt="hi", backend="unknown_backend"))
-    assert "Unknown backend" in result
-    assert "claude_code" in result
+    from joyhousebot.utils.exceptions import ValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        asyncio.run(tool.execute(prompt="hi", backend="unknown_backend"))
+    assert "Unknown backend" in str(exc_info.value)
+    assert "claude_code" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

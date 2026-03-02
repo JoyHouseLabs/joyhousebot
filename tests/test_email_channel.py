@@ -5,24 +5,29 @@ import pytest
 
 from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.bus.queue import MessageBus
-from joyhousebot.channels.email import EmailChannel
-from joyhousebot.config.schema import EmailConfig
+from joyhousebot.channels.plugins.builtin.email import EmailChannelPlugin
 
 
-def _make_config() -> EmailConfig:
-    return EmailConfig(
-        enabled=True,
-        consent_granted=True,
-        imap_host="imap.example.com",
-        imap_port=993,
-        imap_username="bot@example.com",
-        imap_password="secret",
-        smtp_host="smtp.example.com",
-        smtp_port=587,
-        smtp_username="bot@example.com",
-        smtp_password="secret",
-        mark_seen=True,
-    )
+def _make_config() -> dict:
+    return {
+        "enabled": True,
+        "consent_granted": True,
+        "imap_host": "imap.example.com",
+        "imap_port": 993,
+        "imap_username": "bot@example.com",
+        "imap_password": "secret",
+        "smtp_host": "smtp.example.com",
+        "smtp_port": 587,
+        "smtp_username": "bot@example.com",
+        "smtp_password": "secret",
+        "mark_seen": True,
+    }
+
+
+def _make_plugin(config: dict | None = None) -> EmailChannelPlugin:
+    plugin = EmailChannelPlugin()
+    plugin.configure(config or _make_config(), MessageBus())
+    return plugin
 
 
 def _make_raw_email(
@@ -66,10 +71,13 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
             return "BYE", [b""]
 
     fake = FakeIMAP()
-    monkeypatch.setattr("joyhousebot.channels.email.imaplib.IMAP4_SSL", lambda _h, _p: fake)
+    monkeypatch.setattr(
+        "joyhousebot.channels.plugins.builtin.email.imaplib.IMAP4_SSL",
+        lambda _h, _p: fake,
+    )
 
-    channel = EmailChannel(_make_config(), MessageBus())
-    items = channel._fetch_new_messages()
+    plugin = _make_plugin()
+    items = plugin._fetch_new_messages()
 
     assert len(items) == 1
     assert items[0]["sender"] == "alice@example.com"
@@ -77,8 +85,7 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
     assert "Please pay" in items[0]["content"]
     assert fake.store_calls == [(b"1", "+FLAGS", "\\Seen")]
 
-    # Same UID should be deduped in-process.
-    items_again = channel._fetch_new_messages()
+    items_again = plugin._fetch_new_messages()
     assert items_again == []
 
 
@@ -89,16 +96,16 @@ def test_extract_text_body_falls_back_to_html() -> None:
     msg["Subject"] = "HTML only"
     msg.add_alternative("<p>Hello<br>world</p>", subtype="html")
 
-    text = EmailChannel._extract_text_body(msg)
+    text = EmailChannelPlugin._extract_text_body(msg)
     assert "Hello" in text
     assert "world" in text
 
 
 @pytest.mark.asyncio
 async def test_start_returns_immediately_without_consent(monkeypatch) -> None:
-    cfg = _make_config()
-    cfg.consent_granted = False
-    channel = EmailChannel(cfg, MessageBus())
+    config = _make_config()
+    config["consent_granted"] = False
+    plugin = _make_plugin(config)
 
     called = {"fetch": False}
 
@@ -106,9 +113,9 @@ async def test_start_returns_immediately_without_consent(monkeypatch) -> None:
         called["fetch"] = True
         return []
 
-    monkeypatch.setattr(channel, "_fetch_new_messages", _fake_fetch)
-    await channel.start()
-    assert channel.is_running is False
+    monkeypatch.setattr(plugin, "_fetch_new_messages", _fake_fetch)
+    await plugin.start()
+    assert plugin.is_running is False
     assert called["fetch"] is False
 
 
@@ -143,13 +150,16 @@ async def test_send_uses_smtp_and_reply_subject(monkeypatch) -> None:
         fake_instances.append(instance)
         return instance
 
-    monkeypatch.setattr("joyhousebot.channels.email.smtplib.SMTP", _smtp_factory)
+    monkeypatch.setattr(
+        "joyhousebot.channels.plugins.builtin.email.smtplib.SMTP",
+        _smtp_factory,
+    )
 
-    channel = EmailChannel(_make_config(), MessageBus())
-    channel._last_subject_by_chat["alice@example.com"] = "Invoice #42"
-    channel._last_message_id_by_chat["alice@example.com"] = "<m1@example.com>"
+    plugin = _make_plugin()
+    plugin._last_subject_by_chat["alice@example.com"] = "Invoice #42"
+    plugin._last_message_id_by_chat["alice@example.com"] = "<m1@example.com>"
 
-    await channel.send(
+    await plugin.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -196,12 +206,15 @@ async def test_send_skips_when_auto_reply_disabled(monkeypatch) -> None:
         fake_instances.append(instance)
         return instance
 
-    monkeypatch.setattr("joyhousebot.channels.email.smtplib.SMTP", _smtp_factory)
+    monkeypatch.setattr(
+        "joyhousebot.channels.plugins.builtin.email.smtplib.SMTP",
+        _smtp_factory,
+    )
 
-    cfg = _make_config()
-    cfg.auto_reply_enabled = False
-    channel = EmailChannel(cfg, MessageBus())
-    await channel.send(
+    config = _make_config()
+    config["auto_reply_enabled"] = False
+    plugin = _make_plugin(config)
+    await plugin.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -210,7 +223,7 @@ async def test_send_skips_when_auto_reply_disabled(monkeypatch) -> None:
     )
     assert fake_instances == []
 
-    await channel.send(
+    await plugin.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -249,12 +262,15 @@ async def test_send_skips_when_consent_not_granted(monkeypatch) -> None:
         called["smtp"] = True
         return FakeSMTP(host, port, timeout=timeout)
 
-    monkeypatch.setattr("joyhousebot.channels.email.smtplib.SMTP", _smtp_factory)
+    monkeypatch.setattr(
+        "joyhousebot.channels.plugins.builtin.email.smtplib.SMTP",
+        _smtp_factory,
+    )
 
-    cfg = _make_config()
-    cfg.consent_granted = False
-    channel = EmailChannel(cfg, MessageBus())
-    await channel.send(
+    config = _make_config()
+    config["consent_granted"] = False
+    plugin = _make_plugin(config)
+    await plugin.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -294,10 +310,13 @@ def test_fetch_messages_between_dates_uses_imap_since_before_without_mark_seen(m
             return "BYE", [b""]
 
     fake = FakeIMAP()
-    monkeypatch.setattr("joyhousebot.channels.email.imaplib.IMAP4_SSL", lambda _h, _p: fake)
+    monkeypatch.setattr(
+        "joyhousebot.channels.plugins.builtin.email.imaplib.IMAP4_SSL",
+        lambda _h, _p: fake,
+    )
 
-    channel = EmailChannel(_make_config(), MessageBus())
-    items = channel.fetch_messages_between_dates(
+    plugin = _make_plugin()
+    items = plugin.fetch_messages_between_dates(
         start_date=date(2026, 2, 6),
         end_date=date(2026, 2, 7),
         limit=10,
@@ -305,7 +324,6 @@ def test_fetch_messages_between_dates_uses_imap_since_before_without_mark_seen(m
 
     assert len(items) == 1
     assert items[0]["subject"] == "Status"
-    # search(None, "SINCE", "06-Feb-2026", "BEFORE", "07-Feb-2026")
     assert fake.search_args is not None
     assert fake.search_args[1:] == ("SINCE", "06-Feb-2026", "BEFORE", "07-Feb-2026")
     assert fake.store_calls == []

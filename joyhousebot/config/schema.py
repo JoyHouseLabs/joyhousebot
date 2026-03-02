@@ -509,9 +509,8 @@ class AppsConfig(BaseModel):
 
 
 class PluginsConfig(BaseModel):
-    """OpenClaw-compatible plugin configuration."""
+    """Native Python plugin configuration."""
     enabled: bool = True
-    openclaw_dir: str = ""  # OpenClaw 工作区目录，供 plugin_host 桥加载；留空用默认或 JOYHOUSEBOT_OPENCLAW_DIR
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
     load: PluginLoadConfig = Field(default_factory=PluginLoadConfig)

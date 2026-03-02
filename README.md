@@ -69,15 +69,14 @@ flowchart TD
 - [设计与架构](docs/DESIGN_AND_ARCHITECTURE.md) — 分层设计、核心组件、执行流程、安全与扩展点
 - [异常处理](docs/ERROR_HANDLING.md) — 异常类层次、错误分类、敏感信息过滤
 - [CLI 参考](docs/CLI_REFERENCE.md) — 命令与参数说明
-- [OpenClaw 插件接入](docs/zh/OPENCLAW_PLUGIN_HOST.md)（[English](docs/en/OPENCLAW_PLUGIN_HOST.md)）— plugin_host 使用说明
+- [Python 原生插件开发](docs/zh/NATIVE_PLUGIN_GUIDE.md) — 插件开发指南
 
 ## 环境要求
 
 - **Python**：>= 3.11（核心与大部分通道仅需 Python）
 - **Node.js**：仅在使用 **WhatsApp 通道**时需要，>= 20。首次运行 `joyhousebot channels whatsapp start` 时会从包内拷贝 bridge 到 `~/.joyhousebot/bridges/whatsapp` 并执行 `npm install` / `npm run build`，需本机已安装 `npm`。
-- **OpenClaw 插件**：使用内置 plugin_host 无缝接入 OpenClaw 插件时，需配置 `plugins.openclaw_dir`（或环境变量 `JOYHOUSEBOT_OPENCLAW_DIR`），本机需已安装 Node。OpenClaw 目录下需存在 `dist/plugins/loader.js` 或 `src/plugins/loader.ts`。
 
-不使用 WhatsApp 且不使用 OpenClaw 插件时无需安装 Node。
+不使用 WhatsApp 时无需安装 Node。
 
 ## 本地开发与调试
 

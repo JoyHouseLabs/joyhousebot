@@ -15,15 +15,8 @@
 用户向使用说明按中英文分开，便于打包成在线文档并做语言切换。
 
 - **`zh/`** — 中文说明
-  - [OpenClaw 插件接入](zh/OPENCLAW_PLUGIN_HOST.md)
+  - [Python 原生插件开发](zh/NATIVE_PLUGIN_GUIDE.md)
   - [记忆 vs OpenClaw](zh/MEMORY_VS_OPENCLAW.md)
   - [Agent 自主决策配置](zh/AGENT_AUTONOMOUS_DECISION.md)
   - [DNS 工具使用指南](zh/DNS_GUIDE.md)
   - [Memory 命令使用指南](zh/MEMORY_GUIDE.md)
-- **`en/`** — English
-  - [OpenClaw Plugin Host](en/OPENCLAW_PLUGIN_HOST.md)
-
-同一主题在不同语言下使用相同文件名，例如：
-- `zh/OPENCLAW_PLUGIN_HOST.md` / `en/OPENCLAW_PLUGIN_HOST.md`
-
-在线文档站点可据此映射为 `/zh/openclaw-plugin-host`、`/en/openclaw-plugin-host` 等路由。

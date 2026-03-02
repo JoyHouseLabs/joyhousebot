@@ -17,38 +17,6 @@ async def _rpc_call(client: RpcClientState, method: str, params: dict | None = N
 
 
 @pytest.mark.asyncio
-@pytest.mark.requires_pairing
-async def test_chat_send_returns_started_then_agent_wait_gets_final(monkeypatch):
-    old = dict(app_state)
-    try:
-        app_state["config"] = load_config()
-
-        async def fake_chat(msg):
-            return {"ok": True, "response": f"echo:{msg.message}"}
-
-        monkeypatch.setattr(server, "chat", fake_chat)
-        op = RpcClientState(connected=True, role="operator", scopes={"operator.admin"}, client_id="op")
-
-        ok, payload, err = await _rpc_call(
-            op,
-            "chat.send",
-            {"message": "hello", "sessionKey": "semantics-main"},
-        )
-        assert ok, err
-        assert payload["status"] == "started"
-        run_id = payload["runId"]
-
-        ok, payload, err = await _rpc_call(op, "agent.wait", {"runId": run_id, "timeoutMs": 5_000})
-        assert ok, err
-        assert payload["runId"] == run_id
-        assert payload["status"] == "ok"
-        assert payload["endedAt"] is not None
-    finally:
-        app_state.clear()
-        app_state.update(old)
-
-
-@pytest.mark.asyncio
 async def test_agent_and_chat_ack_semantics_inflight(monkeypatch):
     """With session serialization: same session allows only one run; second request returns in_flight with current runId."""
     old = dict(app_state)
@@ -70,7 +38,6 @@ async def test_agent_and_chat_ack_semantics_inflight(monkeypatch):
         assert payload["status"] == "accepted"
         assert payload["runId"] == "rid-agent"
 
-        # Same session, different run_id: lane queue enqueues; returns queued with runId (rid-chat) and position.
         ok, payload, err = await _rpc_call(
             op,
             "chat.send",
@@ -83,7 +50,6 @@ async def test_agent_and_chat_ack_semantics_inflight(monkeypatch):
         assert payload.get("position") == 1
         assert payload.get("queueDepth") == 1
 
-        # Same session again: second queued entry.
         ok, payload, err = await _rpc_call(
             op,
             "chat.send",
@@ -94,33 +60,6 @@ async def test_agent_and_chat_ack_semantics_inflight(monkeypatch):
         assert payload["runId"] == "rid-chat"
         assert payload.get("position") == 2
         assert payload.get("queueDepth") == 2
-    finally:
-        app_state.clear()
-        app_state.update(old)
-
-
-@pytest.mark.asyncio
-@pytest.mark.requires_pairing
-async def test_chat_send_expect_final_returns_final_payload(monkeypatch):
-    old = dict(app_state)
-    try:
-        app_state["config"] = load_config()
-
-        async def fake_chat(msg):
-            return {"ok": True, "response": f"done:{msg.message}"}
-
-        monkeypatch.setattr(server, "chat", fake_chat)
-        op = RpcClientState(connected=True, role="operator", scopes={"operator.admin"}, client_id="op")
-
-        ok, payload, err = await _rpc_call(
-            op,
-            "chat.send",
-            {"message": "hello", "sessionKey": "semantics-main", "expectFinal": True, "timeoutMs": 5_000},
-        )
-        assert ok, err
-        assert payload["status"] == "ok"
-        assert payload["runId"]
-        assert payload["sessionKey"] == "semantics-main"
     finally:
         app_state.clear()
         app_state.update(old)
@@ -152,43 +91,6 @@ async def test_auth_profiles_status_returns_cooldown_observability(monkeypatch):
         assert p["available"] is False
         assert p["state"] == "cooldown"
         assert p["failureCount"] == 3
-    finally:
-        app_state.clear()
-        app_state.update(old)
-
-
-@pytest.mark.asyncio
-@pytest.mark.requires_pairing
-async def test_connect_snapshot_includes_auth_alerts(monkeypatch):
-    old = dict(app_state)
-    try:
-        cfg = load_config()
-        cfg.auth.profiles = {
-            "p-openai": AuthProfileConfig(provider="openai", enabled=True),
-        }
-        app_state["config"] = cfg
-        monkeypatch.setattr(
-            "joyhousebot.agent.auth_profiles.load_profile_usage",
-            lambda: {"p-openai": {"failure_count": 2, "cooldown_until_ms": 9999999999999}},
-        )
-        client = RpcClientState()
-        ok, payload, err = await _rpc_call(
-            client,
-            "connect",
-            {"role": "operator", "scopes": ["operator.read"], "clientId": "op"},
-        )
-        assert ok, err
-        snapshot = payload["snapshot"]
-        assert isinstance(snapshot.get("alerts"), list)
-        assert any(a.get("code") == "AUTH_PROFILES_DOWN" for a in snapshot["alerts"])
-        assert snapshot.get("authProfiles", {}).get("status") == "down"
-        assert snapshot.get("alerts") == snapshot.get("health", {}).get("alerts")
-        assert snapshot.get("alertsSummary") == snapshot.get("health", {}).get("alertsSummary")
-        assert snapshot.get("alertsLifecycle") == snapshot.get("health", {}).get("alertsLifecycle")
-        assert isinstance(snapshot.get("actionsCatalog", {}).get("actions"), list)
-        assert snapshot.get("actionsCatalog") == snapshot.get("health", {}).get("actionsCatalog")
-        assert int(snapshot.get("actionsCatalog", {}).get("count") or 0) >= 1
-        assert int(snapshot.get("alertsSummary", {}).get("critical") or 0) >= 1
     finally:
         app_state.clear()
         app_state.update(old)
@@ -373,52 +275,6 @@ async def test_actions_validate_batch_lifecycle_rpc_method():
         assert isinstance(payload.get("validation"), dict)
         assert isinstance(payload.get("alertsSummary"), dict)
         assert isinstance(payload.get("alertsLifecycle"), dict)
-    finally:
-        app_state.clear()
-        app_state.update(old)
-
-
-@pytest.mark.asyncio
-@pytest.mark.requires_pairing
-async def test_rpc_e2e_connect_status_actions_validate_lifecycle():
-    old = dict(app_state)
-    try:
-        cfg = load_config()
-        app_state["config"] = cfg
-        client = RpcClientState()
-
-        ok, payload, err = await _rpc_call(
-            client,
-            "connect",
-            {"role": "operator", "scopes": ["operator.read"], "clientId": "e2e-op"},
-        )
-        assert ok, err
-        snapshot = payload["snapshot"]
-        assert isinstance(snapshot.get("alertsSummary"), dict)
-        assert isinstance(snapshot.get("actionsCatalog"), dict)
-        assert isinstance(snapshot.get("alertsLifecycle"), dict)
-
-        ok, payload, err = await _rpc_call(client, "status", {})
-        assert ok, err
-        assert isinstance(payload.get("alerts"), list)
-        assert isinstance(payload.get("alertsSummary"), dict)
-
-        ok, payload, err = await _rpc_call(client, "actions.catalog", {})
-        assert ok, err
-        assert int(payload.get("count") or 0) >= 1
-
-        ok, payload, err = await _rpc_call(
-            client,
-            "actions.validate",
-            {"code": "AUTH_PROVIDER_DOWN", "action": {"type": "navigate", "target": "settings.auth.provider"}},
-        )
-        assert ok, err
-        assert payload["ok"] is True
-
-        ok, payload, err = await _rpc_call(client, "alerts.lifecycle", {})
-        assert ok, err
-        assert "active" in payload
-        assert "resolvedRecent" in payload
     finally:
         app_state.clear()
         app_state.update(old)

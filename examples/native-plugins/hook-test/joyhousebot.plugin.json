@@ -1,0 +1,12 @@
+{
+  "id": "hook-test",
+  "name": "Hook Test Plugin",
+  "description": "Test plugin to verify all hooks are working correctly",
+  "version": "1.0.0",
+  "runtime": "python-native",
+  "entry": "plugin.py:plugin",
+  "capabilities": {
+    "hooks": true,
+    "tools": true
+  }
+}

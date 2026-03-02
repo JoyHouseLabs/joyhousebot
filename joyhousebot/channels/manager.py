@@ -1,4 +1,4 @@
-"""Channel manager for coordinating chat channels."""
+"""Channel manager for coordinating chat channels using the plugin system."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from loguru import logger
 
 from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.bus.queue import MessageBus
-from joyhousebot.channels.base import BaseChannel
+from joyhousebot.channels.plugins import get_channel_registry, ChannelPlugin
 from joyhousebot.config.schema import Config
 from joyhousebot.utils.exceptions import (
     ChannelError,
@@ -20,145 +20,104 @@ from joyhousebot.utils.exceptions import (
 
 class ChannelManager:
     """
-    Manages chat channels and coordinates message routing.
+    Manages chat channels using the plugin system.
     
     Responsibilities:
-    - Initialize enabled channels (Telegram, WhatsApp, etc.)
-    - Start/stop channels
+    - Load and register channel plugins
+    - Start/stop channel plugins
     - Route outbound messages
     """
     
     def __init__(self, config: Config, bus: MessageBus):
         self.config = config
         self.bus = bus
-        self.channels: dict[str, BaseChannel] = {}
+        self.plugins: dict[str, ChannelPlugin] = {}
         self._dispatch_task: asyncio.Task | None = None
         
         self._init_channels()
     
+    def _get_channel_config(self, channel_id: str) -> dict[str, Any]:
+        """Extract channel config from the Config object as a dict."""
+        channel_configs = {
+            "telegram": self.config.channels.telegram,
+            "discord": self.config.channels.discord,
+            "slack": self.config.channels.slack,
+            "whatsapp": self.config.channels.whatsapp,
+            "feishu": self.config.channels.feishu,
+            "dingtalk": self.config.channels.dingtalk,
+            "mochat": self.config.channels.mochat,
+            "email": self.config.channels.email,
+            "qq": self.config.channels.qq,
+        }
+        
+        cfg = channel_configs.get(channel_id)
+        if cfg is None:
+            return {}
+        
+        return cfg.model_dump()
+    
+    def _is_channel_enabled(self, channel_id: str) -> bool:
+        """Check if a channel is enabled in config."""
+        enabled_map = {
+            "telegram": self.config.channels.telegram.enabled,
+            "discord": self.config.channels.discord.enabled,
+            "slack": self.config.channels.slack.enabled,
+            "whatsapp": self.config.channels.whatsapp.enabled,
+            "feishu": self.config.channels.feishu.enabled,
+            "dingtalk": self.config.channels.dingtalk.enabled,
+            "mochat": self.config.channels.mochat.enabled,
+            "email": self.config.channels.email.enabled,
+            "qq": self.config.channels.qq.enabled,
+        }
+        return enabled_map.get(channel_id, False)
+    
     def _init_channels(self) -> None:
-        """Initialize channels based on config."""
+        """Initialize channel plugins based on config."""
+        registry = get_channel_registry()
+        registry.load_all_builtins()
+        
+        plugins_dir = getattr(self.config, "plugins_dir", None)
+        if plugins_dir:
+            from pathlib import Path
+            plugins_path = Path(plugins_dir).expanduser()
+            if plugins_path.exists():
+                external = registry.load_from_directory(plugins_path / "channels")
+                if external:
+                    logger.info(f"Loaded {len(external)} external channel plugins from {plugins_path}")
         
         messages_config = getattr(self.config, "messages", None)
         commands_config = getattr(self.config, "commands", None)
-
-        # Telegram channel
-        if self.config.channels.telegram.enabled:
-            try:
-                from joyhousebot.channels.telegram import TelegramChannel
-                self.channels["telegram"] = TelegramChannel(
-                    self.config.channels.telegram,
-                    self.bus,
-                    groq_api_key=self.config.providers.groq.api_key,
-                    messages_config=messages_config,
-                    commands_config=commands_config,
-                )
-                logger.info("Telegram channel enabled")
-            except ImportError as e:
-                logger.warning(f"Telegram channel not available: {e}")
         
-        # WhatsApp channel
-        if self.config.channels.whatsapp.enabled:
+        for channel_id in registry.list_channels():
+            if not self._is_channel_enabled(channel_id):
+                continue
+            
             try:
-                from joyhousebot.channels.whatsapp import WhatsAppChannel
-                self.channels["whatsapp"] = WhatsAppChannel(
-                    self.config.channels.whatsapp, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("WhatsApp channel enabled")
+                plugin = registry.get(channel_id)
+                if plugin is None:
+                    logger.warning(f"Channel plugin {channel_id} not found in registry")
+                    continue
+                
+                config_dict = self._get_channel_config(channel_id)
+                
+                if channel_id == "telegram":
+                    config_dict["groq_api_key"] = self.config.providers.groq.api_key
+                config_dict["messages_config"] = messages_config
+                config_dict["commands_config"] = commands_config
+                
+                plugin.configure(config_dict, self.bus)
+                self.plugins[channel_id] = plugin
+                logger.info(f"{channel_id} channel enabled (plugin)")
+                
             except ImportError as e:
-                logger.warning(f"WhatsApp channel not available: {e}")
-
-        # Discord channel
-        if self.config.channels.discord.enabled:
-            try:
-                from joyhousebot.channels.discord import DiscordChannel
-                self.channels["discord"] = DiscordChannel(
-                    self.config.channels.discord, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("Discord channel enabled")
-            except ImportError as e:
-                logger.warning(f"Discord channel not available: {e}")
-        
-        # Feishu channel
-        if self.config.channels.feishu.enabled:
-            try:
-                from joyhousebot.channels.feishu import FeishuChannel
-                self.channels["feishu"] = FeishuChannel(
-                    self.config.channels.feishu, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("Feishu channel enabled")
-            except ImportError as e:
-                logger.warning(f"Feishu channel not available: {e}")
-
-        # Mochat channel
-        if self.config.channels.mochat.enabled:
-            try:
-                from joyhousebot.channels.mochat import MochatChannel
-
-                self.channels["mochat"] = MochatChannel(
-                    self.config.channels.mochat, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("Mochat channel enabled")
-            except ImportError as e:
-                logger.warning(f"Mochat channel not available: {e}")
-
-        # DingTalk channel
-        if self.config.channels.dingtalk.enabled:
-            try:
-                from joyhousebot.channels.dingtalk import DingTalkChannel
-                self.channels["dingtalk"] = DingTalkChannel(
-                    self.config.channels.dingtalk, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("DingTalk channel enabled")
-            except ImportError as e:
-                logger.warning(f"DingTalk channel not available: {e}")
-
-        # Email channel
-        if self.config.channels.email.enabled:
-            try:
-                from joyhousebot.channels.email import EmailChannel
-                self.channels["email"] = EmailChannel(
-                    self.config.channels.email, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("Email channel enabled")
-            except ImportError as e:
-                logger.warning(f"Email channel not available: {e}")
-
-        # Slack channel
-        if self.config.channels.slack.enabled:
-            try:
-                from joyhousebot.channels.slack import SlackChannel
-                self.channels["slack"] = SlackChannel(
-                    self.config.channels.slack, self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("Slack channel enabled")
-            except ImportError as e:
-                logger.warning(f"Slack channel not available: {e}")
-
-        # QQ channel
-        if self.config.channels.qq.enabled:
-            try:
-                from joyhousebot.channels.qq import QQChannel
-                self.channels["qq"] = QQChannel(
-                    self.config.channels.qq,
-                    self.bus,
-                    messages_config=messages_config,
-                )
-                logger.info("QQ channel enabled")
-            except ImportError as e:
-                logger.warning(f"QQ channel not available: {e}")
+                logger.warning(f"Channel plugin {channel_id} not available: {e}")
+            except Exception as e:
+                logger.error(f"Failed to initialize channel {channel_id}: {e}")
     
-    async def _start_channel(self, name: str, channel: BaseChannel) -> None:
-        """Start a channel and log any exceptions."""
+    async def _start_plugin(self, name: str, plugin: ChannelPlugin) -> None:
+        """Start a channel plugin and log any exceptions."""
         try:
-            await channel.start()
+            await plugin.start()
         except ChannelError as e:
             logger.error(f"Channel {name} error [{e.code}]: {e.message}")
         except asyncio.TimeoutError:
@@ -172,25 +131,22 @@ class ChannelManager:
             logger.error(f"Failed to start channel {name} [{code}]: {sanitize_error_message(str(e))}")
 
     async def start_all(self) -> None:
-        """Start all channels and the outbound dispatcher."""
-        if not self.channels:
+        """Start all channel plugins and the outbound dispatcher."""
+        if not self.plugins:
             logger.warning("No channels enabled")
             return
         
-        # Start outbound dispatcher
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
         
-        # Start channels
         tasks = []
-        for name, channel in self.channels.items():
+        for name, plugin in self.plugins.items():
             logger.info(f"Starting {name} channel...")
-            tasks.append(asyncio.create_task(self._start_channel(name, channel)))
+            tasks.append(asyncio.create_task(self._start_plugin(name, plugin)))
         
-        # Wait for all to complete (they should run forever)
         await asyncio.gather(*tasks, return_exceptions=True)
     
     async def stop_all(self) -> None:
-        """Stop all channels and the dispatcher."""
+        """Stop all channel plugins and the dispatcher."""
         logger.info("Stopping all channels...")
         
         if self._dispatch_task:
@@ -200,9 +156,9 @@ class ChannelManager:
             except asyncio.CancelledError:
                 pass
         
-        for name, channel in self.channels.items():
+        for name, plugin in self.plugins.items():
             try:
-                await channel.stop()
+                await plugin.stop()
                 logger.info(f"Stopped {name} channel")
             except ChannelError as e:
                 logger.error(f"Channel {name} stop error [{e.code}]: {e.message}")
@@ -213,7 +169,7 @@ class ChannelManager:
                 logger.error(f"Error stopping {name} [{code}]: {sanitize_error_message(str(e))}")
     
     async def _dispatch_outbound(self) -> None:
-        """Dispatch outbound messages to the appropriate channel."""
+        """Dispatch outbound messages to the appropriate channel plugin."""
         logger.info("Outbound dispatcher started")
         
         while True:
@@ -223,10 +179,12 @@ class ChannelManager:
                     timeout=1.0
                 )
                 
-                channel = self.channels.get(msg.channel)
-                if channel:
+                plugin = self.plugins.get(msg.channel)
+                if plugin:
                     try:
-                        await channel.send(msg)
+                        result = await plugin.send(msg)
+                        if not result.success:
+                            logger.warning(f"Failed to send to {msg.channel}: {result.error}")
                     except ChannelError as e:
                         logger.error(f"Channel {msg.channel} send error [{e.code}]: {e.message}")
                     except asyncio.TimeoutError:
@@ -244,21 +202,21 @@ class ChannelManager:
             except asyncio.CancelledError:
                 break
     
-    def get_channel(self, name: str) -> BaseChannel | None:
-        """Get a channel by name."""
-        return self.channels.get(name)
+    def get_channel(self, name: str) -> ChannelPlugin | None:
+        """Get a channel plugin by name."""
+        return self.plugins.get(name)
     
     def get_status(self) -> dict[str, Any]:
         """Get status of all channels."""
         return {
             name: {
                 "enabled": True,
-                "running": channel.is_running
+                "running": plugin.is_running
             }
-            for name, channel in self.channels.items()
+            for name, plugin in self.plugins.items()
         }
     
     @property
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""
-        return list(self.channels.keys())
+        return list(self.plugins.keys())

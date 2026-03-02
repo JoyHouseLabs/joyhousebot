@@ -61,15 +61,14 @@ flowchart TD
 - [Design & Architecture](docs/DESIGN_AND_ARCHITECTURE.md) — Layered design, core components, execution flow, security, and extension points
 - [Error Handling](docs/ERROR_HANDLING.md) — Exception class hierarchy, error classification, sensitive information filtering
 - [CLI Reference](docs/CLI_REFERENCE.md) — Commands and parameter descriptions
-- [OpenClaw Plugin Hosting](docs/en/OPENCLAW_PLUGIN_HOST.md) — plugin_host usage guide
+- [Native Plugin Development](docs/zh/NATIVE_PLUGIN_GUIDE.md) — Plugin development guide (Chinese)
 
 ## Environment Requirements
 
 - **Python**: >= 3.11 (core and most channels only require Python)
 - **Node.js**: Only required when using the **WhatsApp channel**, >= 20. On first run of `joyhousebot channels whatsapp start`, the bridge will be copied from the package to `~/.joyhousebot/bridges/whatsapp` and `npm install` / `npm run build` will be executed. You must have `npm` installed locally.
-- **OpenClaw Plugins**: When using the built-in plugin_host to seamlessly integrate OpenClaw plugins, you need to configure `plugins.openclaw_dir` (or environment variable `JOYHOUSEBOT_OPENCLAW_DIR`), and Node.js must be installed locally. The OpenClaw directory must contain `dist/plugins/loader.js` or `src/plugins/loader.ts`.
 
-Node.js is not required if you are not using WhatsApp and not using OpenClaw plugins.
+Node.js is not required if you are not using WhatsApp.
 
 ## Local Development & Debugging
 

@@ -1,3 +1,5 @@
+"""Tests for plugin list service helpers."""
+
 from joyhousebot.services.plugins.list_service import (
     filter_plugin_rows,
     is_native_plugin_row,
@@ -11,7 +13,7 @@ from joyhousebot.services.plugins.list_service import (
 def test_filter_and_table_rows():
     rows = [
         {"id": "a.demo", "name": "Alpha", "status": "loaded", "origin": "native", "source": "/x"},
-        {"id": "b.demo", "name": "Beta", "status": "error", "origin": "bridge", "source": "/y"},
+        {"id": "b.demo", "name": "Beta", "status": "error", "origin": "native", "source": "/y"},
     ]
     filtered = filter_plugin_rows(rows, "alpha")
     assert len(filtered) == 1
@@ -22,9 +24,9 @@ def test_filter_and_table_rows():
             "id": "a.demo",
             "name": "Alpha",
             "status": "loaded",
-            "runtime": "",
+            "runtime": "python-native",
             "capabilities": ["rpc"],
-            "gateway_methods": ["plugins.demo"],
+            "gateway_methods": ["echo"],
             "hook_names": ["h1"],
             "source": "/x",
         }
@@ -40,4 +42,3 @@ def test_info_helpers():
     field_map = {k: v for k, v in fields}
     assert field_map["id"] == "a.demo"
     assert field_map["status"] == "loaded"
-

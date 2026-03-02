@@ -253,7 +253,6 @@ def build_http_config_payload(
             },
             "plugins": {
                 "enabled": config.plugins.enabled,
-                "openclaw_dir": getattr(config.plugins, "openclaw_dir", "") or "",
                 "allow": list(config.plugins.allow or []),
                 "deny": list(config.plugins.deny or []),
                 "load": {"paths": list(config.plugins.load.paths or [])},
@@ -519,8 +518,6 @@ def apply_config_update_to_domain(*, config: Any, update: Any) -> None:
         plugins = update.plugins
         if "enabled" in plugins:
             config.plugins.enabled = bool(plugins.get("enabled"))
-        if "openclaw_dir" in plugins:
-            config.plugins.openclaw_dir = str(plugins.get("openclaw_dir") or "")
         if isinstance(plugins.get("allow"), list):
             config.plugins.allow = [str(x) for x in plugins.get("allow", [])]
         if isinstance(plugins.get("deny"), list):

@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from joyhousebot.plugins.core.types import PluginRecord
 from joyhousebot.plugins.discovery import MANIFEST_FILENAME, get_plugin_roots
+from joyhousebot.plugins.hooks.dispatcher import get_hook_dispatcher
 
 DEFAULT_NATIVE_CALL_TIMEOUT_SECONDS = 15.0
 
@@ -125,6 +126,24 @@ class _NativeApi:
         if not callable(handler):
             raise ValueError("hook handler must be callable")
         self.hooks.append({"hookName": name, "handler": handler, "priority": int(priority)})
+
+    def on(self, hook_name: str, handler: Callable[..., Any] | None = None, *, priority: int = 0) -> Callable[..., Any] | None:
+        name = str(hook_name).strip()
+        if not name:
+            raise ValueError("hook name is required")
+        if handler is not None:
+            if not callable(handler):
+                raise ValueError("hook handler must be callable")
+            self.hooks.append({"hookName": name, "handler": handler, "priority": int(priority)})
+            return handler
+
+        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+            if not callable(fn):
+                raise ValueError("hook handler must be callable")
+            self.hooks.append({"hookName": name, "handler": fn, "priority": int(priority)})
+            return fn
+
+        return decorator
 
     def register_service(
         self,
@@ -462,13 +481,21 @@ class NativePluginLoader:
                         "started": bool(channel_meta.get("started", False)),
                     }
                 for h in api.hooks:
-                    registry.hooks.append(
-                        {
-                            "pluginId": plugin_id,
-                            "hookName": str(h.get("hookName") or ""),
-                            "priority": int(h.get("priority") or 0),
-                            "runtime": "native",
-                        }
+                    hook_entry = {
+                        "pluginId": plugin_id,
+                        "hookName": str(h.get("hookName") or ""),
+                        "priority": int(h.get("priority") or 0),
+                        "runtime": "native",
+                        "handler": h.get("handler"),
+                    }
+                    registry.hooks.append(hook_entry)
+                    dispatcher = get_hook_dispatcher()
+                    dispatcher.register(
+                        hook_name=str(h.get("hookName") or ""),
+                        handler=h.get("handler"),
+                        priority=int(h.get("priority") or 0),
+                        plugin_id=plugin_id,
+                        source=str(root),
                     )
                 for raw_skill_dir in manifest.get("skills") or []:
                     if not isinstance(raw_skill_dir, str) or not raw_skill_dir.strip():

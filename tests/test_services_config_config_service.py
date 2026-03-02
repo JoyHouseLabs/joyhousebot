@@ -10,6 +10,7 @@ class _Update:
     gateway = {"port": 19999}
     skills = {"entries": {"demo.skill": {"enabled": True}}}
     plugins = {"entries": {"demo-plugin": {"enabled": True}}}
+    apps = None
     wallet = None
     auth = None
     approvals = None

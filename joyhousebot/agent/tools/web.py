@@ -103,7 +103,11 @@ class WebSearchTool(Tool):
     """Search the web using Brave Search API."""
 
     name = "web_search"
-    description = "Search the web. Returns titles, URLs, and snippets."
+    description = (
+        "Search the web for information. PREFERRED for finding news, articles, and current events. "
+        "Returns titles, URLs, and snippets. Use this FIRST before web_fetch. "
+        "Works reliably for all topics including news, technical info, and general queries."
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -185,7 +189,12 @@ class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
 
     name = "web_fetch"
-    description = "Fetch URL and extract readable content (HTML → markdown/text)."
+    description = (
+        "Fetch a specific URL and extract readable content. "
+        "LIMITATIONS: Cannot render JavaScript-heavy pages (Google News, Twitter/X, SPA sites). "
+        "For news/current events, use web_search FIRST instead. "
+        "Best for: static articles, blogs, documentation, and server-rendered pages."
+    )
     parameters = {
         "type": "object",
         "properties": {

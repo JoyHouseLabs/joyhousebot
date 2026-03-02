@@ -19,7 +19,9 @@ class _Manager:
         assert isinstance(config, dict)
         return {"checks": {"loadedCount": 1}}
 
-    def doctor(self):
+    def doctor(self, workspace_dir: str = "", config: dict | None = None):
+        if workspace_dir:
+            return {"checks": {"loadedCount": 1}}
         return {"native": {"runtime": {"totals": {"calls": 3}}}}
 
 
@@ -30,7 +32,7 @@ def test_collect_reports_and_should_setup():
         workspace_dir="/tmp/workspace",
         config_payload={},
     )
-    assert should_run_setup_host(report) is True
+    assert should_run_setup_host(report) is False
     assert native_report["runtime"]["totals"]["calls"] == 3
 
 

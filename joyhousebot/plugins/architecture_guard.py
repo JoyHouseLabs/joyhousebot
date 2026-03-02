@@ -6,18 +6,16 @@ import ast
 from pathlib import Path
 
 _FORBIDDEN_IMPORT_PREFIXES = (
-    "joyhousebot.plugins.bridge",
     "joyhousebot.plugins.native",
 )
 
 
 def collect_plugin_boundary_violations(package_root: Path) -> list[str]:
-    """Return violations where non-plugin modules import bridge/native internals."""
+    """Return violations where non-plugin modules import native internals."""
     root = package_root.resolve()
     violations: list[str] = []
     for file_path in root.rglob("*.py"):
         rel_path = file_path.resolve().relative_to(root).as_posix()
-        # Plugin package itself can import bridge/native internals by design.
         if rel_path.startswith("plugins/"):
             continue
         try:
@@ -35,8 +33,6 @@ def collect_plugin_boundary_violations(package_root: Path) -> list[str]:
                 module = str(node.module or "")
                 if module.startswith(_FORBIDDEN_IMPORT_PREFIXES):
                     violations.append(f"{rel_path}:{node.lineno} forbidden-import-from: {module}")
-                # Relative form like `from ..plugins.bridge import ...`
-                if node.level > 0 and ("plugins.bridge" in module or "plugins.native" in module):
+                if node.level > 0 and "plugins.native" in module:
                     violations.append(f"{rel_path}:{node.lineno} forbidden-relative-import-from: {module}")
     return violations
-
