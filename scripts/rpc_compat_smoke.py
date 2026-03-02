@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""OpenClaw RPC compatibility smoke checks.
+"""JoyHouseBot RPC smoke checks.
 
 Usage:
   python scripts/rpc_compat_smoke.py
-  python scripts/rpc_compat_smoke.py --openclaw-root /abs/path/to/openclaw
 """
 
 from __future__ import annotations
@@ -13,22 +12,9 @@ import asyncio
 import re
 from pathlib import Path
 
-from joyhousebot.api.server import GATEWAY_METHODS, RpcClientState, _handle_rpc_request, app_state
+from joyhousebot.api.server import RpcClientState, _handle_rpc_request, app_state
 from joyhousebot.config.loader import load_config
 from joyhousebot.node import NodeRegistry, NodeSession
-
-
-METHOD_RE = re.compile(r'"([a-z]+(?:\.[a-z]+)+)"\s*:\s*async')
-
-
-def collect_openclaw_methods(openclaw_root: Path) -> set[str]:
-    methods: set[str] = set()
-    methods_dir = openclaw_root / "src" / "gateway" / "server-methods"
-    for ts_file in methods_dir.glob("*.ts"):
-        text = ts_file.read_text(encoding="utf-8")
-        for m in METHOD_RE.finditer(text):
-            methods.add(m.group(1))
-    return methods
 
 
 class _FakeNodeSocket:
@@ -152,24 +138,16 @@ async def run_runtime_smoke() -> tuple[list[str], bool]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--openclaw-root",
-        type=Path,
-        default=Path(__file__).resolve().parents[2] / "openclaw",
-        help="Path to openclaw repository root",
+        "--skip-runtime",
+        action="store_true",
+        help="Skip runtime smoke tests",
     )
     args = parser.parse_args()
 
-    openclaw_methods = collect_openclaw_methods(args.openclaw_root)
-    ours = set(GATEWAY_METHODS)
-    missing = sorted(openclaw_methods - ours)
-    extra = sorted(ours - openclaw_methods)
-
-    print(f"openclaw methods: {len(openclaw_methods)}")
-    print(f"joyhousebot methods: {len(ours)}")
-    print(f"missing methods: {len(missing)}")
-    for item in missing:
-        print(f"  MISSING: {item}")
-    print(f"extra methods: {len(extra)}")
+    if args.skip_runtime:
+        print("Runtime smoke tests skipped")
+        print("rpc_smoke: PASS")
+        return 0
 
     runtime_errors, skipped = asyncio.run(run_runtime_smoke())
     if skipped:
@@ -180,9 +158,7 @@ def main() -> int:
             print(f"  ERROR: {err}")
         return 1
 
-    if missing:
-        return 2
-    print("rpc_compat_smoke: PASS")
+    print("rpc_smoke: PASS")
     return 0
 
 

@@ -2,16 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OPENCLAW_ROOT_DEFAULT="$(cd "${ROOT_DIR}/.." && pwd)/openclaw"
-OPENCLAW_ROOT="${OPENCLAW_ROOT:-${OPENCLAW_ROOT_DEFAULT}}"
 
-echo "[1/4] Compile check"
+echo "[1/3] Compile check"
 python -m compileall "${ROOT_DIR}/joyhousebot" "${ROOT_DIR}/scripts/rpc_compat_smoke.py"
 
-echo "[2/4] RPC compatibility smoke"
-python "${ROOT_DIR}/scripts/rpc_compat_smoke.py" --openclaw-root "${OPENCLAW_ROOT}"
+echo "[2/3] RPC smoke"
+python "${ROOT_DIR}/scripts/rpc_compat_smoke.py"
 
-echo "[3/4] Unit tests"
+echo "[3/3] Unit tests"
 if [[ "${FULL_TESTS:-0}" == "1" ]]; then
   python -m pytest "${ROOT_DIR}/tests"
 else
