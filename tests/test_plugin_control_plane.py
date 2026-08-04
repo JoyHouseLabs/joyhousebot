@@ -19,6 +19,7 @@ def _store(tmp_path: Path) -> PostgresTestStore:
         version="1.0.0",
         name="Example Discover",
         distribution_name="example-plugin",
+        build_digest="sha256:test-example-discover",
     )
     store.upsert_plugin_release(manifest.to_dict())
     store.sync_plugin_components(
@@ -57,6 +58,19 @@ def test_plugin_catalog_is_durable_and_metrics_are_empty_without_invocations(tmp
     assert metrics["by_component"] == []
 
 
+def test_plugin_release_digest_cannot_be_overwritten(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(ValueError, match="immutable"):
+        store.upsert_plugin_release(
+            PluginManifest(
+                plugin_id="example.discover",
+                version="1.0.0",
+                name="Example Discover",
+                build_digest="sha256:different-build",
+            ).to_dict()
+        )
+
+
 def test_plugin_control_plane_api_requires_admin_and_projects_safe_metadata(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.create_api_access_token(user_id="operator", actor_id="test", token="plugin-token")
@@ -80,7 +94,7 @@ def test_capability_runtime_settings_api_requires_publish_permission(tmp_path: P
     store = _store(tmp_path)
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("example.search", "1.0.0", CapabilityKind.TOOL),
+            ref=CapabilityRef("example.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
             name="Example search", description="", input_schema={"type": "object"}, output_schema={"type": "object"}, adapter="example.search",
             configuration_schema={"type": "object", "additionalProperties": False, "properties": {"limit": {"type": "integer"}}},
         )
@@ -107,6 +121,14 @@ async def test_declared_plugin_diagnostics_are_persisted(tmp_path: Path) -> None
     # The Dinq catalog is deliberately absent here: the diagnostic must report
     # that fact as a safe failed result rather than raising or accessing a user.
     results = await run_plugin_diagnostics(config=config, store=store, plugin_id="dinq.discover")
-    assert {item["name"] for item in results} == {"catalog", "worker_release"}
+    assert {item["name"] for item in results} == {
+        "catalog",
+        "worker_release",
+        "connections",
+    }
     persisted = store.list_plugin_check_results("dinq.discover")
-    assert {item["name"] for item in persisted} == {"catalog", "worker_release"}
+    assert {item["name"] for item in persisted} == {
+        "catalog",
+        "worker_release",
+        "connections",
+    }

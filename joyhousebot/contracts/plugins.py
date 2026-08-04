@@ -33,11 +33,21 @@ class PluginManifest:
     description: str = ""
     distribution_name: str = ""
     build_digest: str = ""
+    runtime_contract_version: int = 1
     dependencies: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.plugin_id.strip() or not self.version.strip() or not self.name.strip():
             raise ValueError("plugin manifest id, version and name are required")
+        if self.runtime_contract_version < 1:
+            raise ValueError("plugin runtime_contract_version must be positive")
+        for dependency in self.dependencies:
+            if not str(dependency.get("id") or "").strip():
+                raise ValueError("plugin dependency id is required")
+            if str(dependency.get("kind") or "") not in {
+                "database", "http", "queue", "object_store", "credential", "service",
+            }:
+                raise ValueError("plugin dependency kind is invalid")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

@@ -102,6 +102,11 @@ export interface RunInputField {
   value_type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object'
   description?: string
   enum?: unknown[]
+  input_mode?: 'auto' | 'text' | 'textarea' | 'single_choice' | 'multi_choice' | 'boolean' | 'number'
+  options?: Array<{ value: string; label: string; description?: string }>
+  allow_other?: boolean
+  min_selections?: number | null
+  max_selections?: number | null
   required?: boolean
   sensitive?: boolean
 }
@@ -112,6 +117,8 @@ export interface PendingRunInput {
   node_id: string
   question: string
   fields: RunInputField[]
+  presentation?: { help_text?: string; progress?: { current?: number; total?: number }; [key: string]: unknown }
+  source?: 'scenario' | 'agent'
   created_at: string
 }
 

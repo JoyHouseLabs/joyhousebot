@@ -6,6 +6,8 @@
 
 - 不引入 `tenant_id`。认证主体映射为 `user_id`，会话边界是 `user_id + agent_id + session_id`。
 - Agent、Skill、Tool、模型和子 Agent 是平台共享能力；用户状态绝不存放在这些共享对象上。
+- Capability 的可执行身份是不可变 `CapabilityRef`：`capability_id + version + kind + plugin_id + plugin_version + plugin_build_digest`；
+  Scenario、显式 Graph、MCP 调用和 Run payload 都不允许用能力名称解析“最新版本”。
 - 公网协议只有版本化 HTTP 与 SSE；不存在公共 RPC 或 WebSocket 命令协议。
 - API 只认证、提交和查询；Agent Worker 执行模型与工具；Scheduler 和 Channel Worker 独立部署。
 - PostgreSQL 是所有环境的唯一事实源，不提供文件型存储回退。
@@ -95,6 +97,24 @@ draft → published/immutable → rollout(target worker snapshot)
 ```
 
 发布事务冻结当时健康且具备 `agent` 能力的目标 Worker。每个 Worker 的 revision-aware Runtime Catalog 主动拉取待加载版本并逐机 ACK；新请求仍按 Run snapshot 中的精确 revision 懒加载作为容错。只有全部目标成功后，PG 才原子更新 `agent_definitions.current_revision_id`。因此跨进程发布不要求重启，也不会把流量提前切给未加载版本。Agent 已发布 revision、Skill 绑定、Capability version 和 Scenario version 都不可原地修改。
+
+Agent revision 可声明精确 `plugin_requirements`。保存时会校验 PostgreSQL 存在同一
+`plugin_id + version + build_digest` 的活跃发布单元；Run snapshot 固化这些依赖，Worker 在执行前比对
+自身已加载插件清单，缺失时明确失败而不会换成同名新插件。插件注册阶段将每个 Capability 绑定到
+manifest 的 build digest；开发环境若 manifest 未提供 digest，框架只从已加载插件类源码导出 SHA-256，
+再将该不可变值写入控制面。
+
+Capability Registry 同时维护两个索引：模型可见目录按 capability 名称取当前启用版本；已持久化的
+Task 和 MCP 调用则按 `capability_id + version` 从版本索引取得 Adapter。后者绝不回退到当前版本。
+CapabilityDefinition 还声明 data classification、connection IDs、permissions 和 cost policy；这些是
+可审计的能力策略，不保存任何连接凭据正文。`capability_policy.permissions` 是 Agent revision 的
+能力授权集：它在提交 Run 后被固化到 execution snapshot，Worker 将其传给 Tool context；模型工具目录
+会过滤未授权能力，Dispatcher 在真正调用前再次拒绝未授权能力。支持精确权限、`namespace.*` 和 `*`，
+因此元数据声明绝不会只停留在控制台展示层。
+
+业务插件（例如 Dinq）不修改核心 Agent 默认配置。插件负责发布自己的 Capability、Scenario、Skill 和
+manifest；部署者创建或发布业务 Agent revision，显式写入该插件的 `plugin_requirements` 及最小
+`capability_policy.permissions`。因此通用平台可以不安装 Dinq，安装后也能以最小权限运行 Dinq Agent。
 
 ## PostgreSQL 数据模型
 
@@ -186,6 +206,13 @@ api / bootstrap / channel adapter
 Task 可由不同 Worker/Agent 并行执行，最终协调 Agent聚合全部结果。所有模型输出使用 JSON Schema
 校验，所有 Tool/Connector 调用使用 CapabilityResult 和持久 Invocation。
 
+追问不是普通聊天文本，而是冻结在 Run 上的 `InputRequest` 协议：一个字段可声明文本、单选、多选、
+确认或数字控件，选项标签、`Other`、最少/最多选择数和展示说明随场景版本保存。用户回答写入
+`run_input_answers`，Run 从 `waiting_input` 原子恢复；DAG 边按受限条件表达式（例如
+`goal == 'recruit'`、`present(city)`）和 priority 决定下一题。主协调器在未命中场景、且确实缺少
+执行所需信息时，也可以产生最多四个非敏感的动态 InputRequest；回答保存在 Run metadata 后重新进入
+协调，不会新建会话或丢失审计链路。
+
 ## 前端控制台
 
 Vue 前端是平台运行、管理、监控、配置控制台，同时保留一个用户态 Agent 试用面：
@@ -194,7 +221,8 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
 - 运行中心使用管理 API 查询所有用户 Run；详情统一展示 Task、Event、Log、Artifact、
   Capability Invocation、Request Trace、模型调用、原始推理、性能瀑布、回放对比和动态子 Agent。
 - 配置导航分为平台和业务能力配置两组。平台只负责访问控制、集群发布、审计和运行摘要；Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护，避免重复编辑入口。Dinq 运维作为独立插件运维入口保留。
-- 场景工作台负责路由、追问 DAG 与执行策略配置。
+- 场景工作台负责路由、追问 DAG 与执行策略配置，可编辑单选、多选、Other、选项说明和条件边；试用页将
+  InputRequest 渲染为可提交的交互卡片，并显示题目进度。
 - Agent 试用仍以当前 `user_id` 提交普通用户 Run，用于验证真实业务链路，不绕过用户隔离。
 
 ## 已删除且不得恢复

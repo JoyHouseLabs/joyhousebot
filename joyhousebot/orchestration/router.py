@@ -124,7 +124,7 @@ class ScenarioRouter:
             extracted_inputs=normalized_inputs,
             missing_inputs=missing,
             candidate_capabilities=tuple(
-                {"capability_id": item, "reason_code": "SCENARIO_ALLOWED"}
+                {**item.to_dict(), "reason_code": "SCENARIO_ALLOWED"}
                 for item in scenario.allowed_capabilities
             ),
             next_action="clarify" if missing else "plan",

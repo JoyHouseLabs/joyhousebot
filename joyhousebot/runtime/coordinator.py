@@ -13,7 +13,7 @@ from typing import Any
 from loguru import logger
 
 from joyhousebot.capabilities.dispatcher import capability_result_prompt
-from joyhousebot.domain.capabilities import InvocationStatus
+from joyhousebot.domain.capabilities import CapabilityRef, InvocationStatus
 from joyhousebot.orchestration.planner import ScenarioPlanner
 from joyhousebot.orchestration.task_graph import render_value
 from joyhousebot.runtime.context import CancellationToken, ToolExecutionContext
@@ -357,7 +357,12 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
                 },
             )
         )
-        capability_id = str(task.payload.get("capability_id") or "").strip()
+        capability = (
+            CapabilityRef.from_dict(dict(task.payload["capability"]))
+            if task.payload.get("capability")
+            else None
+        )
+        capability_id = capability.capability_id if capability else ""
         capability_result = None
         try:
             dependencies = await asyncio.to_thread(
@@ -407,6 +412,7 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
                 capability_result = await registry.invoke_tool(
                     capability_id,
                     capability_input,
+                    version=capability.version,
                     context=ToolExecutionContext(
                         run_id=run.run_id,
                         task_id=task.task_id,
@@ -418,6 +424,9 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
                         user_id=run.user_id,
                         agent_id=task.agent_id,
                         allowed_tools=frozenset({capability_id}),
+                        granted_permissions=await self._execution_permissions(
+                            run.run_id, task.agent_id
+                        ),
                         cancellation=cancellation,
                         worker_id=self.worker_id,
                     ),

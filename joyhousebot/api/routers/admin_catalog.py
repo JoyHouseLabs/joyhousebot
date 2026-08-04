@@ -32,7 +32,7 @@ from joyhousebot.api.schemas import (
 from joyhousebot.application.permissions import permission_catalog_response
 from joyhousebot.application.presenters import public_capability_definition
 from joyhousebot.config.schema import MCPServerConfig
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
@@ -128,6 +128,9 @@ async def save_agent_revision(
         capability_policy=body.capability_policy,
         memory_policy=body.memory_policy,
         output_policy=body.output_policy,
+        plugin_requirements=tuple(
+            PluginReleaseRequirement.from_dict(item) for item in body.plugin_requirements
+        ),
         status="draft",
         created_by=principal.subject,
     )
@@ -241,7 +244,14 @@ async def publish_capability(
     container: ContainerDep,
 ):
     definition = CapabilityDefinition(
-        ref=CapabilityRef(capability_id, version, CapabilityKind(body.kind)),
+        ref=CapabilityRef(
+            capability_id,
+            version,
+            CapabilityKind(body.kind),
+            body.plugin_id,
+            body.plugin_version,
+            body.plugin_build_digest,
+        ),
         name=body.name,
         description=body.description,
         input_schema=body.input_schema,
@@ -256,6 +266,9 @@ async def publish_capability(
         side_effect=body.side_effect,
         supports_stream=body.supports_stream,
         permissions=tuple(body.permissions),
+        data_classification=body.data_classification,
+        connection_ids=tuple(body.connection_ids),
+        cost_policy=body.cost_policy,
         configuration_schema=body.configuration_schema,
         configuration=body.configuration,
     )

@@ -14,6 +14,7 @@ from joyhousebot.api.dependencies import (
 )
 from joyhousebot.api.schemas import SaveScenarioVersionRequest, SimulateScenarioRequest
 from joyhousebot.application.presenters import public_capability_definition
+from joyhousebot.domain.capabilities.models import CapabilityRef
 from joyhousebot.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
@@ -57,7 +58,9 @@ async def save_version(
         fields=tuple(ScenarioField(**item.model_dump()) for item in body.fields),
         nodes=tuple(ClarificationNode(**item.model_dump()) for item in body.nodes),
         edges=tuple(ClarificationEdge(**item.model_dump()) for item in body.edges),
-        allowed_capabilities=tuple(body.allowed_capabilities),
+        allowed_capabilities=tuple(
+            CapabilityRef.from_dict(item.model_dump()) for item in body.allowed_capabilities
+        ),
         planning_mode=body.planning_mode,
         execution_policy=body.execution_policy,
         routing_rules=tuple(body.routing_rules),
@@ -93,9 +96,22 @@ async def publish_version(
     )
     if draft is None:
         raise HTTPException(status_code=404, detail="scenario version not found")
-    definitions = await asyncio.to_thread(container.store.list_capability_definitions)
-    known = {str(item.get("ref", {}).get("capability_id")) for item in definitions}
-    unknown = set(draft.allowed_capabilities) - known
+    checks = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                container.store.get_capability_definition,
+                item.capability_id,
+                item.version,
+            )
+            for item in draft.allowed_capabilities
+        )
+    )
+    unknown = [
+        item.to_dict()
+        for item, definition in zip(draft.allowed_capabilities, checks, strict=True)
+        if definition is None
+        or CapabilityRef.from_dict(dict(definition["ref"])).identity != item.identity
+    ]
     if unknown:
         raise HTTPException(
             status_code=409,

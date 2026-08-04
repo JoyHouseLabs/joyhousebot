@@ -16,7 +16,7 @@ from tests.support.postgres_store import PostgresTestStore
 
 def _definition(description: str = "Search public pages") -> CapabilityDefinition:
     return CapabilityDefinition(
-        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL),
+        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
         name="Web search",
         description=description,
         input_schema={
@@ -62,7 +62,7 @@ def test_capability_invocation_is_idempotent_and_user_scoped(tmp_path: Path) -> 
     store = PostgresTestStore(tmp_path / "invocations.db")
     _run(store)
     invocation = CapabilityInvocation(
-        capability=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL),
+        capability=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
         user_id="user-a",
         agent_id="coordinator",
         session_id="session-1",
@@ -95,7 +95,7 @@ def test_published_skill_content_is_worker_shared_and_not_public(tmp_path: Path)
     instruction = "---\ndescription: Evidence research\n---\nUse primary sources."
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("skill.research", "1.0.0", CapabilityKind.SKILL),
+            ref=CapabilityRef("skill.research", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
             name="research",
             description="Evidence research",
             input_schema={"type": "object"},
@@ -118,7 +118,7 @@ def test_runtime_capability_settings_are_validated_audited_and_overlay_skill(tmp
     store = PostgresTestStore(tmp_path / "runtime-settings.db")
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("skill.configurable", "1.0.0", CapabilityKind.SKILL),
+            ref=CapabilityRef("skill.configurable", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
             name="configurable",
             description="A configurable prompt skill",
             input_schema={"type": "object"},

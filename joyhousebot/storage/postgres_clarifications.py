@@ -28,7 +28,9 @@ class PostgresClarificationStoreMixin:
             run_id TEXT NOT NULL REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
             user_id TEXT NOT NULL,scenario_id TEXT NOT NULL,scenario_version INTEGER NOT NULL,
             node_id TEXT NOT NULL,status TEXT NOT NULL,question TEXT NOT NULL,
-            fields JSONB NOT NULL DEFAULT '[]'::jsonb,expires_at TIMESTAMPTZ,
+            fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+            presentation JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source TEXT NOT NULL DEFAULT 'scenario',expires_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),resolved_at TIMESTAMPTZ
         );
         CREATE INDEX IF NOT EXISTS ix_run_input_pending
@@ -46,6 +48,14 @@ class PostgresClarificationStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341910,))
             conn.execute(ddl)
+            conn.execute(
+                "ALTER TABLE run_input_requests ADD COLUMN IF NOT EXISTS "
+                "presentation JSONB NOT NULL DEFAULT '{}'::jsonb"
+            )
+            conn.execute(
+                "ALTER TABLE run_input_requests ADD COLUMN IF NOT EXISTS "
+                "source TEXT NOT NULL DEFAULT 'scenario'"
+            )
 
     def save_run_scenario_state(
         self, *, run_id: str, user_id: str, scenario_id: str, scenario_version: int,
@@ -82,17 +92,18 @@ class PostgresClarificationStoreMixin:
     def create_input_request(
         self, *, input_request_id: str, run_id: str, user_id: str,
         scenario_id: str, scenario_version: int, node_id: str, question: str,
-        fields: list[dict[str, Any]], expires_at: str | None = None,
+        fields: list[dict[str, Any]], presentation: dict[str, Any] | None = None,
+        source: str = "scenario", expires_at: str | None = None,
     ) -> InputRequestRecord:
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(
                 """INSERT INTO run_input_requests
                        (input_request_id,run_id,user_id,scenario_id,scenario_version,node_id,
-                        status,question,fields,expires_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s)
+                        status,question,fields,presentation,source,expires_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s)
                    ON CONFLICT(run_id,node_id) WHERE status='pending' DO NOTHING RETURNING *""",
                 (input_request_id, run_id, user_id, scenario_id, scenario_version, node_id,
-                 question, Jsonb(fields), expires_at),
+                 question, Jsonb(fields), Jsonb(presentation or {}), source, expires_at),
             ).fetchone()
             if row is None:
                 row = conn.execute(
@@ -113,6 +124,17 @@ class PostgresClarificationStoreMixin:
                 (run_id, expected_user_id),
             ).fetchall()
         return [self._input_request(row) for row in rows]
+
+    def get_input_request(
+        self, input_request_id: str, *, expected_user_id: str
+    ) -> InputRequestRecord | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT * FROM run_input_requests
+                   WHERE input_request_id=%s AND user_id=%s""",
+                (input_request_id, expected_user_id),
+            ).fetchone()
+        return self._input_request(row) if row else None
 
     def resolve_input_request(
         self, *, input_request_id: str, run_id: str, user_id: str,
@@ -154,6 +176,49 @@ class PostgresClarificationStoreMixin:
             ).fetchone()
         return updated is not None
 
+    def resolve_dynamic_input_request(
+        self,
+        *,
+        input_request_id: str,
+        run_id: str,
+        user_id: str,
+        answers: dict[str, Any],
+    ) -> bool:
+        """Resolve a coordinator-created request and atomically requeue its Run."""
+        with self._pool.connection() as conn, conn.transaction():
+            request = conn.execute(
+                """SELECT status,source FROM run_input_requests WHERE input_request_id=%s
+                   AND run_id=%s AND user_id=%s FOR UPDATE""",
+                (input_request_id, run_id, user_id),
+            ).fetchone()
+            if request is None or request["status"] != "pending" or request["source"] != "agent":
+                return False
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """INSERT INTO run_input_answers
+                           (input_request_id,field_name,value,source)
+                       VALUES (%s,%s,%s,'user')""",
+                    [(input_request_id, name, Jsonb(value)) for name, value in answers.items()],
+                )
+            conn.execute(
+                """UPDATE run_input_requests SET status='resolved',resolved_at=clock_timestamp()
+                   WHERE input_request_id=%s""",
+                (input_request_id,),
+            )
+            updated = conn.execute(
+                """UPDATE runtime_runs SET status='queued',waiting_on=NULL,
+                       options=jsonb_set(
+                           options,
+                           '{metadata,dynamic_inputs}',
+                           COALESCE(options #> '{metadata,dynamic_inputs}', '{}'::jsonb) || %s::jsonb,
+                           true
+                       ),updated_at=clock_timestamp()
+                   WHERE run_id=%s AND user_id=%s AND status='waiting_input'
+                   RETURNING run_id""",
+                (Jsonb(answers), run_id, user_id),
+            ).fetchone()
+        return updated is not None
+
     @staticmethod
     def _scenario_state(row: dict[str, Any]) -> RunScenarioStateRecord:
         from joyhousebot.storage.postgres_store import _iso
@@ -176,6 +241,7 @@ class PostgresClarificationStoreMixin:
             user_id=str(row["user_id"]), scenario_id=str(row["scenario_id"]),
             scenario_version=int(row["scenario_version"]), node_id=str(row["node_id"]),
             status=str(row["status"]), question=str(row["question"]),
-            fields=list(row["fields"]), expires_at=_iso(row["expires_at"]),
+            fields=list(row["fields"]), presentation=dict(row["presentation"] or {}),
+            source=str(row["source"]), expires_at=_iso(row["expires_at"]),
             created_at=_iso(row["created_at"]) or "", resolved_at=_iso(row["resolved_at"]),
         )

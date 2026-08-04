@@ -34,7 +34,7 @@ class ToolCapabilityAdapter:
         self,
         tool: Tool,
         *,
-        version: str = "1.0.0",
+        version: str = "1.0.1",
         definition: CapabilityDefinition | None = None,
     ) -> None:
         self.tool = tool
@@ -44,7 +44,14 @@ class ToolCapabilityAdapter:
             self.definition = definition
         else:
             self.definition = CapabilityDefinition(
-                ref=CapabilityRef(tool.name, version, CapabilityKind.TOOL),
+                ref=CapabilityRef(
+                    tool.name,
+                    version,
+                    CapabilityKind.TOOL,
+                    "joyhousebot.core",
+                    "0.1.2",
+                    "builtin",
+                ),
                 name=tool.name,
                 description=tool.description,
                 input_schema=tool.parameters,

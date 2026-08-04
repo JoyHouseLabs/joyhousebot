@@ -95,8 +95,8 @@ def test_plugin_registry_loads_configured_module(monkeypatch):
     module.register = register
     monkeypatch.setitem(sys.modules, module.__name__, module)
     registry = CapabilityPluginRegistry()
-    assert registry.load_modules([module.__name__]) == [module.__name__]
-    assert registry.get("demo.module", "1.0.0") is not None
+    with pytest.raises(ValueError, match="active plugin"):
+        registry.load_modules([module.__name__])
 
 
 def test_runtime_adapter_preserves_plugin_definition_metadata():
@@ -128,7 +128,9 @@ def test_runtime_adapter_preserves_plugin_definition_metadata():
     assert adapter.definition.retryable is False
     assert adapter.definition.permissions == ("metadata.invoke",)
     assert adapter.definition.configuration == {"cache_ttl_seconds": 60}
-    assert adapter.definition.origin == {"plugin_id": "metadata", "plugin_version": "1.0.0"}
+    assert adapter.definition.origin["plugin_id"] == "metadata"
+    assert adapter.definition.origin["plugin_version"] == "1.0.0"
+    assert adapter.definition.origin["plugin_build_digest"].startswith("sha256:")
 
 
 @pytest.mark.asyncio
@@ -162,3 +164,45 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
     assert result.ok and observed == {"prefix": "configured"}
     store.save_capability_runtime_settings("settings.echo", enabled=False, configuration={}, actor_id="admin")
     assert registry.get_tool("settings.echo") is None
+
+
+@pytest.mark.asyncio
+async def test_native_runtime_enforces_plugin_capability_permissions():
+    class ProtectedPlugin:
+        plugin_id = "protected"
+        version = "1.0.0"
+
+        def register(self, registry):
+            registry.register_capability(
+                CapabilityDefinition(
+                    name="protected.read",
+                    ref=CapabilityRef("protected.read", "1.0.0", CapabilityKind.TOOL),
+                    description="protected read",
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    adapter="protected.read",
+                    permissions=("protected.read",),
+                ),
+                Handler(),
+            )
+
+    registry = CapabilityRegistry()
+    registry.register_plugin(ProtectedPlugin())
+    base = ToolExecutionContext(run_id="run", session_key="session", channel="api", chat_id="chat")
+    denied = await registry.invoke_tool("protected.read", {}, context=base)
+    assert denied.ok is False
+    assert denied.error and denied.error.code == "PERMISSION_DENIED"
+    assert registry.get_tool_definitions(base) == []
+
+    allowed = ToolExecutionContext(
+        run_id="run",
+        session_key="session",
+        channel="api",
+        chat_id="chat",
+        granted_permissions=frozenset({"protected.*"}),
+    )
+    result = await registry.invoke_tool("protected.read", {}, context=allowed)
+    assert result.ok is True
+    assert [item["function"]["name"] for item in registry.get_tool_definitions(allowed)] == [
+        "protected.read"
+    ]

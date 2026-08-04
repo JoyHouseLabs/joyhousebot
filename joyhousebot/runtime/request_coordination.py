@@ -69,6 +69,7 @@ class RequestCoordinationMixin:
             return prompt, tools, metadata, coordination_usage
         if not bool(options.metadata.get("coordinator_required")):
             return prompt, tools, metadata, coordination_usage
+        dynamic_inputs = dict(options.metadata.get("dynamic_inputs") or {})
 
         scenarios, capability_catalog = await asyncio.gather(
             asyncio.to_thread(self.store.list_scenario_versions, published_only=True),
@@ -89,7 +90,12 @@ class RequestCoordinationMixin:
             run_id=record.run_id,
             task_id=None,
             prompt=build_coordinator_prompt(
-                options.prompt,
+                (
+                    f"{options.prompt}\n\n## Answers already supplied by the user\n"
+                    f"{json.dumps(dynamic_inputs, ensure_ascii=False)}"
+                    if dynamic_inputs
+                    else options.prompt
+                ),
                 scenarios=[item.to_dict() for item in scenarios],
                 capabilities=capability_catalog,
                 routing_decision=dict(options.metadata.get("routing_decision") or {}),
@@ -124,13 +130,18 @@ class RequestCoordinationMixin:
             status="completed",
             data={"intent": plan["intent"], "execution_class": plan["execution_class"]},
         )
-        tools = plan["selected_capabilities"] or tools
+        selected_tool_ids = [
+            str(item.get("capability_id"))
+            for item in plan["selected_capabilities"]
+            if isinstance(item, dict)
+        ]
+        tools = selected_tool_ids or tools
         metadata["skill_names"] = plan["selected_skills"]
         metadata["coordinator_plan"] = plan
         if plan["selected_capabilities"]:
             await self._publish_coordination_progress(
                 record.run_id,
-                "已选择能力：" + "、".join(plan["selected_capabilities"]),
+                "已选择能力：" + "、".join(selected_tool_ids),
                 stage="capabilities_selected",
                 status="completed",
                 data={"capabilities": plan["selected_capabilities"]},
@@ -243,6 +254,7 @@ class RequestCoordinationMixin:
                             "scenario_id": selected_scenario.scenario_id,
                             "question": request.question,
                             "fields": request.fields,
+                            "presentation": request.presentation,
                         },
                     )
                 )
@@ -267,17 +279,9 @@ class RequestCoordinationMixin:
                 data={"scenario_id": selected_scenario.scenario_id},
             )
             tools = [
-                item
+                item.capability_id
                 for item in selected_scenario.allowed_capabilities
-                if next(
-                    (
-                        definition.get("ref", {}).get("kind")
-                        for definition in capability_catalog
-                        if definition.get("ref", {}).get("capability_id") == item
-                    ),
-                    None,
-                )
-                in {"tool", "connector"}
+                if item.kind.value in {"tool", "connector"}
             ]
             await self._publish_coordination_progress(
                 record.run_id,
@@ -287,9 +291,9 @@ class RequestCoordinationMixin:
                 data={"capability_count": len(tools)},
             )
             metadata["skill_names"] = [
-                item.removeprefix("skill.")
+                item.capability_id.removeprefix("skill.")
                 for item in selected_scenario.allowed_capabilities
-                if item.startswith("skill.")
+                if item.kind.value == "skill"
             ]
             prompt += (
                 "\n\n## Validated scenario context\n"
@@ -307,6 +311,50 @@ class RequestCoordinationMixin:
                 idempotency_key=record.idempotency_key,
                 request_id=str(options.request_id or f"req_{record.run_id}"),
             )
+        clarification = plan.get("clarification")
+        if selected_scenario is None and clarification is not None:
+            clarifications = ClarificationEngine(self.store)
+            request = await asyncio.to_thread(
+                clarifications.create_dynamic_request,
+                run_id=record.run_id,
+                user_id=record.user_id,
+                question=str(clarification["question"]),
+                fields=list(clarification["fields"]),
+                presentation={"help_text": clarification.get("help_text") or ""},
+            )
+            transitioned = await asyncio.to_thread(
+                self.store.update_runtime_run,
+                record.run_id,
+                status="waiting_input",
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+            )
+            if not transitioned:
+                raise asyncio.CancelledError("run ownership lost before dynamic clarification")
+            await self._publish_coordination_progress(
+                record.run_id,
+                "需要补充关键信息后继续执行",
+                stage="dynamic_clarification_required",
+                status="waiting_input",
+                data={"field_count": len(request.fields)},
+            )
+            await self.events.publish(
+                AgentEvent(
+                    run_id=record.run_id,
+                    type=EventType.USER_INPUT_REQUESTED.value,
+                    phase="clarifying",
+                    status="waiting_input",
+                    summary=request.question,
+                    data={
+                        "input_request_id": request.input_request_id,
+                        "source": request.source,
+                        "question": request.question,
+                        "fields": request.fields,
+                        "presentation": request.presentation,
+                    },
+                )
+            )
+            return None, tools, metadata, coordination_usage
         await self.events.publish(
             AgentEvent(
                 run_id=record.run_id,

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from joyhousebot.domain.capabilities.models import CapabilityRef
+
 
 @dataclass(frozen=True, slots=True)
 class ScenarioField:
@@ -14,16 +16,58 @@ class ScenarioField:
     description: str = ""
     default: Any = None
     enum: tuple[Any, ...] = ()
+    # Presentation is deliberately part of the immutable scenario version,
+    # rather than a frontend-only hint.  It freezes what a user was asked and
+    # lets another channel (web, Slack, WhatsApp, MCP host) render the same
+    # request without guessing from a Python type.
+    input_mode: str = "auto"
+    options: tuple[dict[str, Any], ...] = ()
+    allow_other: bool = False
+    min_selections: int | None = None
+    max_selections: int | None = None
     validation: dict[str, Any] = field(default_factory=dict)
     sensitive: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("scenario field name is required")
+        modes = {"auto", "text", "textarea", "single_choice", "multi_choice", "boolean", "number"}
+        if self.input_mode not in modes:
+            raise ValueError("invalid scenario field input_mode")
+        values: list[str] = []
+        for option in self.options:
+            if not isinstance(option, dict):
+                raise ValueError("scenario field options must be objects")
+            value = str(option.get("value") or "").strip()
+            label = str(option.get("label") or "").strip()
+            if not value or not label:
+                raise ValueError("scenario field options require value and label")
+            values.append(value)
+        if len(values) != len(set(values)):
+            raise ValueError("scenario field option values must be unique")
+        if self.input_mode == "multi_choice" and self.value_type != "array":
+            raise ValueError("multi_choice scenario field must use array value_type")
+        if self.input_mode == "single_choice" and self.value_type != "string":
+            raise ValueError("single_choice scenario field must use string value_type")
+        if self.input_mode == "boolean" and self.value_type != "boolean":
+            raise ValueError("boolean scenario field must use boolean value_type")
+        if self.input_mode == "number" and self.value_type not in {"integer", "number"}:
+            raise ValueError("number scenario field must use numeric value_type")
+        if self.min_selections is not None and self.min_selections < 0:
+            raise ValueError("min_selections cannot be negative")
+        if self.max_selections is not None and self.max_selections < 1:
+            raise ValueError("max_selections must be positive")
+        if (
+            self.min_selections is not None
+            and self.max_selections is not None
+            and self.min_selections > self.max_selections
+        ):
+            raise ValueError("min_selections cannot exceed max_selections")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["enum"] = list(self.enum)
+        value["options"] = [dict(item) for item in self.options]
         return value
 
 
@@ -64,7 +108,7 @@ class ScenarioVersion:
     fields: tuple[ScenarioField, ...]
     nodes: tuple[ClarificationNode, ...]
     edges: tuple[ClarificationEdge, ...]
-    allowed_capabilities: tuple[str, ...]
+    allowed_capabilities: tuple[CapabilityRef, ...]
     planning_mode: str = "dynamic"
     execution_policy: dict[str, Any] = field(default_factory=dict)
     routing_rules: tuple[dict[str, Any], ...] = ()
@@ -78,6 +122,11 @@ class ScenarioVersion:
             raise ValueError("scenario planning mode must be fixed or dynamic")
         if self.status not in {"draft", "published", "retired"}:
             raise ValueError("invalid scenario version status")
+        if any(not isinstance(item, CapabilityRef) for item in self.allowed_capabilities):
+            raise ValueError("scenario allowed_capabilities must contain pinned CapabilityRef values")
+        identities = [item.identity for item in self.allowed_capabilities]
+        if len(identities) != len(set(identities)):
+            raise ValueError("scenario allowed capability references must be unique")
         aggregation_policy = self.execution_policy.get("aggregation_policy")
         if aggregation_policy is not None:
             from joyhousebot.orchestration.aggregation import normalize_aggregation_policy
@@ -103,6 +152,9 @@ class ScenarioVersion:
         for edge in self.edges:
             if edge.source_node_id not in node_ids or edge.target_node_id not in node_ids:
                 raise ValueError("clarification edge references an unknown node")
+            from joyhousebot.domain.scenarios.clarification_conditions import validate_condition
+
+            validate_condition(edge.condition)
             adjacency[edge.source_node_id].append(edge.target_node_id)
         visiting: set[str] = set()
         visited: set[str] = set()
@@ -130,7 +182,7 @@ class ScenarioVersion:
             "fields": [item.to_dict() for item in self.fields],
             "nodes": [item.to_dict() for item in self.nodes],
             "edges": [asdict(item) for item in self.edges],
-            "allowed_capabilities": list(self.allowed_capabilities),
+            "allowed_capabilities": [item.to_dict() for item in self.allowed_capabilities],
             "planning_mode": self.planning_mode,
             "execution_policy": self.execution_policy,
             "routing_rules": list(self.routing_rules),
@@ -153,6 +205,19 @@ class ScenarioVersion:
                     description=str(item.get("description") or ""),
                     default=item.get("default"),
                     enum=tuple(item.get("enum") or ()),
+                    input_mode=str(item.get("input_mode") or "auto"),
+                    options=tuple(dict(option) for option in item.get("options") or ()),
+                    allow_other=bool(item.get("allow_other")),
+                    min_selections=(
+                        int(item["min_selections"])
+                        if item.get("min_selections") is not None
+                        else None
+                    ),
+                    max_selections=(
+                        int(item["max_selections"])
+                        if item.get("max_selections") is not None
+                        else None
+                    ),
                     validation=dict(item.get("validation") or {}),
                     sensitive=bool(item.get("sensitive")),
                 )
@@ -177,7 +242,10 @@ class ScenarioVersion:
                 )
                 for item in value.get("edges") or ()
             ),
-            allowed_capabilities=tuple(value.get("allowed_capabilities") or ()),
+            allowed_capabilities=tuple(
+                CapabilityRef.from_dict(dict(item))
+                for item in value.get("allowed_capabilities") or ()
+            ),
             planning_mode=str(value.get("planning_mode") or "dynamic"),
             execution_policy=dict(value.get("execution_policy") or {}),
             routing_rules=tuple(value.get("routing_rules") or ()),

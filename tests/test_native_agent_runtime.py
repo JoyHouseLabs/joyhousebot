@@ -10,6 +10,7 @@ import pytest
 from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities import CapabilityRegistry
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
 from joyhousebot.orchestration.clarification import ClarificationEngine
 from joyhousebot.orchestration.task_graph import validate_and_order_graph
@@ -241,6 +242,70 @@ async def test_main_coordinator_materializes_multi_agent_plan_as_graph(
 
 
 @pytest.mark.asyncio
+async def test_main_coordinator_can_pause_for_dynamic_structured_input(
+    store: PostgresTestStore,
+) -> None:
+    class DynamicClarificationAgent(FakeAgent):
+        async def process_direct(self, content: str, *, run_context, **kwargs: Any) -> str:
+            if run_context.output_schema:
+                if "Answers already supplied" not in content:
+                    return json.dumps(
+                        {
+                            "intent": "people_search",
+                            "summary": "Need search goal",
+                            "scenario_id": None,
+                            "scenario_inputs": {},
+                            "execution_class": "interactive",
+                            "estimated_duration_seconds": 30,
+                            "selected_capabilities": [],
+                            "selected_skills": [],
+                            "planned_steps": [],
+                            "clarification": {
+                                "question": "What should the search produce?",
+                                "fields": [{
+                                    "name": "goal", "label": "Goal", "value_type": "string",
+                                    "required": True, "input_mode": "single_choice",
+                                    "options": [{"value": "recruit", "label": "Recruit candidates"}],
+                                }],
+                            },
+                        }
+                    )
+                return json.dumps(
+                    {
+                        "intent": "people_search", "summary": "Search planned", "scenario_id": None,
+                        "scenario_inputs": {}, "execution_class": "interactive",
+                        "estimated_duration_seconds": 30, "selected_capabilities": [],
+                        "selected_skills": [], "planned_steps": [], "clarification": None,
+                    }
+                )
+            return "dynamic input accepted"
+
+    runtime = NativeAgentRuntime(agent=DynamicClarificationAgent(), store=store)
+    submitted = await runtime.submit_run(
+        AgentOptions(
+            prompt="Find people", user_id="user-a", session_id="dynamic-session",
+            metadata={"coordinator_required": True},
+        )
+    )
+    waiting = await runtime.wait(submitted.run_id, timeout=2)
+    assert waiting.status == "waiting_input"
+    pending = store.list_pending_input_requests(waiting.run_id, expected_user_id="user-a")
+    assert pending[0].source == "agent"
+    assert pending[0].fields[0]["input_mode"] == "single_choice"
+    assert store.resolve_dynamic_input_request(
+        input_request_id=pending[0].input_request_id,
+        run_id=waiting.run_id,
+        user_id="user-a",
+        answers={"goal": "recruit"},
+    )
+    store.notify_work(waiting.run_id)
+    completed = await runtime.wait(waiting.run_id, timeout=3)
+    assert completed.status == "completed"
+    assert completed.result["content"] == "dynamic input accepted"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_routes_shared_agents_and_persists_user_session_identity(
     store: PostgresTestStore,
 ) -> None:
@@ -449,7 +514,7 @@ async def test_graph_task_invokes_capability_through_unified_dispatcher(
                 GraphTaskSpec(
                     id="echo",
                     prompt="",
-                    capability_id="echo",
+                    capability=CapabilityRef("echo", "1.0.1", CapabilityKind.TOOL, "joyhousebot.core", "0.1.2", "builtin"),
                     capability_input={"text": "hello"},
                 )
             ],

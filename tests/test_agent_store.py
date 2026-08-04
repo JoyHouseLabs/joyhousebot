@@ -6,7 +6,8 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.contracts.plugins import PluginManifest
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
@@ -75,6 +76,60 @@ def test_default_agents_are_seeded_from_database(tmp_path: Path) -> None:
     }
 
 
+def test_default_agent_seed_does_not_restore_pruned_revision(tmp_path: Path) -> None:
+    """An operator-selected current revision survives a process restart."""
+    store = PostgresTestStore(tmp_path / "agent-seed-prune.db")
+    definition = AgentDefinition(
+        agent_id="main-coordinator",
+        name="Main Coordinator",
+        description="Operator managed coordinator",
+        role="coordinator",
+    )
+    revision = AgentRevision(
+        revision_id="main-coordinator:v2",
+        agent_id="main-coordinator",
+        version=2,
+        instructions="Use approved Dinq capabilities.",
+        model_policy={"primary": "test/model"},
+        capability_policy={"permissions": ["dinq.search.read"]},
+        status="published",
+    )
+    store.save_agent_revision(definition, revision)
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute("DELETE FROM agent_revisions WHERE revision_id='main-coordinator:v1'")
+
+    store._seed_default_agents()
+
+    assert store.get_agent_revision("main-coordinator:v1") is None
+    profile = store.get_agent_profile("main-coordinator")
+    assert profile is not None
+    assert profile.revision.revision_id == "main-coordinator:v2"
+
+
+def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "agent-plugin-requirements.db")
+    definition, revision = _profile()
+    pinned = replace(
+        revision,
+        plugin_requirements=(
+            PluginReleaseRequirement("dinq.discover", "0.4.0", "sha256:dinq-040"),
+        ),
+    )
+    with pytest.raises(ValueError, match="unavailable plugin release"):
+        store.save_agent_revision(definition, pinned)
+    store.upsert_plugin_release(
+        PluginManifest(
+            plugin_id="dinq.discover",
+            version="0.4.0",
+            name="Dinq Discover",
+            build_digest="sha256:dinq-040",
+        ).to_dict()
+    )
+    store.save_agent_revision(definition, pinned)
+    restored = store.get_agent_revision("researcher:v1")
+    assert restored and restored.plugin_requirements == pinned.plugin_requirements
+
+
 def test_draft_can_be_published_and_published_revision_is_immutable(
     tmp_path: Path,
 ) -> None:
@@ -110,7 +165,7 @@ def test_agent_skill_binding_requires_published_skill(tmp_path: Path) -> None:
 
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("skill.research", "1.0.0", CapabilityKind.SKILL),
+            ref=CapabilityRef("skill.research", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
             name="Research",
             description="Research instructions",
             input_schema={"type": "object"},

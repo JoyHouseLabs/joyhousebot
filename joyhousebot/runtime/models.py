@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from joyhousebot.domain.capabilities.models import CapabilityRef
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -229,11 +231,17 @@ class GraphTaskSpec:
     timeout_seconds: float = 300.0
     max_attempts: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
-    capability_id: str | None = None
+    capability: CapabilityRef | None = None
     capability_input: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
     allowed_tools: list[str] = field(default_factory=list)
     skill_names: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.capability, dict):
+            self.capability = CapabilityRef.from_dict(self.capability)
+        if self.capability is not None and not isinstance(self.capability, CapabilityRef):
+            raise ValueError("graph task capability must be a pinned CapabilityRef")
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "GraphTaskSpec":
@@ -252,7 +260,11 @@ class GraphTaskSpec:
             ),
             max_attempts=max(1, int(value.get("max_attempts") or value.get("maxAttempts") or 1)),
             metadata=dict(value.get("metadata") or {}),
-            capability_id=(str(value["capability_id"]) if value.get("capability_id") else None),
+            capability=(
+                CapabilityRef.from_dict(dict(value["capability"]))
+                if value.get("capability")
+                else None
+            ),
             capability_input=dict(value.get("capability_input") or {}),
             output_schema=(dict(value["output_schema"]) if value.get("output_schema") else None),
             allowed_tools=[str(item) for item in value.get("allowed_tools", [])],

@@ -19,7 +19,7 @@
 ### 1.2 主协调与业务场景
 
 - 请求先经过确定性场景路由和结构化协调决策，再选择单 Agent、固定 DAG 或动态 Graph。
-- Scenario 支持字段 Schema、追问节点、条件边、能力白名单、执行策略和 Studio 模拟。
+- Scenario 支持字段 Schema、单选/多选/Other 展示协议、追问节点、受限条件边、能力白名单、执行策略和 Studio 模拟；用户回答始终恢复同一个 Run。
 - Tool、Skill、Agent、Workflow、Connector 使用统一 CapabilityDefinition/Invocation/Result。
 - Agent、Capability、Scenario 是平台共享版本化资源，不为每个用户复制。
 
@@ -31,6 +31,13 @@
 - Worker 的 AgentRuntimeCatalog 主动预热精确 revision，并记录 loaded/failed ACK。
 - 全部目标成功后才原子切换 current revision；失败时旧版本继续服务。
 - Run 创建时固化 Agent revision 与 Skill 绑定，回放不会被后续发布漂移。
+- CapabilityRef 已固定到产生它的插件发布单元；Scenario、Graph 和 MCP 任务只持久化完整引用，不会
+  因同名 capability 发布新版本而漂移。
+- Agent revision 的 `plugin_requirements` 在保存、Run snapshot 和 Worker 执行三处校验精确 digest。
+- Plugin release 同版本不可覆盖 build digest；Worker 观测会分别展示已加载、版本不匹配和真正
+  execution-eligible 的节点。Capability 声明已包含数据分级、连接依赖与成本策略字段。
+- Capability 权限已进入执行边界：Agent revision 的 `capability_policy.permissions` 随 Run snapshot
+  固化，既过滤模型可见目录，也在 Dispatcher 处二次校验；业务插件不得只在 UI 元数据中声明权限。
 
 ### 1.4 控制面与认证
 

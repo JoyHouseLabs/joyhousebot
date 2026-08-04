@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
@@ -33,7 +34,7 @@ def _scenario() -> ScenarioVersion:
             ClarificationEdge("text", "voice", "present(text)"),
             ClarificationEdge("voice", "ready", "present(voice)"),
         ),
-        allowed_capabilities=("speech.synthesize",),
+        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
         planning_mode="fixed",
         execution_policy={"execution_class": "interactive"},
         routing_rules=({"contains_any": ["语音", "朗读"]},),
@@ -166,7 +167,7 @@ def test_scenario_numeric_validation_honors_configured_bounds(tmp_path: Path) ->
         ),
         nodes=(ClarificationNode("limit", "question", "How many?", ("limit",)),),
         edges=(),
-        allowed_capabilities=("speech.synthesize",),
+        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
     )
     engine = ClarificationEngine(store)
     with pytest.raises(ValueError, match="at least 1"):
@@ -174,3 +175,90 @@ def test_scenario_numeric_validation_honors_configured_bounds(tmp_path: Path) ->
     with pytest.raises(ValueError, match="at most 20"):
         engine.validate_inputs(scenario, {"limit": 21})
     assert engine.validate_inputs(scenario, {"limit": 20}) == {"limit": 20}
+
+
+def test_clarification_follows_condition_edge_and_validates_multi_choice(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "condition-branch.db")
+    scenario = ScenarioVersion(
+        scenario_id="discovery-intake",
+        version=1,
+        name="Discovery intake",
+        description="",
+        fields=(
+            ScenarioField(
+                "goal", "string", required=True, input_mode="single_choice",
+                options=(
+                    {"value": "recruit", "label": "招聘"},
+                    {"value": "research", "label": "研究"},
+                ),
+            ),
+            ScenarioField(
+                "sources", "array", required=True, input_mode="multi_choice",
+                options=(
+                    {"value": "github", "label": "GitHub"},
+                    {"value": "scholar", "label": "Google Scholar"},
+                    {"value": "linkedin", "label": "LinkedIn"},
+                ),
+                min_selections=1,
+                max_selections=2,
+            ),
+            ScenarioField("research_area", "string", required=True),
+        ),
+        nodes=(
+            ClarificationNode("ask_goal", "question", "主要目标是什么？", ("goal",)),
+            ClarificationNode("ask_sources", "question", "选择数据来源", ("sources",)),
+            ClarificationNode("ask_area", "question", "研究方向？", ("research_area",)),
+            ClarificationNode("ready", "terminal", ""),
+        ),
+        edges=(
+            ClarificationEdge("ask_goal", "ask_sources", "goal == 'recruit'", priority=100),
+            ClarificationEdge("ask_goal", "ask_area", "goal == 'research'", priority=100),
+            ClarificationEdge("ask_sources", "ready", "present(sources)"),
+            ClarificationEdge("ask_area", "ready", "present(research_area)"),
+        ),
+        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
+    )
+    engine = ClarificationEngine(store)
+    first = engine.evaluate(scenario, {})
+    assert first.node and first.node.node_id == "ask_goal"
+    assert first.progress == {"current": 1, "total": 3}
+    second = engine.evaluate(scenario, {"goal": "recruit"}, from_node_id="ask_goal")
+    assert second.node and second.node.node_id == "ask_sources"
+    assert second.progress == {"current": 2, "total": 3}
+    assert engine.validate_request_answers(
+        [scenario.fields[1].to_dict()], {"sources": ["github", "scholar"]}
+    ) == {"sources": ["github", "scholar"]}
+    with pytest.raises(ValueError, match="at most 2"):
+        engine.validate_request_answers(
+            [scenario.fields[1].to_dict()],
+            {"sources": ["github", "scholar", "linkedin"]},
+        )
+
+
+def test_dynamic_input_resolution_requeues_same_run_with_answers(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "dynamic-input.db")
+    store.create_runtime_run(
+        run_id="run-dynamic", user_id="user-a", session_id="session-a",
+        agent_id="coordinator", kind="agent", prompt="Help me search", options={"metadata": {}},
+        initial_status="waiting_input",
+    )
+    engine = ClarificationEngine(store)
+    request = engine.create_dynamic_request(
+        run_id="run-dynamic",
+        user_id="user-a",
+        question="Which outcome do you need?",
+        fields=[{
+            "name": "goal", "value_type": "string", "required": True,
+            "description": "Goal", "input_mode": "single_choice",
+            "options": [{"value": "recruit", "label": "Recruit"}],
+            "enum": ["recruit"], "validation": {}, "sensitive": False,
+        }],
+    )
+    assert request.source == "agent"
+    assert store.resolve_dynamic_input_request(
+        input_request_id=request.input_request_id,
+        run_id="run-dynamic", user_id="user-a", answers={"goal": "recruit"},
+    )
+    run = store.get_runtime_run("run-dynamic", expected_user_id="user-a")
+    assert run is not None and run.status == "queued"
+    assert run.options["metadata"]["dynamic_inputs"] == {"goal": "recruit"}

@@ -33,7 +33,10 @@ def _scenario(question: str = "Which voice?") -> ScenarioVersion:
             ClarificationEdge("ask_text", "ask_voice", "present(text)"),
             ClarificationEdge("ask_voice", "ready", "present(voice)"),
         ),
-        allowed_capabilities=("speech.synthesize", "artifact.store"),
+        allowed_capabilities=(
+            CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            CapabilityRef("artifact.store", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+        ),
         planning_mode="fixed",
         execution_policy={"execution_class": "interactive", "wait_seconds": 20},
         routing_rules=({"contains_any": ["语音", "朗读", "tts"]},),
@@ -63,7 +66,7 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
     store = PostgresTestStore(tmp_path / "scenario-plan.db")
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -73,7 +76,7 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
     )
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("skill.voice-style", "1.0.0", CapabilityKind.SKILL),
+            ref=CapabilityRef("skill.voice-style", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
             name="Voice style",
             description="Voice policy",
             input_schema={"type": "object"},
@@ -83,14 +86,17 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
     )
     scenario = replace(
         _scenario(),
-        allowed_capabilities=("speech.synthesize", "skill.voice-style"),
+        allowed_capabilities=(
+            CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            CapabilityRef("skill.voice-style", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
+        ),
         execution_policy={
             "max_concurrent": 2,
             "aggregate": False,
             "tasks": [
                 {
                     "id": "synthesize",
-                    "capability_id": "speech.synthesize",
+                    "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test").to_dict(),
                     "input": {"text": "${text}", "voice": "${voice}"},
                 }
             ],
@@ -110,7 +116,8 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
 
     assert graph is not None
     assert graph.aggregate is False
-    assert graph.tasks[0].capability_id == "speech.synthesize"
+    assert graph.tasks[0].capability is not None
+    assert graph.tasks[0].capability.capability_id == "speech.synthesize"
     assert graph.tasks[0].capability_input == {
         "text": "hello",
         "voice": "professional",
@@ -123,7 +130,7 @@ def test_fixed_graph_omits_missing_optional_fields_from_capability_input(tmp_pat
     store.publish_capability(
         CapabilityDefinition(
             name="Echo",
-            ref=CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL),
+            ref=CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
             description="Echo input",
             input_schema={"type": "object"},
             output_schema={"type": "object"},
@@ -133,8 +140,8 @@ def test_fixed_graph_omits_missing_optional_fields_from_capability_input(tmp_pat
     scenario = ScenarioVersion(
         scenario_id="optional-input", version=1, name="Optional", description="Optional input",
         fields=(ScenarioField("query", "string", default=""), ScenarioField("platform", "string")),
-        nodes=(), edges=(), allowed_capabilities=("echo",), planning_mode="fixed",
-        execution_policy={"tasks": [{"id": "echo", "capability_id": "echo", "input": {"query": "${query}", "platform": "${platform}"}}]},
+        nodes=(), edges=(), allowed_capabilities=(CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),), planning_mode="fixed",
+        execution_policy={"tasks": [{"id": "echo", "capability": CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test").to_dict(), "input": {"query": "${query}", "platform": "${platform}"}}]},
     )
     store.save_scenario_version(scenario, status="published")
     graph = ScenarioPlanner(store).build_graph(

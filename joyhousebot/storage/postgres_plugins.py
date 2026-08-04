@@ -80,7 +80,19 @@ class PostgresPluginStoreMixin:
         value = dict(manifest)
         plugin_id = str(value["plugin_id"])
         version = str(value["version"])
+        build_digest = str(value.get("build_digest") or "").strip()
+        if not build_digest:
+            raise ValueError("plugin release build_digest is required")
         with self._pool.connection() as conn, conn.transaction():
+            existing = conn.execute(
+                """SELECT build_digest FROM plugin_releases
+                   WHERE plugin_id=%s AND version=%s FOR UPDATE""",
+                (plugin_id, version),
+            ).fetchone()
+            if existing is not None and str(existing["build_digest"]) != build_digest:
+                raise ValueError(
+                    "plugin release is immutable; publish a new version for a new build digest"
+                )
             conn.execute(
                 """INSERT INTO plugin_releases
                        (plugin_id,version,name,description,distribution_name,build_digest,manifest)
@@ -96,7 +108,7 @@ class PostgresPluginStoreMixin:
                     str(value.get("name") or plugin_id),
                     str(value.get("description") or ""),
                     str(value.get("distribution_name") or ""),
-                    str(value.get("build_digest") or ""),
+                    build_digest,
                     Jsonb(value),
                 ),
             )
@@ -152,13 +164,22 @@ class PostgresPluginStoreMixin:
             ).fetchall()
         return [self._release_dict(row) for row in rows]
 
-    def get_plugin_release(self, plugin_id: str) -> dict[str, Any] | None:
+    def get_plugin_release(
+        self, plugin_id: str, version: str | None = None
+    ) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
-            row = conn.execute(
-                """SELECT * FROM plugin_releases WHERE plugin_id=%s AND status='active'
-                   ORDER BY updated_at DESC LIMIT 1""",
-                (plugin_id,),
-            ).fetchone()
+            if version:
+                row = conn.execute(
+                    """SELECT * FROM plugin_releases WHERE plugin_id=%s AND version=%s
+                       AND status='active'""",
+                    (plugin_id, version),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """SELECT * FROM plugin_releases WHERE plugin_id=%s AND status='active'
+                       ORDER BY updated_at DESC LIMIT 1""",
+                    (plugin_id,),
+                ).fetchone()
         return self._release_dict(row) if row else None
 
     @staticmethod
@@ -192,11 +213,28 @@ class PostgresPluginStoreMixin:
         ]
 
     def list_plugin_workers(self, plugin_id: str) -> list[dict[str, Any]]:
-        return [
-            {**worker, "plugin": next((item for item in worker["metadata"].get("plugins", [])
-                                        if item.get("plugin_id") == plugin_id), None)}
-            for worker in self.list_runtime_workers(limit=5000)
-        ]
+        release = self.get_plugin_release(plugin_id)
+        values = []
+        for worker in self.list_runtime_workers(limit=5000):
+            plugin = next(
+                (
+                    item for item in worker["metadata"].get("plugins", [])
+                    if item.get("plugin_id") == plugin_id
+                ),
+                None,
+            )
+            release_matched = bool(
+                plugin and release
+                and str(plugin.get("version") or "") == release["version"]
+                and str(plugin.get("build_digest") or "") == release["build_digest"]
+            )
+            values.append({
+                **worker,
+                "plugin": plugin,
+                "release_matched": release_matched,
+                "execution_eligible": bool(worker.get("healthy")) and release_matched,
+            })
+        return values
 
     def record_plugin_check_result(
         self,

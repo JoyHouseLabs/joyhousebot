@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from joyhousebot.application.context import RequestContext
 from joyhousebot.application.errors import NotFoundError, ValidationError
+from joyhousebot.domain.capabilities.models import CapabilityRef
 from joyhousebot.orchestration import ClarificationEngine, ScenarioPlanner, ScenarioRouter
 from joyhousebot.runtime.models import (
     AgentEvent,
@@ -45,11 +46,19 @@ class GraphTaskCommand:
     timeout_seconds: float | None = None
     max_attempts: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
-    capability_id: str | None = None
+    capability: CapabilityRef | None = None
     capability_input: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
     allowed_tools: list[str] = field(default_factory=list)
     skill_names: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.capability, dict):
+            self.capability = CapabilityRef.from_dict(self.capability)
+        if self.capability is not None and not isinstance(self.capability, CapabilityRef):
+            raise ValidationError("graph task capability must be a pinned CapabilityRef")
+        if not self.prompt.strip() and self.capability is None:
+            raise ValidationError("graph task prompt or capability is required")
 
 
 class RunService:
@@ -98,15 +107,19 @@ class RunService:
             "coordinator_required": coordinator_required or scenario is None,
         }
         allowed_tools = (
-            [item for item in scenario.allowed_capabilities if not item.startswith("skill.")]
+            [
+                item.capability_id
+                for item in scenario.allowed_capabilities
+                if item.kind.value in {"tool", "connector"}
+            ]
             if scenario
             else []
         )
         skill_names = (
             [
-                item.removeprefix("skill.")
+                item.capability_id.removeprefix("skill.")
                 for item in scenario.allowed_capabilities
-                if item.startswith("skill.")
+                if item.kind.value == "skill"
             ]
             if scenario
             else []
@@ -230,6 +243,7 @@ class RunService:
                     "scenario_id": scenario.scenario_id,
                     "question": request.question,
                     "fields": request.fields,
+                    "presentation": request.presentation,
                 },
             )
         )
@@ -252,6 +266,49 @@ class RunService:
         answers: dict[str, Any],
     ) -> tuple[Any, list[Any]]:
         await self.get(context, run_id)
+        request = await asyncio.to_thread(
+            self.store.get_input_request,
+            input_request_id,
+            expected_user_id=context.user_id,
+        )
+        if request is None or request.run_id != run_id:
+            raise ValidationError("input request is not pending")
+        if request.source == "agent":
+            try:
+                validated = self.clarifications.validate_request_answers(request.fields, answers)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            resolved = await asyncio.to_thread(
+                self.store.resolve_dynamic_input_request,
+                input_request_id=input_request_id,
+                run_id=run_id,
+                user_id=context.user_id,
+                answers=validated,
+            )
+            if not resolved:
+                raise ValidationError("input request was already resolved")
+            await asyncio.to_thread(self.store.notify_work, run_id)
+            await self.runtime.events.publish(
+                AgentEvent(
+                    run_id=run_id,
+                    type=EventType.USER_INPUT_RESOLVED.value,
+                    status="completed",
+                    data={
+                        "input_request_id": input_request_id,
+                        "source": "agent",
+                        "fields": sorted(validated),
+                    },
+                )
+            )
+            await self.runtime.events.publish(
+                AgentEvent(
+                    run_id=run_id,
+                    type=EventType.RUN_QUEUED.value,
+                    status="queued",
+                    data={"reason": "dynamic_clarification_completed"},
+                )
+            )
+            return await self.get(context, run_id), await self.pending_inputs(context, run_id)
         try:
             step, next_request = await asyncio.to_thread(
                 self.clarifications.resolve,
@@ -280,6 +337,7 @@ class RunService:
                         "input_request_id": next_request.input_request_id,
                         "question": next_request.question,
                         "fields": next_request.fields,
+                        "presentation": next_request.presentation,
                     },
                 )
             )
@@ -351,16 +409,40 @@ class RunService:
     ) -> Any:
         if not goal.strip() or not tasks:
             raise ValidationError("goal and tasks are required")
+        catalog = await asyncio.to_thread(self.store.list_capability_definitions)
         definitions = {
-            str(item.get("ref", {}).get("capability_id")): item
-            for item in await asyncio.to_thread(self.store.list_capability_definitions)
+            CapabilityRef.from_dict(dict(item["ref"])).identity: item
+            for item in catalog
         }
         for task in tasks:
             executable = [*(task.allowed_tools or [])]
-            if task.capability_id:
-                executable.append(task.capability_id)
+            if task.capability:
+                executable.append(task.capability.capability_id)
+                definition = await asyncio.to_thread(
+                    self.store.get_capability_definition,
+                    task.capability.capability_id,
+                    task.capability.version,
+                )
+                kind = (definition or {}).get("ref", {}).get("kind")
+                if (
+                    kind not in {"tool", "connector"}
+                    or definition is None
+                    or CapabilityRef.from_dict(dict(definition["ref"])).identity
+                    != task.capability.identity
+                ):
+                    raise ValidationError(
+                        "graph task references unavailable pinned executable capability: "
+                        f"{task.capability.capability_id}@{task.capability.version}"
+                    )
             for capability_id in executable:
-                definition = definitions.get(capability_id)
+                definition = next(
+                    (
+                        item
+                        for identity, item in definitions.items()
+                        if identity[0] == capability_id
+                    ),
+                    None,
+                )
                 kind = (definition or {}).get("ref", {}).get("kind")
                 if kind not in {"tool", "connector"}:
                     raise ValidationError(
@@ -370,7 +452,14 @@ class RunService:
                 capability_id = (
                     skill_name if skill_name.startswith("skill.") else f"skill.{skill_name}"
                 )
-                definition = definitions.get(capability_id)
+                definition = next(
+                    (
+                        item
+                        for identity, item in definitions.items()
+                        if identity[0] == capability_id
+                    ),
+                    None,
+                )
                 if (definition or {}).get("ref", {}).get("kind") != "skill":
                     raise ValidationError(f"graph task references unavailable skill: {skill_name}")
         spec = TaskGraphSpec(
@@ -391,7 +480,7 @@ class RunService:
                     timeout_seconds=item.timeout_seconds,
                     max_attempts=item.max_attempts,
                     metadata=item.metadata,
-                    capability_id=item.capability_id,
+                    capability=item.capability,
                     capability_input=item.capability_input,
                     output_schema=item.output_schema,
                     allowed_tools=item.allowed_tools,

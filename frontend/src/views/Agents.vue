@@ -112,7 +112,7 @@
           </section>
         </div>
 
-        <div v-else-if="editorTab === 'abilities'" class="abilities-layout">
+        <div v-else-if="editorTab === 'abilities'" class="abilities-pane">
           <section class="form-section ability-section">
             <header><div><span>03</span><h3>工具与能力</h3></div><p>选择此 Agent 可调用的 Tool、Connector、Workflow 或子 Agent。</p></header>
             <div class="ability-toolbar">
@@ -128,15 +128,30 @@
               <div v-if="!filteredExecutableCapabilities.length" class="empty-state compact"><span>＋</span><strong>目录中暂无可执行能力</strong></div>
             </div>
           </section>
-          <section class="form-section compact-section">
+        </div>
+
+        <div v-else-if="editorTab === 'planning'" class="agent-form">
+          <section class="form-section">
             <header>
-              <div><span>04</span><h3>规划与记忆</h3></div>
-              <p>记忆按 Agent Revision 生效。搜索类 Agent 建议只保留工作记忆和领域知识；只有个性化 Agent 才开启用户画像与长期记忆。</p>
+              <div><span>04</span><h3>规划策略</h3></div>
+              <p>控制任务拆解、子 Agent 委派和并行规模；这些限制随 Agent Revision 冻结并可在运行记录中回放。</p>
             </header>
             <div class="form-grid">
               <label class="switch-label wide"><input v-model="draft.allow_subagents" type="checkbox" /><span><strong>允许派生子 Agent</strong><small>规划器可以将任务委派给其他 Agent</small></span></label>
               <label><span>最大规划步骤</span><input v-model.number="draft.max_steps" type="number" min="1" /></label>
               <label><span>最大并发分支</span><input v-model.number="draft.max_fan_out" type="number" min="1" /></label>
+              <div class="memory-guide wide"><strong>使用建议</strong><span>简单检索或单一工具任务可设为 1–3 步、关闭子 Agent；需要调研、并行检索或交叉验证时再提高步骤与分支数。并发分支是单个 Run 的上限，实际执行仍受 Worker 槽位与租约控制。</span></div>
+            </div>
+          </section>
+        </div>
+
+        <div v-else-if="editorTab === 'memory'" class="agent-form">
+          <section class="form-section">
+            <header>
+              <div><span>05</span><h3>记忆策略</h3></div>
+              <p>记忆按 Agent Revision 生效。搜索类 Agent 建议只保留工作记忆和领域知识；只有个性化 Agent 才开启用户画像与长期记忆。</p>
+            </header>
+            <div class="form-grid">
               <label class="switch-label wide"><input v-model="draft.memory_enabled" type="checkbox" /><span><strong>启用持久记忆</strong><small>关闭后仍保留当前 Run 的工作记忆，但不会读取或写入用户长期记忆。</small></span></label>
               <label><span>记忆模式</span><select v-model="draft.memory_mode"><option value="task_only">任务型：仅当前任务</option><option value="personalized">个性化：启用用户记忆</option></select></label>
               <label><span>记忆范围</span><select v-model="draft.memory_scope"><option value="user_agent">用户 × Agent</option><option value="user">用户共享</option><option value="session">仅当前会话</option></select></label>
@@ -155,7 +170,7 @@
 
         <div v-else-if="editorTab === 'skills'" class="skills-pane">
           <section class="form-section">
-            <header><div><span>05</span><h3>Skill 绑定</h3></div><p>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
+            <header><div><span>06</span><h3>Skill 绑定</h3></div><p>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
             <form class="skill-bind-form" @submit.prevent="addSkillBinding">
               <label><span>Skill</span><select v-model="skillDraft.skill_id" required><option value="" disabled>选择已发布 Skill</option><option v-for="skill in skillCapabilities" :key="skill.ref.capability_id" :value="skill.ref.capability_id">{{ skill.name }} · {{ skill.ref.version }}</option></select></label>
               <label><span>激活方式</span><select v-model="skillDraft.activation_mode"><option value="coordinator_selected">协调器选择</option><option value="always">始终启用</option><option value="scenario_required">场景要求</option></select></label>
@@ -175,7 +190,7 @@
 
         <div v-else class="revision-pane">
           <section class="form-section">
-            <header><div><span>06</span><h3>版本与发布</h3></div><p>发布会将 Draft 设为只读，并触发 Worker rollout。</p></header>
+            <header><div><span>07</span><h3>版本与发布</h3></div><p>发布会将 Draft 设为只读，并触发 Worker rollout。</p></header>
             <div class="revision-list">
               <article v-for="revision in revisions" :key="revision.revision_id" :class="{ current: currentAgent?.current_revision_id === revision.revision_id }">
                 <span class="revision-node" />
@@ -210,7 +225,7 @@ import {
   type AgentSkillBinding,
 } from '../api/admin'
 
-type EditorTab = 'profile' | 'model' | 'abilities' | 'skills' | 'revisions'
+type EditorTab = 'profile' | 'model' | 'abilities' | 'planning' | 'memory' | 'skills' | 'revisions'
 type AgentRole = AdminAgent['role']
 const roleDefinitions: Array<{ id: AgentRole; label: string; en: string; title: string; summary: string; detail: string; boundary: string }> = [
   { id: 'coordinator', label: '协调器', en: 'Coordinator', title: '拆解、路由与汇总', summary: '负责理解目标并组织执行', detail: '分析用户目标，拆成可执行步骤，选择合适的 Agent、Skill 或 Tool，并汇总结果。', boundary: '默认负责规划和委派，不直接承担大部分业务操作。' },
@@ -265,7 +280,9 @@ const draftSaved = computed(() => Boolean(activeRevision.value?.status === 'draf
 const canSave = computed(() => Boolean(draft.agent_id && draft.name && draft.revision_id && draft.primary_model))
 const editorTabs = computed(() => [
   { id: 'profile' as const, label: '身份指令' }, { id: 'model' as const, label: '模型策略' },
-  { id: 'abilities' as const, label: '工具与策略', count: draft.allowed_capabilities.length },
+  { id: 'abilities' as const, label: '工具与能力', count: draft.allowed_capabilities.length },
+  { id: 'planning' as const, label: '规划策略' },
+  { id: 'memory' as const, label: '记忆策略' },
   { id: 'skills' as const, label: 'Skills', count: skillBindings.value.length },
   { id: 'revisions' as const, label: '版本发布', count: revisions.value.length },
 ])
@@ -448,7 +465,7 @@ watch(() => draft.agent_id, (agentId, previous) => {
 .editor-tabs { display: flex; overflow-x: auto; padding: 0 18px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.editor-tabs button { display: flex; align-items: center; gap: 6px; padding: 13px 12px 11px; color: var(--text-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; }.editor-tabs button.active { color: var(--text-strong); border-bottom-color: var(--accent); }.editor-tabs small { min-width: 17px; padding: 1px 4px; color: var(--accent); background: var(--accent-subtle); border-radius: 99px; font: 9px var(--font-mono); }
 .agent-form,.skills-pane,.revision-pane { padding: 22px; }.form-section { border: 1px solid var(--border); border-radius: 13px; overflow: hidden; }.form-section>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px 18px; background: var(--surface-raised); border-bottom: 1px solid var(--border); }.form-section>header>div { display: flex; align-items: center; gap: 9px; }.form-section>header span { color: var(--accent); font: 600 9px var(--font-mono); }.form-section h3 { margin: 0; color: var(--text-strong); font-size: 14px; }.form-section>header p { margin: 0; color: var(--text-muted); font-size: 10px; text-align: right; }
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; padding: 18px; }.form-grid label,.skill-bind-form label,.ability-toolbar label { display: grid; gap: 6px; color: var(--text-muted); font-size: 10px; }.form-grid label.wide { grid-column: 1/-1; }.form-grid input,.form-grid select,.form-grid textarea,.skill-bind-form input,.skill-bind-form select,.ability-toolbar select { width: 100%; padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border-strong); border-radius: 9px; outline: none; }.form-grid textarea { resize: vertical; line-height: 1.65; }.form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-subtle); }.switch-label { display: flex !important; flex-direction: row !important; align-items: center; gap: 10px !important; min-height: 54px; padding: 9px 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; }.switch-label input { width: auto; }.switch-label span { display: grid; gap: 2px; }.switch-label strong { color: var(--text); font-size: 11px; }.switch-label small { color: var(--text-muted); }
-.abilities-layout { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(280px,.72fr); gap: 16px; padding: 22px; }.ability-toolbar { display: grid; grid-template-columns: minmax(190px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.capability-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: center; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card>span:last-child { min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; }.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { grid-column: 1/-1; color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }.compact-section { align-self: start; }
+.abilities-pane { padding: 22px; }.ability-toolbar { display: grid; grid-template-columns: minmax(190px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.capability-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: center; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card>span:last-child { min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; }.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { grid-column: 1/-1; color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }
 .skill-bind-form { display: grid; grid-template-columns: 1.3fr 1fr 110px auto; gap: 12px; align-items: end; padding: 18px; border-bottom: 1px solid var(--border); }.binding-list article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto auto; gap: 11px; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--border); }.binding-list article:last-child { border-bottom: 0; }.binding-list article>div { min-width: 0; display: grid; gap: 2px; }.binding-list strong { color: var(--text-strong); font-size: 11px; }.binding-list small,.binding-list article>span:nth-last-child(2),.binding-list code { color: var(--text-muted); font-size: 9px; }
 .revision-list { padding: 4px 18px 18px; }.revision-list article { position: relative; display: grid; grid-template-columns: 12px minmax(0,1fr) auto auto; gap: 12px; align-items: center; min-height: 66px; padding: 11px 0; border-bottom: 1px solid var(--border); }.revision-list article.current { background: linear-gradient(90deg,var(--accent-subtle),transparent); }.revision-node { width: 9px; height: 9px; border: 2px solid var(--accent); border-radius: 50%; }.revision-list article>div { min-width: 0; display: grid; gap: 3px; }.revision-list strong { color: var(--text-strong); font-size: 11px; }.revision-list small { color: var(--text-muted); font: 9px var(--font-mono); }.current-label { color: var(--accent); font: 600 8px var(--font-mono); }
 .role-guide { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: -2px; }
@@ -457,7 +474,7 @@ watch(() => draft.agent_id, (agentId, previous) => {
 .role-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-strong); }.role-card-top small { color: var(--text-muted); font-size: 10px; }.role-card>span:last-child { font-size: 12px; line-height: 1.45; }
 .role-detail { grid-column: 1/-1; padding: 11px 13px; border-left: 3px solid var(--accent); border-radius: 5px; background: var(--surface-raised); }.role-detail p { margin: 5px 0; color: var(--text-muted); font-size: 12px; line-height: 1.55; }.role-detail small { color: var(--text-muted); font-size: 11px; }
 .memory-guide { display: grid; gap: 5px; padding: 11px 13px; color: var(--text-muted); background: var(--surface-raised); border-left: 3px solid var(--accent); border-radius: 5px; font-size: 11px; line-height: 1.55; }.memory-guide strong { color: var(--text-strong); font-size: 11px; }
-@media (max-width: 1120px) { .abilities-layout { grid-template-columns: 1fr; }.capability-grid { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+@media (max-width: 1120px) { .capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 900px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 300px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.skill-bind-form { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide { grid-template-columns: 1fr; }.abilities-layout,.agent-form,.skills-pane,.revision-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; } }
+@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; } }
 </style>

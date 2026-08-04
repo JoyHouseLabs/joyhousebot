@@ -103,6 +103,27 @@ class CapabilityDispatcher:
             decision = permission_engine.evaluate(adapter.tool.name, context)
             if not decision.allowed:
                 raise ToolInvocationError("PERMISSION_DENIED", decision.reason)
+            required = {
+                str(item).strip()
+                for item in (getattr(adapter.definition, "permissions", ()) or ())
+                if str(item).strip()
+            }
+            granted = set(context.granted_permissions)
+            missing = [
+                permission
+                for permission in sorted(required)
+                if "*" not in granted
+                and permission not in granted
+                and not any(
+                    grant.endswith(".*") and permission.startswith(grant[:-1])
+                    for grant in granted
+                )
+            ]
+            if missing:
+                raise ToolInvocationError(
+                    "PERMISSION_DENIED",
+                    f"Missing capability permissions: {', '.join(missing)}",
+                )
             errors = adapter.tool.validate_params(inputs)
             if errors:
                 raise ToolInvocationError("INVALID_PARAMETERS", "; ".join(errors))

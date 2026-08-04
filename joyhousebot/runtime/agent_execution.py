@@ -452,6 +452,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
             tracker_id=stored_options.get("tracker_id"),
         )
         execution_span_id = f"span_exec_{uuid4().hex}"
+        granted_permissions = await self._execution_permissions(run_id, agent_id)
         context = RunContext(
             run_id=run_id,
             task_id=task_id,
@@ -479,6 +480,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
             permission_mode=permission_mode,
             allowed_tools=frozenset(allowed_tools),
             disallowed_tools=frozenset(disallowed_tools),
+            granted_permissions=granted_permissions,
             cancellation=cancellation,
             worker_id=self.worker_id,
             skill_names=tuple(str(item) for item in (metadata or {}).get("skill_names", [])),

@@ -7,6 +7,11 @@ export interface ScenarioField {
   description: string
   default?: unknown
   enum: unknown[]
+  input_mode: 'auto' | 'text' | 'textarea' | 'single_choice' | 'multi_choice' | 'boolean' | 'number'
+  options: Array<{ value: string; label: string; description?: string }>
+  allow_other: boolean
+  min_selections?: number | null
+  max_selections?: number | null
   validation: Record<string, unknown>
   sensitive: boolean
 }

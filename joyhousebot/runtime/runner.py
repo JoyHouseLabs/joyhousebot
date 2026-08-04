@@ -172,7 +172,47 @@ class NativeAgentRuntime(
                 agent_id in {"default", snapshot.agent_id}
                 or snapshot.agent_id == self.default_agent_id
             ):
+                self._assert_plugin_requirements(snapshot.plugin_requirements)
                 revision_key = snapshot.agent_revision_id
         if self.agent_resolver is None:
             return self.agent
         return await asyncio.to_thread(self.agent_resolver, revision_key)
+
+    async def _execution_permissions(self, run_id: str, agent_id: str) -> frozenset[str]:
+        """Read the capability grants frozen with this Run's Agent revision.
+
+        Permissions are not read from the mutable Agent catalog while work is
+        executing.  A retry or replay therefore sees the same grants as the
+        original attempt, even after an administrator publishes a new
+        revision.
+        """
+        reader = getattr(self.store, "get_run_execution_snapshot", None)
+        if reader is None:
+            return frozenset()
+        snapshot = await asyncio.to_thread(reader, run_id)
+        if snapshot is None or agent_id not in {"default", snapshot.agent_id}:
+            return frozenset()
+        value = snapshot.capability_policy.get("permissions", ())
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return frozenset()
+        return frozenset(str(item).strip() for item in value if str(item).strip())
+
+    def _assert_plugin_requirements(self, requirements: Any) -> None:
+        """Refuse execution on a node without each pinned plugin artifact."""
+        loaded = {
+            (
+                str(item.get("plugin_id") or ""),
+                str(item.get("version") or ""),
+                str(item.get("build_digest") or ""),
+            )
+            for item in self.plugin_releases
+        }
+        missing = [
+            f"{item.plugin_id}@{item.version}"
+            for item in requirements
+            if (item.plugin_id, item.version, item.build_digest) not in loaded
+        ]
+        if missing:
+            raise RuntimeError(
+                "worker does not have required plugin releases: " + ", ".join(missing)
+            )

@@ -38,12 +38,19 @@ async def plugin_overview(plugin_id: str, principal: PlatformAdminDep, container
         asyncio.to_thread(container.store.list_plugin_workers, plugin_id),
         asyncio.to_thread(container.store.get_plugin_metrics, plugin_id),
     )
-    loaded = sum(1 for worker in workers if worker.get("plugin") is not None and worker.get("healthy"))
+    loaded = sum(1 for worker in workers if worker.get("execution_eligible"))
     return {
         "release": release,
         "components": components,
         "metrics": metrics,
-        "worker_summary": {"total": len(workers), "healthy_loaded": loaded},
+        "worker_summary": {
+            "total": len(workers),
+            "execution_eligible": loaded,
+            "release_mismatch": sum(
+                1 for worker in workers
+                if worker.get("plugin") is not None and not worker.get("release_matched")
+            ),
+        },
     }
 
 
@@ -94,12 +101,15 @@ async def plugin_topology(plugin_id: str, principal: PlatformAdminDep, container
     edges = [{"source": f"plugin:{plugin_id}", "target": f"component:{item['component_id']}", "kind": "owns"} for item in components]
     for scenario in scenarios:
         scenario_node = f"scenario:{scenario.scenario_id}:{scenario.version}"
-        relevant = [value for value in scenario.allowed_capabilities if value in component_by_ref]
+        relevant = [
+            value for value in scenario.allowed_capabilities
+            if value.capability_id in component_by_ref
+        ]
         if not relevant:
             continue
         nodes.append({"id": scenario_node, "kind": "scenario", "label": scenario.name, "data": {"scenario_id": scenario.scenario_id, "version": scenario.version}})
-        for capability_id in relevant:
-            edges.append({"source": f"component:{component_by_ref[capability_id]['component_id']}", "target": scenario_node, "kind": "allowed_by"})
+        for capability in relevant:
+            edges.append({"source": f"component:{component_by_ref[capability.capability_id]['component_id']}", "target": scenario_node, "kind": "allowed_by", "data": {"capability": capability.to_dict()}})
     for profile in agents:
         bindings = await asyncio.to_thread(container.store.list_agent_skill_bindings, profile.revision.revision_id)
         relevant = [item for item in bindings if item["skill_id"] in component_by_ref]
@@ -120,10 +130,10 @@ async def plugin_health(plugin_id: str, principal: PlatformAdminDep, container: 
         asyncio.to_thread(container.store.list_plugin_components, plugin_id),
     )
     loaded = [item for item in workers if item.get("plugin")]
-    healthy = [item for item in loaded if item.get("healthy")]
+    healthy = [item for item in loaded if item.get("execution_eligible")]
     baseline_checks = [
         {"name": "catalog", "status": "healthy" if components else "failed", "summary": f"{len(components)} registered components"},
-        {"name": "worker_release", "status": "healthy" if healthy else "degraded", "summary": f"{len(healthy)}/{len(workers)} healthy workers loaded this plugin"},
+        {"name": "worker_release", "status": "healthy" if healthy else "degraded", "summary": f"{len(healthy)}/{len(workers)} workers match this exact release"},
     ]
     persisted = await asyncio.to_thread(container.store.list_plugin_check_results, plugin_id)
     checks = persisted or baseline_checks

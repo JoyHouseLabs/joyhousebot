@@ -6,11 +6,13 @@ import importlib
 import inspect
 from collections.abc import Iterable
 from dataclasses import is_dataclass, replace
+from hashlib import sha256
 from importlib import metadata as importlib_metadata
 from typing import Any
 
 from joyhousebot.contracts.capabilities import CapabilityContext, CapabilityResult
 from joyhousebot.contracts.plugins import PluginManifest
+from joyhousebot.domain.capabilities.models import CapabilityRef
 
 
 class CapabilityPluginRegistry:
@@ -86,17 +88,41 @@ class CapabilityPluginRegistry:
         if (
             self._active_plugin
             and is_dataclass(definition)
-            and "origin" in getattr(definition, "__dataclass_fields__", {})
-            and not getattr(definition, "origin", None)
         ):
             plugin = self._plugins.get(self._active_plugin)
-            definition = replace(
-                definition,
-                origin={
-                    "plugin_id": self._active_plugin,
-                    "plugin_version": str(getattr(plugin, "version", "")),
-                },
-            )
+            if plugin is None:
+                raise ValueError("capability registration has no active plugin")
+            manifest = self._manifest_for(plugin)
+            if isinstance(ref, CapabilityRef) and not ref.is_bound:
+                definition = replace(
+                    definition,
+                    ref=CapabilityRef(
+                        capability_id=capability_id,
+                        version=version,
+                        kind=ref.kind,
+                        plugin_id=manifest.plugin_id,
+                        plugin_version=manifest.version,
+                        plugin_build_digest=manifest.build_digest,
+                    ),
+                )
+                ref = definition.ref
+            if isinstance(ref, CapabilityRef) and (
+                ref.plugin_id != manifest.plugin_id
+                or ref.plugin_version != manifest.version
+                or ref.plugin_build_digest != manifest.build_digest
+            ):
+                raise ValueError(
+                    f"capability {capability_id}@{version} is not bound to its active plugin release"
+                )
+            if "origin" in getattr(definition, "__dataclass_fields__", {}) and not getattr(definition, "origin", None):
+                definition = replace(
+                    definition,
+                    origin={
+                        "plugin_id": manifest.plugin_id,
+                        "plugin_version": manifest.version,
+                        "plugin_build_digest": manifest.build_digest,
+                    },
+                )
         key = f"{capability_id}@{version}"
         existing = self._capabilities.get(key)
         if existing is not None and existing[:2] != (definition, handler):
@@ -124,20 +150,30 @@ class CapabilityPluginRegistry:
         """Return safe manifests, including a compatibility fallback."""
         values: list[PluginManifest] = []
         for plugin in self.plugins:
-            declared = getattr(plugin, "manifest", None)
-            manifest = declared() if callable(declared) else None
-            if isinstance(manifest, PluginManifest):
-                values.append(manifest)
-            else:
-                values.append(
-                    PluginManifest(
-                        plugin_id=str(plugin.plugin_id),
-                        version=str(plugin.version),
-                        name=str(plugin.plugin_id),
-                        description="External capability plugin",
-                    )
-                )
+            values.append(self._manifest_for(plugin))
         return tuple(values)
+
+    @staticmethod
+    def _manifest_for(plugin: Any) -> PluginManifest:
+        declared = getattr(plugin, "manifest", None)
+        manifest = declared() if callable(declared) else None
+        if not isinstance(manifest, PluginManifest):
+            manifest = PluginManifest(
+                plugin_id=str(plugin.plugin_id),
+                version=str(plugin.version),
+                name=str(plugin.plugin_id),
+                description="External capability plugin",
+            )
+        if manifest.build_digest:
+            return manifest
+        # Package manifests must provide a source/build digest in production.
+        # During local development derive one from the loaded plugin class so
+        # every registered capability is still pinned to a concrete artifact.
+        try:
+            source = inspect.getsource(plugin.__class__).encode()
+        except (OSError, TypeError):
+            source = f"{plugin.__class__.__module__}:{plugin.__class__.__qualname__}".encode()
+        return replace(manifest, build_digest=f"sha256:{sha256(source).hexdigest()}")
 
     async def invoke(
         self,
@@ -153,7 +189,16 @@ class CapabilityPluginRegistry:
         definition, handler = resolved
         required = set(getattr(definition, "permissions", ()) or ())
         granted = set((context.metadata or {}).get("permissions", ()) or ())
-        missing = sorted(required - granted)
+        missing = sorted(
+            permission
+            for permission in required
+            if "*" not in granted
+            and permission not in granted
+            and not any(
+                str(grant).endswith(".*") and permission.startswith(str(grant)[:-1])
+                for grant in granted
+            )
+        )
         if missing:
             return CapabilityResult(
                 success=False,

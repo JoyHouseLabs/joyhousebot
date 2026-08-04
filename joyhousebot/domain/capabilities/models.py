@@ -41,17 +41,79 @@ class CapabilityRef:
     capability_id: str
     version: str
     kind: CapabilityKind
+    # A capability version is only reproducible when its producing plugin
+    # release is pinned as well.  Core capabilities use the explicit
+    # ``joyhousebot.core`` release; third-party capabilities use their plugin
+    # manifest values.  Plugin registration is allowed to create an unbound
+    # definition briefly, then must bind all three values before persistence.
+    plugin_id: str = ""
+    plugin_version: str = ""
+    plugin_build_digest: str = ""
 
     def __post_init__(self) -> None:
-        if not self.capability_id.strip() or not self.version.strip():
+        if any(
+            not value.strip()
+            for value in (self.capability_id, self.version)
+        ):
             raise ValueError("capability id and version are required")
+        plugin_values = (
+            self.plugin_id,
+            self.plugin_version,
+            self.plugin_build_digest,
+        )
+        if any(value.strip() for value in plugin_values) and any(
+            not value.strip() for value in plugin_values
+        ):
+            raise ValueError("plugin provenance must be fully pinned or unbound")
+
+    @property
+    def is_bound(self) -> bool:
+        return all(
+            value.strip()
+            for value in (
+                self.plugin_id,
+                self.plugin_version,
+                self.plugin_build_digest,
+            )
+        )
+
+    def require_bound(self) -> None:
+        if not self.is_bound:
+            raise ValueError("capability reference must be bound to a plugin release")
+
+    @property
+    def identity(self) -> tuple[str, str, str, str, str, str]:
+        self.require_bound()
+        return (
+            self.capability_id,
+            self.version,
+            self.kind.value,
+            self.plugin_id,
+            self.plugin_version,
+            self.plugin_build_digest,
+        )
 
     def to_dict(self) -> dict[str, Any]:
+        self.require_bound()
         return {
             "capability_id": self.capability_id,
             "version": self.version,
             "kind": self.kind.value,
+            "plugin_id": self.plugin_id,
+            "plugin_version": self.plugin_version,
+            "plugin_build_digest": self.plugin_build_digest,
         }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CapabilityRef":
+        return cls(
+            capability_id=str(value["capability_id"]),
+            version=str(value["version"]),
+            kind=CapabilityKind(str(value["kind"])),
+            plugin_id=str(value["plugin_id"]),
+            plugin_version=str(value["plugin_version"]),
+            plugin_build_digest=str(value["plugin_build_digest"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +133,9 @@ class CapabilityDefinition:
     side_effect: str = "none"
     supports_stream: bool = False
     permissions: tuple[str, ...] = ()
+    data_classification: str = "internal"
+    connection_ids: tuple[str, ...] = ()
+    cost_policy: dict[str, Any] = field(default_factory=dict)
     origin: dict[str, str] = field(default_factory=dict)
     # A safe JSON Schema describing operator-owned runtime settings.  It is
     # deliberately distinct from ``configuration``: the latter is immutable
@@ -86,12 +151,17 @@ class CapabilityDefinition:
             raise ValueError("capability input schema must describe an object")
         if self.timeout_seconds <= 0 or self.expected_duration_seconds < 0:
             raise ValueError("capability durations must be positive")
+        if self.data_classification not in {"public", "internal", "confidential", "restricted"}:
+            raise ValueError("invalid capability data classification")
+        if any(not item.strip() for item in self.connection_ids):
+            raise ValueError("capability connection ids must be non-empty")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["ref"] = self.ref.to_dict()
         value["tags"] = list(self.tags)
         value["permissions"] = list(self.permissions)
+        value["connection_ids"] = list(self.connection_ids)
         # Preserve compatibility with already-published built-in capability
         # versions. Plugin provenance is explicit when present, but an empty
         # optional field must not mutate legacy immutable definitions.

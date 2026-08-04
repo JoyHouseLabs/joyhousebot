@@ -271,7 +271,7 @@ class SubmissionMixin(GraphMaterializationMixin):
                     "prompt": task.prompt,
                     "metadata": task.metadata,
                     "timeout_seconds": task.timeout_seconds,
-                    "capability_id": task.capability_id,
+                    "capability": task.capability.to_dict() if task.capability else None,
                     "capability_input": task.capability_input,
                     "output_schema": task.output_schema,
                     "allowed_tools": task.allowed_tools,

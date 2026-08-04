@@ -5,6 +5,7 @@ from joyhousebot.domain.agents.models import (
     AgentExecutionSnapshot,
     AgentProfile,
     AgentRevision,
+    PluginReleaseRequirement,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "AgentExecutionSnapshot",
     "AgentProfile",
     "AgentRevision",
+    "PluginReleaseRequirement",
 ]

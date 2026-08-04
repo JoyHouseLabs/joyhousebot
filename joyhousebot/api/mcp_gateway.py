@@ -23,6 +23,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from joyhousebot.api.dependencies import _bearer_token
 from joyhousebot.application.context import Principal, RequestContext
 from joyhousebot.application.runs import GraphTaskCommand
+from joyhousebot.domain.capabilities.models import CapabilityRef
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
@@ -225,7 +226,7 @@ class MCPGateway:
                     name=capability_id,
                     prompt=f"Invoke {capability_id} through the registered capability adapter.",
                     timeout_seconds=timeout_seconds,
-                    capability_id=capability_id,
+                    capability=CapabilityRef.from_dict(dict(definition["ref"])),
                     capability_input=dict(arguments),
                     allowed_tools=[capability_id],
                     metadata={

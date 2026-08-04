@@ -46,6 +46,11 @@ class _PluginTool(Tool):
         if not settings["enabled"]:
             raise ToolInvocationError("CAPABILITY_DISABLED", f"Capability '{self.name}' is disabled by an operator")
         metadata = dict(getattr(tool_context, "metadata", {}) or {})
+        # Capability handlers receive the grants that were frozen in the
+        # Agent execution snapshot.  They are useful for independently
+        # invokable plugins, while the dispatcher remains the authoritative
+        # enforcement point for the native Tool path.
+        metadata["permissions"] = sorted(tool_context.granted_permissions)
         # This is the only configuration contract plugins receive.  It is
         # run-scoped, non-secret, and has already been validated by the
         # control plane against the capability's declared JSON Schema.
@@ -66,8 +71,16 @@ class _PluginTool(Tool):
         if isinstance(result.output, ToolOutput):
             return result.output
         if isinstance(result.output, str):
-            return result.output
-        return ToolOutput(content=str(result.output), data={"output": result.output})
+            return ToolOutput(
+                content=result.output,
+                data={"content": result.output},
+                artifacts=tuple(item.to_dict() for item in result.artifacts),
+            )
+        return ToolOutput(
+            content=str(result.output),
+            data={"output": result.output},
+            artifacts=tuple(item.to_dict() for item in result.artifacts),
+        )
 
     def _settings(self) -> dict[str, Any]:
         if self._runtime_settings is None:
@@ -89,6 +102,11 @@ class CapabilityRegistry:
         discover_entry_points: bool = False,
     ) -> None:
         self._adapters: dict[str, ToolCapabilityAdapter] = {}
+        # The model-facing catalog exposes one current adapter per name, but
+        # durable Task/MCP execution must resolve the exact capability version
+        # captured in CapabilityRef.  Never use the mutable current index for
+        # a persisted invocation.
+        self._versioned_adapters: dict[tuple[str, str], ToolCapabilityAdapter] = {}
         self._optional: set[str] = set()
         self._allowlist = {
             str(item).strip() for item in (optional_allowlist or []) if str(item).strip()
@@ -148,11 +166,13 @@ class CapabilityRegistry:
     def register_capability(self, definition: Any, handler: Any) -> None:
         self.plugins.register_capability(definition, handler)
         capability_id = str(definition.ref.capability_id)
-        self._adapters[capability_id] = ToolCapabilityAdapter(
+        adapter = ToolCapabilityAdapter(
             _PluginTool(definition, handler, self._runtime_settings),
             version=str(definition.ref.version),
             definition=definition,
         )
+        self._adapters[capability_id] = adapter
+        self._versioned_adapters[(capability_id, str(definition.ref.version))] = adapter
 
     async def invoke_capability(self, name: str, params: dict[str, Any], *, context: Any, version: str | None = None):
         return await self.plugins.invoke(name, params, context=context, version=version)
@@ -160,6 +180,7 @@ class CapabilityRegistry:
     def register_tool(self, tool: Tool, *, optional: bool = False) -> None:
         adapter = ToolCapabilityAdapter(tool)
         self._adapters[tool.name] = adapter
+        self._versioned_adapters[(tool.name, str(adapter.definition.ref.version))] = adapter
         if optional:
             self._optional.add(tool.name)
         else:
@@ -167,12 +188,16 @@ class CapabilityRegistry:
         if self._store is not None:
             self._store.publish_capability(adapter.definition)
 
-    def get_tool(self, name: str) -> Tool | None:
-        adapter = self._adapters.get(name)
+    def get_tool(self, name: str, version: str | None = None) -> Tool | None:
+        adapter = (
+            self._versioned_adapters.get((name, version))
+            if version is not None
+            else self._adapters.get(name)
+        )
         return adapter.tool if adapter and self._enabled(name) else None
 
-    def has(self, name: str) -> bool:
-        return name in self._adapters and self._enabled(name)
+    def has(self, name: str, version: str | None = None) -> bool:
+        return self.get_tool(name, version) is not None
 
     @property
     def tool_names(self) -> list[str]:
@@ -185,7 +210,7 @@ class CapabilityRegistry:
             adapter.tool.to_schema()
             for name, adapter in self._adapters.items()
             if self._enabled(name)
-            and (context is None or permission_engine.evaluate(name, context).allowed)
+            and (context is None or self._is_authorized(adapter, context))
         ]
 
     async def invoke_tool(
@@ -195,20 +220,35 @@ class CapabilityRegistry:
         *,
         context: ToolExecutionContext,
         tool_call_id: str | None = None,
+        version: str | None = None,
         **kwargs: Any,
     ) -> CapabilityResult:
-        adapter = self._adapters.get(name)
+        adapter = (
+            self._versioned_adapters.get((name, version))
+            if version is not None
+            else self._adapters.get(name)
+        )
         if adapter is None:
             return CapabilityResult.failed(
                 f"inv_{tool_call_id or 'unknown'}",
                 code="CAPABILITY_NOT_FOUND",
-                message=f"Capability '{name}' was not found",
+                message=(
+                    f"Capability '{name}@{version}' was not found"
+                    if version is not None
+                    else f"Capability '{name}' was not found"
+                ),
             )
         if not self._enabled(name):
             return CapabilityResult.failed(
                 f"inv_{tool_call_id or 'unknown'}",
                 code="CAPABILITY_DISABLED",
                 message=f"Capability '{name}' is disabled",
+            )
+        if not self._is_authorized(adapter, context):
+            return CapabilityResult.failed(
+                f"inv_{tool_call_id or 'unknown'}",
+                code="PERMISSION_DENIED",
+                message=self._authorization_error(adapter, context),
             )
         return await self.dispatcher.invoke_tool(
             adapter,
@@ -222,6 +262,37 @@ class CapabilityRegistry:
         if name in self._optional and name not in self._allowlist:
             return False
         return bool(self._runtime_settings(name).get("enabled", True))
+
+    @staticmethod
+    def _missing_permissions(adapter: ToolCapabilityAdapter, context: ToolExecutionContext) -> list[str]:
+        required = {
+            str(item).strip()
+            for item in (getattr(adapter.definition, "permissions", ()) or ())
+            if str(item).strip()
+        }
+        granted = set(context.granted_permissions)
+        wildcard = "*" in granted
+        missing = [
+            permission
+            for permission in sorted(required)
+            if not wildcard
+            and permission not in granted
+            and not any(
+                grant.endswith(".*") and permission.startswith(grant[:-1])
+                for grant in granted
+            )
+        ]
+        return missing
+
+    def _is_authorized(self, adapter: ToolCapabilityAdapter, context: ToolExecutionContext) -> bool:
+        return permission_engine.evaluate(adapter.tool.name, context).allowed and not self._missing_permissions(adapter, context)
+
+    def _authorization_error(self, adapter: ToolCapabilityAdapter, context: ToolExecutionContext) -> str:
+        decision = permission_engine.evaluate(adapter.tool.name, context)
+        if not decision.allowed:
+            return decision.reason
+        missing = self._missing_permissions(adapter, context)
+        return f"Missing capability permissions: {', '.join(missing)}"
 
     def _runtime_settings(self, capability_id: str) -> dict[str, Any]:
         if self._store is None or not hasattr(self._store, "get_capability_runtime_settings"):

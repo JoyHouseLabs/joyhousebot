@@ -75,6 +75,7 @@ class ToolExecutionContext:
     permission_mode: str = "default"
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     disallowed_tools: frozenset[str] = field(default_factory=frozenset)
+    granted_permissions: frozenset[str] = field(default_factory=frozenset)
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     worker_id: str | None = None
 
@@ -111,6 +112,7 @@ class RunContext:
     permission_mode: str = "default"
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     disallowed_tools: frozenset[str] = field(default_factory=frozenset)
+    granted_permissions: frozenset[str] = field(default_factory=frozenset)
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     worker_id: str | None = None
     skill_names: tuple[str, ...] = ()
@@ -137,6 +139,7 @@ class RunContext:
             permission_mode=self.permission_mode,
             allowed_tools=self.allowed_tools,
             disallowed_tools=self.disallowed_tools,
+            granted_permissions=self.granted_permissions,
             cancellation=self.cancellation,
             worker_id=self.worker_id,
         )

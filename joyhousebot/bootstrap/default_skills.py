@@ -33,7 +33,7 @@ Use ISO timestamps for one-time schedules and standard cron expressions for recu
 
 # Prompt content is immutable once published. Increment this only when the
 # built-in instruction catalog changes; older revisions remain replayable.
-_DEFAULT_SKILL_VERSION = "1.0.3"
+_DEFAULT_SKILL_VERSION = "1.0.4"
 
 
 def default_skill_definitions() -> tuple[CapabilityDefinition, ...]:
@@ -49,7 +49,14 @@ def default_skill_definitions() -> tuple[CapabilityDefinition, ...]:
     )
     return tuple(
         CapabilityDefinition(
-            ref=CapabilityRef(f"skill.{name}", _DEFAULT_SKILL_VERSION, CapabilityKind.SKILL),
+            ref=CapabilityRef(
+                f"skill.{name}",
+                _DEFAULT_SKILL_VERSION,
+                CapabilityKind.SKILL,
+                "joyhousebot.core",
+                "0.1.2",
+                "builtin",
+            ),
             name=name,
             description=description,
             input_schema={"type": "object", "properties": {}},

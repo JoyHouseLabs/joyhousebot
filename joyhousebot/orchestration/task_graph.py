@@ -19,8 +19,8 @@ def validate_and_order_graph(tasks: list[GraphTaskSpec]) -> list[GraphTaskSpec]:
     for task in tasks:
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", task.id):
             raise ValueError(f"invalid task id: {task.id}")
-        if not task.prompt.strip() and not task.capability_id:
-            raise ValueError(f"task '{task.id}' prompt or capability_id is required")
+        if not task.prompt.strip() and not task.capability:
+            raise ValueError(f"task '{task.id}' prompt or capability is required")
         unknown = set(task.dependencies) - set(task_map)
         if unknown:
             raise ValueError(f"task '{task.id}' has unknown dependencies: {sorted(unknown)}")

@@ -59,7 +59,7 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
     )
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -86,7 +86,7 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
                 "field_names": ["voice"],
             }
         ],
-        "allowed_capabilities": ["speech.synthesize"],
+        "allowed_capabilities": [{"capability_id": "speech.synthesize", "version": "1.0.0", "kind": "tool", "plugin_id": "test.plugin", "plugin_version": "1.0.0", "plugin_build_digest": "sha256:test"}],
         "planning_mode": "fixed",
         "routing_rules": [{"contains_any": ["语音", "朗读"]}],
     }
@@ -148,7 +148,7 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
     client, store = _client(tmp_path)
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -165,14 +165,14 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
             fields=(ScenarioField("voice", "string", required=True, enum=("pro", "default")),),
             nodes=(ClarificationNode("voice", "question", "选择声音", ("voice",)),),
             edges=(),
-            allowed_capabilities=("speech.synthesize",),
+            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
             planning_mode="fixed",
             execution_policy={
                 "aggregate": False,
                 "tasks": [
                     {
                         "id": "synthesize",
-                        "capability_id": "speech.synthesize",
+                        "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test").to_dict(),
                         "input": {"voice": "${voice}"},
                     }
                 ],

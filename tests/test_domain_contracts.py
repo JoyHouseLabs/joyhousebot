@@ -18,7 +18,7 @@ from joyhousebot.domain.scenarios import (
 
 def test_capability_definition_and_result_are_structured() -> None:
     definition = CapabilityDefinition(
-        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL),
+        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
         name="Web search",
         description="Search public pages",
         input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
@@ -62,5 +62,5 @@ def test_scenario_rejects_invalid_clarification_graph() -> None:
                 ClarificationEdge("voice", "confirm"),
                 ClarificationEdge("confirm", "voice"),
             ),
-            allowed_capabilities=("speech.synthesize",),
+            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
         )

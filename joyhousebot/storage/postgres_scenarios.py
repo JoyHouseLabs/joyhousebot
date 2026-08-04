@@ -52,8 +52,12 @@ class PostgresScenarioStoreMixin:
         );
         CREATE TABLE IF NOT EXISTS scenario_capabilities (
             scenario_id TEXT NOT NULL,version INTEGER NOT NULL,
-            capability_id TEXT NOT NULL,position INTEGER NOT NULL,
-            PRIMARY KEY(scenario_id,version,capability_id),
+            capability_id TEXT NOT NULL,capability_version TEXT NOT NULL,
+            capability_kind TEXT NOT NULL,plugin_id TEXT NOT NULL,
+            plugin_version TEXT NOT NULL,plugin_build_digest TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY(scenario_id,version,capability_id,capability_version,
+                plugin_id,plugin_version),
             FOREIGN KEY(scenario_id,version) REFERENCES scenario_versions(scenario_id,version)
                 ON DELETE CASCADE
         );
@@ -62,6 +66,22 @@ class PostgresScenarioStoreMixin:
         """
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341909,))
+            # This product has not been released.  A legacy table stored only
+            # capability ids, which is incapable of replaying an approved
+            # scenario after a plugin release changes.  Replace it rather
+            # than carrying an ambiguous compatibility path indefinitely.
+            legacy = conn.execute(
+                """SELECT 1 FROM information_schema.tables t
+                   WHERE t.table_schema=current_schema() AND t.table_name='scenario_capabilities'
+                     AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns c
+                        WHERE c.table_schema=current_schema()
+                          AND c.table_name='scenario_capabilities'
+                          AND c.column_name='capability_version'
+                     )"""
+            ).fetchone()
+            if legacy:
+                conn.execute("DROP TABLE scenario_capabilities")
             conn.execute(ddl)
 
     def save_scenario_version(
@@ -133,8 +153,12 @@ class PostgresScenarioStoreMixin:
                 )
                 cursor.executemany(
                     """INSERT INTO scenario_capabilities
-                           (scenario_id,version,capability_id,position) VALUES (%s,%s,%s,%s)""",
-                    [(scenario.scenario_id, scenario.version, item, index)
+                           (scenario_id,version,capability_id,capability_version,
+                            capability_kind,plugin_id,plugin_version,plugin_build_digest,position)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    [(scenario.scenario_id, scenario.version, item.capability_id,
+                      item.version, item.kind.value, item.plugin_id,
+                      item.plugin_version, item.plugin_build_digest, index)
                      for index, item in enumerate(scenario.allowed_capabilities)],
                 )
             conn.execute(
@@ -221,7 +245,8 @@ class PostgresScenarioStoreMixin:
                ORDER BY priority""", (scenario_id, version),
         ).fetchall()
         capabilities = conn.execute(
-            """SELECT capability_id FROM scenario_capabilities
+            """SELECT capability_id,capability_version,capability_kind,plugin_id,
+                      plugin_version,plugin_build_digest FROM scenario_capabilities
                WHERE scenario_id=%s AND version=%s ORDER BY position""",
             (scenario_id, version),
         ).fetchall()
@@ -236,7 +261,17 @@ class PostgresScenarioStoreMixin:
                        "target_node_id": row["target_node_id"],
                        "condition": row["condition_expr"], "priority": row["priority"]}
                       for row in edges],
-            "allowed_capabilities": [row["capability_id"] for row in capabilities],
+            "allowed_capabilities": [
+                {
+                    "capability_id": row["capability_id"],
+                    "version": row["capability_version"],
+                    "kind": row["capability_kind"],
+                    "plugin_id": row["plugin_id"],
+                    "plugin_version": row["plugin_version"],
+                    "plugin_build_digest": row["plugin_build_digest"],
+                }
+                for row in capabilities
+            ],
             "planning_mode": base["planning_mode"],
             "execution_policy": dict(base["execution_policy"]),
             "routing_rules": list(base["routing_rules"]),

@@ -67,6 +67,7 @@ class SaveAgentRevisionRequest(BaseModel):
         ),
     )
     output_policy: dict[str, Any] = Field(default_factory=dict)
+    plugin_requirements: list[dict[str, str]] = Field(default_factory=list)
 
 
 class SaveMCPServerRequest(BaseModel):
@@ -94,6 +95,9 @@ class PublishCapabilityRequest(BaseModel):
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     output_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     adapter: str = Field(min_length=1)
+    plugin_id: str = Field(default="joyhousebot.core", min_length=1, pattern=_ID_PATTERN)
+    plugin_version: str = Field(default="0.1.2", min_length=1, max_length=128)
+    plugin_build_digest: str = Field(default="builtin", min_length=1, max_length=256)
     tags: list[str] = Field(default_factory=list)
     execution_mode: str = "immediate"
     expected_duration_seconds: int = Field(default=10, ge=0)
@@ -103,6 +107,9 @@ class PublishCapabilityRequest(BaseModel):
     side_effect: str = "none"
     supports_stream: bool = False
     permissions: list[str] = Field(default_factory=list)
+    data_classification: Literal["public", "internal", "confidential", "restricted"] = "internal"
+    connection_ids: list[str] = Field(default_factory=list)
+    cost_policy: dict[str, Any] = Field(default_factory=dict)
     configuration_schema: dict[str, Any] = Field(default_factory=dict)
     configuration: dict[str, Any] = Field(default_factory=dict)
 
@@ -128,6 +135,13 @@ class ScenarioFieldRequest(BaseModel):
     description: str = ""
     default: Any = None
     enum: list[Any] = Field(default_factory=list)
+    input_mode: Literal[
+        "auto", "text", "textarea", "single_choice", "multi_choice", "boolean", "number"
+    ] = "auto"
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    allow_other: bool = False
+    min_selections: int | None = Field(default=None, ge=0)
+    max_selections: int | None = Field(default=None, ge=1)
     validation: dict[str, Any] = Field(default_factory=dict)
     sensitive: bool = False
 
@@ -147,6 +161,15 @@ class ClarificationEdgeRequest(BaseModel):
     priority: int = 100
 
 
+class CapabilityRefRequest(BaseModel):
+    capability_id: str = Field(min_length=1, pattern=_ID_PATTERN)
+    version: str = Field(min_length=1, max_length=128)
+    kind: Literal["tool", "agent", "workflow", "skill", "connector"]
+    plugin_id: str = Field(min_length=1, pattern=_ID_PATTERN)
+    plugin_version: str = Field(min_length=1, max_length=128)
+    plugin_build_digest: str = Field(min_length=1, max_length=256)
+
+
 class SaveScenarioVersionRequest(BaseModel):
     version: int = Field(ge=1)
     name: str = Field(min_length=1)
@@ -154,7 +177,7 @@ class SaveScenarioVersionRequest(BaseModel):
     fields: list[ScenarioFieldRequest] = Field(default_factory=list)
     nodes: list[ClarificationNodeRequest] = Field(default_factory=list)
     edges: list[ClarificationEdgeRequest] = Field(default_factory=list)
-    allowed_capabilities: list[str] = Field(default_factory=list)
+    allowed_capabilities: list[CapabilityRefRequest] = Field(default_factory=list)
     planning_mode: Literal["fixed", "dynamic"] = "dynamic"
     execution_policy: dict[str, Any] = Field(default_factory=dict)
     routing_rules: list[dict[str, Any]] = Field(default_factory=list)
@@ -175,7 +198,7 @@ class GraphTaskRequest(BaseModel):
     timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
     max_attempts: int = Field(default=1, ge=1, le=20)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    capability_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    capability: CapabilityRefRequest | None = None
     capability_input: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
     allowed_tools: list[str] = Field(default_factory=list)

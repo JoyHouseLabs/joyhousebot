@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from joyhousebot.domain.capabilities.models import CapabilityRef
 from joyhousebot.domain.scenarios import ScenarioVersion
 from joyhousebot.orchestration.task_graph import render_value
 from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
@@ -29,26 +30,36 @@ class ScenarioPlanner:
         templates = list(scenario.execution_policy.get("tasks") or [])
         if scenario.planning_mode != "fixed" or not templates:
             return None
-        allowed = set(scenario.allowed_capabilities)
+        allowed = {item.identity: item for item in scenario.allowed_capabilities}
         definitions = {
-            str(item.get("ref", {}).get("capability_id")): item
-            for item in self.store.list_capability_definitions()
+            ref.identity: self.store.get_capability_definition(
+                ref.capability_id, ref.version
+            )
+            for ref in scenario.allowed_capabilities
         }
-        unknown_allowed = allowed - set(definitions)
+        definitions = {identity: item for identity, item in definitions.items() if item is not None}
+        unknown_allowed = set(allowed) - set(definitions)
         if unknown_allowed:
             raise ValueError(
                 f"scenario references unpublished capabilities: {sorted(unknown_allowed)}"
             )
+        for identity, definition in definitions.items():
+            published_ref = CapabilityRef.from_dict(dict(definition.get("ref") or {}))
+            if published_ref.identity != identity:
+                raise ValueError(
+                    "scenario capability provenance does not match its published definition: "
+                    f"{published_ref.capability_id}@{published_ref.version}"
+                )
         tool_capabilities = {
-            capability_id
-            for capability_id in allowed
-            if definitions[capability_id].get("ref", {}).get("kind")
+            ref.capability_id
+            for identity, ref in allowed.items()
+            if definitions[identity].get("ref", {}).get("kind")
             in {"tool", "connector"}
         }
         skills = {
-            capability_id.removeprefix("skill.")
-            for capability_id in allowed
-            if definitions[capability_id].get("ref", {}).get("kind") == "skill"
+            ref.capability_id.removeprefix("skill.")
+            for identity, ref in allowed.items()
+            if definitions[identity].get("ref", {}).get("kind") == "skill"
         }
         # Render every declared field so a template never sends literal
         # ``${field}`` text to a tool.  Unset optional values are removed from
@@ -63,15 +74,22 @@ class ScenarioPlanner:
         }
         tasks: list[GraphTaskSpec] = []
         for position, raw in enumerate(templates):
-            capability_id = str(raw.get("capability_id") or "").strip() or None
-            if capability_id and capability_id not in allowed:
-                raise ValueError(f"capability is not allowed by scenario: {capability_id}")
-            if capability_id:
-                kind = definitions[capability_id].get("ref", {}).get("kind")
+            capability = (
+                CapabilityRef.from_dict(dict(raw["capability"]))
+                if raw.get("capability")
+                else None
+            )
+            if capability and capability.identity not in allowed:
+                raise ValueError(
+                    "capability is not allowed by scenario: "
+                    f"{capability.capability_id}@{capability.version}"
+                )
+            if capability:
+                kind = definitions[capability.identity].get("ref", {}).get("kind")
                 if kind not in {"tool", "connector"}:
                     raise ValueError(
-                        "fixed task capability_id must be an executable tool or connector: "
-                        f"{capability_id}"
+                        "fixed task capability must be an executable tool or connector: "
+                        f"{capability.capability_id}"
                     )
             rendered_input = render_value(raw.get("input") or {}, variables)
             tasks.append(
@@ -83,7 +101,7 @@ class ScenarioPlanner:
                     dependencies=[str(item) for item in raw.get("dependencies") or []],
                     timeout_seconds=float(raw.get("timeout_seconds") or 300),
                     max_attempts=int(raw.get("max_attempts") or 1),
-                    capability_id=capability_id,
+                    capability=capability,
                     capability_input=_omit_none_object_values(dict(rendered_input)),
                     output_schema=(
                         dict(raw["output_schema"]) if raw.get("output_schema") else None
@@ -151,7 +169,11 @@ def build_coordinator_graph(
                 ),
                 agent_id=agent_id,
                 dependencies=dependencies,
-                allowed_tools=list(plan.get("selected_capabilities") or []),
+                allowed_tools=[
+                    str(item.get("capability_id"))
+                    for item in plan.get("selected_capabilities") or []
+                    if isinstance(item, dict)
+                ],
                 skill_names=list(plan.get("selected_skills") or []),
                 metadata={"coordinator_step": index + 1},
             )

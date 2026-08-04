@@ -11,7 +11,7 @@ class _Store:
     def list_capability_definitions(self):
         return [
             {
-                "ref": {"capability_id": "dinq.talent.filter", "version": "1", "kind": "tool"},
+                "ref": {"capability_id": "dinq.talent.filter", "version": "1", "kind": "tool", "plugin_id": "dinq-discover", "plugin_version": "1", "plugin_build_digest": "sha256:test"},
                 "name": "Talent filter",
                 "description": "Filter Dinq talent",
                 "input_schema": {
@@ -23,7 +23,7 @@ class _Store:
                 "timeout_seconds": 20,
             },
             {
-                "ref": {"capability_id": "skill.internal", "version": "1", "kind": "skill"},
+                "ref": {"capability_id": "skill.internal", "version": "1", "kind": "skill", "plugin_id": "dinq-discover", "plugin_version": "1", "plugin_build_digest": "sha256:test"},
                 "name": "Internal skill",
                 "description": "Not an MCP tool",
                 "input_schema": {"type": "object"},

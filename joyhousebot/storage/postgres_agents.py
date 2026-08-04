@@ -12,6 +12,7 @@ from joyhousebot.domain.agents import (
     AgentExecutionSnapshot,
     AgentProfile,
     AgentRevision,
+    PluginReleaseRequirement,
 )
 
 
@@ -43,6 +44,7 @@ class PostgresAgentStoreMixin:
             capability_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
             memory_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
             output_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+            plugin_requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_by TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             published_at TIMESTAMPTZ,
@@ -128,14 +130,28 @@ class PostgresAgentStoreMixin:
                          'anthropic/claude-opus-4-5', 'anthropic/claude-opus-4.5'
                      )"""
             )
+            conn.execute(
+                """ALTER TABLE agent_revisions ADD COLUMN IF NOT EXISTS
+                       plugin_requirements JSONB NOT NULL DEFAULT '[]'::jsonb"""
+            )
         self._seed_default_agents()
 
     def _seed_default_agents(self) -> None:
         from joyhousebot.bootstrap.default_agents import default_agent_profiles
 
+        # Defaults bootstrap a genuinely empty catalog only.  They must never
+        # be re-created after an operator has published a replacement revision
+        # (or intentionally pruned an old revision): doing so would silently
+        # move ``current_revision_id`` back to ``*:v1`` on every process
+        # restart and invalidate the operator's capability policy.
+        with self._pool.connection() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM agent_definitions LIMIT 1"
+            ).fetchone()
+        if existing is not None:
+            return
         for definition, revision in default_agent_profiles():
-            if self.get_agent_revision(revision.revision_id) is None:
-                self.save_agent_revision(definition, revision)
+            self.save_agent_revision(definition, revision)
 
     def save_agent_revision(
         self, definition: AgentDefinition, revision: AgentRevision
@@ -143,6 +159,17 @@ class PostgresAgentStoreMixin:
         if definition.agent_id != revision.agent_id:
             raise ValueError("Agent definition/revision identity mismatch")
         with self._pool.connection() as conn, conn.transaction():
+            for requirement in revision.plugin_requirements:
+                release = conn.execute(
+                    """SELECT build_digest FROM plugin_releases
+                       WHERE plugin_id=%s AND version=%s AND status='active'""",
+                    (requirement.plugin_id, requirement.version),
+                ).fetchone()
+                if release is None or str(release["build_digest"]) != requirement.build_digest:
+                    raise ValueError(
+                        "Agent revision requires an unavailable plugin release: "
+                        f"{requirement.plugin_id}@{requirement.version}"
+                    )
             existing = conn.execute(
                 "SELECT * FROM agent_revisions WHERE revision_id=%s FOR UPDATE",
                 (revision.revision_id,),
@@ -174,9 +201,9 @@ class PostgresAgentStoreMixin:
             conn.execute(
                 """INSERT INTO agent_revisions
                        (revision_id,agent_id,version,status,persona,instructions,model_policy,
-                        planning_policy,capability_policy,memory_policy,output_policy,created_by,
+                        planning_policy,capability_policy,memory_policy,output_policy,plugin_requirements,created_by,
                         published_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                            CASE WHEN %s='published' THEN clock_timestamp() ELSE NULL END)
                    ON CONFLICT(revision_id) DO UPDATE SET
                        persona=excluded.persona,instructions=excluded.instructions,
@@ -184,6 +211,7 @@ class PostgresAgentStoreMixin:
                        planning_policy=excluded.planning_policy,
                        capability_policy=excluded.capability_policy,
                        memory_policy=excluded.memory_policy,output_policy=excluded.output_policy,
+                       plugin_requirements=excluded.plugin_requirements,
                        created_by=excluded.created_by
                    WHERE agent_revisions.status='draft'""",
                 (
@@ -198,6 +226,7 @@ class PostgresAgentStoreMixin:
                     Jsonb(revision.capability_policy),
                     Jsonb(revision.memory_policy),
                     Jsonb(revision.output_policy),
+                    Jsonb([item.to_dict() for item in revision.plugin_requirements]),
                     revision.created_by,
                     revision.status,
                 ),
@@ -394,6 +423,7 @@ class PostgresAgentStoreMixin:
             "capability_policy": profile.revision.capability_policy,
             "memory_policy": profile.revision.memory_policy,
             "output_policy": profile.revision.output_policy,
+            "plugin_requirements": [item.to_dict() for item in profile.revision.plugin_requirements],
             "skill_bindings": list(bindings),
         }
         with self._pool.connection() as conn, conn.transaction():
@@ -441,6 +471,10 @@ class PostgresAgentStoreMixin:
             capability_policy=dict(value["capability_policy"]),
             memory_policy=dict(value["memory_policy"]),
             output_policy=dict(value["output_policy"]),
+            plugin_requirements=tuple(
+                PluginReleaseRequirement.from_dict(dict(item))
+                for item in value.get("plugin_requirements") or ()
+            ),
             skill_bindings=tuple(value.get("skill_bindings") or ()),
             created_at=value.get("created_at"),
         )
@@ -525,6 +559,7 @@ class PostgresAgentStoreMixin:
                 "capability_policy": dict(row["capability_policy"]),
                 "memory_policy": dict(row["memory_policy"]),
                 "output_policy": dict(row["output_policy"]),
+                "plugin_requirements": list(row["plugin_requirements"] or ()),
                 "created_by": row["created_by"],
                 "created_at": _iso(row["created_at"]),
                 "published_at": _iso(row["published_at"]),

@@ -235,6 +235,23 @@
 .message-content { min-width: 0; padding-top: 4px; }
 .message-content > strong { display: block; margin-bottom: 7px; color: var(--text-strong); font-size: 11px; }
 .message-content > small { display: block; margin-top: 7px; color: var(--text-muted); font: 9px var(--font-mono); }
+.clarification-card { display: grid; gap: 11px; padding: 16px; background: var(--surface-raised); border: 1px solid var(--accent-border); border-radius: 14px; }
+.clarification-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.clarification-heading small { color: var(--text-muted); font: 10px var(--font-mono); }
+.clarification-card h3 { margin: -4px 0 0; color: var(--text-strong); font-size: 16px; }
+.clarification-help { margin: -4px 0 2px; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
+.clarification-card > label { display: grid; gap: 7px; color: var(--text); font-size: 11px; }
+.clarification-card input, .clarification-card textarea, .clarification-card select { width: 100%; padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border); border-radius: 8px; outline: none; }
+.clarification-card > div:last-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.clarification-card code { overflow: hidden; color: var(--text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.choice-list { display: grid; gap: 7px; }
+.choice-list button { display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 10px 11px; color: var(--text); background: var(--input); border: 1px solid var(--border); border-radius: 9px; text-align: left; cursor: pointer; }
+.choice-list button:hover, .choice-list button.selected { border-color: var(--accent-border); background: var(--accent-subtle); }
+.choice-list button strong { display: block; color: var(--text-strong); font-size: 11px; }
+.choice-list button small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.choice-list.multi i { width: 16px; height: 16px; display: grid; flex: none; place-items: center; margin-top: 1px; color: var(--bg); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 4px; font-style: normal; font-size: 10px; }
+.choice-list.multi button.selected i { color: #fff; background: var(--accent-strong); border-color: var(--accent-strong); }
+.other-input { margin-top: 1px; }
 .message-block.user .message-author { color: var(--accent); background: var(--accent-subtle); border: 1px solid var(--accent-border); }
 .active-run-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .active-run-heading span { color: var(--text-muted); font-size: 10px; }

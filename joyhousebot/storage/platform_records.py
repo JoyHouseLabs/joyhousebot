@@ -117,6 +117,8 @@ class InputRequestRecord:
     status: str
     question: str
     fields: list[dict[str, Any]]
+    presentation: dict[str, Any]
+    source: str
     expires_at: str | None
     created_at: str
     resolved_at: str | None
