@@ -1,123 +1,136 @@
-# Joyhousebot Cloud
+# Joyhousebot
 
-Joyhousebot 是面向多用户并发的分布式 Agent 云运行平台。它提供 FastAPI HTTP/SSE 网关、持久化 Run/Task 状态机、多 Agent DAG、独立 Worker/Scheduler/Channel Worker，并直接基于 PostgreSQL 协调执行，不依赖外部 Agent SDK。
+## 企业 Agent 应用治理平台
 
-系统没有 `tenant_id`。用户资源使用认证主体派生的 `user_id` 隔离，会话由 `user_id + agent_id + session_id` 唯一确定；Agent、Skill 和 Tool 是服务所有用户的平台级能力。
+Joyhousebot 不是单 Agent 客户端，也不是模型供应商 SDK。它解决企业把 Agent 应用投入真实业务后最难管理的问题：权限边界、能力准入、版本发布、并发执行、故障恢复、全流程审计、结果回放，以及成本和性能治理。
 
-## 架构
+它提供一个 PostgreSQL-first 的控制面与运行面，让企业可以统一构建、发布、运行和治理多个 Agent 应用。
+
+## 治理模型
 
 ```text
-Browser / API Client
-       │ HTTP + SSE
-       ▼
-  FastAPI replicas ─────────────┐
-                                ▼
-                           PostgreSQL
-                 ┌──────────────┼──────────────┐
-                 ▼              ▼              ▼
-            Agent Worker    Scheduler     Channel Worker
+用户 / API Client
+      │ 身份、权限、配额、审计
+      ▼
+  Agent 应用
+      │ 版本、场景、追问 DAG、记忆策略
+      ▼
+能力目录 ─ Skills / Tools / MCP / Channels / Providers
+      │ allowlist、策略、沙箱、健康检查
+      ▼
+运行时 ─ Run / Task / Event / Trace / Artifact / Replay
+      ▼
+PostgreSQL 事实源
 ```
 
-- 公共协议只有 `/v1` HTTP + SSE，没有 WebSocket RPC。
-- API 只提交和查询；模型与 Tool 只在 Worker 执行。
-- PostgreSQL 是唯一的运行时事实源；没有 SQLite 运行时后端。
-- Run Event、Log、Artifact、执行 Span 和模型调用可审计、可恢复、可回放。
-- 普通用户只接收结构化进度；具备专门权限的诊断台可查看完整模型请求/响应，以及供应商实际返回的原始推理块。
-- `/mcp/` 是 MCP Streamable HTTP 适配层；MCP 工具调用仍会创建统一的持久化 Run/Task，不维护第二套执行运行时。
+治理是每次执行的默认路径：请求先经过认证和权限校验，能力必须来自已发布目录，执行过程写入可续传事件与诊断数据，结果与成本、耗时、错误和产物一起归档。
 
-完整说明见 [架构文档](docs/ARCHITECTURE.md) 和 [开发计划](docs/DEVELOPMENT_PLAN.md)。
+## 核心能力
+
+### Agent、场景与版本治理
+
+- Agent、Skill、Tool、Scenario 和 MCP Server 使用可审计的版本目录管理。
+- 草稿 → 发布 → Worker 加载确认 → 生效切换是明确的 rollout 状态机；失败发布不会覆盖旧版本。
+- 场景支持意图路由、字段校验、追问节点与边、能力绑定和执行策略，可在控制台模拟和发布。
+- 主协调器可以路由到固定场景、生成追问或创建并行 Task Graph；业务应用不需要硬编码进核心运行时。
+
+### 能力与安全治理
+
+- Capability Registry 统一登记 Tool、Skill、Connector 和 MCP 能力，调用前执行 allowlist、权限、配额和参数校验。
+- Shell 只允许在隔离 Docker 容器中执行；容器不可用时失败关闭，不降级到宿主机。
+- File、Memory、Knowledge、Artifact 按 `user_id + agent_id + root_run_id` 隔离；Worker 本地磁盘不是共享事实源。
+- Provider、数据库、Channel 和外部服务凭据只通过环境变量或 `env://VARIABLE` 引用，禁止明文进入配置和日志。
+
+### 可观测、审计与可解释性
+
+每个请求形成可续传 Run 时间线，串联父子 Run、Task、Worker、模型调用、Tool Invocation、日志、Span 和产物。控制台可以定位队列等待、claim 延迟、首 Token、工具耗时、Token、成本、重试、缓存命中、错误、场景路由和子 Agent。
+
+诊断面可以查看供应商实际返回的 reasoning/thinking 块。平台区分 `provider_native/exact`、`model_declared/normalized`、`runtime_decision` 和 `unavailable`，不会把模型未暴露的隐藏状态伪装成思维链。原始请求、响应和推理 Blob 按权限读取，读取行为也写入审计日志。
+
+### 回放与持续改进
+
+支持 offline、frozen、branch 和 live 回放，用于故障分析、结果比较和受控重试。模型缓存只复用等价请求，仍然保留 Invocation、Span 和审计记录。
+
+### 分布式执行
+
+```text
+客户端 ── HTTP / SSE ──▶ FastAPI API 副本
+                              │
+                              ▼
+                         PostgreSQL
+                    ┌─────────┼─────────┐
+                    ▼         ▼         ▼
+              Agent Worker  Scheduler  Channel Worker
+```
+
+- PostgreSQL 是唯一运行时事实源；SQLite 不支持。
+- Worker 使用 lease、fencing version、`FOR UPDATE SKIP LOCKED` 和 PostgreSQL `LISTEN/NOTIFY`，不依赖进程内队列。
+- API 负责认证、提交和查询；模型与工具只在 Worker 执行。
+- 同一会话的顶层 Run 串行，不同用户、会话和子任务可以并发。
+- Redis 不是必需依赖；如引入，只能作为缓存或唤醒加速层，不能替代 PostgreSQL 状态机。
+
+### 统一执行入口
+
+公共协议是版本化 HTTP + SSE。聊天、定时任务、Channel 入站、多 Agent DAG 和 MCP `tools/call` 都进入同一套 Run/Task 链路，不维护第二套 RPC 或 MCP 执行引擎。
+
+## 身份与权限
+
+当前核心模型不引入 `tenant_id`：资源归属由认证主体 `user_id` 表达，会话边界是 `user_id + agent_id + session_id`；Agent、Skill、Tool 和子 Agent 是平台共享能力。平台管理员存放在独立的 `platform_admins` 表中，与普通用户身份分离。
+
+生产环境使用数据库签发的 Bearer Token，数据库只保存 SHA-256 指纹；`X-User-ID` 仅在显式开发模式生效。权限按操作拆分，例如 `runs.read`、`runs.cancel`、`agents.publish`、`reasoning.read_raw` 和 `replay.execute`，管理操作全部产生审计事件。
+
+## 代码边界与业务集成
+
+```text
+api / bootstrap / channel adapters
+                ↓
+            application
+                ↓
+       runtime + domain services
+                ↓
+       dedicated PostgreSQL repositories
+```
+
+业务项目（例如 Dinq Discover）应通过独立插件包注册 Scenario、Capability、Tool、Skill 或 MCP Server，不把业务代码写入 `joyhousebot` 核心包。
 
 ## 快速启动
 
-已有本地 PostgreSQL 时，可以一条命令启动 API、Scheduler 和两个 Worker。脚本会优先读取
-`LLM_API_KEY`，其次读取 `OPENROUTER_API_KEY`，最后只在内存中迁移旧
-`~/.joyhousebot/config.json` 的 OpenRouter Key：
+本地需要 PostgreSQL：
 
 ```bash
+cp config.example.json config.json
+export LLM_PROVIDER="openrouter"
+export LLM_API_KEY="your-key"
+export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot"
 ./scripts/start-local.sh
 ```
 
-业务插件不写入核心包目录。以本机的 Dinq 插件为例，在 `config.json` 显式启用模块，并将其作为
-editable package 安装到本地运行环境：
+打开 `http://127.0.0.1:18790/ui/`；OpenAPI 在 `/docs`，健康检查为 `/healthz` 和 `/readyz`。`config.json` 已被 Git 忽略，真实配置和密钥不要提交。
 
-```json
-{
-  "tools": {
-    "capability_plugins": ["dinq_plugin.discover.plugin"]
-  }
-}
-```
+Docker Compose：
 
 ```bash
-export JOYHOUSEBOT_LOCAL_PLUGIN_PACKAGES='/Users/joyhouse/workspace/dinq-plugin'
-./scripts/start-local.sh
-dinq-plugin-seed
-```
-
-插件以进程镜像/依赖的一部分部署；`capability_plugins` 是明确的 allowlist，默认不扫描环境中其他
-Python 包的 entry point。Dinq 人才 Capability 另需只读的 `DINQ_TALENT_DATABASE_URL`；内部用户检索
-另需 `DINQ_INTERNAL_USER_SEARCH_URL`。
-
-浏览器打开 `http://127.0.0.1:18790/ui/`，按 `Ctrl+C` 会关闭全部子进程。组件日志保存在
-`~/.joyhousebot/logs/local/`。
-
-使用 Docker Compose 启动整套依赖：
-
-```bash
-export LLM_PROVIDER='anthropic'
-export LLM_API_KEY='your-key'
-export POSTGRES_PASSWORD='choose-a-strong-password'
+export LLM_PROVIDER="openrouter"
+export LLM_API_KEY="your-key"
+export POSTGRES_PASSWORD="choose-a-strong-password"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
-Compose 默认挂载 `config.example.json`，其中显式开启 `allowInsecureAuth`，仅供本机开发。生产环境必须关闭该选项，并从控制台或 `/v1/admin/access-tokens` 签发数据库哈希令牌。配置文件拒绝明文密钥；Provider、数据库和 Channel 凭据使用外部环境变量或 `env://VARIABLE` 引用。
-
-本地直接运行可先执行 `cp config.example.json config.json`。`config.json` 已被 `.gitignore` 忽略，不要提交真实配置。
-
-或连接已有 PostgreSQL，分别启动角色：
-
-```bash
-export JOYHOUSEBOT_DATABASE_URL='postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot'
-export JOYHOUSEBOT_CONFIG_PATH="$PWD/config.json"
-uv run joyhousebot check
-uv run joyhousebot api --surface combined --port 18790
-uv run joyhousebot worker
-uv run joyhousebot scheduler
-```
-
-也可以给每个命令传入 `--config ./config.json`。显式配置路径不存在或仍包含旧版单机客户端字段时，进程会直接失败，不会静默使用其他配置。
-
-API 文档：`http://127.0.0.1:18790/docs`；UI：`http://127.0.0.1:18790/ui/`。
-
-Channel 连接器在控制台的“配置 → Channels”查看启用状态和运行边界；当前凭据仍由环境变量或 `env://VARIABLE` 引用提供，连接配置尚未迁移为数据库热加载。
-
-前端开发：
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-监控台开发地址为 `http://localhost:5178/ui/overview`，Agent 试用地址为 `/ui/chat`；Vite 代理 `/v1`、`/healthz` 和 `/readyz` 到 18790。
+详细部署和故障排查见 [运行手册](docs/OPERATIONS.md)，完整边界和数据模型见 [架构文档](docs/ARCHITECTURE.md)。
 
 ## API 示例
 
 ```bash
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: local-user' \
-  -d '{"agent_id":"joy","session_id":"demo","input":{"content":"分析这个任务"}}'
+  -H 'X-User-ID: local-dev' \
+  -d '{"agent_id":"main-coordinator","session_id":"demo","input":{"content":"分析这个任务"}}'
 ```
 
-生产环境应使用数据库签发的 Bearer Token；PostgreSQL 只保存令牌 SHA-256 指纹，明文仅在签发响应中出现一次。`X-User-ID` 仅在显式设置 `gateway.allowInsecureAuth=true` 的开发模式生效；没有有效令牌时默认拒绝认证（401）。
+生产请求应使用数据库签发的 Bearer Token。
 
-## 许可证
-
-本项目采用 Apache License 2.0，可用于商业产品。使用和再分发时请保留许可证和版权声明，并遵守 Apache License 2.0 的专利与 NOTICE 条款。
-
-## 开发验证
+## 验证
 
 ```bash
 .venv/bin/python -m pytest
@@ -125,4 +138,6 @@ curl -X POST http://127.0.0.1:18790/v1/runs \
 cd frontend && npm run build
 ```
 
-部署与故障排查见 [运行手册](docs/OPERATIONS.md)。
+## 许可证
+
+本项目采用 Apache License 2.0，可用于商业产品。再分发时请保留许可证、版权声明，并遵守 Apache 2.0 的专利与 NOTICE 条款。

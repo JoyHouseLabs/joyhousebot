@@ -1,71 +1,134 @@
-# Joyhousebot Cloud
+# Joyhousebot
 
-Joyhousebot is a distributed Agent runtime for multi-user cloud services. It provides a FastAPI HTTP/SSE gateway, durable Run/Task state machines, multi-Agent DAG execution, and independently scalable Worker, Scheduler, and Channel Worker roles. The runtime is implemented in this repository and does not depend on an external Agent SDK.
+## Governance for enterprise Agent applications
 
-There is no tenant abstraction. Authentication resolves a `user_id`; a conversation is uniquely identified by `user_id + agent_id + session_id`. Agents, skills, tools, and child-Agent capacity are shared platform capabilities, while user state remains isolated.
+Joyhousebot is not a single-agent chat client and not a model-vendor SDK. It governs the concerns that appear when an Agent application enters real business workflows: identity and permissions, capability access, version rollout, distributed execution, recovery, auditability, replay, cost, and performance.
 
-## Architecture
+It provides one PostgreSQL-first control plane and runtime for building, publishing, operating, and governing many Agent applications.
+
+## Governance model
 
 ```text
-Browser / API client
-       │ HTTP + SSE
-       ▼
- FastAPI replicas ──────────────┐
-                                ▼
-                           PostgreSQL
-                 ┌──────────────┼──────────────┐
-                 ▼              ▼              ▼
-            Agent Worker    Scheduler     Channel Worker
+Users / API clients
+        │ identity, permissions, quotas, audit
+        ▼
+    Agent application
+        │ revisions, scenarios, clarification DAGs, memory policy
+        ▼
+Capability catalog ─ Skills / Tools / MCP / Channels / Providers
+        │ allowlists, policy, sandbox, health
+        ▼
+Runtime ─ Run / Task / Event / Trace / Artifact / Replay
+        ▼
+PostgreSQL source of truth
 ```
 
-- `/v1` HTTP and SSE are the only public application protocols.
-- API replicas authenticate, submit, and query; model and tool execution happens in Workers.
-- PostgreSQL is the only runtime source of truth in development and production; SQLite is not supported.
-- Runs, tasks, events, logs, artifacts, memory, knowledge, schedules, channel delivery, and provider health are durable.
-- Normal clients receive structured progress. Privileged diagnostics can inspect exact model requests/responses and reasoning blocks actually returned by the provider.
-- Shell execution is Docker-only and fails closed when isolation is unavailable.
-- `/mcp/` is a Streamable HTTP protocol adapter; MCP tool calls still create the same durable Run/Task and do not introduce a second execution runtime.
+Governance is part of every execution: requests are authenticated, capabilities come from a published catalog, execution is recorded as resumable events and diagnostics, and results are archived with cost, latency, errors, and artifacts.
 
-See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md), and the [Development Plan](docs/DEVELOPMENT_PLAN.md).
+## Core capabilities
+
+### Agent, scenario, and release governance
+
+- Versioned catalogs for Agents, Skills, Tools, Scenarios, and MCP servers.
+- Draft → publish → Worker acknowledgement → activation is an explicit rollout state machine; failed rollouts retain the previous revision.
+- Scenarios support intent routing, field validation, clarification nodes and edges, capability bindings, and execution policies.
+- A main coordinator can route to a scenario, ask configured follow-ups, or create a parallel Task Graph without hard-coding a business application into the core runtime.
+
+### Capability and security governance
+
+- One Capability Registry for Tools, Skills, Connectors, and MCP capabilities with allowlists, permissions, quotas, and input validation.
+- Shell execution is Docker-only and fails closed when isolation is unavailable.
+- Files, Memory, Knowledge, and Artifacts are isolated by `user_id + agent_id + root_run_id`; a Worker filesystem is never the shared source of truth.
+- Provider, database, Channel, and external-service credentials are environment or `env://VARIABLE` references, never plaintext JSON or logs.
+
+### Observability, audit, and explainability
+
+Every request creates a resumable Run timeline linking parent/child Runs, Tasks, Workers, model calls, Tool Invocations, logs, spans, and artifacts. The console exposes queue wait, claim latency, first-token time, tool latency, tokens, cost, retries, cache hits, errors, routing decisions, follow-ups, and child Agents.
+
+Privileged diagnostics may inspect reasoning/thinking blocks actually returned by a provider. The platform distinguishes `provider_native/exact`, `model_declared/normalized`, `runtime_decision`, and `unavailable`; it never claims to expose hidden model state that a provider did not return. Raw payloads and reasoning blobs are permission-gated and reads are audited.
+
+### Replay and improvement
+
+Offline, frozen, branch, and live replays support incident analysis, deterministic comparison, and controlled re-execution. Model caching reuses only equivalent requests and still records Invocation, Span, and audit data.
+
+### Distributed execution
+
+```text
+Client ── HTTP / SSE ──▶ FastAPI API replicas
+                              │
+                              ▼
+                         PostgreSQL
+                    ┌─────────┼─────────┐
+                    ▼         ▼         ▼
+              Agent Worker  Scheduler  Channel Worker
+```
+
+- PostgreSQL is the only runtime source of truth; SQLite is not supported.
+- Workers use leases, fencing versions, `FOR UPDATE SKIP LOCKED`, and PostgreSQL `LISTEN/NOTIFY` rather than in-process queues.
+- APIs authenticate, submit, and query; models and tools execute in Workers.
+- Top-level Runs in one session are serialized; users, sessions, and child tasks can run concurrently.
+- Redis is optional acceleration only and cannot replace the PostgreSQL state machine.
+
+### One public execution path
+
+Versioned HTTP + SSE is the public application protocol. Chat, schedules, Channel ingress, multi-Agent DAGs, and MCP `tools/call` all enter the same Run/Task pipeline; there is no second RPC or MCP execution engine.
+
+## Identity and permissions
+
+The current core model deliberately has no `tenant_id`. Resource ownership is expressed by the authenticated `user_id`; a session is `user_id + agent_id + session_id`. Agents, Skills, Tools, and child-Agent capacity are shared platform capabilities. Platform administrators are stored separately in `platform_admins`.
+
+Production uses database-issued Bearer Tokens, storing only SHA-256 token fingerprints. `X-User-ID` is development-only. Permissions are operation-scoped (`runs.read`, `runs.cancel`, `agents.publish`, `reasoning.read_raw`, `replay.execute`) and administrative actions create audit events.
+
+## Business integration and code boundaries
+
+```text
+api / bootstrap / channel adapters
+                ↓
+            application
+                ↓
+       runtime + domain services
+                ↓
+       dedicated PostgreSQL repositories
+```
+
+Business applications such as Dinq Discover should register Scenarios, Capabilities, Tools, Skills, or MCP servers through an independent plugin package rather than adding business code to the `joyhousebot` core package.
 
 ## Start locally
 
+PostgreSQL is required:
+
 ```bash
-export LLM_PROVIDER='anthropic'
-export LLM_API_KEY='your-key'
+cp config.example.json config.json
+export LLM_PROVIDER="openrouter"
+export LLM_API_KEY="your-key"
+export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot"
+./scripts/start-local.sh
+```
+
+Open `http://127.0.0.1:18790/ui/`; OpenAPI is at `/docs`, and health endpoints are `/healthz` and `/readyz`. `config.json` is ignored by Git; never commit real credentials.
+
+Docker Compose is also available:
+
+```bash
+export LLM_PROVIDER="openrouter"
+export LLM_API_KEY="your-key"
+export POSTGRES_PASSWORD="choose-a-strong-password"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
-To run roles against an existing PostgreSQL database:
+See [Architecture](docs/ARCHITECTURE.md) and [Operations](docs/OPERATIONS.md) for deployment, migrations, Worker roles, and incident handling.
 
-```bash
-export JOYHOUSEBOT_DATABASE_URL='postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot'
-uv run joyhousebot check
-uv run joyhousebot api --surface combined --port 18790
-uv run joyhousebot worker
-uv run joyhousebot scheduler
-uv run joyhousebot channel-worker
-```
-
-OpenAPI is at `http://127.0.0.1:18790/docs`; the built-in UI is at `http://127.0.0.1:18790/ui/`.
-
-Channel connectors are visible under “Configuration → Channels” in the console. Their credentials remain environment or `env://VARIABLE` references; database-backed hot editing is planned, not currently implemented.
-
-## Submit a run
+## Submit a Run
 
 ```bash
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: local-user' \
-  -d '{"agent_id":"joy","session_id":"demo","input":{"content":"Analyze this task"}}'
+  -H 'X-User-ID: local-dev' \
+  -d '{"agent_id":"main-coordinator","session_id":"demo","input":{"content":"Analyze this task"}}'
 ```
 
-`X-User-ID` is accepted only in explicit development mode. Production deployments issue database-backed Bearer tokens; only token hashes are retained.
-
-## License
-
-Joyhousebot is released under the Apache License 2.0. Commercial use is permitted; redistributions must retain the license, copyright notices, and comply with the Apache 2.0 patent and NOTICE terms.
+Use a database-issued Bearer Token in production.
 
 ## Verify
 
@@ -74,3 +137,7 @@ Joyhousebot is released under the Apache License 2.0. Commercial use is permitte
 .venv/bin/ruff check joyhousebot tests
 cd frontend && npm run build
 ```
+
+## License
+
+Joyhousebot is released under the Apache License 2.0. Commercial use is permitted; redistributions must retain the license, copyright notices, and comply with the Apache 2.0 patent and NOTICE terms.
