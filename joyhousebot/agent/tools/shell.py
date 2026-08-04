@@ -2,6 +2,9 @@
 
 Safety guard (allowlist + structured blocking):
 - deny_patterns: dangerous commands/patterns (rm -rf, format, dd, redirect to raw device, fork bomb, etc.).
+  NOTE: deny_patterns/allow_patterns are a best-effort UX backstop only. The real security
+  boundary is the container sandbox (resource limits, dropped caps, no network by default);
+  never rely on the regex guard alone for isolation.
 - allow_patterns: when non-empty, only commands matching allow_patterns are allowed (allowlist mode).
 - restrict_to_workspace: path and working-dir checks; when True and shell_mode=False, shell metacharacters
   are forbidden so that the following are blocked in non-shell mode:
@@ -9,29 +12,45 @@ Safety guard (allowlist + structured blocking):
   - Command substitution: $(...), `...` (pattern includes $, `).
   - Subshell: (...) (pattern includes ( and )).
   - Chaining: |, &&, ||, ; (pattern includes |, &, ;).
+  - Embedded newlines (\\n, \\r), which could smuggle extra commands past line-based checks.
   When shell_mode=True, piping and redirects are allowed; guard relies on deny_patterns and path checks.
 """
 
 import asyncio
-import os
+import hashlib
 import re
-import shlex
+import shutil
+import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from loguru import logger
 
 from joyhousebot.agent.tools.base import Tool
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
 from joyhousebot.utils.exceptions import (
-    ToolError,
-    TimeoutError,
     sanitize_error_message,
 )
 
+_SCRATCH_MAX_AGE_SECONDS = 24 * 3600
 
-_MAX_OUTPUT_LENGTH = 10000
+
+def _cleanup_old_scratch(scratch_root: Path) -> None:
+    """Opportunistically drop run scratch dirs older than 24h; failures are logged only."""
+    try:
+        cutoff = time.time() - _SCRATCH_MAX_AGE_SECONDS
+        for child in scratch_root.iterdir():
+            try:
+                if child.is_dir() and child.stat().st_mtime < cutoff:
+                    shutil.rmtree(child, ignore_errors=True)
+            except OSError:
+                continue
+    except OSError as e:
+        logger.warning("scratch cleanup failed for {}: {}", scratch_root, e)
 
 
 class ExecTool(Tool):
-    """Tool to execute shell commands (direct or Docker backend with fallback)."""
+    """Tool to execute shell commands directly or in a fail-closed container."""
 
     def __init__(
         self,
@@ -39,24 +58,51 @@ class ExecTool(Tool):
         working_dir: str | None = None,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
-        restrict_to_workspace: bool = False,
+        restrict_to_workspace: bool = True,
         shell_mode: bool = False,
-        container_enabled: bool = False,
         container_image: str = "alpine:3.18",
         container_workspace_mount: str = "",
-        container_user: str = "",
+        container_user: str = "65534:65534",
         container_network: str = "none",
-        get_skill_env: Callable[[str], dict[str, str]] | None = None,
+        container_memory: str = "512m",
+        container_cpus: str = "1",
+        container_pids_limit: int = 256,
     ):
         self.timeout = timeout
         self.working_dir = working_dir
         self.shell_mode = shell_mode
-        self.container_enabled = container_enabled
         self.container_image = container_image or "alpine:3.18"
         self.container_workspace_mount = (container_workspace_mount or "").strip()
         self.container_user = (container_user or "").strip()
-        self.container_network = container_network or "none"
-        self.get_skill_env = get_skill_env
+        self.container_network = (container_network or "none").strip()
+        if self.container_network == "host":
+            logger.warning(
+                "exec container_network='host' is not allowed on the cloud platform; "
+                "falling back to 'none'"
+            )
+            self.container_network = "none"
+        self.container_memory = container_memory or "512m"
+        self.container_cpus = container_cpus or "1"
+        self.container_pids_limit = int(container_pids_limit or 256)
+        self._mount_config_error: str | None = None
+        if not restrict_to_workspace:
+            # Unrestricted exec requires an explicit mount source; never fall back to
+            # (or accept) the platform process working directory as the mount source.
+            mount = self.container_workspace_mount
+            try:
+                mount_is_cwd = bool(mount) and (
+                    Path(mount).expanduser().resolve() == Path.cwd().resolve()
+                )
+            except OSError:
+                mount_is_cwd = True
+            if not mount or mount_is_cwd:
+                self._mount_config_error = (
+                    "container_workspace_mount must be explicitly configured when "
+                    "restrict_to_workspace is False, and must not be the platform "
+                    "process working directory"
+                )
+                logger.warning("exec tool misconfigured: {}", self._mount_config_error)
+        self.restrict_to_workspace = restrict_to_workspace
         self.deny_patterns = deny_patterns or [
             r"\brm\s+-[rf]{1,2}\b",
             r"\bdel\s+/[fq]\b",
@@ -68,8 +114,7 @@ class ExecTool(Tool):
             r":\(\)\s*\{.*\};\s*:",
         ]
         self.allow_patterns = allow_patterns or []
-        self.restrict_to_workspace = restrict_to_workspace
-        self._shell_metachar_pattern = re.compile(r"[|&;<>()`$]")
+        self._shell_metachar_pattern = re.compile(r"[|&;<>()`$\n\r]")
 
     @property
     def name(self) -> str:
@@ -84,45 +129,74 @@ class ExecTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The shell command to execute"
-                },
+                "command": {"type": "string", "description": "The shell command to execute"},
                 "working_dir": {
                     "type": "string",
-                    "description": "Optional working directory for the command"
-                }
+                    "description": "Optional working directory for the command",
+                },
             },
-            "required": ["command"]
+            "required": ["command"],
         }
 
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
-        cwd = working_dir or self.working_dir or os.getcwd()
+        if self._mount_config_error:
+            raise ToolInvocationError("SANDBOX_MISCONFIGURED", self._mount_config_error)
+        cwd = working_dir or self.working_dir or str(Path.cwd())
+        cwd = self._scoped_working_dir(cwd, kwargs.get("tool_context"))
         guard_error = self._guard_command(command, cwd)
         if guard_error:
-            return guard_error
+            raise ToolInvocationError("COMMAND_BLOCKED", guard_error)
 
-        if self.container_enabled:
-            result, fallback_reason = await self._execute_docker_or_fallback(command, cwd)
-            if fallback_reason:
-                result = (result or "(no output)").rstrip() + f"\n[Sandbox fallback: {fallback_reason}]"
-            return result
+        return await self._execute_docker(command, cwd)
 
-        return await self._execute_direct(command, cwd)
+    def _scoped_working_dir(self, cwd: str, tool_context: Any) -> str:
+        """Give each root workflow a private local scratch mount."""
+        if not self.restrict_to_workspace or tool_context is None or not self.working_dir:
+            return cwd
+        from joyhousebot.runtime.context import ToolExecutionContext
 
-    async def _execute_docker_or_fallback(self, command: str, cwd: str) -> tuple[str, str | None]:
-        """Try Docker backend; on failure fall back to direct and return (output, fallback_reason)."""
+        if not isinstance(tool_context, ToolExecutionContext):
+            return cwd
+        workflow_id = tool_context.root_run_id or tool_context.run_id
+        scope = hashlib.sha256(
+            f"{tool_context.user_id}\0{tool_context.agent_id}\0{workflow_id}".encode()
+        ).hexdigest()[:24]
+        scratch_root = Path(self.working_dir).expanduser().resolve() / ".scratch"
+        root = scratch_root / scope
+        root.mkdir(parents=True, exist_ok=True)
+        # The container runs as nobody (65534) by default; keep the scratch mount writable.
+        try:
+            root.chmod(0o777)
+        except OSError as e:
+            logger.warning("failed to chmod scratch dir {}: {}", root, e)
+        _cleanup_old_scratch(scratch_root)
+        requested = Path(cwd).expanduser()
+        if requested.is_absolute():
+            workspace = Path(self.working_dir).expanduser().resolve()
+            try:
+                relative = requested.resolve().relative_to(workspace)
+            except ValueError:
+                return str(requested.resolve())
+            return str((root / relative).resolve())
+        return str((root / requested).resolve())
+
+    async def _execute_docker(self, command: str, cwd: str) -> str:
+        """Run in Docker and fail closed; never downgrade to host execution."""
         from joyhousebot.sandbox.docker_backend import is_docker_available, run_in_container
 
         try:
             if not await is_docker_available():
-                out = await self._execute_direct(command, cwd)
-                return out, "Docker unavailable; ran in host"
+                raise ToolInvocationError("SANDBOX_UNAVAILABLE", "execution sandbox is unavailable", retryable=True)
         except Exception as e:
-            out = await self._execute_direct(command, cwd)
-            return out, f"Docker check failed ({sanitize_error_message(str(e))}); ran in host"
+            if isinstance(e, ToolInvocationError):
+                raise
+            raise ToolInvocationError(
+                "SANDBOX_CHECK_FAILED", sanitize_error_message(str(e)), retryable=True
+            ) from e
 
-        workspace_host = self.container_workspace_mount or cwd
+        workspace_host = (
+            cwd if self.restrict_to_workspace else (self.container_workspace_mount or cwd)
+        )
         try:
             out, exit_code, err = await run_in_container(
                 command=command,
@@ -134,117 +208,50 @@ class ExecTool(Tool):
                 user=self.container_user,
                 network=self.container_network,
                 shell_mode=self.shell_mode,
+                memory=self.container_memory,
+                cpus=self.container_cpus,
+                pids_limit=self.container_pids_limit,
             )
             if err is None:
                 if exit_code != 0:
                     out = (out or "").rstrip() + f"\nExit code: {exit_code}"
-                return (out or "(no output)").rstrip(), None
+                return (out or "(no output)").rstrip()
+            raise ToolInvocationError("SANDBOX_EXECUTION_FAILED", sanitize_error_message(str(err)))
         except asyncio.TimeoutError:
-            return f"Error: Command timed out after {self.timeout} seconds", "Container timeout"
+            raise ToolInvocationError(
+                "COMMAND_TIMEOUT", f"Command timed out after {self.timeout} seconds", retryable=True
+            )
+        except ToolInvocationError:
+            raise
         except Exception as e:
-            sanitized = sanitize_error_message(str(e))
-
-        try:
-            direct_out = await self._execute_direct(command, cwd)
-            return direct_out, f"Docker failed ({sanitized}); ran in host"
-        except asyncio.TimeoutError:
-            return f"Error: Command timed out after {self.timeout} seconds", "Direct timeout after Docker failed"
-        except Exception as e:
-            return f"Error: {sanitize_error_message(str(e))}\n[Docker had failed: {sanitized}]", "Both Docker and direct failed"
-
-    def _build_env_for_cwd(self, cwd: str) -> dict[str, str]:
-        """Build environment for subprocess: current env + per-skill env when cwd is under workspace/skills/<name>."""
-        env = dict(os.environ)
-        if self.get_skill_env:
-            extra = self.get_skill_env(cwd)
-            if extra:
-                env.update(extra)
-        return env
-
-    async def _execute_direct(self, command: str, cwd: str) -> str:
-        """Run command on host (current behavior)."""
-        run_env = self._build_env_for_cwd(cwd)
-        try:
-            if self.shell_mode:
-                shell = os.environ.get("SHELL", "/bin/sh")
-                if shell.endswith("fish"):
-                    shell = "/bin/sh"
-                process = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                    env=run_env,
-                    executable=shell,
-                )
-            else:
-                argv = shlex.split(command, posix=True)
-                if not argv:
-                    return "Error: Empty command"
-                process = await asyncio.create_subprocess_exec(
-                    argv[0],
-                    *argv[1:],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                    env=run_env,
-                )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.timeout
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                return f"Error: Command timed out after {self.timeout} seconds"
-
-            output_parts = []
-            if stdout:
-                output_parts.append(stdout.decode("utf-8", errors="replace"))
-            if stderr:
-                stderr_text = stderr.decode("utf-8", errors="replace")
-                if stderr_text.strip():
-                    output_parts.append(f"STDERR:\n{stderr_text}")
-            if process.returncode != 0:
-                output_parts.append(f"\nExit code: {process.returncode}")
-            result = "\n".join(output_parts) if output_parts else "(no output)"
-            if len(result) > _MAX_OUTPUT_LENGTH:
-                result = result[:_MAX_OUTPUT_LENGTH] + f"\n... (truncated, {len(result) - _MAX_OUTPUT_LENGTH} more chars)"
-            return result
-        except FileNotFoundError as e:
-            return f"Error: Command not found: {shlex.split(command)[0] if command else 'unknown'}"
-        except PermissionError:
-            return "Error: Permission denied"
-        except asyncio.TimeoutError:
-            return f"Error: Command timed out after {self.timeout} seconds"
-        except OSError as e:
-            return f"Error: {sanitize_error_message(str(e))}"
-        except Exception as e:
-            return f"Error executing command: {sanitize_error_message(str(e))}"
+            raise ToolInvocationError("SANDBOX_EXECUTION_FAILED", sanitize_error_message(str(e))) from e
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
-        """Best-effort safety guard: deny_patterns, allowlist (allow_patterns), and when restrict_to_workspace
-        and not shell_mode, block shell metacharacters (| & ; < > ( ) ` $) so redirects, command substitution,
-        subshells, and chaining are rejected. Path traversal and paths outside working_dir are also blocked."""
+        """Best-effort UX backstop only: deny_patterns, allowlist (allow_patterns), and when
+        restrict_to_workspace and not shell_mode, block shell metacharacters (| & ; < > ( ) ` $
+        and embedded newlines) so redirects, command substitution, subshells, and chaining are
+        rejected. Path traversal and paths outside working_dir are also blocked. The real
+        security boundary is the container sandbox, not this regex guard."""
         cmd = command.strip()
         lower = cmd.lower()
 
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
-                return "Error: Command blocked by safety guard (dangerous pattern detected)"
+                return "Command blocked by safety guard (dangerous pattern detected)"
 
         if self.allow_patterns:
             if not any(re.search(p, lower) for p in self.allow_patterns):
-                return "Error: Command blocked by safety guard (not in allowlist)"
+                return "Command blocked by safety guard (not in allowlist)"
 
         if self.restrict_to_workspace and not self.shell_mode:
             if self._shell_metachar_pattern.search(cmd):
-                return "Error: Command blocked by safety guard (shell metacharacters are not allowed)"
+                return (
+                    "Command blocked by safety guard (shell metacharacters are not allowed)"
+                )
 
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
-                return "Error: Command blocked by safety guard (path traversal detected)"
+                return "Command blocked by safety guard (path traversal detected)"
 
             cwd_path = Path(cwd).expanduser().resolve()
             if self.working_dir:
@@ -255,7 +262,7 @@ class ExecTool(Tool):
             try:
                 cwd_path.relative_to(allowed_root)
             except ValueError:
-                return "Error: Command blocked by safety guard (working_dir outside allowed root)"
+                return "Command blocked by safety guard (working_dir outside allowed root)"
 
             win_paths = re.findall(r"[A-Za-z]:\\[^\\\"']+", cmd)
             posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
@@ -269,6 +276,6 @@ class ExecTool(Tool):
                     try:
                         p.relative_to(allowed_root)
                     except ValueError:
-                        return "Error: Command blocked by safety guard (path outside working dir)"
+                        return "Command blocked by safety guard (path outside working dir)"
 
         return None

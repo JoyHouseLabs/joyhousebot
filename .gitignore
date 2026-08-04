@@ -4,6 +4,9 @@
 .env.*.local
 .assets
 
+# Deployment config may contain secrets; keep only the example template in git.
+config.json
+
 # Python
 *.pyc
 *.pyo
@@ -19,21 +22,15 @@ __pycache__/
 *.egg
 dist/
 build/
-poetry.lock
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 *.log
 botpy.log
 
-# Tests (optional: remove to track tests)
-# tests/
-
 # Node (anywhere: frontend, bridge, etc.)
 node_modules/
 **/node_modules/
-dist/
-**/dist/
 .vite/
 **/.vite/
 *.tsbuildinfo
@@ -61,4 +58,7 @@ bridges/whatsapp/.env.*.local
 *.swo
 .DS_Store
 Thumbs.db
-knowledge/
+
+# Documentation rendering intermediates
+tmp/pdfs/render/
+tmp/pdfs/rendered/

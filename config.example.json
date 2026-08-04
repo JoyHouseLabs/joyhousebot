@@ -1,0 +1,32 @@
+{
+  "gateway": {
+    "allowInsecureAuth": true,
+    "maxConcurrentSessions": 8
+  },
+  "runtime": {
+    "scratchRoot": "~/.joyhousebot/runtime-scratch",
+    "store": {
+      "databaseUrl": "",
+      "poolMinSize": 1,
+      "poolMaxSize": 10,
+      "autoMigrate": true,
+      "leaseSeconds": 60,
+      "pollIntervalSeconds": 0.2
+    }
+  },
+  "tools": {
+    "capability_plugins": [],
+    "discover_capability_plugins": false,
+    "restrictToWorkspace": true,
+    "optionalAllowlist": [],
+    "exec": {
+      "timeout": 60,
+      "containerImage": "alpine:3.18",
+      "containerNetwork": "none"
+    },
+    "retrieval": {
+      "memoryScope": "user"
+    }
+  },
+  "channels": {}
+}

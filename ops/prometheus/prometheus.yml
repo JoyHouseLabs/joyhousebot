@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/joyhousebot-alerts.yml
+
+scrape_configs:
+  - job_name: joyhousebot
+    metrics_path: /metrics
+    # Enable this block when JOYHOUSEBOT_METRICS_TOKEN is configured:
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/secrets/joyhousebot_metrics_token
+    static_configs:
+      - targets: ["api:18790"]

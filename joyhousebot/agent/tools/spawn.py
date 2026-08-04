@@ -1,43 +1,33 @@
 """Spawn tool for creating background subagents."""
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from joyhousebot.agent.tools.base import Tool
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError, ToolOutput
+from joyhousebot.runtime.context import ToolExecutionContext
 
 if TYPE_CHECKING:
     from joyhousebot.agent.subagent import SubagentManager
 
 
 class SpawnTool(Tool):
-    """
-    Tool to spawn a subagent for background task execution.
-    
-    The subagent runs asynchronously and announces its result back
-    to the main agent when complete.
-    """
-    
+    """Submit a durable child Agent run to the distributed runtime."""
+
     def __init__(self, manager: "SubagentManager"):
         self._manager = manager
-        self._origin_channel = "cli"
-        self._origin_chat_id = "direct"
-    
-    def set_context(self, channel: str, chat_id: str) -> None:
-        """Set the origin context for subagent announcements."""
-        self._origin_channel = channel
-        self._origin_chat_id = chat_id
-    
+
     @property
     def name(self) -> str:
         return "spawn"
-    
+
     @property
     def description(self) -> str:
         return (
-            "Spawn a subagent to handle a task in the background. "
+            "Submit a durable child Agent run to handle a task. "
             "Use this for complex or time-consuming tasks that can run independently. "
-            "The subagent will complete the task and report back when done."
+            "Its status and result are linked to the parent workflow."
         )
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -51,15 +41,35 @@ class SpawnTool(Tool):
                     "type": "string",
                     "description": "Optional short label for the task (for display)",
                 },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Optional registered specialist Agent id",
+                },
+                "output_schema": {
+                    "type": "object",
+                    "description": "Optional JSON Schema required from the child Agent",
+                },
             },
             "required": ["task"],
         }
-    
-    async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
+
+    async def execute(
+        self,
+        task: str,
+        label: str | None = None,
+        agent_id: str | None = None,
+        output_schema: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> ToolOutput:
         """Spawn a subagent to execute the given task."""
+        tool_context = kwargs.get("tool_context")
+        if not isinstance(tool_context, ToolExecutionContext):
+            raise ToolInvocationError("CONTEXT_REQUIRED", "Spawn tool requires run context")
         return await self._manager.spawn(
             task=task,
             label=label,
-            origin_channel=self._origin_channel,
-            origin_chat_id=self._origin_chat_id,
+            agent_id=agent_id,
+            output_schema=output_schema,
+            origin_channel=tool_context.channel,
+            origin_chat_id=tool_context.chat_id,
         )

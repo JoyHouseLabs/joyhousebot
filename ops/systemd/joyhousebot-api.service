@@ -1,0 +1,22 @@
+[Unit]
+Description=Joyhousebot API gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/joyhousebot
+Environment=JOYHOUSEBOT_CONFIG_PATH=/opt/joyhousebot/config.json
+EnvironmentFile=/etc/joyhousebot/joyhousebot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/joyhousebot/.venv/bin/joyhousebot api --surface combined --config /opt/joyhousebot/config.json --host 127.0.0.1 --port 18790
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,2 +1,1 @@
-"""Shared domain services for HTTP/RPC/CLI adapters."""
-
+"""Shared domain services used by the cloud application layer."""

@@ -1,5 +1,5 @@
-"""API server for joyhousebot client integration."""
+"""Public HTTP/SSE API for the Joyhousebot cloud platform."""
 
-from joyhousebot.api.server import create_app
+from joyhousebot.api.app import create_app
 
 __all__ = ["create_app"]

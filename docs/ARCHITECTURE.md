@@ -1,0 +1,208 @@
+# Joyhousebot 云 Agent 平台架构
+
+本文是当前代码唯一有效的总体架构说明。Joyhousebot 是面向多用户并发的 Agent 云运行平台，不是本地单 Agent 客户端，也不兼容 OpenClaw Gateway。
+
+## 不可变原则
+
+- 不引入 `tenant_id`。认证主体映射为 `user_id`，会话边界是 `user_id + agent_id + session_id`。
+- Agent、Skill、Tool、模型和子 Agent 是平台共享能力；用户状态绝不存放在这些共享对象上。
+- 公网协议只有版本化 HTTP 与 SSE；不存在公共 RPC 或 WebSocket 命令协议。
+- API 只认证、提交和查询；Agent Worker 执行模型与工具；Scheduler 和 Channel Worker 独立部署。
+- PostgreSQL 是所有环境的唯一事实源，不提供文件型存储回退。
+- Redis 不是必选组件；只能作为可拔插广播/缓存加速层，不能成为 Run/Task 事实源。
+- Shell、filesystem、MCP 和外部 URL 等高风险能力默认关闭，必须经过 Capability allowlist、权限、配额和审计。
+- 每类业务状态使用专用表，禁止恢复通用 JSON `shared_state`。
+- 普通用户接口只输出结构化进度摘要、事件、日志和产物；供应商实际返回的推理内容和完整请求/响应只进入受权限控制的诊断面。
+
+## 运行模型
+
+```text
+User
+ └─ Session (user_id, agent_id, session_id)
+     └─ Run
+         ├─ Task / child Run / dependency
+         ├─ Event（可续传执行时间线）
+         ├─ Log（结构化诊断日志）
+         ├─ Artifact（执行产物）
+```
+
+聊天、定时任务、Channel 入站和多 Agent 工作流最终都提交 Run。父子关系由 `root_run_id / parent_run_id / parent_task_id` 表达；子 Agent 先持久化再返回 ID，不依赖进程内后台任务。
+
+## 部署拓扑
+
+```text
+Client ──HTTP/SSE──▶ API replicas ───────────────┐
+                                                  ▼
+                                             PostgreSQL
+                      ┌───────────────────────────┼──────────────────────┐
+                      ▼                           ▼                      ▼
+               Agent Workers              Scheduler Workers      Channel Workers
+```
+
+- Agent Worker 使用数据库 lease、fencing version 和 `FOR UPDATE SKIP LOCKED` claim 工作。
+- 同一会话的顶层 Run 串行；不同用户、会话和子任务可以并发。
+- 不完整 Run 的恢复顺序按用户轮转，避免单个用户占满恢复队列。
+- Schedule occurrence、Channel lease/outbox、Provider profile health、Memory 和 Knowledge 都是集群共享的规范化状态。
+- Channel 投递成功或失败会写 delivery audit；外部连接所有权由带续租的 channel lease 决定。
+- 当前 Channel 适配器仍随核心包内置，通过 `ChannelRegistry` 加载；`ChannelPlugin`、`RunAdapter` 和
+  `ChannelRuntimeBridge` 已经形成独立边界，但尚未拆成可单独安装的 `joyhousebot-channel-*` 包。
+  拆包属于后续扩展，不改变统一 Run/Task 契约。
+
+## 身份与认证
+
+生产请求的 `user_id` 只能来自数据库签发的 Bearer Token。`api_access_tokens` 只保存 SHA-256 指纹，明文仅在签发响应中返回一次；吊销在所有 API 副本即时生效。普通用户不能通过 Header 或请求体指定资源归属。环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 是紧急 operator 凭据，代用户操作必须显式发送 `X-Impersonate-User-ID`（每次代操作都会写 warning 级审计日志）。认证 fail-closed：没有有效 token 时默认拒绝（401）；仅当显式设置 `gateway.allowInsecureAuth=true` 的开发模式下，`X-User-ID`/`JOYHOUSEBOT_DEV_USER_ID` 才生效，默认用户为 `local-dev`，启动时会打印 INSECURE DEV MODE 警告。
+
+`user_id` 只表达业务资源归属，管理权限来自独立的 `platform_admins` 表。权限按 `runs.read/runs.cancel`、`agents.write/agents.publish`、`tokens.write` 等操作拆分，不存在“只读管理员可以取消 Run”的隐式升级。最后一个拥有 `admins.write` 的启用管理员由数据库事务和 PG advisory lock 保护，不能被并发删除或降权。开发模式首次启动会把默认 `local-dev` 显式登记为 `is_test_user=true` 的平台管理员；生产模式绝不自动创建管理员。
+
+JSON 配置不接受明文 token、API key、password 或 database URL；敏感值只能来自进程环境或 `env://VARIABLE` 引用。Agent、Capability、Scenario 和权限是数据库业务配置，进程配置只保留数据库连接、进程角色和本地执行参数。
+
+所有 Run、Session、Schedule、Memory、Knowledge 和查询都带 `user_id`。平台能力使用 `agent_id` 标识，不复制成每用户一份。
+
+## 公共 API
+
+公共接口位于 `/v1`：
+
+- `POST/GET /v1/runs`，以及 run 的 cancel、resume、events、tasks、artifacts、logs、
+  invocations、pending inputs 和 input resolve。
+- `POST /v1/runs/graphs` 提交显式 DAG；普通请求也可由主协调器自动提升为 Graph。
+- `GET/DELETE /v1/sessions`。
+- `GET/POST/PATCH/DELETE /v1/schedules`。
+- `GET /v1/agents`、`GET /v1/capabilities`、`GET /v1/scenarios`、`GET /v1/me`、
+  `GET /v1/usage`。
+- `/v1/admin/scenarios` 提供草稿、发布、模拟和能力目录，分别要求 scenarios.read/write/publish。
+- `/v1/admin/overview`、`runs`、`workers`、`agents`、`capabilities`、`config` 和
+  `users`、`access-tokens`、`rollouts` 和 `configuration-events` 构成平台管理面；全局 Run diagnostics 汇总 Event、Log、Task、Invocation、Trace、
+  Artifact 和动态子 Run。只有数据库管理员权限或 control-token operator 可以调用。
+- `/v1/admin/runs/{run_id}/reasoning`、`blobs/{blob_id}` 和 `replays` 分别提供原始推理、
+  完整请求/响应读取与回放。它们要求 `reasoning.read`、`reasoning.read_raw`、
+  `replay.execute` 细粒度权限，并写入审计日志。
+- `/mcp/` 提供 Streamable HTTP MCP 网关。已发布且启用的 `tool` / `connector` 能力会动态映射为 MCP tools；
+  `tools/call` 不直接执行业务函数，而是创建持久化 Run/Task，复用同一套鉴权、权限、Lease、事件、Trace、产物和回放链路。
+  MCP 仅是协议适配层，不构成第二套执行运行时。
+
+SSE 使用事件 sequence 恢复，断开客户端不会取消 Run。Router 只做 DTO、认证上下文和错误映射；业务入口位于 `application/`。
+
+同一代码可以用 `joyhousebot api --surface public|control|combined` 部署为公网数据面、私有控制面或本地一体化进程。`public` 不注册 `/v1/admin/*`，`control` 不注册用户 Run/Session/Schedule 写接口；`combined` 供内网控制台和本地试用。
+
+## 配置发布状态机
+
+Agent 发布不是立即覆盖 current revision：
+
+```text
+draft → published/immutable → rollout(target worker snapshot)
+                               ├─ all loaded → activated/current pointer switch
+                               └─ any failed → rollout.failed/old pointer retained
+```
+
+发布事务冻结当时健康且具备 `agent` 能力的目标 Worker。每个 Worker 的 revision-aware Runtime Catalog 主动拉取待加载版本并逐机 ACK；新请求仍按 Run snapshot 中的精确 revision 懒加载作为容错。只有全部目标成功后，PG 才原子更新 `agent_definitions.current_revision_id`。因此跨进程发布不要求重启，也不会把流量提前切给未加载版本。Agent 已发布 revision、Skill 绑定、Capability version 和 Scenario version 都不可原地修改。
+
+## PostgreSQL 数据模型
+
+当前实现的专用表：
+
+- 执行：`runtime_runs`、`runtime_tasks`、`runtime_task_dependencies`、`runtime_events`、`runtime_logs`、`runtime_artifacts`、`runtime_workers`。
+- 能力：`capability_definitions`、`capability_versions`、`capability_invocations`。
+- 场景：`scenario_definitions`、`scenario_versions`、`scenario_fields`、
+  `scenario_clarification_nodes`、`scenario_clarification_edges`、`scenario_capabilities`、
+  `run_scenario_states`、`run_input_requests`、`run_input_answers`。
+- 会话与追踪：`conversation_sessions`、`request_trace_events`、`execution_spans`、
+  `model_invocations`、`model_reasoning_segments`、`trace_blobs`、`replay_runs`、
+  `model_response_cache`。
+- 记忆与知识：`memory_documents`、`knowledge_documents`、`knowledge_chunks`。
+- 调度：`schedules`、`schedule_occurrences`。
+- Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。
+- Provider：`provider_profile_health`。
+- 网关准入：`api_rate_limits`。
+- 平台权限：`platform_admins`、`platform_admin_events`、`api_access_tokens`、`api_access_token_events`。
+- 配置发布：`configuration_events`、`configuration_rollouts`、`configuration_rollout_targets`。
+
+所有 PostgreSQL schema migration 使用同一个 cluster-wide advisory lock 串行执行，避免 API、
+Scheduler 与多个 Worker 并发启动时让不同领域的 DDL 交叉持锁。运行数据保留清理由 Scheduler
+承担，并在事务内依次抢占 migration lock 和 purge lock；迁移进行中或已有清理者时立即跳过，
+deadlock/lock-timeout 只做有界重试，不会导致执行 Worker 退出。
+
+JSONB 只保存单实体 payload/result/options；集合、队列、lease 和状态机必须是可索引行。生产迁移使用 advisory lock；状态提交必须校验 lease owner/version。
+
+## 全链路可解释性、诊断与回放
+
+每个 Run 使用同一个 trace ID 串联主 Agent、子 Agent、Task、模型和 Tool Span。Span 记录父子关系、
+Worker、耗时、首 Token 时间和错误；模型调用另存 provider/model/attempt、Token、成本、缓存状态、
+供应商请求 ID、请求/响应 hash 与完整 payload。Tool Span 保存输入、结果和错误，Run 事件仍负责面向人的
+实时进度。
+
+推理数据必须标记真实性级别：
+
+- `provider_native/exact`：供应商响应或流中实际返回的 thinking/reasoning 块；
+- `model_declared/normalized`：模型按协议声明的计划或决策，不冒充内部状态；
+- `runtime_decision`：场景路由、调度器、重试和策略引擎的确定性决定；
+- `unavailable`：供应商没有返回推理。平台不会声称能够读取模型服务端未暴露的隐藏状态。
+
+原始推理 delta 是 private event，普通用户 SSE 会去掉正文。完整 Prompt、响应、流事件和供应商错误体
+保存为带 SHA-256 与大小的 Trace Blob；认证 Header/API Key 从不进入 Blob。诊断台按权限按需读取，
+读取行为写审计日志。当前开发/测试配置默认开启
+供应商推理参数；生产管理员应将这些表、备份和数据库访问视为最高敏感级别，并配置独立保留周期。
+
+回放分为四类：`offline` 对现有存档重新做解析/对比，`frozen` 固定使用已保存结果，`branch` 从源 Run
+创建有父子关联的新 Run，`live` 使用当前外部依赖重新执行。每次回放保存发起人、覆盖项、新 Run ID 和
+结果比较。精确模型缓存键包含 provider、model、完整消息/工具、参数和 Agent revision，命中也创建完整
+Invocation/Span，避免缓存把追踪链路截断。
+
+## 工具与文件安全
+
+- shell 工具只允许经隔离容器执行，不存在主机执行或自动降级路径。
+- 容器不可用时命令执行失败关闭，绝不降级到宿主机。
+- 可变文件按 `user_id + agent_id + root_run_id` 映射到私有临时 scratch；不允许读取另一用户或平台工作目录。
+- 跨实例持久状态必须写 Memory、Knowledge、Artifact 或业务 Repository，不能把 Worker 本地文件当事实源。
+- Memory/Knowledge 直接读写数据库，不启动每 Agent 文件 watcher/subprocess。
+
+## 代码边界
+
+```text
+api / bootstrap / channel adapter
+                ↓
+            application
+                ↓
+        runtime + domain services
+                ↓
+       dedicated repositories
+```
+
+所有 Python 模块由架构测试限制在 650 行内。`NativeAgentExecutor` 按模型调用、工具运行、轮次引擎、消息处理和记忆生命周期组合；原生 Runtime 按提交、Agent 执行、协调、任务图与控制组合；PG Store 均按 Run、Task/Event、Operations 聚合拆分。Memory、Schedule、Channel、Knowledge、Profile Health 使用独立 Repository。
+
+## 当前代码实现映射
+
+- `api/`：FastAPI composition root、身份依赖、版本化 Router 和 DTO；不加载模型与 NativeAgentExecutor。
+- `application/`：用户边界内的 Run、Session、Schedule 用例，以及控制面 Catalog/Rollout 用例。
+- `runtime/`：Run/Graph 提交、claim、lease/fencing、执行、事件叙事、取消与恢复。
+- `agent/`：共享 NativeAgentExecutor，拆分为模型调用、轮次引擎、Tool runtime、消息处理、记忆生命周期；每次执行状态来自不可变 `RunContext`。
+- `storage/`：PostgreSQL RuntimeStore；使用连接池、advisory migration lock、`SKIP LOCKED` 和 LISTEN/NOTIFY 唤醒。
+- `scheduling/`、`channels/`、`services/retrieval/`：Schedule、Channel outbox/lease、Knowledge 的专用 Repository。
+- `bootstrap/`：分别组合 API、Agent Worker、Scheduler Worker 和 Channel Worker；AgentRuntimeCatalog 按不可变 revision 热加载，不共享进程内业务状态。
+
+一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。
+
+主协调路径是：确定性场景路由 → 结构化主协调器 → 字段校验/追问 DAG → Planner。
+单步骤交给主 Agent；固定场景或两步以上开放计划会在同一 Run 上原子生成 Task Graph。
+Task 可由不同 Worker/Agent 并行执行，最终协调 Agent聚合全部结果。所有模型输出使用 JSON Schema
+校验，所有 Tool/Connector 调用使用 CapabilityResult 和持久 Invocation。
+
+## 前端控制台
+
+Vue 前端是平台运行、管理、监控、配置控制台，同时保留一个用户态 Agent 试用面：
+
+- 监控概览读取平台全局 Run/User/Session/Token/Worker 指标。
+- 运行中心使用管理 API 查询所有用户 Run；详情统一展示 Task、Event、Log、Artifact、
+  Capability Invocation、Request Trace、模型调用、原始推理、性能瀑布、回放对比和动态子 Agent。
+- 配置导航分为平台和业务能力配置两组。平台只负责访问控制、集群发布、审计和运行摘要；Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护，避免重复编辑入口。Dinq 运维作为独立插件运维入口保留。
+- 场景工作台负责路由、追问 DAG 与执行策略配置。
+- Agent 试用仍以当前 `user_id` 提交普通用户 Run，用于验证真实业务链路，不绕过用户隔离。
+
+## 已删除且不得恢复
+
+- OpenClaw compatibility、device pairing、client Node、control plane。
+- `/ws/rpc`、`/ws/chat`、`/ws/agent-stream` 和两套 HTTP/RPC handler。
+- 进程内业务队列、通用 shared-state、旧 heartbeat scheduler。
+- 单一全局 wallet/x402、旧本地 identity/task/knowledge service 入口。
+- API 进程里的 NativeAgentExecutor、Cron loop 和第三方 Channel 长连接。
+- 进程内子 Agent、本地 JSONL Session、主机 shell/process、外部 Agent CLI/SDK 适配。
+- 动态插件主机、Browser server、Mochat 本地 cursor/polling 实现和运行时安装 Skill。

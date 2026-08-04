@@ -1,67 +1,71 @@
-"""Tests for memory_get tool: read memory files with optional scope and line range."""
+"""Tests for scoped durable memory_get access."""
 
 import json
-import pytest
-from pathlib import Path
 
+import pytest
+
+from joyhousebot.agent.memory import MemoryStore
 from joyhousebot.agent.tools.memory_get import MemoryGetTool
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
+from joyhousebot.runtime.context import ToolExecutionContext
+from tests.support.postgres_store import PostgresTestStore
 
 
 @pytest.fixture
-def workspace_with_memory(tmp_path: Path) -> Path:
-    memory_dir = tmp_path / "memory"
-    memory_dir.mkdir()
-    (memory_dir / "MEMORY.md").write_text("- [P0] User prefers Python.\n- [P1] Project X.")
-    (memory_dir / "HISTORY.md").write_text("[2026-02-25 10:00] First entry.\n\n[2026-02-25 11:00] Second.")
-    (memory_dir / "2026-02-25.md").write_text("Daily log line 1.\nDaily log line 2.\nDaily log line 3.")
-    return tmp_path
+def durable_memory(tmp_path):
+    store = PostgresTestStore(tmp_path / "memory-tool.db")
+    scope = "user:user-a:agent:default"
+    memory = MemoryStore(store, scope)
+    memory.write_long_term("User prefers Python.\nProject X.")
+    memory.write_relative("2026-02-25.md", "line 1\nline 2\nline 3")
+    context = ToolExecutionContext(
+        run_id="run-a",
+        session_key="session-a",
+        channel="api",
+        chat_id="chat-a",
+        user_id="user-a",
+        memory_scope=scope,
+    )
+    return MemoryGetTool(store), context
 
 
 @pytest.mark.asyncio
-async def test_memory_get_reads_memory_md(workspace_with_memory: Path) -> None:
-    tool = MemoryGetTool(workspace_with_memory)
-    out = await tool.execute(path="memory/MEMORY.md")
-    data = json.loads(out)
-    assert data.get("text", "")
+async def test_memory_get_reads_document(durable_memory) -> None:
+    tool, context = durable_memory
+    data = json.loads(await tool.execute(path="memory/MEMORY.md", tool_context=context))
     assert "User prefers Python" in data["text"]
-    assert data.get("path") == "memory/MEMORY.md"
 
 
 @pytest.mark.asyncio
-async def test_memory_get_missing_file_returns_empty_text(workspace_with_memory: Path) -> None:
-    tool = MemoryGetTool(workspace_with_memory)
-    out = await tool.execute(path="memory/nonexistent.md")
-    data = json.loads(out)
-    assert data.get("text") == ""
-    assert data.get("path") == "memory/nonexistent.md"
+async def test_memory_get_missing_document_is_empty(durable_memory) -> None:
+    tool, context = durable_memory
+    data = json.loads(await tool.execute(path="memory/missing.md", tool_context=context))
+    assert data["text"] == ""
 
 
 @pytest.mark.asyncio
-async def test_memory_get_path_traversal_returns_error(workspace_with_memory: Path) -> None:
-    tool = MemoryGetTool(workspace_with_memory)
-    out = await tool.execute(path="memory/../other/file.md")
-    data = json.loads(out)
-    assert data.get("text") == ""
-    assert "error" in data or "path must be under memory" in data.get("error", "")
+async def test_memory_get_rejects_traversal(durable_memory) -> None:
+    tool, context = durable_memory
+    with pytest.raises(ToolInvocationError, match="invalid memory path"):
+        await tool.execute(path="memory/../other.md", tool_context=context)
 
 
 @pytest.mark.asyncio
-async def test_memory_get_line_range(workspace_with_memory: Path) -> None:
-    tool = MemoryGetTool(workspace_with_memory)
-    out = await tool.execute(path="memory/2026-02-25.md", start_line=2, num_lines=2)
-    data = json.loads(out)
-    assert "Daily log line 2" in data["text"]
-    assert "Daily log line 3" in data["text"]
-    assert "Daily log line 1" not in data["text"]
+async def test_memory_get_line_range(durable_memory) -> None:
+    tool, context = durable_memory
+    data = json.loads(
+        await tool.execute(
+            path="memory/2026-02-25.md",
+            start_line=2,
+            num_lines=2,
+            tool_context=context,
+        )
+    )
+    assert data["text"] == "line 2\nline 3"
 
 
 @pytest.mark.asyncio
-async def test_memory_get_with_scope_reads_scoped_file(workspace_with_memory: Path) -> None:
-    scope_dir = workspace_with_memory / "memory" / "session_1"
-    scope_dir.mkdir(parents=True)
-    (scope_dir / "MEMORY.md").write_text("Session 1 private: secret plan.")
-    tool = MemoryGetTool(workspace_with_memory)
-    tool.set_memory_scope("session_1")
-    out = await tool.execute(path="memory/session_1/MEMORY.md")
-    data = json.loads(out)
-    assert "secret plan" in data.get("text", "")
+async def test_memory_get_requires_run_scope(durable_memory) -> None:
+    tool, _context = durable_memory
+    with pytest.raises(ToolInvocationError, match="run memory scope"):
+        await tool.execute(path="memory/MEMORY.md")

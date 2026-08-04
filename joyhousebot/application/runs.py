@@ -1,0 +1,468 @@
+"""Run command and query use cases."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import uuid4
+
+from joyhousebot.application.context import RequestContext
+from joyhousebot.application.errors import NotFoundError, ValidationError
+from joyhousebot.orchestration import ClarificationEngine, ScenarioPlanner, ScenarioRouter
+from joyhousebot.runtime.models import (
+    AgentEvent,
+    AgentOptions,
+    EventType,
+    GraphTaskSpec,
+    TaskGraphSpec,
+)
+
+
+@dataclass(slots=True)
+class CreateRunCommand:
+    agent_id: str
+    session_id: str | None
+    input: str
+    scenario_id: str | None = None
+    scenario_inputs: dict[str, Any] = field(default_factory=dict)
+    execution_mode: str = "auto"
+    model: str | None = None
+    system_prompt: str | None = None
+    timeout_seconds: float = 300.0
+    max_turns: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class GraphTaskCommand:
+    id: str
+    prompt: str
+    agent_id: str | None = None
+    dependencies: list[str] = field(default_factory=list)
+    name: str | None = None
+    timeout_seconds: float | None = None
+    max_attempts: int = 1
+    metadata: dict[str, Any] = field(default_factory=dict)
+    capability_id: str | None = None
+    capability_input: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] | None = None
+    allowed_tools: list[str] = field(default_factory=list)
+    skill_names: list[str] = field(default_factory=list)
+
+
+class RunService:
+    def __init__(self, runtime: Any, store: Any) -> None:
+        self.runtime = runtime
+        self.store = store
+        self.router = ScenarioRouter(store)
+        self.clarifications = ClarificationEngine(store)
+        self.planner = ScenarioPlanner(store)
+
+    async def create(self, context: RequestContext, command: CreateRunCommand) -> Any:
+        if not command.input.strip():
+            raise ValidationError("input is required")
+        session_id = command.session_id or self._new_session_id()
+        try:
+            decision, scenario = await asyncio.to_thread(
+                self.router.route,
+                command.input,
+                explicit_scenario_id=command.scenario_id,
+                supplied_inputs=command.scenario_inputs,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        if scenario is not None:
+            try:
+                self.clarifications.validate_inputs(scenario, decision.extracted_inputs)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+        agent_definition = await asyncio.to_thread(
+            self.store.get_agent_definition, command.agent_id
+        )
+        # A coordinator Agent must always inspect the request before a routed
+        # scenario runs.  Deterministic routing is only a candidate selection:
+        # the coordinator extracts scenario inputs and narrows the executable
+        # tool set.  Otherwise a natural-language request such as a Dinq
+        # talent search would enter a fixed graph with empty template inputs.
+        coordinator_required = (
+            getattr(agent_definition, "role", None) == "coordinator"
+            or bool(command.metadata.get("coordinator_required"))
+        )
+        metadata = {
+            **command.metadata,
+            "routing_decision": decision.to_dict(),
+            "scenario_inputs": decision.extracted_inputs,
+            "execution_mode": command.execution_mode,
+            "coordinator_required": coordinator_required or scenario is None,
+        }
+        allowed_tools = (
+            [item for item in scenario.allowed_capabilities if not item.startswith("skill.")]
+            if scenario
+            else []
+        )
+        skill_names = (
+            [
+                item.removeprefix("skill.")
+                for item in scenario.allowed_capabilities
+                if item.startswith("skill.")
+            ]
+            if scenario
+            else []
+        )
+        metadata["skill_names"] = skill_names
+        options = AgentOptions(
+            prompt=command.input,
+            user_id=context.user_id,
+            agent_id=command.agent_id,
+            session_id=session_id,
+            model=command.model,
+            system_prompt=command.system_prompt,
+            timeout_seconds=command.timeout_seconds,
+            max_turns=command.max_turns,
+            metadata=metadata,
+            allowed_tools=allowed_tools,
+            idempotency_key=context.idempotency_key,
+            request_id=context.request_id,
+        )
+        if coordinator_required or scenario is None or decision.next_action == "plan":
+            graph = None
+            if scenario is not None and not coordinator_required:
+                try:
+                    graph = await asyncio.to_thread(
+                        self.planner.build_graph,
+                        scenario,
+                        goal=command.input,
+                        inputs=decision.extracted_inputs,
+                        user_id=context.user_id,
+                        session_id=session_id,
+                        agent_id=command.agent_id,
+                        idempotency_key=context.idempotency_key,
+                        request_id=context.request_id,
+                    )
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+            record = (
+                await self.runtime.submit_graph(graph)
+                if graph is not None
+                else await self.runtime.submit_run(options)
+            )
+            await self.runtime.events.publish(
+                AgentEvent(
+                    run_id=record.run_id,
+                    type=EventType.DECISION_RECORDED.value,
+                    status="completed",
+                    data={
+                        "source": "runtime_decision",
+                        "kind": "scenario_routing",
+                        "decision": decision.to_dict(),
+                    },
+                )
+            )
+            if scenario is not None:
+                await asyncio.to_thread(
+                    self.store.save_run_scenario_state,
+                    run_id=record.run_id,
+                    user_id=context.user_id,
+                    scenario_id=scenario.scenario_id,
+                    scenario_version=scenario.version,
+                    status="ready",
+                    collected_inputs=decision.extracted_inputs,
+                    missing_inputs=[],
+                    current_node_id=None,
+                    routing_decision=decision.to_dict(),
+                )
+                await self.runtime.events.publish(
+                    AgentEvent(
+                        run_id=record.run_id,
+                        type=EventType.PLAN_CREATED.value,
+                        status="completed",
+                        data={
+                            "planning_mode": scenario.planning_mode,
+                            "task_count": len(graph.tasks) if graph else 1,
+                            "scenario_id": scenario.scenario_id,
+                        },
+                    )
+                )
+            return record
+
+        record = await self.runtime.submit_run(options, initial_status="waiting_input")
+        await self.runtime.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.DECISION_RECORDED.value,
+                status="completed",
+                data={
+                    "source": "runtime_decision",
+                    "kind": "scenario_routing",
+                    "decision": decision.to_dict(),
+                },
+            )
+        )
+        step = self.clarifications.evaluate(scenario, decision.extracted_inputs)
+        await asyncio.to_thread(
+            self.store.save_run_scenario_state,
+            run_id=record.run_id,
+            user_id=context.user_id,
+            scenario_id=scenario.scenario_id,
+            scenario_version=scenario.version,
+            status="waiting_input",
+            collected_inputs=step.collected_inputs,
+            missing_inputs=list(step.missing_inputs),
+            current_node_id=step.node.node_id if step.node else None,
+            routing_decision=decision.to_dict(),
+        )
+        request = await asyncio.to_thread(
+            self.clarifications.create_request,
+            run_id=record.run_id,
+            user_id=context.user_id,
+            scenario=scenario,
+            step=step,
+        )
+        await self.runtime.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.USER_INPUT_REQUESTED.value,
+                status="waiting_input",
+                data={
+                    "input_request_id": request.input_request_id,
+                    "scenario_id": scenario.scenario_id,
+                    "question": request.question,
+                    "fields": request.fields,
+                },
+            )
+        )
+        return await self.get(context, record.run_id)
+
+    async def pending_inputs(self, context: RequestContext, run_id: str) -> list[Any]:
+        await self.get(context, run_id)
+        return await asyncio.to_thread(
+            self.store.list_pending_input_requests,
+            run_id,
+            expected_user_id=context.user_id,
+        )
+
+    async def resolve_input(
+        self,
+        context: RequestContext,
+        run_id: str,
+        *,
+        input_request_id: str,
+        answers: dict[str, Any],
+    ) -> tuple[Any, list[Any]]:
+        await self.get(context, run_id)
+        try:
+            step, next_request = await asyncio.to_thread(
+                self.clarifications.resolve,
+                run_id=run_id,
+                user_id=context.user_id,
+                input_request_id=input_request_id,
+                answers=answers,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        await self.runtime.events.publish(
+            AgentEvent(
+                run_id=run_id,
+                type=EventType.USER_INPUT_RESOLVED.value,
+                status="completed",
+                data={"input_request_id": input_request_id, "fields": sorted(answers)},
+            )
+        )
+        if next_request:
+            await self.runtime.events.publish(
+                AgentEvent(
+                    run_id=run_id,
+                    type=EventType.USER_INPUT_REQUESTED.value,
+                    status="waiting_input",
+                    data={
+                        "input_request_id": next_request.input_request_id,
+                        "question": next_request.question,
+                        "fields": next_request.fields,
+                    },
+                )
+            )
+        elif step.complete:
+            state = await asyncio.to_thread(
+                self.store.get_run_scenario_state,
+                run_id,
+                expected_user_id=context.user_id,
+            )
+            record = await self.get(context, run_id)
+            scenario = (
+                await asyncio.to_thread(
+                    self.store.get_scenario_version,
+                    state.scenario_id,
+                    state.scenario_version,
+                )
+                if state is not None
+                else None
+            )
+            if state is None or scenario is None:
+                raise ValidationError("resolved scenario state is unavailable")
+            try:
+                graph = await asyncio.to_thread(
+                    self.planner.build_graph,
+                    scenario,
+                    goal=record.prompt,
+                    inputs=state.collected_inputs,
+                    user_id=context.user_id,
+                    session_id=record.session_id,
+                    agent_id=record.agent_id,
+                    idempotency_key=record.idempotency_key,
+                    request_id=str(record.options.get("request_id") or context.request_id),
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            if graph is not None:
+                await self.runtime.materialize_graph(run_id, graph)
+            else:
+                queued = await asyncio.to_thread(
+                    self.store.update_runtime_run, run_id, status="queued"
+                )
+                if not queued:
+                    raise ValidationError("resolved run could not be queued")
+                await asyncio.to_thread(self.store.notify_work, run_id)
+            await self.runtime.events.publish(
+                AgentEvent(
+                    run_id=run_id,
+                    type=EventType.RUN_QUEUED.value,
+                    status="queued",
+                    data={"reason": "clarification_completed"},
+                )
+            )
+        return await self.get(context, run_id), await self.pending_inputs(context, run_id)
+
+    @staticmethod
+    def _new_session_id() -> str:
+        return f"sess_{int(time.time() * 1000):x}{uuid4().hex[:16]}"
+
+    async def create_graph(
+        self,
+        context: RequestContext,
+        *,
+        goal: str,
+        agent_id: str,
+        session_id: str,
+        tasks: list[GraphTaskCommand],
+        max_concurrent: int = 4,
+        fail_fast: bool = True,
+    ) -> Any:
+        if not goal.strip() or not tasks:
+            raise ValidationError("goal and tasks are required")
+        definitions = {
+            str(item.get("ref", {}).get("capability_id")): item
+            for item in await asyncio.to_thread(self.store.list_capability_definitions)
+        }
+        for task in tasks:
+            executable = [*(task.allowed_tools or [])]
+            if task.capability_id:
+                executable.append(task.capability_id)
+            for capability_id in executable:
+                definition = definitions.get(capability_id)
+                kind = (definition or {}).get("ref", {}).get("kind")
+                if kind not in {"tool", "connector"}:
+                    raise ValidationError(
+                        f"graph task references unavailable executable capability: {capability_id}"
+                    )
+            for skill_name in task.skill_names:
+                capability_id = (
+                    skill_name if skill_name.startswith("skill.") else f"skill.{skill_name}"
+                )
+                definition = definitions.get(capability_id)
+                if (definition or {}).get("ref", {}).get("kind") != "skill":
+                    raise ValidationError(f"graph task references unavailable skill: {skill_name}")
+        spec = TaskGraphSpec(
+            goal=goal,
+            user_id=context.user_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            max_concurrent=max_concurrent,
+            fail_fast=fail_fast,
+            idempotency_key=context.idempotency_key,
+            tasks=[
+                GraphTaskSpec(
+                    id=item.id,
+                    prompt=item.prompt,
+                    agent_id=item.agent_id,
+                    dependencies=item.dependencies,
+                    name=item.name,
+                    timeout_seconds=item.timeout_seconds,
+                    max_attempts=item.max_attempts,
+                    metadata=item.metadata,
+                    capability_id=item.capability_id,
+                    capability_input=item.capability_input,
+                    output_schema=item.output_schema,
+                    allowed_tools=item.allowed_tools,
+                    skill_names=item.skill_names,
+                )
+                for item in tasks
+            ],
+        )
+        return await self.runtime.submit_graph(spec)
+
+    async def get(self, context: RequestContext, run_id: str) -> Any:
+        # SQL-level user isolation: the store filters by expected_user_id so a
+        # foreign run never leaves the database layer.
+        record = await asyncio.to_thread(
+            self.store.get_runtime_run, run_id, expected_user_id=context.user_id
+        )
+        if record is None:
+            raise NotFoundError("run not found")
+        return record
+
+    async def list(
+        self,
+        context: RequestContext,
+        *,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[Any]:
+        return await asyncio.to_thread(
+            self.store.list_runtime_runs,
+            user_id=context.user_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            status=status,
+            limit=limit,
+        )
+
+    async def cancel(self, context: RequestContext, run_id: str) -> Any:
+        await self.get(context, run_id)
+        if not await self.runtime.cancel(run_id, "cancelled by user"):
+            raise NotFoundError("run is not cancellable")
+        return await self.get(context, run_id)
+
+    async def resume(self, context: RequestContext, run_id: str) -> Any:
+        await self.get(context, run_id)
+        record = await self.runtime.resume(run_id)
+        if record is None:
+            raise ValidationError("run is not resumable")
+        return record
+
+    async def tasks(self, context: RequestContext, run_id: str) -> list[Any]:
+        await self.get(context, run_id)
+        return await asyncio.to_thread(self.store.list_runtime_tasks, run_id=run_id, limit=5000)
+
+    async def artifacts(self, context: RequestContext, run_id: str) -> list[dict[str, Any]]:
+        await self.get(context, run_id)
+        return await asyncio.to_thread(self.store.list_runtime_artifacts, run_id)
+
+    async def invocations(self, context: RequestContext, run_id: str) -> list[Any]:
+        await self.get(context, run_id)
+        return await asyncio.to_thread(
+            self.store.list_capability_invocations,
+            run_id,
+            expected_user_id=context.user_id,
+        )
+
+    async def logs(
+        self, context: RequestContext, run_id: str, *, after_sequence: int = 0
+    ) -> list[Any]:
+        await self.get(context, run_id)
+        return await asyncio.to_thread(
+            self.store.list_runtime_logs, run_id, after_sequence=after_sequence
+        )

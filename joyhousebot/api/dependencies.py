@@ -1,0 +1,237 @@
+"""FastAPI dependencies for authenticated cloud requests."""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import os
+import uuid
+from typing import Annotated, Any
+
+from fastapi import Depends, Header, HTTPException, Request
+from loguru import logger
+
+from joyhousebot.application.context import Principal, RequestContext
+
+
+def get_container(request: Request) -> Any:
+    container = getattr(request.app.state, "container", None)
+    if container is None:
+        raise RuntimeError("application container is not initialized")
+    return container
+
+
+def _bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        return ""
+    scheme, _, token = authorization.partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+async def get_principal(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+    x_impersonate_user_id: Annotated[str | None, Header()] = None,
+    x_user_id: Annotated[str | None, Header()] = None,
+) -> Principal:
+    config = get_container(request).config
+    gateway = config.gateway
+    token = _bearer_token(authorization)
+
+    control_token = str(os.getenv("JOYHOUSEBOT_CONTROL_TOKEN") or "")
+    if token and control_token and hmac.compare_digest(token, control_token):
+        user_id = str(x_impersonate_user_id or "").strip() or None
+        # Audit trail for operator impersonation: who is acting as whom, where.
+        logger.warning(
+            "operator impersonation: subject=operator target_user={} method={} path={}",
+            user_id or "(none)",
+            request.method,
+            request.url.path,
+        )
+        return Principal(subject="operator", user_id=user_id, role="operator", permissions=("*",))
+    access = (
+        await asyncio.to_thread(
+            get_container(request).store.authenticate_api_access_token, token
+        )
+        if token
+        else None
+    )
+    if access is not None:
+        resolved_user_id = str(access["user_id"])
+        admin = await asyncio.to_thread(
+            get_container(request).store.get_platform_admin, resolved_user_id
+        )
+        if admin is not None and admin.enabled:
+            return Principal(
+                subject=f"token:{access['token_id']}",
+                user_id=resolved_user_id,
+                role=admin.role,
+                permissions=admin.permissions,
+            )
+        return Principal(
+            subject=f"token:{access['token_id']}", user_id=resolved_user_id
+        )
+
+    # Fail closed: an empty token configuration rejects requests instead of
+    # silently trusting caller-supplied identity headers. The insecure dev
+    # mode (X-User-Id) requires an explicit allow_insecure_auth=true opt-in.
+    if bool(getattr(gateway, "allow_insecure_auth", False)):
+        dev_user = str(x_user_id or os.getenv("JOYHOUSEBOT_DEV_USER_ID") or "local-dev").strip()
+        admin = await asyncio.to_thread(
+            get_container(request).store.get_platform_admin, dev_user
+        )
+        if admin is not None and admin.enabled:
+            return Principal(
+                subject=f"dev:{dev_user}",
+                user_id=dev_user,
+                role=admin.role,
+                permissions=admin.permissions,
+            )
+        return Principal(subject=f"dev:{dev_user}", user_id=dev_user, role="user")
+    raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+
+
+async def get_request_context(
+    principal: Annotated[Principal, Depends(get_principal)],
+    x_request_id: Annotated[str | None, Header()] = None,
+    idempotency_key: Annotated[str | None, Header()] = None,
+) -> RequestContext:
+    if not principal.user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="operator requests require X-Impersonate-User-ID",
+        )
+    return RequestContext(
+        principal=principal,
+        request_id=str(x_request_id or f"req_{uuid.uuid4().hex}"),
+        idempotency_key=str(idempotency_key or "").strip() or None,
+    )
+
+
+ContainerDep = Annotated[Any, Depends(get_container)]
+PrincipalDep = Annotated[Principal, Depends(get_principal)]
+ContextDep = Annotated[RequestContext, Depends(get_request_context)]
+
+
+async def require_scenario_editor(principal: PrincipalDep) -> Principal:
+    if not principal.can("scenarios.write"):
+        raise HTTPException(status_code=403, detail="scenario editor permission required")
+    return principal
+
+
+ScenarioEditorDep = Annotated[Principal, Depends(require_scenario_editor)]
+
+
+def _permission_dependency(permission: str, detail: str):
+    async def dependency(principal: PrincipalDep) -> Principal:
+        if not principal.can(permission):
+            raise HTTPException(status_code=403, detail=detail)
+        return principal
+
+    return dependency
+
+
+async def require_platform_admin(principal: PrincipalDep) -> Principal:
+    if not principal.can("platform.read"):
+        raise HTTPException(status_code=403, detail="platform administrator permission required")
+    return principal
+
+
+PlatformAdminDep = Annotated[Principal, Depends(require_platform_admin)]
+
+
+async def require_admin_writer(principal: PrincipalDep) -> Principal:
+    if not principal.can("admins.write"):
+        raise HTTPException(status_code=403, detail="administrator management permission required")
+    return principal
+
+
+AdminWriterDep = Annotated[Principal, Depends(require_admin_writer)]
+
+RunsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("runs.read", "run read permission required"))
+]
+RunsCancellerDep = Annotated[
+    Principal, Depends(_permission_dependency("runs.cancel", "run cancellation permission required"))
+]
+WorkersReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("workers.read", "worker read permission required"))
+]
+AgentsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("agents.read", "Agent read permission required"))
+]
+AgentsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("agents.write", "Agent write permission required"))
+]
+AgentsPublisherDep = Annotated[
+    Principal, Depends(_permission_dependency("agents.publish", "Agent publish permission required"))
+]
+CapabilitiesReaderDep = Annotated[
+    Principal,
+    Depends(_permission_dependency("capabilities.read", "capability read permission required")),
+]
+CapabilitiesPublisherDep = Annotated[
+    Principal,
+    Depends(_permission_dependency("capabilities.publish", "capability publish permission required")),
+]
+SettingsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("settings.read", "settings read permission required"))
+]
+SettingsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("settings.write", "settings write permission required"))
+]
+AdminsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("admins.read", "administrator read permission required"))
+]
+TokensReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("tokens.read", "token read permission required"))
+]
+TokensWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("tokens.write", "token write permission required"))
+]
+AuditReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("audit.read", "audit read permission required"))
+]
+RolloutsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("rollouts.read", "rollout read permission required"))
+]
+ScenarioReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("scenarios.read", "scenario read permission required"))
+]
+ScenarioWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("scenarios.write", "scenario write permission required"))
+]
+ScenarioPublisherDep = Annotated[
+    Principal, Depends(_permission_dependency("scenarios.publish", "scenario publish permission required"))
+]
+
+
+async def require_reasoning_reader(principal: PrincipalDep) -> Principal:
+    if not principal.can("runs.read") or not principal.can("reasoning.read"):
+        raise HTTPException(status_code=403, detail="reasoning access permission required")
+    return principal
+
+
+ReasoningReaderDep = Annotated[Principal, Depends(require_reasoning_reader)]
+
+
+async def require_raw_trace_reader(principal: PrincipalDep) -> Principal:
+    if not principal.can("runs.read") or not principal.can("reasoning.read_raw"):
+        raise HTTPException(status_code=403, detail="raw trace access permission required")
+    return principal
+
+
+RawTraceReaderDep = Annotated[Principal, Depends(require_raw_trace_reader)]
+
+
+async def require_replay_writer(principal: PrincipalDep) -> Principal:
+    if not principal.can("runs.read") or not principal.can("replay.execute"):
+        raise HTTPException(status_code=403, detail="replay execution permission required")
+    return principal
+
+
+ReplayWriterDep = Annotated[Principal, Depends(require_replay_writer)]
+
+ReplayReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("replay.read", "replay read permission required"))
+]

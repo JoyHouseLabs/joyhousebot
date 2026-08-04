@@ -7,6 +7,7 @@ from typing import Literal
 @dataclass
 class CronSchedule:
     """Schedule definition for a cron job."""
+
     kind: Literal["at", "every", "cron"]
     # For "at": timestamp in ms
     at_ms: int | None = None
@@ -21,7 +22,8 @@ class CronSchedule:
 @dataclass
 class CronPayload:
     """What to do when the job runs."""
-    kind: Literal["system_event", "agent_turn", "memory_compaction"] = "agent_turn"
+
+    kind: Literal["system_event", "agent_turn"] = "agent_turn"
     message: str = ""
     # Deliver response to channel
     deliver: bool = False
@@ -32,6 +34,7 @@ class CronPayload:
 @dataclass
 class CronJobState:
     """Runtime state of a job."""
+
     next_run_at_ms: int | None = None
     last_run_at_ms: int | None = None
     last_status: Literal["ok", "error", "skipped"] | None = None
@@ -40,11 +43,13 @@ class CronJobState:
 
 @dataclass
 class CronJob:
-    """A scheduled job (OpenClaw-style: optional agent_id, fallback to default)."""
+    """A user-owned scheduled Agent run."""
+
     id: str
     name: str
+    user_id: str = "system"
     enabled: bool = True
-    # OpenClaw agentId: which agent runs this job; None = default agent
+    # Which shared platform Agent runs this job; None selects the default.
     agent_id: str | None = None
     schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
     payload: CronPayload = field(default_factory=CronPayload)
@@ -52,10 +57,6 @@ class CronJob:
     created_at_ms: int = 0
     updated_at_ms: int = 0
     delete_after_run: bool = False
-
-
-@dataclass
-class CronStore:
-    """Persistent store for cron jobs."""
-    version: int = 1
-    jobs: list[CronJob] = field(default_factory=list)
+    lease_owner: str | None = None
+    lease_until_ms: int | None = None
+    lease_version: int = 0

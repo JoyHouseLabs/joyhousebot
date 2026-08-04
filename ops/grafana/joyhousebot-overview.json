@@ -1,0 +1,18 @@
+{
+  "title": "Joyhousebot Overview",
+  "schemaVersion": 39,
+  "tags": ["joyhousebot", "agent"],
+  "timezone": "browser",
+  "panels": [
+    {"type":"stat","title":"API Up","targets":[{"expr":"joyhousebot_up"}]},
+    {"type":"timeseries","title":"Runs by Status","targets":[{"expr":"sum by (status) (joyhousebot_runs_total)"}]},
+    {"type":"timeseries","title":"Tasks by Status","targets":[{"expr":"sum by (status) (joyhousebot_tasks_total)"}]},
+    {"type":"timeseries","title":"Provider Requests","targets":[{"expr":"sum by (provider, model, status) (rate(joyhousebot_provider_requests_total[5m]))"}]},
+    {"type":"timeseries","title":"Provider Average Duration","targets":[{"expr":"joyhousebot_provider_duration_ms_avg"}]},
+    {"type":"timeseries","title":"Provider P95 Duration","targets":[{"expr":"joyhousebot_provider_duration_ms_p95"}]},
+    {"type":"timeseries","title":"Provider TTFT","targets":[{"expr":"joyhousebot_provider_ttft_ms_avg"}]},
+    {"type":"timeseries","title":"Queue Age","targets":[{"expr":"joyhousebot_queue_oldest_age_seconds"}]},
+    {"type":"timeseries","title":"Expired Leases / Retries","targets":[{"expr":"joyhousebot_queue_expired_leases_total"},{"expr":"joyhousebot_queue_retried_tasks_total"}]},
+    {"type":"timeseries","title":"Channel Outbox","targets":[{"expr":"sum by (channel, status) (joyhousebot_channel_outbox_total)"}]}
+  ]
+}

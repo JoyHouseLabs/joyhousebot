@@ -2,7 +2,7 @@
 Entry point for running joyhousebot as a module: python -m joyhousebot
 """
 
-from joyhousebot.cli.commands import app
+from joyhousebot.cli.cloud import app
 
 if __name__ == "__main__":
     app()

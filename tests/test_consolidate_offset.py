@@ -1,8 +1,10 @@
 """Test session management with cache-friendly message handling."""
 
 import pytest
-from pathlib import Path
-from joyhousebot.session.manager import Session, SessionManager
+
+from joyhousebot.session.models import Session
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.postgres_store import PostgresTestStore
 
 # Test constants
 MEMORY_WINDOW = 50
@@ -63,7 +65,7 @@ class TestSessionLastConsolidated:
 
     def test_last_consolidated_persistence(self, tmp_path) -> None:
         """Test that last_consolidated persists across save/load."""
-        manager = SessionManager(Path(tmp_path))
+        manager = RuntimeSessionManager(PostgresTestStore(tmp_path / "runtime.db"))
         session1 = create_session_with_messages("test:persist", 20)
         session1.last_consolidated = 15
         manager.save(session1)
@@ -143,7 +145,7 @@ class TestSessionPersistence:
 
     @pytest.fixture
     def temp_manager(self, tmp_path):
-        return SessionManager(Path(tmp_path))
+        return RuntimeSessionManager(PostgresTestStore(tmp_path / "runtime.db"))
 
     def test_persistence_roundtrip(self, temp_manager):
         """Test that messages persist across save/load."""

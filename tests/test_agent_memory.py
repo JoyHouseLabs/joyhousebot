@@ -1,131 +1,73 @@
-"""Tests for L0/L1/L2 memory structure and MemoryStore helpers."""
+"""Tests for durable scoped Agent memory."""
+
+from datetime import date, timedelta
 
 import pytest
-from pathlib import Path
 
-from joyhousebot.agent.memory import (
-    MemoryStore,
-    safe_scope_key,
-    L0_ABSTRACT_FILENAME,
-    INSIGHTS_DIR,
-    LESSONS_DIR,
-    ARCHIVE_DIR,
-)
+from joyhousebot.agent.memory import L0_ABSTRACT_FILENAME, MemoryStore
+from tests.support.postgres_store import PostgresTestStore
 
 
-def test_ensure_memory_structure_creates_dirs_and_abstract(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    assert (store.memory_dir / INSIGHTS_DIR).is_dir()
-    assert (store.memory_dir / LESSONS_DIR).is_dir()
-    assert (store.memory_dir / ARCHIVE_DIR).is_dir()
-    l0 = store.memory_dir / L0_ABSTRACT_FILENAME
-    assert l0.is_file()
-    content = l0.read_text()
-    assert "memory index" in content
-    assert "active topics" in content
-    assert "retrieval hints" in content
+@pytest.fixture
+def runtime_store(tmp_path):
+    return PostgresTestStore(tmp_path / "memory.db")
 
 
-def test_read_l0_abstract_empty_until_updated(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    raw = store.read_l0_abstract()
-    assert "memory index" in raw
-    store.update_l0_abstract("# custom index\n\n## topics\n- foo")
-    assert "custom index" in store.read_l0_abstract()
-    assert "foo" in store.read_l0_abstract()
+def test_ensure_memory_structure_creates_abstract(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    memory.ensure_memory_structure()
+    assert "memory index" in memory.read_l0_abstract()
+    assert (L0_ABSTRACT_FILENAME, False) in memory.list_relative()
 
 
-def test_append_l2_daily_and_get_l2_path(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    path = store.get_l2_path("2026-02-22")
-    assert path == store.memory_dir / "2026-02-22.md"
-    store.append_l2_daily("2026-02-22", "Event: deployed v2.")
-    store.append_l2_daily("2026-02-22", "Event: user asked about X.")
-    text = path.read_text()
-    assert "deployed v2" in text
-    assert "user asked about X" in text
+def test_read_l0_abstract_until_updated(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    memory.ensure_memory_structure()
+    memory.update_l0_abstract("# custom index\n\n## topics\n- foo")
+    assert "foo" in memory.read_l0_abstract()
 
 
-def test_get_memory_context_with_l0_truncates_long_l0(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    store.update_l0_abstract("x" * 2000)
-    store.write_long_term("- [P0] User prefers short answers.")
-    ctx = store.get_memory_context_with_l0(max_l0_chars=500)
-    assert "(truncated)" in ctx
-    assert "User prefers short answers" in ctx
+def test_append_daily_log(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    memory.append_l2_daily("2026-02-22", "Event: deployed v2.")
+    memory.append_l2_daily("2026-02-22", "Event: user asked about X.")
+    text = memory.read_relative("2026-02-22.md")
+    assert "deployed v2" in text and "user asked about X" in text
 
 
-def test_append_history_trims_when_max_entries_set(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    for i in range(5):
-        store.append_history(f"[2026-01-0{i+1} 10:00] Entry {i+1}.", max_entries=0)
-    content = store.history_file.read_text()
-    blocks = [b for b in content.split("\n\n") if b.strip()]
-    assert len(blocks) == 5
-    store.append_history("[2026-01-06 10:00] Entry 6.", max_entries=3)
-    content = store.history_file.read_text()
-    blocks = [b for b in content.split("\n\n") if b.strip()]
-    assert len(blocks) == 3
-    assert "Entry 4" in content and "Entry 5" in content and "Entry 6" in content
+def test_append_history_trims_atomically(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    for index in range(6):
+        memory.append_history(f"Entry {index + 1}.", max_entries=3 if index == 5 else 0)
+    content = memory.read_relative("HISTORY.md")
+    assert "Entry 4" in content and "Entry 6" in content
     assert "Entry 1" not in content
 
 
-def test_read_daily_logs_today_yesterday(tmp_path: Path) -> None:
-    from datetime import date, timedelta
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
-    store.append_l2_daily(today, "Today: shipped feature X.")
-    store.append_l2_daily(yesterday, "Yesterday: discussed API design.")
-    combined = store.read_daily_logs_today_yesterday()
-    assert "Today: shipped feature X" in combined
-    assert "Yesterday: discussed API design" in combined
+def test_daily_logs_today_and_yesterday(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    memory.append_l2_daily(date.today().isoformat(), "Today")
+    memory.append_l2_daily((date.today() - timedelta(days=1)).isoformat(), "Yesterday")
+    assert memory.read_daily_logs_today_yesterday() == "Today\n\nYesterday"
 
 
-def test_safe_scope_key() -> None:
-    assert safe_scope_key("session_abc") == "session_abc"
-    assert safe_scope_key("user:123") == "user_123"
-    assert safe_scope_key("") == ""
-    assert safe_scope_key("..") == ""
-    assert ".." not in safe_scope_key("a:b:c")
-    assert "/" not in safe_scope_key("a/b")
+def test_scopes_are_isolated(runtime_store) -> None:
+    first = MemoryStore(runtime_store, "user:a:agent:default")
+    second = MemoryStore(runtime_store, "user:b:agent:default")
+    first.write_long_term("private-a")
+    assert first.read_long_term() == "private-a"
+    assert second.read_long_term() == ""
 
 
-def test_memory_store_with_scope_key_uses_subdir(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path, scope_key="session_1")
-    store.ensure_memory_structure()
-    assert store.memory_dir == tmp_path / "memory" / "session_1"
-    assert store.memory_file == store.memory_dir / "MEMORY.md"
-    store.write_long_term("- [P0] Session-specific fact.")
-    assert "Session-specific fact" in store.read_long_term()
+def test_write_long_term_with_timestamp(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    memory.write_long_term("Fact", updated_at="2026-02-25T12:00:00Z")
+    assert "updated_at=2026-02-25" in memory.read_long_term()
 
 
-def test_write_long_term_with_updated_at(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    store.write_long_term("- [P0] Fact.", updated_at="2026-02-25T12:00:00Z")
-    raw = store.read_long_term()
-    assert "updated_at=2026-02-25" in raw
-    assert "[P0] Fact" in raw
-
-
-def test_get_memory_context_empty(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    assert store.get_memory_context() == ""
-
-
-def test_get_memory_context_with_l0_empty_l0(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path)
-    store.ensure_memory_structure()
-    store.write_long_term("- [P0] Only long-term.")
-    ctx = store.get_memory_context_with_l0()
-    assert "Long-term Memory" in ctx
-    assert "Only long-term" in ctx
-    assert "memory index" in ctx or ".abstract" in ctx or "active topics" in ctx
+def test_virtual_directory_listing(runtime_store) -> None:
+    memory = MemoryStore(runtime_store)
+    memory.write_relative("insights/one.md", "one")
+    memory.write_relative("MEMORY.md", "root")
+    assert memory.list_relative() == [("MEMORY.md", False), ("insights", True)]
+    assert memory.list_relative("insights") == [("one.md", False)]

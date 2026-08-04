@@ -1,15 +1,21 @@
 """URL ingest: fetch page, extract readable content, chunk and return IngestDoc."""
 
 import html
-import ipaddress
+import json
 import re
-import socket
-from urllib.parse import urlparse
-
-import httpx
 
 from joyhousebot.agent.tools.ingest.chunking import chunk_text
 from joyhousebot.agent.tools.ingest.models import IngestDoc
+from joyhousebot.runtime.http_tracking import TrackedAsyncClient
+from joyhousebot.utils.exceptions import sanitize_error_message
+from joyhousebot.utils.ssrf import (
+    DEFAULT_MAX_BYTES,
+    SsrfProtectedTransport,
+    fetch_url,
+)
+from joyhousebot.utils.ssrf import (
+    validate_url as _validate_url,
+)
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
 MAX_REDIRECTS = 5
@@ -22,44 +28,9 @@ def _strip_tags(text: str) -> str:
     return html.unescape(text).strip()
 
 
-def _validate_url(url: str) -> tuple[bool, str]:
-    try:
-        p = urlparse(url)
-        if p.scheme not in ("http", "https"):
-            return False, f"Only http/https allowed, got '{p.scheme or 'none'}'"
-        if not p.netloc:
-            return False, "Missing domain"
-        host = p.hostname or ""
-        if _is_forbidden_host(host):
-            return False, f"Blocked host: {host}"
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-
-def _is_forbidden_host(host: str) -> bool:
-    if host.lower() in {"localhost"} or host.lower().endswith(".local"):
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-        return bool(
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_multicast or ip.is_reserved
-            or ip == ipaddress.ip_address("169.254.169.254")
-        )
-    except ValueError:
-        pass
-    try:
-        for info in socket.getaddrinfo(host, None):
-            ip = ipaddress.ip_address(info[4][0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-                return True
-    except socket.gaierror:
-        return True
-    return False
-
-
-async def fetch_and_ingest_url(url: str, max_chars: int = 50000) -> IngestDoc:
+async def fetch_and_ingest_url(
+    url: str, max_chars: int = 50000, max_bytes: int = DEFAULT_MAX_BYTES
+) -> IngestDoc:
     """Fetch URL, extract readable content, chunk and return IngestDoc."""
     ok, err = _validate_url(url)
     if not ok:
@@ -67,28 +38,34 @@ async def fetch_and_ingest_url(url: str, max_chars: int = 50000) -> IngestDoc:
 
     from readability import Document
 
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        max_redirects=MAX_REDIRECTS,
+    async with TrackedAsyncClient(
+        propagate_headers=False,
+        transport=SsrfProtectedTransport(),
+        follow_redirects=False,
         timeout=30.0,
     ) as client:
-        r = await client.get(url, headers={"User-Agent": USER_AGENT})
-        r.raise_for_status()
-
-    final_host = urlparse(str(r.url)).hostname
-    if final_host and _is_forbidden_host(final_host):
-        raise ValueError(f"Blocked final URL host: {final_host}")
+        try:
+            r, text = await fetch_url(
+                client,
+                url,
+                headers={"User-Agent": USER_AGENT},
+                max_redirects=MAX_REDIRECTS,
+                max_bytes=max_bytes,
+            )
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(sanitize_error_message(str(e))) from e
 
     ctype = r.headers.get("content-type", "")
     if "application/json" in ctype:
-        text = str(r.json())
+        text = str(json.loads(text))
         title = url
-    elif "text/html" in ctype or (r.text[:256].lower().startswith(("<!doctype", "<html"))):
-        doc = Document(r.text)
+    elif "text/html" in ctype or (text[:256].lower().startswith(("<!doctype", "<html"))):
+        doc = Document(text)
         title = doc.title() or url
         text = f"# {title}\n\n" + _strip_tags(doc.summary())
     else:
-        text = r.text
         title = url
 
     if len(text) > max_chars:

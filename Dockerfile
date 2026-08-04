@@ -30,11 +30,20 @@ WORKDIR /app/bridges/whatsapp
 RUN npm install && npm run build
 WORKDIR /app
 
-# Create config directory
-RUN mkdir -p /root/.joyhousebot
+# Run as a non-root user by default (api/scheduler/channel-worker roles).
+# NOTE: the agent worker role executes commands in Docker sandbox containers
+# and therefore needs access to /var/run/docker.sock. When running the worker
+# role with the socket mounted, either run that container as root
+# (`docker run --user root ...` / compose `user: root`) or grant the
+# container the host docker group via compose `group_add`. The default CMD
+# (api) does not need the socket and stays unprivileged.
+RUN useradd --create-home --uid 1000 joyhousebot && \
+    mkdir -p /home/joyhousebot/.joyhousebot && \
+    chown -R joyhousebot:joyhousebot /app /home/joyhousebot/.joyhousebot
+USER joyhousebot
 
-# Gateway default port
+# Cloud API default port
 EXPOSE 18790
 
 ENTRYPOINT ["joyhousebot"]
-CMD ["status"]
+CMD ["api"]

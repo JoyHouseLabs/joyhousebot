@@ -1,5 +1,5 @@
-"""Retrieval service: SQLite FTS5 full-text search over knowledge base with evidence trace."""
+"""Durable knowledge retrieval."""
 
-from joyhousebot.services.retrieval.store import RetrievalStore
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
-__all__ = ["RetrievalStore"]
+__all__ = ["KnowledgeRepository"]

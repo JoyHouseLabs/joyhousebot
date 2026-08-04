@@ -1,0 +1,38 @@
+groups:
+  - name: joyhousebot-runtime
+    rules:
+      - alert: JoyhousebotApiDown
+        expr: up{job="joyhousebot"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "Joyhousebot API is down"}
+      - alert: JoyhousebotQueueGrowing
+        expr: sum(joyhousebot_tasks_total{status="queued"}) > 100
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Joyhousebot task queue is growing"}
+      - alert: JoyhousebotQueueStalled
+        expr: joyhousebot_queue_oldest_age_seconds > 300
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Oldest Joyhousebot task has been queued for over five minutes"}
+      - alert: JoyhousebotNoWorkers
+        expr: sum(joyhousebot_workers_total{status="online"}) == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "No online Joyhousebot workers"}
+      - alert: JoyhousebotStaleWorkers
+        expr: joyhousebot_workers_stale_total > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Joyhousebot worker heartbeat is stale"}
+      - alert: JoyhousebotProviderErrors
+        expr: sum(rate(joyhousebot_provider_requests_total{status=~"error|failed"}[5m])) > 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Joyhousebot provider error rate is elevated"}
+      - alert: JoyhousebotDeadChannelOutbox
+        expr: sum(joyhousebot_channel_outbox_total{status="dead"}) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Joyhousebot channel outbox has dead messages"}

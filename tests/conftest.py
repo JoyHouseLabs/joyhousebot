@@ -1,23 +1,12 @@
-"""Pytest hooks and fixtures."""
+"""Shared PostgreSQL test fixtures."""
 
-import os
+from __future__ import annotations
 
 import pytest
 
-
-def pytest_configure(config):
-    """Register custom markers (also in pyproject.toml)."""
-    config.addinivalue_line(
-        "markers",
-        "requires_pairing: requires device pairing / full runtime (skipped in CI)",
-    )
+from tests.support.postgres_store import TEST_DATABASE_URL
 
 
-def pytest_collection_modifyitems(config, items):
-    """Skip requires_pairing tests when running in CI (no device paired)."""
-    if os.environ.get("CI") != "true":
-        return
-    skip = pytest.mark.skip(reason="Requires device pairing (skipped in CI)")
-    for item in items:
-        if "requires_pairing" in item.keywords:
-            item.add_marker(skip)
+@pytest.fixture(scope="session")
+def postgres_database_url() -> str:
+    return TEST_DATABASE_URL

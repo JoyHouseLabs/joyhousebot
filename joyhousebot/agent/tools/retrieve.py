@@ -1,49 +1,32 @@
-"""Retrieve tool: pluggable search over knowledge base (FTS5+vector) and optional memory scope via adapter."""
+"""Retrieve durable user-scoped knowledge and memory."""
 
 import json
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.agent.tools.base import Tool
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
+from joyhousebot.runtime.context import ToolExecutionContext
 from joyhousebot.utils.exceptions import (
     ToolError,
     ValidationError,
-    sanitize_error_message,
     classify_exception,
+    sanitize_error_message,
 )
 
 
 class RetrieveTool(Tool):
-    """Search the knowledge base (ingested documents). Returns matching chunks with evidence trace.
-    Uses retrieval adapter: builtin hybrid by default; memory scope can use configurable backend (e.g. MCP qmd).
-    """
+    """Search durable scoped knowledge or memory records."""
 
     def __init__(
         self,
-        workspace: Path,
-        config: Any = None,
-        mcp_memory_search_callable: Any = None,
-        mcp_knowledge_search_callable: Any = None,
+        runtime_store: Any,
     ):
-        self.workspace = Path(workspace)
-        self.config = config
-        self._mcp_memory_search_callable = mcp_memory_search_callable
-        self._mcp_knowledge_search_callable = mcp_knowledge_search_callable
-        self._memory_scope_key: str | None = None
-
-    def set_memory_scope(self, scope_key: str | None) -> None:
-        """Set current memory scope for scope=memory searches (per-session/per-user isolation)."""
-        self._memory_scope_key = scope_key
-
-    def set_mcp_memory_search_callable(self, callable: Any) -> None:
-        """Inject MCP memory search callable (e.g. after QMD connects)."""
-        self._mcp_memory_search_callable = callable
-
-    def set_mcp_knowledge_search_callable(self, callable: Any) -> None:
-        """Inject MCP knowledge search callable (e.g. after QMD connects)."""
-        self._mcp_knowledge_search_callable = callable
+        if runtime_store is None:
+            raise ValueError("RetrieveTool requires a durable runtime_store")
+        self.runtime_store = runtime_store
 
     @property
     def name(self) -> str:
@@ -52,7 +35,7 @@ class RetrieveTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search the knowledge base (documents from workspace/knowledgebase pipeline: files there are converted to markdown and indexed). "
+            "Search durable user-scoped knowledge and memory documents. "
             "Returns matching text chunks with source trace (doc_id, source_url/file_path, page). "
             "Use for evidence-backed answers and decision support."
         )
@@ -63,16 +46,21 @@ class RetrieveTool(Tool):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query (full-text)"},
-                "top_k": {"type": "integer", "description": "Max results (default 10)", "minimum": 1, "maximum": 50},
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max results (default 10)",
+                    "minimum": 1,
+                    "maximum": 50,
+                },
                 "source_type": {
                     "type": "string",
-                    "enum": ["pdf", "url", "image", "youtube"],
+                    "enum": ["url", "note"],
                     "description": "Optional: filter by source type",
                 },
                 "scope": {
                     "type": "string",
                     "enum": ["knowledge", "memory"],
-                    "description": "knowledge = docs from knowledgebase pipeline; memory = L0/L1/L2 memory (if backend configured)",
+                    "description": "knowledge = indexed documents; memory = durable Agent memory",
                 },
             },
             "required": ["query"],
@@ -91,32 +79,40 @@ class RetrieveTool(Tool):
             raise ValidationError("query is required", field="query")
 
         try:
+            tool_context = kwargs.get("tool_context")
+            if not isinstance(tool_context, ToolExecutionContext):
+                raise ToolError(self.name, "durable run context is required")
+            if scope == "memory" and not EffectiveMemoryPolicy.from_dict(
+                tool_context.memory_policy
+            ).can_read_tools:
+                raise ToolInvocationError(
+                    "MEMORY_ACCESS_DENIED",
+                    "memory retrieval is disabled by this Agent memory policy",
+                )
             from joyhousebot.services.retrieval.adapter import search_async
+
             hits = await search_async(
-                self.workspace,
-                self.config,
                 query=query,
                 top_k=top_k,
                 source_type=source_type,
                 scope=scope,
-                mcp_memory_search_callable=self._mcp_memory_search_callable,
-                mcp_knowledge_search_callable=self._mcp_knowledge_search_callable,
-                memory_scope_key=self._memory_scope_key,
+                memory_scope_key=tool_context.memory_scope,
+                runtime_store=self.runtime_store,
+                user_id=tool_context.user_id,
             )
         except ToolError:
             raise
         except FileNotFoundError as e:
             logger.warning(f"Knowledge base not found: {e}")
-            return json.dumps({"error": "Knowledge base not initialized", "hits": []})
+            raise ToolInvocationError("KNOWLEDGE_NOT_INITIALIZED", "Knowledge base not initialized") from e
         except Exception as e:
             code, category, _ = classify_exception(e)
             sanitized = sanitize_error_message(str(e))
             logger.error(f"Retrieve error [{code}]: {sanitized}")
-            return json.dumps({"error": sanitized, "code": code, "hits": []})
+            raise ToolInvocationError(code, sanitized, retryable=category == "transient") from e
 
         return json.dumps(
             {"query": query, "scope": scope, "count": len(hits), "hits": hits},
             ensure_ascii=False,
             indent=2,
         )
-

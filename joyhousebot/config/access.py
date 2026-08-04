@@ -13,7 +13,11 @@ _cache: dict[str, Config] = {}
 
 
 def _cache_key(config_path: Path | None = None) -> str:
-    path = Path(config_path).expanduser().resolve() if config_path else get_config_path().expanduser().resolve()
+    path = (
+        Path(config_path).expanduser().resolve()
+        if config_path
+        else get_config_path().expanduser().resolve()
+    )
     return str(path)
 
 
@@ -22,15 +26,9 @@ def get_config(*, config_path: Path | None = None, force_reload: bool = False) -
     key = _cache_key(config_path)
     with _lock:
         if force_reload or key not in _cache:
-            _cache[key] = load_config(Path(key))
+            # Preserve whether the caller explicitly selected a path. The
+            # loader uses that distinction to fail on a missing deployment
+            # file while still allowing defaults when ~/.joyhousebot has
+            # never been initialized.
+            _cache[key] = load_config(config_path)
         return _cache[key]
-
-
-def clear_config_cache(*, config_path: Path | None = None) -> None:
-    """Clear cached config entry (or all cache entries)."""
-    with _lock:
-        if config_path is None:
-            _cache.clear()
-            return
-        _cache.pop(_cache_key(config_path), None)
-

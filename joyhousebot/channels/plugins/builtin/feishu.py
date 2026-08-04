@@ -21,18 +21,18 @@ from joyhousebot.channels.plugins.types import (
 
 if TYPE_CHECKING:
     from joyhousebot.bus.events import OutboundMessage
-    from joyhousebot.bus.queue import MessageBus
 
 try:
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import (
-        CreateMessageRequest,
-        CreateMessageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
+        CreateMessageRequest,
+        CreateMessageRequestBody,
         Emoji,
         P2ImMessageReceiveV1,
     )
+
     FEISHU_AVAILABLE = True
 except ImportError:
     FEISHU_AVAILABLE = False
@@ -49,6 +49,7 @@ MSG_TYPE_MAP = {
 
 def _extract_post_text(content_json: dict) -> str:
     """Extract plain text from Feishu post message content."""
+
     def extract_from_lang(lang_content: dict) -> str | None:
         if not isinstance(lang_content, dict):
             return None
@@ -72,18 +73,18 @@ def _extract_post_text(content_json: dict) -> str:
                     elif tag == "at":
                         text_parts.append(f"@{element.get('user_name', 'user')}")
         return " ".join(text_parts).strip() if text_parts else None
-    
+
     if "content" in content_json:
         result = extract_from_lang(content_json)
         if result:
             return result
-    
+
     for lang_key in ("zh_cn", "en_us", "ja_jp"):
         lang_content = content_json.get(lang_key)
         result = extract_from_lang(lang_content)
         if result:
             return result
-    
+
     return ""
 
 
@@ -131,40 +132,39 @@ class FeishuChannelPlugin(BaseChannelPlugin):
         if not FEISHU_AVAILABLE:
             self._log_error("Feishu SDK not installed. Run: pip install lark-oapi")
             return
-        
+
         app_id = self._config.get("app_id", "")
         app_secret = self._config.get("app_secret", "")
-        
+
         if not app_id or not app_secret:
             self._log_error("Feishu app_id and app_secret not configured")
             return
-        
+
         self._log_start()
         self._set_running(True)
         self._loop = asyncio.get_running_loop()
-        
+
         encrypt_key = self._config.get("encrypt_key", "") or ""
         verification_token = self._config.get("verification_token", "") or ""
-        
-        self._client = lark.Client.builder() \
-            .app_id(app_id) \
-            .app_secret(app_secret) \
-            .log_level(lark.LogLevel.INFO) \
+
+        self._client = (
+            lark.Client.builder()
+            .app_id(app_id)
+            .app_secret(app_secret)
+            .log_level(lark.LogLevel.INFO)
             .build()
-        
-        event_handler = lark.EventDispatcherHandler.builder(
-            encrypt_key, verification_token
-        ).register_p2_im_message_receive_v1(
-            self._on_message_sync
-        ).build()
-        
-        self._ws_client = lark.ws.Client(
-            app_id,
-            app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.INFO
         )
-        
+
+        event_handler = (
+            lark.EventDispatcherHandler.builder(encrypt_key, verification_token)
+            .register_p2_im_message_receive_v1(self._on_message_sync)
+            .build()
+        )
+
+        self._ws_client = lark.ws.Client(
+            app_id, app_secret, event_handler=event_handler, log_level=lark.LogLevel.INFO
+        )
+
         def run_ws():
             while self._running:
                 try:
@@ -173,69 +173,73 @@ class FeishuChannelPlugin(BaseChannelPlugin):
                     logger.warning(f"[{self.id}] WebSocket error: {e}")
                 if self._running:
                     import time
+
                     time.sleep(5)
-        
+
         self._ws_thread = threading.Thread(target=run_ws, daemon=True)
         self._ws_thread.start()
-        
+
         self._set_connected(True)
         self._log_started()
         logger.info(f"[{self.id}] No public IP required - using WebSocket to receive events")
-        
+
         while self._running:
             await asyncio.sleep(1)
 
     async def stop(self) -> None:
         self._log_stop()
         self._set_running(False)
-        
+
         if self._ws_client:
             try:
                 self._ws_client.stop()
             except Exception as e:
                 logger.warning(f"[{self.id}] Error stopping WebSocket: {e}")
-        
+
         self._set_connected(False)
         self._log_stopped()
 
     async def send(self, msg: "OutboundMessage") -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Feishu client not initialized")
-        
+
         try:
             if msg.chat_id.startswith("oc_"):
                 receive_id_type = "chat_id"
             else:
                 receive_id_type = "open_id"
-            
+
             elements = self._build_card_elements(msg.content)
             card = {
                 "config": {"wide_screen_mode": True},
                 "elements": elements,
             }
             content = json.dumps(card, ensure_ascii=False)
-            
-            request = CreateMessageRequest.builder() \
-                .receive_id_type(receive_id_type) \
+
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type(receive_id_type)
                 .request_body(
                     CreateMessageRequestBody.builder()
                     .receive_id(msg.chat_id)
                     .msg_type("interactive")
                     .content(content)
                     .build()
-                ).build()
-            
-            response = self._client.im.v1.message.create(request)
-            
+                )
+                .build()
+            )
+
+            response = await asyncio.to_thread(self._client.im.v1.message.create, request)
+
             if not response.success():
                 logger.error(
                     f"[{self.id}] Failed to send: code={response.code}, msg={response.msg}"
                 )
                 return SendResult(success=False, error=response.msg)
-            
+
             logger.debug(f"[{self.id}] Message sent to {msg.chat_id}")
             return SendResult(success=True)
-            
+
         except Exception as e:
             self._log_error("Error sending message", e)
             return SendResult(success=False, error=str(e))
@@ -249,25 +253,25 @@ class FeishuChannelPlugin(BaseChannelPlugin):
             event = data.event
             message = event.message
             sender = event.sender
-            
+
             message_id = message.message_id
             if message_id in self._processed_message_ids:
                 return
             self._processed_message_ids[message_id] = None
-            
+
             while len(self._processed_message_ids) > 1000:
                 self._processed_message_ids.popitem(last=False)
-            
+
             if sender.sender_type == "bot":
                 return
-            
+
             sender_id = sender.sender_id.open_id if sender.sender_id else "unknown"
             chat_id = message.chat_id
             chat_type = message.chat_type
             msg_type = message.message_type
-            
+
             await self._add_reaction(message_id, "THUMBSUP")
-            
+
             if msg_type == "text":
                 try:
                     content = json.loads(message.content).get("text", "")
@@ -281,10 +285,10 @@ class FeishuChannelPlugin(BaseChannelPlugin):
                     content = message.content or ""
             else:
                 content = MSG_TYPE_MAP.get(msg_type, f"[{msg_type}]")
-            
+
             if not content:
                 return
-            
+
             reply_to = chat_id if chat_type == "group" else sender_id
             await self._publish_inbound(
                 sender_id=sender_id,
@@ -294,31 +298,34 @@ class FeishuChannelPlugin(BaseChannelPlugin):
                     "message_id": message_id,
                     "chat_type": chat_type,
                     "msg_type": msg_type,
-                }
+                },
             )
-            
+
         except Exception as e:
             logger.error(f"[{self.id}] Error processing message: {e}")
 
     async def _add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> None:
         if not self._client or not Emoji:
             return
-        
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._add_reaction_sync, message_id, emoji_type)
 
     def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
         try:
-            request = CreateMessageReactionRequest.builder() \
-                .message_id(message_id) \
+            request = (
+                CreateMessageReactionRequest.builder()
+                .message_id(message_id)
                 .request_body(
                     CreateMessageReactionRequestBody.builder()
                     .reaction_type(Emoji.builder().emoji_type(emoji_type).build())
                     .build()
-                ).build()
-            
+                )
+                .build()
+            )
+
             response = self._client.im.v1.message_reaction.create(request)
-            
+
             if not response.success():
                 logger.warning(f"[{self.id}] Failed to add reaction: code={response.code}")
         except Exception as e:
@@ -326,28 +333,37 @@ class FeishuChannelPlugin(BaseChannelPlugin):
 
     @staticmethod
     def _parse_md_table(table_text: str) -> dict | None:
-        lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
+        lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
         if len(lines) < 3:
             return None
-        split = lambda l: [c.strip() for c in l.strip("|").split("|")]
-        headers = split(lines[0])
-        rows = [split(l) for l in lines[2:]]
-        columns = [{"tag": "column", "name": f"c{i}", "display_name": h, "width": "auto"}
-                   for i, h in enumerate(headers)]
+
+        def split_row(line: str) -> list[str]:
+            return [cell.strip() for cell in line.strip("|").split("|")]
+
+        headers = split_row(lines[0])
+        rows = [split_row(line) for line in lines[2:]]
+        columns = [
+            {"tag": "column", "name": f"c{i}", "display_name": h, "width": "auto"}
+            for i, h in enumerate(headers)
+        ]
         return {
             "tag": "table",
             "page_size": len(rows) + 1,
             "columns": columns,
-            "rows": [{f"c{i}": r[i] if i < len(r) else "" for i in range(len(headers))} for r in rows],
+            "rows": [
+                {f"c{i}": r[i] if i < len(r) else "" for i in range(len(headers))} for r in rows
+            ],
         }
 
     def _build_card_elements(self, content: str) -> list[dict]:
         elements, last_end = [], 0
         for m in self._TABLE_RE.finditer(content):
-            before = content[last_end:m.start()]
+            before = content[last_end : m.start()]
             if before.strip():
                 elements.extend(self._split_headings(before))
-            elements.append(self._parse_md_table(m.group(1)) or {"tag": "markdown", "content": m.group(1)})
+            elements.append(
+                self._parse_md_table(m.group(1)) or {"tag": "markdown", "content": m.group(1)}
+            )
             last_end = m.end()
         remaining = content[last_end:]
         if remaining.strip():
@@ -359,19 +375,21 @@ class FeishuChannelPlugin(BaseChannelPlugin):
         code_blocks = []
         for m in self._CODE_BLOCK_RE.finditer(content):
             code_blocks.append(m.group(1))
-            protected = protected.replace(m.group(1), f"\x00CODE{len(code_blocks)-1}\x00", 1)
+            protected = protected.replace(m.group(1), f"\x00CODE{len(code_blocks) - 1}\x00", 1)
 
         elements = []
         last_end = 0
         for m in self._HEADING_RE.finditer(protected):
-            before = protected[last_end:m.start()].strip()
+            before = protected[last_end : m.start()].strip()
             if before:
                 elements.append({"tag": "markdown", "content": before})
             text = m.group(2).strip()
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"**{text}**"},
-            })
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"**{text}**"},
+                }
+            )
             last_end = m.end()
         remaining = protected[last_end:].strip()
         if remaining:

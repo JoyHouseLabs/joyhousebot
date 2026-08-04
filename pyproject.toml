@@ -1,56 +1,45 @@
 [project]
 name = "joyhousebot"
 version = "0.1.2"
-description = "Lightweight agentic application framework - Python version of OpenClaw compatible edge agent"
+description = "Multi-user distributed Agent cloud runtime"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 authors = [
     {name = "Joyhouse Team"}
 ]
 maintainers = [
     {name = "Joyhouse Team"}
 ]
-keywords = ["ai", "agent", "chatbot", "edge", "llm", "openclaw", "assistant"]
+keywords = ["ai", "agent", "runtime", "distributed", "llm", "cloud"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "typer>=0.9.0",
-    "litellm>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "websockets>=12.0",
-    "websocket-client>=1.6.0",
     "httpx[socks]>=0.25.0",
     "loguru>=0.7.0",
     "readability-lxml>=0.8.0",
-    "rich>=13.0.0",
     "croniter>=2.0.0",
     "dingtalk-stream>=0.4.0",
     "python-telegram-bot[socks]>=21.0",
     "lark-oapi>=1.0.0",
-    "socksio>=1.0.0",
-    "python-socketio>=5.11.0",
-    "msgpack>=1.0.8",
     "slack-sdk>=3.26.0",
     "qq-botpy>=1.0.0",
-    "python-socks[asyncio]>=2.4.0",
-    "prompt-toolkit>=3.0.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2.0",
     "json-repair>=0.30.0",
-    "pycryptodome>=3.20.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
-    "python-multipart>=0.0.6",
-    "playwright>=1.40.0",
-    "pypdf>=4.0.0",
-    "watchfiles>=0.21.0",
+    "psycopg[binary,pool]>=3.2.0",
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -59,13 +48,6 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
 ]
-youtube = [
-    "yt-dlp>=2024.0.0",
-]
-retrieval = [
-    "chromadb>=0.4.0",
-]
-
 [project.urls]
 Homepage = "https://joyhousebot.com"
 Repository = "https://github.com/JoyHouseLabs/joyhousebot"
@@ -73,7 +55,7 @@ Documentation = "https://github.com/JoyHouseLabs/joyhousebot/tree/main/docs"
 Issues = "https://github.com/JoyHouseLabs/joyhousebot/issues"
 
 [project.scripts]
-joyhousebot = "joyhousebot.cli.commands:app"
+joyhousebot = "joyhousebot.cli.cloud:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -88,8 +70,6 @@ packages = ["joyhousebot"]
 [tool.hatch.build]
 include = [
     "joyhousebot/**/*.py",
-    "joyhousebot/skills/**/*.md",
-    "joyhousebot/skills/**/*.sh",
     "joyhousebot/static/**",
 ]
 
@@ -97,14 +77,12 @@ include = [
 include = [
     "joyhousebot/",
     "bridges/",
-    "plugin_host/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
 "bridges/whatsapp" = "joyhousebot/bridges/whatsapp"
-"plugin_host" = "plugin_host"
 
 [tool.ruff]
 line-length = 100
@@ -116,8 +94,8 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
-    "e2e: end-to-end tests (e.g. real browser); run with pytest -m e2e",
-    "requires_pairing: requires device pairing / full runtime (skipped in CI)",
+    "postgres: requires JOYHOUSEBOT_TEST_POSTGRES_URL",
 ]

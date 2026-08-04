@@ -1,41 +1,55 @@
-"""Tests for ContextBuilder memory context (scope_key, L0, daily)."""
-
-from pathlib import Path
+"""ContextBuilder reads memory only from the shared runtime store."""
 
 import pytest
 
 from joyhousebot.agent.context import ContextBuilder
 from joyhousebot.agent.memory import MemoryStore
+from joyhousebot.domain.agents import AgentRevision
+from tests.support.postgres_store import PostgresTestStore
 
 
 @pytest.fixture
-def workspace_with_scoped_memory(tmp_path: Path) -> Path:
-    store_shared = MemoryStore(tmp_path)
-    store_shared.ensure_memory_structure()
-    store_shared.write_long_term("- [P0] Shared memory fact.")
-    scope_dir = tmp_path / "memory" / "session_1"
-    scope_dir.mkdir(parents=True)
-    (scope_dir / "MEMORY.md").write_text("- [P0] Session 1 only fact.")
-    (scope_dir / "HISTORY.md").write_text("")
-    return tmp_path
+def durable_context(tmp_path):
+    store = PostgresTestStore(tmp_path / "context.db")
+    MemoryStore(store).write_long_term("Shared memory fact.")
+    MemoryStore(store, "session_1").write_long_term("Session 1 only fact.")
+    return tmp_path, store
 
 
-def test_memory_store_scope_key_isolates_content(workspace_with_scoped_memory: Path) -> None:
-    store_shared = MemoryStore(workspace_with_scoped_memory, scope_key=None)
-    store_scoped = MemoryStore(workspace_with_scoped_memory, scope_key="session_1")
-    assert "Shared memory fact" in store_shared.get_memory_context()
-    assert "Session 1 only fact" in store_scoped.get_memory_context()
-    assert "Session 1 only fact" not in store_shared.get_memory_context()
+def test_memory_scope_isolates_content(durable_context) -> None:
+    _workspace, store = durable_context
+    assert "Shared memory fact" in MemoryStore(store).get_memory_context()
+    assert "Session 1 only" in MemoryStore(store, "session_1").get_memory_context()
+    assert "Session 1 only" not in MemoryStore(store).get_memory_context()
 
 
-def test_build_system_prompt_includes_memory_block(workspace_with_scoped_memory: Path) -> None:
-    builder = ContextBuilder(workspace_with_scoped_memory)
-    prompt = builder.build_system_prompt(skill_names=None, scope_key=None)
-    assert "Memory" in prompt or "memory" in prompt
+def test_system_prompt_includes_shared_memory(durable_context) -> None:
+    scratch_root, store = durable_context
+    prompt = ContextBuilder(scratch_root, runtime_store=store).build_system_prompt(
+        scope_key=None
+    )
     assert "Shared memory fact" in prompt
 
 
-def test_build_system_prompt_with_scope_key_includes_scoped_memory(workspace_with_scoped_memory: Path) -> None:
-    builder = ContextBuilder(workspace_with_scoped_memory)
-    prompt = builder.build_system_prompt(skill_names=None, scope_key="session_1")
+def test_system_prompt_includes_scoped_memory(durable_context) -> None:
+    scratch_root, store = durable_context
+    prompt = ContextBuilder(scratch_root, runtime_store=store).build_system_prompt(
+        scope_key="session_1"
+    )
     assert "Session 1 only fact" in prompt
+
+
+def test_agent_task_only_policy_does_not_inject_persistent_memory(durable_context) -> None:
+    scratch_root, store = durable_context
+    revision = AgentRevision(
+        revision_id="search:v1",
+        agent_id="search",
+        version=1,
+        model_policy={"primary": "test/model"},
+        memory_policy={"enabled": False, "mode": "task_only", "write_mode": "none"},
+    )
+    prompt = ContextBuilder(
+        scratch_root, runtime_store=store, agent_revision=revision
+    ).build_system_prompt(scope_key=None)
+    assert "Shared memory fact" not in prompt
+    assert "personal memory is disabled" in prompt

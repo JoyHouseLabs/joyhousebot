@@ -1,7 +1,9 @@
 from typing import Any
 
 from joyhousebot.agent.tools.base import Tool
-from joyhousebot.agent.tools.registry import ToolRegistry
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.capabilities.dispatcher import capability_result_prompt
+from joyhousebot.runtime.context import ToolExecutionContext
 
 
 class SampleTool(Tool):
@@ -82,7 +84,11 @@ def test_validate_params_ignores_unknown_fields() -> None:
 
 
 async def test_registry_returns_validation_error() -> None:
-    reg = ToolRegistry()
-    reg.register(SampleTool())
-    result = await reg.execute("sample", {"query": "hi"})
-    assert "Invalid parameters" in result
+    reg = CapabilityRegistry()
+    reg.register_tool(SampleTool())
+    result = await reg.invoke_tool(
+        "sample",
+        {"query": "hi"},
+        context=ToolExecutionContext("run", "session", "api", "chat"),
+    )
+    assert "missing required count" in capability_result_prompt(result)

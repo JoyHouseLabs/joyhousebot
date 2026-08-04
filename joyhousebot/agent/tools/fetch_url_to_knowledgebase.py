@@ -2,35 +2,27 @@
 
 import hashlib
 import json
-import re
-from pathlib import Path
 from typing import Any
 
 from joyhousebot.agent.tools.base import Tool
 from joyhousebot.agent.tools.ingest.url_ingest import fetch_and_ingest_url
-from joyhousebot.utils.helpers import ensure_dir
-
-
-def _safe_filename(url: str, title: str) -> str:
-    """Produce a safe .md filename from URL and title."""
-    slug = re.sub(r"[^\w\s-]", "", (title or url)[:60]).strip()
-    slug = re.sub(r"[-\s]+", "_", slug).strip("_") or "page"
-    h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
-    return f"url_{h}_{slug}.md"[:120]
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
+from joyhousebot.runtime.context import ToolExecutionContext
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
+from joyhousebot.utils.exceptions import sanitize_error_message
 
 
 class FetchUrlToKnowledgebaseTool(Tool):
     """Fetch a URL and save its extracted content into workspace/knowledgebase. The knowledge pipeline will then convert and index it. Use this to add web pages to the knowledge base."""
 
-    def __init__(self, workspace: Path, config: Any = None):
-        self.workspace = Path(workspace)
-        self.config = config
-
-    def _knowledge_source_dir(self) -> Path:
-        if self.config and getattr(getattr(self.config, "tools", None), "knowledge_pipeline", None):
-            d = getattr(self.config.tools.knowledge_pipeline, "knowledge_source_dir", "knowledgebase")
-            return self.workspace / d
-        return self.workspace / "knowledgebase"
+    def __init__(self, runtime_store: Any):
+        self.runtime_store = runtime_store
+        self.repository = None
+        if runtime_store is not None:
+            self.repository = getattr(runtime_store, "_knowledge_repository", None)
+            if self.repository is None:
+                self.repository = KnowledgeRepository(runtime_store)
+                runtime_store._knowledge_repository = self.repository
 
     @property
     def name(self) -> str:
@@ -39,8 +31,7 @@ class FetchUrlToKnowledgebaseTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Fetch a URL and save its readable content into the knowledge source dir (knowledgebase). "
-            "The pipeline will then convert and index it so you can search with retrieve(scope='knowledge'). "
+            "Fetch a URL and index its readable content in durable user-scoped knowledge. "
             "Use for adding web pages or articles to the knowledge base."
         )
 
@@ -57,26 +48,43 @@ class FetchUrlToKnowledgebaseTool(Tool):
     async def execute(self, url: str, **kwargs: Any) -> str:
         url = (url or "").strip()
         if not url:
-            return json.dumps({"error": "url is required"})
+            raise ToolInvocationError("INVALID_PARAMETERS", "url is required")
+        # Validate the runtime context before any network fetch happens.
+        tool_context = kwargs.get("tool_context")
+        if not isinstance(tool_context, ToolExecutionContext) or self.repository is None:
+            raise ToolInvocationError(
+                "CONTEXT_REQUIRED", "durable runtime context is required for knowledge ingestion"
+            )
         try:
             doc = await fetch_and_ingest_url(url)
         except ValueError as e:
-            return json.dumps({"error": str(e)})
+            raise ToolInvocationError("INVALID_URL", sanitize_error_message(str(e))) from e
         except Exception as e:
-            return json.dumps({"error": f"Fetch failed: {e}"})
-        target_dir = self._knowledge_source_dir()
-        ensure_dir(target_dir)
-        filename = _safe_filename(doc.source_url, doc.title)
-        md_path = target_dir / filename
-        lines = [f"# {doc.title}", "", f"**Source:** {doc.source_url}", ""]
-        for c in doc.chunks:
-            lines.append(c.text)
-            lines.append("")
-        md_path.write_text("\n".join(lines), encoding="utf-8")
-        return json.dumps({
-            "ok": True,
-            "url": doc.source_url,
-            "title": doc.title,
-            "path": str(md_path),
-            "message": "Content saved to knowledgebase; pipeline will index it shortly.",
-        }, ensure_ascii=False, indent=2)
+            raise ToolInvocationError(
+                "FETCH_FAILED", sanitize_error_message(str(e)), retryable=True
+            ) from e
+        doc_id = hashlib.sha256(f"{tool_context.user_id}:{doc.source_url}".encode()).hexdigest()[
+            :24
+        ]
+        self.repository.index_document(
+            doc_id=doc_id,
+            user_id=tool_context.user_id,
+            agent_id=tool_context.agent_id,
+            source_type=doc.source_type,
+            source_url=doc.source_url,
+            title=doc.title,
+            chunks=[{"text": chunk.text, "page": chunk.page} for chunk in doc.chunks],
+            metadata={"trace": doc.trace},
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "doc_id": doc_id,
+                "url": doc.source_url,
+                "title": doc.title,
+                "chunk_count": len(doc.chunks),
+                "message": "Content indexed in the durable knowledge store.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )

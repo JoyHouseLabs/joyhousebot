@@ -1,10 +1,8 @@
 from email.message import EmailMessage
-from datetime import date
 
 import pytest
 
 from joyhousebot.bus.events import OutboundMessage
-from joyhousebot.bus.queue import MessageBus
 from joyhousebot.channels.plugins.builtin.email import EmailChannelPlugin
 
 
@@ -26,7 +24,11 @@ def _make_config() -> dict:
 
 def _make_plugin(config: dict | None = None) -> EmailChannelPlugin:
     plugin = EmailChannelPlugin()
-    plugin.configure(config or _make_config(), MessageBus())
+    class Adapter:
+        async def handle(self, message):
+            return None
+
+    plugin.configure(config or _make_config(), Adapter())
     return plugin
 
 
@@ -279,51 +281,3 @@ async def test_send_skips_when_consent_not_granted(monkeypatch) -> None:
         )
     )
     assert called["smtp"] is False
-
-
-def test_fetch_messages_between_dates_uses_imap_since_before_without_mark_seen(monkeypatch) -> None:
-    raw = _make_raw_email(subject="Status", body="Yesterday update")
-
-    class FakeIMAP:
-        def __init__(self) -> None:
-            self.search_args = None
-            self.store_calls: list[tuple[bytes, str, str]] = []
-
-        def login(self, _user: str, _pw: str):
-            return "OK", [b"logged in"]
-
-        def select(self, _mailbox: str):
-            return "OK", [b"1"]
-
-        def search(self, *_args):
-            self.search_args = _args
-            return "OK", [b"5"]
-
-        def fetch(self, _imap_id: bytes, _parts: str):
-            return "OK", [(b"5 (UID 999 BODY[] {200})", raw), b")"]
-
-        def store(self, imap_id: bytes, op: str, flags: str):
-            self.store_calls.append((imap_id, op, flags))
-            return "OK", [b""]
-
-        def logout(self):
-            return "BYE", [b""]
-
-    fake = FakeIMAP()
-    monkeypatch.setattr(
-        "joyhousebot.channels.plugins.builtin.email.imaplib.IMAP4_SSL",
-        lambda _h, _p: fake,
-    )
-
-    plugin = _make_plugin()
-    items = plugin.fetch_messages_between_dates(
-        start_date=date(2026, 2, 6),
-        end_date=date(2026, 2, 7),
-        limit=10,
-    )
-
-    assert len(items) == 1
-    assert items[0]["subject"] == "Status"
-    assert fake.search_args is not None
-    assert fake.search_args[1:] == ("SINCE", "06-Feb-2026", "BEFORE", "07-Feb-2026")
-    assert fake.store_calls == []

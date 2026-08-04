@@ -8,7 +8,6 @@ import imaplib
 import re
 import smtplib
 import ssl
-from datetime import date
 from email import policy
 from email.header import decode_header, make_header
 from email.message import EmailMessage
@@ -25,21 +24,6 @@ from joyhousebot.channels.plugins.types import (
     ChannelMeta,
     ChatType,
     SendResult,
-)
-
-_IMAP_MONTHS = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
 )
 
 
@@ -157,7 +141,11 @@ class EmailChannelPlugin(BaseChannelPlugin):
                 subject = override
 
         email_msg = EmailMessage()
-        email_msg["From"] = self._config.get("from_address") or self._config.get("smtp_username") or self._config.get("imap_username")
+        email_msg["From"] = (
+            self._config.get("from_address")
+            or self._config.get("smtp_username")
+            or self._config.get("imap_username")
+        )
         email_msg["To"] = to_addr
         email_msg["Subject"] = subject
         email_msg.set_content(msg.content or "")
@@ -206,7 +194,9 @@ class EmailChannelPlugin(BaseChannelPlugin):
                 smtp.send_message(msg)
             return
 
-        with smtplib.SMTP(self._config.get("smtp_host"), self._config.get("smtp_port", 587), timeout=timeout) as smtp:
+        with smtplib.SMTP(
+            self._config.get("smtp_host"), self._config.get("smtp_port", 587), timeout=timeout
+        ) as smtp:
             if self._config.get("smtp_use_tls", True):
                 smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._config.get("smtp_username"), self._config.get("smtp_password"))
@@ -220,27 +210,6 @@ class EmailChannelPlugin(BaseChannelPlugin):
             limit=0,
         )
 
-    def fetch_messages_between_dates(
-        self,
-        start_date: date,
-        end_date: date,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        if end_date <= start_date:
-            return []
-
-        return self._fetch_messages(
-            search_criteria=(
-                "SINCE",
-                self._format_imap_date(start_date),
-                "BEFORE",
-                self._format_imap_date(end_date),
-            ),
-            mark_seen=False,
-            dedupe=False,
-            limit=max(1, int(limit)),
-        )
-
     def _fetch_messages(
         self,
         search_criteria: tuple[str, ...],
@@ -252,9 +221,13 @@ class EmailChannelPlugin(BaseChannelPlugin):
         mailbox = self._config.get("imap_mailbox") or "INBOX"
 
         if self._config.get("imap_use_ssl", True):
-            client = imaplib.IMAP4_SSL(self._config.get("imap_host"), self._config.get("imap_port", 993))
+            client = imaplib.IMAP4_SSL(
+                self._config.get("imap_host"), self._config.get("imap_port", 993)
+            )
         else:
-            client = imaplib.IMAP4(self._config.get("imap_host"), self._config.get("imap_port", 143))
+            client = imaplib.IMAP4(
+                self._config.get("imap_host"), self._config.get("imap_port", 143)
+            )
 
         try:
             client.login(self._config.get("imap_username"), self._config.get("imap_password"))
@@ -337,15 +310,14 @@ class EmailChannelPlugin(BaseChannelPlugin):
 
         return messages
 
-    @classmethod
-    def _format_imap_date(cls, value: date) -> str:
-        month = _IMAP_MONTHS[value.month - 1]
-        return f"{value.day:02d}-{month}-{value.year}"
-
     @staticmethod
     def _extract_message_bytes(fetched: list[Any]) -> bytes | None:
         for item in fetched:
-            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray)):
+            if (
+                isinstance(item, tuple)
+                and len(item) >= 2
+                and isinstance(item[1], (bytes, bytearray))
+            ):
                 return bytes(item[1])
         return None
 

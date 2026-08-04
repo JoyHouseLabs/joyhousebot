@@ -6,7 +6,6 @@ from joyhousebot.channels.messages_ack import (
     should_send_ack,
 )
 
-
 # --- should_send_ack ---
 
 

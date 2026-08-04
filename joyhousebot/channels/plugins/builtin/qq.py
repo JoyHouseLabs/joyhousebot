@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -95,8 +95,8 @@ class QQChannelPlugin(BaseChannelPlugin):
         self._set_running(True)
         self._log_start()
 
-        BotClass = _make_bot_class(self)
-        self._client = BotClass()
+        bot_class = _make_bot_class(self)
+        self._client = bot_class()
 
         self._bot_task = asyncio.create_task(self._run_bot())
         logger.info("QQ bot started (C2C private message)")
@@ -104,7 +104,9 @@ class QQChannelPlugin(BaseChannelPlugin):
     async def _run_bot(self) -> None:
         while self._running:
             try:
-                await self._client.start(appid=self._config.get("app_id"), secret=self._config.get("secret"))
+                await self._client.start(
+                    appid=self._config.get("app_id"), secret=self._config.get("secret")
+                )
             except Exception as e:
                 self._log_error(f"QQ bot error: {e}")
             if self._running:
@@ -143,7 +145,7 @@ class QQChannelPlugin(BaseChannelPlugin):
             self._processed_ids.append(data.id)
 
             author = data.author
-            user_id = str(getattr(author, 'id', None) or getattr(author, 'user_openid', 'unknown'))
+            user_id = str(getattr(author, "id", None) or getattr(author, "user_openid", "unknown"))
             content = (data.content or "").strip()
             if not content:
                 return

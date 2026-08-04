@@ -1,18 +1,21 @@
-"""Minimal Docker backend: availability check, run in container, list/remove."""
+"""Fail-closed execution of one-off commands in Docker containers."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import shlex
+import time
+import uuid
 from pathlib import Path
-from typing import Any
 
-SANDBOX_LABEL = "joyhousebot.sandbox=1"
+# Cache `docker info` briefly so every exec does not pay a daemon round-trip.
+_DOCKER_INFO_TTL_SECONDS = 60.0
+_docker_info_cache: tuple[float, bool] | None = None
+
+# Per-stream (stdout/stderr) output cap; exceeding it truncates and stops the container.
+_MAX_OUTPUT_BYTES = 1024 * 1024  # 1 MB
 
 
-async def is_docker_available() -> bool:
-    """Return True if docker CLI is available and daemon is reachable."""
+async def _probe_docker() -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -26,9 +29,40 @@ async def is_docker_available() -> bool:
         return False
 
 
+async def is_docker_available() -> bool:
+    """Return True if docker CLI is available and daemon is reachable.
+
+    The result is cached for ``_DOCKER_INFO_TTL_SECONDS`` to avoid running
+    ``docker info`` before every single exec.
+    """
+    global _docker_info_cache
+    now = time.monotonic()
+    if _docker_info_cache is not None and now - _docker_info_cache[0] < _DOCKER_INFO_TTL_SECONDS:
+        return _docker_info_cache[1]
+    result = await _probe_docker()
+    _docker_info_cache = (now, result)
+    return result
+
+
 def _escape_single(s: str) -> str:
     """Escape for single-quoted shell (replace ' with '\'')."""
     return s.replace("'", "'\"'\"'")
+
+
+async def _kill_container(name: str) -> None:
+    """Best-effort cleanup of a named container: kill, then force-remove as fallback."""
+    for args in (("docker", "kill", name), ("docker", "rm", "-f", name)):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=10.0)
+            if proc.returncode == 0:
+                return
+        except (FileNotFoundError, asyncio.TimeoutError, OSError):
+            continue
 
 
 async def run_in_container(
@@ -42,10 +76,20 @@ async def run_in_container(
     user: str = "",
     network: str = "none",
     shell_mode: bool = False,
+    memory: str = "512m",
+    cpus: str = "1",
+    pids_limit: int = 256,
+    max_output_bytes: int = _MAX_OUTPUT_BYTES,
 ) -> tuple[str, int, str | None]:
     """
     Run command inside a one-off container (docker run --rm).
     Always uses sh -c so piping/redirects work. Returns (combined_stdout_stderr, exit_code, error_message_if_failed).
+
+    The container runs with resource limits (memory/cpus/pids), dropped capabilities,
+    no-new-privileges and a small noexec /tmp. It is named so that on timeout or output
+    overflow the container itself is killed (killing the docker CLI alone would leave it
+    running). Output per stream is capped at ``max_output_bytes``; beyond that the output
+    is truncated, marked with "[output truncated]" and the container is stopped.
     """
     host_workspace = Path(workspace_host_path or cwd).expanduser().resolve()
     if not host_workspace.exists():
@@ -54,10 +98,25 @@ async def run_in_container(
     if not host_ws.strip():
         return "", -1, "Workspace path is empty"
     cmd_escaped = _escape_single(command)
+    name = f"joyhousebot-exec-{uuid.uuid4().hex[:12]}"
     args = [
         "docker",
         "run",
         "--rm",
+        "--name",
+        name,
+        "--memory",
+        memory,
+        "--cpus",
+        cpus,
+        "--pids-limit",
+        str(pids_limit),
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
         "-v",
         f"{host_ws}:{workspace_container_path}",
         "-w",
@@ -72,93 +131,55 @@ async def run_in_container(
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=asyncio.subprocess.PIPE,
         )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=float(timeout_seconds))
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return "", -1, f"Command timed out after {timeout_seconds} seconds"
-        out = stdout.decode("utf-8", errors="replace")
-        return out, proc.returncode or 0, None if proc.returncode == 0 else out
     except FileNotFoundError:
         return "", -1, "Docker CLI not found"
-    except asyncio.TimeoutError:
-        return "", -1, "Docker run timed out"
     except Exception as e:
         return "", -1, str(e)
 
+    truncated = False
 
-async def list_containers(browser_only: bool = False) -> list[dict[str, Any]]:
-    """List containers with label joyhousebot.sandbox=1. Returns list of {id, names, image, labels, browser?}."""
+    async def _read(stream: asyncio.StreamReader) -> bytes:
+        nonlocal truncated
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_output_bytes:
+                truncated = True
+                keep = max_output_bytes - (size - len(chunk))
+                if keep > 0:
+                    chunks.append(chunk[:keep])
+                await _kill_container(name)
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    out_task = asyncio.ensure_future(_read(proc.stdout))
+    err_task = asyncio.ensure_future(_read(proc.stderr))
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            f"label={SANDBOX_LABEL}",
-            "--format",
-            "{{json .}}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        await asyncio.wait_for(
+            asyncio.gather(out_task, err_task), timeout=float(timeout_seconds)
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-        if proc.returncode != 0:
-            return []
-        out: list[dict[str, Any]] = []
-        for line in stdout.decode("utf-8", errors="replace").strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            cid = obj.get("ID") or obj.get("Id") or ""
-            names = obj.get("Names") or ""
-            image = obj.get("Image") or ""
-            labels = obj.get("Labels") or ""
-            browser = "browser" in (labels or "").lower() or "browser" in (names or "").lower()
-            if browser_only and not browser:
-                continue
-            out.append({
-                "id": cid[:12] if len(cid) > 12 else cid,
-                "idFull": cid,
-                "names": names,
-                "image": image,
-                "browser": browser,
-            })
-        return out
-    except (FileNotFoundError, asyncio.TimeoutError, OSError):
-        return []
-
-
-async def remove_container(container_id: str) -> tuple[bool, str]:
-    """Remove container by id (docker rm -f). Returns (success, error_message)."""
-    if not container_id or not container_id.strip():
-        return False, "empty container id"
-    cid = container_id.strip()
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "rm",
-            "-f",
-            cid,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-        if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="replace").strip()
-            return False, err or f"exit code {proc.returncode}"
-        return True, ""
-    except FileNotFoundError:
-        return False, "Docker CLI not found"
+        await proc.wait()
     except asyncio.TimeoutError:
-        return False, "Timeout"
+        # Killing the docker CLI alone leaves the container running; kill it by name.
+        await _kill_container(name)
+        proc.kill()
+        await proc.wait()
+        await asyncio.gather(out_task, err_task, return_exceptions=True)
+        return "", -1, f"Command timed out after {timeout_seconds} seconds"
     except Exception as e:
-        return False, str(e)
+        await _kill_container(name)
+        proc.kill()
+        await asyncio.gather(out_task, err_task, return_exceptions=True)
+        return "", -1, str(e)
+
+    out = (out_task.result() + err_task.result()).decode("utf-8", errors="replace")
+    if truncated:
+        out += "\n[output truncated: per-stream limit reached, container stopped]"
+    return out, proc.returncode or 0, None if proc.returncode == 0 else out

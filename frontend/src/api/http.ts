@@ -1,7 +1,7 @@
 /**
- * Shared HTTP client for /api requests. Adds Authorization header when
+ * Shared HTTP client for the versioned cloud API. Adds Authorization when
  * token is set (from URL ?token=, localStorage, or env VITE_HTTP_API_TOKEN).
- * 首次通过 URL 传入的 token 会写入 localStorage，后续请求与 WS 从本地读取。
+ * 首次通过 URL 传入的 token 会写入 localStorage，供后续请求复用。
  */
 
 const CONTROL_TOKEN_STORAGE_KEY = 'joyhousebot_control_token'
@@ -30,13 +30,18 @@ function getTokenFromStorage(): string {
 }
 
 /** 将 token 写入 localStorage（首次从 URL 带入时调用） */
-function setControlTokenToStorage(token: string): void {
+export function setControlToken(token: string): void {
   if (typeof window === 'undefined' || !token) return
   try {
     localStorage.setItem(CONTROL_TOKEN_STORAGE_KEY, token)
   } catch {
     /* ignore */
   }
+}
+
+export function clearControlToken(): void {
+  if (typeof window === 'undefined') return
+  try { localStorage.removeItem(CONTROL_TOKEN_STORAGE_KEY) } catch { /* ignore */ }
 }
 
 /** 从当前 URL 中移除 token 参数，避免长期暴露在地址栏 */
@@ -55,14 +60,14 @@ function removeTokenFromUrl(): void {
 }
 
 /**
- * 获取 control token，供 HTTP 与 WebSocket 共用。
+ * 获取 bearer token，供 HTTP 与 SSE 请求共用。
  * 优先级：URL ?token= > localStorage（首次从 URL 带入时会写入）> 环境变量
  * 首次从 URL 读取到 token 时会写入 localStorage 并从地址栏移除 token 参数。
  */
 export function getControlToken(): string {
   const fromUrl = getTokenFromUrl()
   if (fromUrl) {
-    setControlTokenToStorage(fromUrl)
+    setControlToken(fromUrl)
     removeTokenFromUrl()
     return fromUrl
   }

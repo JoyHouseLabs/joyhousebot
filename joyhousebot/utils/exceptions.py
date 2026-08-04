@@ -24,6 +24,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 class ErrorCategory(Enum):
     """Error categories for classification."""
+
     RECOVERABLE = "recoverable"
     RETRYABLE = "retryable"
     FATAL = "fatal"
@@ -67,27 +68,9 @@ class ValidationError(JoyhouseBotError):
 
     def __init__(self, message: str, field: str | None = None):
         details = {"field": field} if field else {}
-        super().__init__(message, code="VALIDATION_ERROR", category=ErrorCategory.VALIDATION, details=details)
-
-
-class NotFoundError(JoyhouseBotError):
-    """Resource not found error."""
-
-    def __init__(self, resource_type: str, resource_id: str):
         super().__init__(
-            f"{resource_type} not found: {resource_id}",
-            code="NOT_FOUND",
-            category=ErrorCategory.NOT_FOUND,
-            details={"resource_type": resource_type, "resource_id": resource_id},
+            message, code="VALIDATION_ERROR", category=ErrorCategory.VALIDATION, details=details
         )
-
-
-class PermissionError(JoyhouseBotError):
-    """Permission denied error."""
-
-    def __init__(self, message: str, resource: str | None = None):
-        details = {"resource": resource} if resource else {}
-        super().__init__(message, code="PERMISSION_DENIED", category=ErrorCategory.PERMISSION, details=details)
 
 
 class TimeoutError(JoyhouseBotError):
@@ -154,34 +137,10 @@ class ToolError(JoyhouseBotError):
         )
 
 
-class ChannelError(JoyhouseBotError):
-    """Channel communication error."""
-
-    def __init__(self, channel: str, message: str, is_retryable: bool = False):
-        category = ErrorCategory.RETRYABLE if is_retryable else ErrorCategory.FATAL
-        super().__init__(
-            f"Channel '{channel}' error: {message}",
-            code="CHANNEL_ERROR",
-            category=category,
-            details={"channel": channel, "is_retryable": is_retryable},
-        )
-
-
-class PluginError(JoyhouseBotError):
-    """Plugin execution error."""
-
-    def __init__(self, plugin_id: str, message: str, is_retryable: bool = False):
-        category = ErrorCategory.RETRYABLE if is_retryable else ErrorCategory.FATAL
-        super().__init__(
-            f"Plugin '{plugin_id}' error: {message}",
-            code="PLUGIN_ERROR",
-            category=category,
-            details={"plugin_id": plugin_id, "is_retryable": is_retryable},
-        )
-
-
 _SENSITIVE_PATTERNS = [
-    re.compile(r"(api[_-]?key|token|secret|password|auth)[=:]\s*['\"]?([^\s'\"]+)['\"]?", re.IGNORECASE),
+    re.compile(
+        r"(api[_-]?key|token|secret|password|auth)[=:]\s*['\"]?([^\s'\"]+)['\"]?", re.IGNORECASE
+    ),
     re.compile(r"bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.IGNORECASE),
     re.compile(r"[a-zA-Z0-9]{32,}"),
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),
@@ -208,7 +167,11 @@ def classify_exception(exc: Exception) -> tuple[str, ErrorCategory, bool]:
     exc_str = str(exc).lower()
 
     if isinstance(exc, JoyhouseBotError):
-        return exc.code, exc.category, exc.category in (ErrorCategory.RETRYABLE, ErrorCategory.RATE_LIMIT)
+        return (
+            exc.code,
+            exc.category,
+            exc.category in (ErrorCategory.RETRYABLE, ErrorCategory.RATE_LIMIT),
+        )
 
     if isinstance(exc, FileNotFoundError):
         return "FILE_NOT_FOUND", ErrorCategory.NOT_FOUND, False
@@ -253,20 +216,6 @@ def classify_exception(exc: Exception) -> tuple[str, ErrorCategory, bool]:
         return "CONNECTION_ERROR", ErrorCategory.RETRYABLE, True
 
     return "INTERNAL_ERROR", ErrorCategory.FATAL, False
-
-
-def format_tool_error(tool_name: str, exc: Exception, include_details: bool = False) -> str:
-    """Format an exception as a tool error response string."""
-    code, category, _ = classify_exception(exc)
-
-    if isinstance(exc, JoyhouseBotError):
-        message = exc.message
-    else:
-        message = sanitize_error_message(str(exc))
-
-    if include_details:
-        return f"Error [{code}] ({category.value}): {message}"
-    return f"Error: {message}"
 
 
 def tool_error_handler(
@@ -345,20 +294,3 @@ def tool_error_handler(
         return sync_wrapper
 
     return decorator
-
-
-def safe_execute(
-    func: Callable[..., Any],
-    *args: Any,
-    default: str = "Error: Operation failed",
-    **kwargs: Any,
-) -> str:
-    """Safely execute a function and return a string result."""
-    try:
-        result = func(*args, **kwargs)
-        if isinstance(result, str):
-            return result
-        return str(result)
-    except Exception as e:
-        logger.debug(f"safe_execute error: {sanitize_error_message(str(e))}")
-        return default

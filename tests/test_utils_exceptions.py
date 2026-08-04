@@ -7,21 +7,15 @@ import asyncio
 import pytest
 
 from joyhousebot.utils.exceptions import (
-    JoyhouseBotError,
-    ValidationError,
-    NotFoundError,
-    PermissionError,
-    TimeoutError,
-    RateLimitError,
-    LLMError,
-    ToolError,
-    ChannelError,
-    PluginError,
     ErrorCategory,
-    sanitize_error_message,
+    JoyhouseBotError,
+    LLMError,
+    RateLimitError,
+    TimeoutError,
+    ToolError,
+    ValidationError,
     classify_exception,
-    format_tool_error,
-    safe_execute,
+    sanitize_error_message,
 )
 
 
@@ -43,17 +37,6 @@ class TestExceptionClasses:
         assert exc.code == "VALIDATION_ERROR"
         assert exc.category == ErrorCategory.VALIDATION
         assert exc.details == {"field": "username"}
-
-    def test_not_found_error(self) -> None:
-        exc = NotFoundError("User", "123")
-        assert exc.code == "NOT_FOUND"
-        assert exc.category == ErrorCategory.NOT_FOUND
-        assert "User not found: 123" in str(exc)
-
-    def test_permission_error(self) -> None:
-        exc = PermissionError("Access denied", resource="/etc/passwd")
-        assert exc.code == "PERMISSION_DENIED"
-        assert exc.category == ErrorCategory.PERMISSION
 
     def test_timeout_error(self) -> None:
         exc = TimeoutError("fetch_data", 30.0)
@@ -91,16 +74,6 @@ class TestExceptionClasses:
         exc = ToolError("exec", "Command not found", is_recoverable=False)
         assert exc.code == "TOOL_ERROR"
         assert exc.category == ErrorCategory.FATAL
-
-    def test_channel_error_retryable(self) -> None:
-        exc = ChannelError("telegram", "Connection lost", is_retryable=True)
-        assert exc.code == "CHANNEL_ERROR"
-        assert exc.category == ErrorCategory.RETRYABLE
-
-    def test_plugin_error_retryable(self) -> None:
-        exc = PluginError("my-plugin", "Timeout", is_retryable=True)
-        assert exc.code == "PLUGIN_ERROR"
-        assert exc.category == ErrorCategory.RETRYABLE
 
 
 class TestSanitizeErrorMessage:
@@ -180,6 +153,7 @@ class TestClassifyException:
 
     def test_classify_json_decode_error(self) -> None:
         import json
+
         exc = json.JSONDecodeError("Invalid JSON", "", 0)
         code, category, should_retry = classify_exception(exc)
         assert code == "JSON_PARSE_ERROR"
@@ -269,64 +243,6 @@ class TestClassifyException:
         assert code == "INTERNAL_ERROR"
         assert category == ErrorCategory.FATAL
         assert should_retry is False
-
-
-class TestFormatToolError:
-    """Test format_tool_error function."""
-
-    def test_format_with_joyhousebot_error(self) -> None:
-        exc = ToolError("read_file", "File not found", is_recoverable=False)
-        result = format_tool_error("read_file", exc)
-        assert "Error: Tool 'read_file' error: File not found" == result
-
-    def test_format_with_generic_error(self) -> None:
-        exc = RuntimeError("Something went wrong")
-        result = format_tool_error("test_tool", exc)
-        assert "Error: Something went wrong" == result
-
-    def test_format_with_sensitive_info(self) -> None:
-        exc = RuntimeError("API key: sk-abcdefghijklmnopqrstuvwxyz1234567890 failed")
-        result = format_tool_error("test_tool", exc)
-        assert "sk-abcdefghijklmnopqrstuvwxyz" not in result
-        assert "[REDACTED]" in result
-
-    def test_format_with_details(self) -> None:
-        exc = RuntimeError("Error occurred")
-        result = format_tool_error("test_tool", exc, include_details=True)
-        assert "INTERNAL_ERROR" in result
-        assert "Error occurred" in result
-
-
-class TestSafeExecute:
-    """Test safe_execute function."""
-
-    def test_safe_execute_success(self) -> None:
-        def func(x: int, y: int) -> int:
-            return x + y
-
-        result = safe_execute(func, 2, 3)
-        assert result == "5"
-
-    def test_safe_execute_returns_string(self) -> None:
-        def func() -> str:
-            return "hello"
-
-        result = safe_execute(func)
-        assert result == "hello"
-
-    def test_safe_execute_exception(self) -> None:
-        def func() -> str:
-            raise RuntimeError("Boom")
-
-        result = safe_execute(func)
-        assert "Error: Operation failed" == result
-
-    def test_safe_execute_custom_default(self) -> None:
-        def func() -> str:
-            raise RuntimeError("Boom")
-
-        result = safe_execute(func, default="Custom error")
-        assert "Custom error" == result
 
 
 @pytest.mark.asyncio

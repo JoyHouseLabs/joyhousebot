@@ -1,5 +1,11 @@
-"""Session management module."""
+"""Durable conversation session domain."""
 
-from joyhousebot.session.manager import SessionManager, Session
+from joyhousebot.session.models import Session
+from joyhousebot.session.protocol import SessionStore
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
 
-__all__ = ["SessionManager", "Session"]
+__all__ = [
+    "RuntimeSessionManager",
+    "Session",
+    "SessionStore",
+]

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-
-# Default emoji when ack_reaction is not set (OpenClaw-style "eyes" ack)
+# Default emoji when ack_reaction is not set.
 DEFAULT_ACK_REACTION = "\U0001f440"  # 👀
 
 # Slack uses short names for standard emoji (reactions.add name=)
 SLACK_EMOJI_ALIASES: dict[str, str] = {
-    "\U0001f440": "eyes",   # 👀
-    "\U0001f44d": "+1",     # 👍
-    "\U0001f44e": "-1",     # 👎
+    "\U0001f440": "eyes",  # 👀
+    "\U0001f44d": "+1",  # 👍
+    "\U0001f44e": "-1",  # 👎
 }
 
 
@@ -29,7 +28,7 @@ def should_send_ack(
 ) -> bool:
     """
     Whether to send an ack reaction for this inbound message given scope and context.
-    Matches OpenClaw ackReactionScope semantics.
+    Applies the configured acknowledgement scope.
     """
     if not scope or scope.strip() == "off":
         return False

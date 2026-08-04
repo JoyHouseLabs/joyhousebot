@@ -2,24 +2,33 @@
 
 import asyncio
 import html
-import ipaddress
 import json
 import os
 import re
-import socket
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
 from joyhousebot.agent.tools.base import Tool
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
+from joyhousebot.runtime.http_tracking import TrackedAsyncClient
 from joyhousebot.utils.exceptions import (
-    ToolError,
-    TimeoutError,
     RateLimitError,
+    TimeoutError,
     sanitize_error_message,
 )
-
+from joyhousebot.utils.ssrf import (
+    DEFAULT_MAX_BYTES,
+    ResponseTooLargeError,
+    SsrfBlockedError,
+    SsrfProtectedTransport,
+    TooManyRedirectsError,
+    UnsupportedContentTypeError,
+    fetch_url,
+)
+from joyhousebot.utils.ssrf import (
+    validate_url as _validate_url,
+)
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
 MAX_REDIRECTS = 5
@@ -30,73 +39,16 @@ _MAX_RETRIES = 3
 
 def _strip_tags(text: str) -> str:
     """Remove HTML tags and decode entities."""
-    text = re.sub(r'<script[\s\S]*?</script>', '', text, flags=re.I)
-    text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r"<script[\s\S]*?</script>", "", text, flags=re.I)
+    text = re.sub(r"<style[\s\S]*?</style>", "", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
     return html.unescape(text).strip()
 
 
 def _normalize(text: str) -> str:
     """Normalize whitespace."""
-    text = re.sub(r'[ \t]+', ' ', text)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
-
-
-def _validate_url(url: str) -> tuple[bool, str]:
-    """Validate URL: must be http(s) with valid domain."""
-    try:
-        p = urlparse(url)
-        if p.scheme not in ('http', 'https'):
-            return False, f"Only http/https allowed, got '{p.scheme or 'none'}'"
-        if not p.netloc:
-            return False, "Missing domain"
-        host = p.hostname
-        if not host:
-            return False, "Missing hostname"
-        if _is_forbidden_host(host):
-            return False, f"Blocked host: {host}"
-        return True, ""
-    except ValueError as e:
-        return False, f"Invalid URL format: {e}"
-    except Exception as e:
-        return False, sanitize_error_message(str(e))
-
-
-def _is_forbidden_host(host: str) -> bool:
-    """Block localhost/private IPs to reduce SSRF risk."""
-    lowered = host.lower()
-    if lowered in {"localhost"} or lowered.endswith(".local"):
-        return True
-
-    try:
-        ip = ipaddress.ip_address(lowered)
-        return _is_forbidden_ip(ip)
-    except ValueError:
-        pass
-
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return True
-
-    for info in infos:
-        ip_raw = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_raw)
-        except ValueError:
-            continue
-        if _is_forbidden_ip(ip):
-            return True
-    return False
-
-
-def _is_forbidden_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Deny local/private/special-purpose address ranges."""
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-        return True
-    if ip == ipaddress.ip_address("169.254.169.254"):
-        return True
-    return False
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 class WebSearchTool(Tool):
@@ -112,9 +64,14 @@ class WebSearchTool(Tool):
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query"},
-            "count": {"type": "integer", "description": "Results (1-10)", "minimum": 1, "maximum": 10}
+            "count": {
+                "type": "integer",
+                "description": "Results (1-10)",
+                "minimum": 1,
+                "maximum": 10,
+            },
         },
-        "required": ["query"]
+        "required": ["query"],
     }
 
     def __init__(self, api_key: str | None = None, max_results: int = 5):
@@ -123,11 +80,11 @@ class WebSearchTool(Tool):
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         if not self.api_key:
-            return "Error: BRAVE_API_KEY not configured"
+            raise ToolInvocationError("CAPABILITY_NOT_CONFIGURED", "BRAVE_API_KEY not configured")
 
         try:
             n = min(max(count or self.max_results, 1), 10)
-            async with httpx.AsyncClient() as client:
+            async with TrackedAsyncClient() as client:
                 r = None
                 last_error: Exception | None = None
                 for attempt in range(_MAX_RETRIES):
@@ -135,8 +92,11 @@ class WebSearchTool(Tool):
                         r = await client.get(
                             "https://api.search.brave.com/res/v1/web/search",
                             params={"q": query, "count": n},
-                            headers={"Accept": "application/json", "X-Subscription-Token": self.api_key},
-                            timeout=_SEARCH_TIMEOUT
+                            headers={
+                                "Accept": "application/json",
+                                "X-Subscription-Token": self.api_key,
+                            },
+                            timeout=_SEARCH_TIMEOUT,
                         )
                         r.raise_for_status()
                         break
@@ -172,17 +132,21 @@ class WebSearchTool(Tool):
                     lines.append(f"   {desc}")
             return "\n".join(lines)
         except RateLimitError as e:
-            return f"Error: {e.message}"
+            raise ToolInvocationError("RATE_LIMITED", e.message, retryable=True) from e
         except TimeoutError as e:
-            return f"Error: {e.message}"
+            raise ToolInvocationError("UPSTREAM_TIMEOUT", e.message, retryable=True) from e
         except httpx.HTTPStatusError as e:
-            return f"Error: HTTP {e.response.status_code}"
+            raise ToolInvocationError(
+                "UPSTREAM_HTTP_ERROR", f"HTTP {e.response.status_code}", retryable=e.response.status_code >= 500
+            ) from e
         except httpx.RequestError as e:
-            return f"Error: Connection failed - {sanitize_error_message(str(e))}"
+            raise ToolInvocationError(
+                "UPSTREAM_CONNECTION_FAILED", sanitize_error_message(str(e)), retryable=True
+            ) from e
         except json.JSONDecodeError:
-            return "Error: Invalid response from search API"
+            raise ToolInvocationError("UPSTREAM_INVALID_RESPONSE", "Invalid response from search API")
         except Exception as e:
-            return f"Error: {sanitize_error_message(str(e))}"
+            raise ToolInvocationError("WEB_SEARCH_FAILED", sanitize_error_message(str(e))) from e
 
 
 class WebFetchTool(Tool):
@@ -199,84 +163,132 @@ class WebFetchTool(Tool):
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL to fetch"},
-            "extractMode": {"type": "string", "enum": ["markdown", "text"], "default": "markdown"},
-            "maxChars": {"type": "integer", "minimum": 100}
+            "extract_mode": {"type": "string", "enum": ["markdown", "text"], "default": "markdown"},
+            "max_chars": {"type": "integer", "minimum": 100, "maximum": 50000},
         },
-        "required": ["url"]
+        "required": ["url"],
     }
 
-    def __init__(self, max_chars: int = 50000):
+    def __init__(self, max_chars: int = 50000, max_bytes: int = DEFAULT_MAX_BYTES):
         self.max_chars = max_chars
+        self.max_bytes = max_bytes
 
-    async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self, url: str, extract_mode: str = "markdown", max_chars: int | None = None, **kwargs: Any
+    ) -> str:
         from readability import Document
 
-        max_chars = maxChars or self.max_chars
+        max_chars = min(max_chars, self.max_chars) if max_chars else self.max_chars
 
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
-            return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url})
+            raise ToolInvocationError("INVALID_URL", f"URL validation failed: {error_msg}")
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
-                timeout=_REQUEST_TIMEOUT
+            async with TrackedAsyncClient(
+                propagate_headers=False,
+                transport=SsrfProtectedTransport(),
+                follow_redirects=False,
+                timeout=_REQUEST_TIMEOUT,
             ) as client:
                 r = None
+                text = ""
                 for attempt in range(_MAX_RETRIES):
                     try:
-                        r = await client.get(url, headers={"User-Agent": USER_AGENT})
-                        r.raise_for_status()
+                        r, text = await fetch_url(
+                            client,
+                            url,
+                            headers={"User-Agent": USER_AGENT},
+                            max_redirects=MAX_REDIRECTS,
+                            max_bytes=self.max_bytes,
+                        )
                         break
                     except httpx.TimeoutException:
                         if attempt < _MAX_RETRIES - 1:
                             await asyncio.sleep(0.5 * (attempt + 1))
                             continue
-                        return json.dumps({"error": f"Request timed out after {_REQUEST_TIMEOUT}s", "url": url})
+                        raise ToolInvocationError(
+                            "UPSTREAM_TIMEOUT",
+                            f"Request timed out after {_REQUEST_TIMEOUT}s",
+                            retryable=True,
+                        )
                     except httpx.RequestError as e:
                         if attempt < _MAX_RETRIES - 1:
                             await asyncio.sleep(0.5 * (attempt + 1))
                             continue
-                        return json.dumps({"error": f"Connection failed: {sanitize_error_message(str(e))}", "url": url})
+                        raise ToolInvocationError(
+                            "UPSTREAM_CONNECTION_FAILED",
+                            sanitize_error_message(str(e)),
+                            retryable=True,
+                        ) from e
                 assert r is not None
-
-            final_host = urlparse(str(r.url)).hostname
-            if final_host and _is_forbidden_host(final_host):
-                return json.dumps({"error": f"Blocked final URL host: {final_host}", "url": str(r.url)})
 
             ctype = r.headers.get("content-type", "")
 
             if "application/json" in ctype:
-                text, extractor = json.dumps(r.json(), indent=2), "json"
-            elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
-                doc = Document(r.text)
-                content = self._to_markdown(doc.summary()) if extractMode == "markdown" else _strip_tags(doc.summary())
+                text, extractor = json.dumps(json.loads(text), indent=2), "json"
+            elif "text/html" in ctype or text[:256].lower().startswith(("<!doctype", "<html")):
+                doc = Document(text)
+                content = (
+                    self._to_markdown(doc.summary())
+                    if extract_mode == "markdown"
+                    else _strip_tags(doc.summary())
+                )
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content
                 extractor = "readability"
             else:
-                text, extractor = r.text, "raw"
+                extractor = "raw"
 
             truncated = len(text) > max_chars
             if truncated:
                 text = text[:max_chars]
 
-            return json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
-                              "extractor": extractor, "truncated": truncated, "length": len(text), "text": text})
+            return json.dumps(
+                {
+                    "url": url,
+                    "finalUrl": str(r.url),
+                    "status": r.status_code,
+                    "extractor": extractor,
+                    "truncated": truncated,
+                    "length": len(text),
+                    "text": text,
+                }
+            )
+        except (
+            SsrfBlockedError,
+            ResponseTooLargeError,
+            UnsupportedContentTypeError,
+            TooManyRedirectsError,
+        ) as e:
+            raise ToolInvocationError("FETCH_BLOCKED", str(e)) from e
         except httpx.HTTPStatusError as e:
-            return json.dumps({"error": f"HTTP {e.response.status_code}", "url": url})
+            raise ToolInvocationError(
+                "UPSTREAM_HTTP_ERROR", f"HTTP {e.response.status_code}", retryable=e.response.status_code >= 500
+            ) from e
         except json.JSONDecodeError:
-            return json.dumps({"error": "Invalid JSON response", "url": url})
+            raise ToolInvocationError("UPSTREAM_INVALID_RESPONSE", "Invalid JSON response")
+        except ToolInvocationError:
+            raise
         except Exception as e:
-            return json.dumps({"error": sanitize_error_message(str(e)), "url": url})
+            raise ToolInvocationError("WEB_FETCH_FAILED", sanitize_error_message(str(e))) from e
 
     def _to_markdown(self, html: str) -> str:
         """Convert HTML to markdown."""
-        text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
-                      lambda m: f'[{_strip_tags(m[2])}]({m[1]})', html, flags=re.I)
-        text = re.sub(r'<h([1-6])[^>]*>([\s\S]*?)</h\1>',
-                      lambda m: f'\n{"#" * int(m[1])} {_strip_tags(m[2])}\n', text, flags=re.I)
-        text = re.sub(r'<li[^>]*>([\s\S]*?)</li>', lambda m: f'\n- {_strip_tags(m[1])}', text, flags=re.I)
-        text = re.sub(r'</(p|div|section|article)>', '\n\n', text, flags=re.I)
-        text = re.sub(r'<(br|hr)\s*/?>', '\n', text, flags=re.I)
+        text = re.sub(
+            r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
+            lambda m: f"[{_strip_tags(m[2])}]({m[1]})",
+            html,
+            flags=re.I,
+        )
+        text = re.sub(
+            r"<h([1-6])[^>]*>([\s\S]*?)</h\1>",
+            lambda m: f"\n{'#' * int(m[1])} {_strip_tags(m[2])}\n",
+            text,
+            flags=re.I,
+        )
+        text = re.sub(
+            r"<li[^>]*>([\s\S]*?)</li>", lambda m: f"\n- {_strip_tags(m[1])}", text, flags=re.I
+        )
+        text = re.sub(r"</(p|div|section|article)>", "\n\n", text, flags=re.I)
+        text = re.sub(r"<(br|hr)\s*/?>", "\n", text, flags=re.I)
         return _normalize(_strip_tags(text))

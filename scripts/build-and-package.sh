@@ -34,7 +34,7 @@ if [ "$DO_INSTALL" = true ]; then
   else
     pip install -e .
   fi
-  echo "Done. 可执行 joyhousebot gateway 后访问 http://<host>:<port>/ui/"
+  echo "Done. 可执行 joyhousebot api 后访问 http://<host>:<port>/ui/"
 else
   echo ""
   echo "Done. 如需本地安装可执行: pip install -e .  或重新运行本脚本并加 --install"

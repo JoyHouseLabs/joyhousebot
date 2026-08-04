@@ -1,107 +1,65 @@
-"""Pluggable retrieval adapter: builtin (FTS5+vector), optional MCP (e.g. qmd) for memory and knowledge."""
+"""Durable user-scoped retrieval over normalized knowledge and memory tables."""
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from joyhousebot.services.retrieval.hybrid import hybrid_search_async
-from joyhousebot.services.retrieval.memory_search import search_memory_files
-from joyhousebot.services.retrieval.memory_vector_store import search_memory_sqlite_vector
-from joyhousebot.services.retrieval.vector_optional import get_memory_embedding_provider
-
-
-def _cosine_sim(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+from joyhousebot.agent.memory import MemoryStore
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
 
 async def search_async(
-    workspace: Path,
-    config: Any,
     query: str,
+    *,
     top_k: int = 10,
     source_type: str | None = None,
     doc_id: str | None = None,
     scope: str = "knowledge",
-    mcp_memory_search_callable: Callable[[str, int], Awaitable[list[dict[str, Any]]]] | None = None,
-    mcp_knowledge_search_callable: Callable[[str, int], Awaitable[list[dict[str, Any]]]] | None = None,
     memory_scope_key: str | None = None,
+    runtime_store: Any = None,
+    user_id: str = "system",
 ) -> list[dict[str, Any]]:
-    """
-    Unified search: knowledge scope uses knowledge_backend (builtin = FTS5+Chroma, or qmd when callable provided);
-    memory scope uses memory_backend (builtin = grep, or mcp_qmd / sqlite_vector when configured).
-    """
-    query = (query or "").strip()
-    if not query:
+    """Search durable state; local files and process-local vector stores are not fallbacks."""
+    query = query.strip()
+    if not query or runtime_store is None:
         return []
-
+    limit = max(1, min(int(top_k), 50))
     if scope == "knowledge":
-        retrieval_cfg = getattr(getattr(config, "tools", None), "retrieval", None)
-        knowledge_backend = (getattr(retrieval_cfg, "knowledge_backend", "builtin") or "builtin").strip().lower()
-        if knowledge_backend in ("qmd", "auto") and mcp_knowledge_search_callable:
-            try:
-                hits = await mcp_knowledge_search_callable(query, top_k)
-                if isinstance(hits, list):
-                    return hits
-            except Exception:
-                pass
-        return await hybrid_search_async(
-            workspace, config, query=query, top_k=top_k, source_type=source_type, doc_id=doc_id
+        repository = getattr(runtime_store, "_knowledge_repository", None)
+        if repository is None:
+            repository = KnowledgeRepository(runtime_store)
+            runtime_store._knowledge_repository = repository
+        return repository.search(
+            user_id=user_id,
+            query=query,
+            top_k=limit,
+            source_type=source_type,
+            doc_id=doc_id,
         )
-
-    if scope == "memory":
-        retrieval_cfg = getattr(getattr(config, "tools", None), "retrieval", None)
-        memory_backend = (getattr(retrieval_cfg, "memory_backend", "builtin") or "builtin").strip().lower()
-        mem_top_k = getattr(retrieval_cfg, "memory_top_k", top_k) if retrieval_cfg else top_k
-        memory_vector = getattr(retrieval_cfg, "memory_vector_enabled", False) if retrieval_cfg else False
-
-        # mcp_qmd: try first when backend is mcp_qmd or auto
-        if memory_backend in ("mcp_qmd", "auto") and mcp_memory_search_callable:
-            try:
-                hits = await mcp_memory_search_callable(query, mem_top_k)
-                if isinstance(hits, list):
-                    return hits
-            except Exception:
-                pass
-
-        # sqlite_vector: try when backend is sqlite_vector or (auto and mcp_qmd failed)
-        if memory_backend in ("sqlite_vector", "auto"):
-            try:
-                hits = await search_memory_sqlite_vector(
-                    workspace, config, query=query, top_k=mem_top_k, scope_key=memory_scope_key
-                )
-                if hits is not None:
-                    return hits
-            except Exception:
-                pass
-
-        # builtin: grep over memory files (default or fallback)
-        fetch_k = max(mem_top_k * 4, 20) if memory_vector else mem_top_k
-        hits = search_memory_files(workspace, query=query, top_k=fetch_k, scope_key=memory_scope_key)
-        if memory_vector and hits:
-            provider = get_memory_embedding_provider(config)
-            if provider is not None:
-                try:
-                    texts = [h["content"] for h in hits]
-                    query_vec, *hit_vecs = await provider.aembed([query] + texts)
-                    if query_vec and len(hit_vecs) == len(hits):
-                        scored = [(h, _cosine_sim(query_vec, v)) for h, v in zip(hits, hit_vecs)]
-                        scored.sort(key=lambda x: -x[1])
-                        hits = [h for h, _ in scored[:mem_top_k]]
-                except Exception:
-                    hits = hits[:mem_top_k]
-        else:
-            hits = hits[:mem_top_k]
-        return hits
-
-    return await hybrid_search_async(
-        workspace, config, query=query, top_k=top_k, source_type=source_type, doc_id=doc_id
-    )
+    if scope != "memory":
+        return []
+    store = MemoryStore(runtime_store, scope_key=memory_scope_key)
+    documents = store.repository.list_documents(store.scope_key) if store.repository else {}
+    lowered = query.casefold()
+    hits: list[dict[str, Any]] = []
+    for path, content in documents.items():
+        for index, line in enumerate(content.splitlines()):
+            if lowered not in line.casefold():
+                continue
+            hits.append(
+                {
+                    "doc_id": path,
+                    "source_type": "memory",
+                    "source_url": "",
+                    "file_path": path,
+                    "title": Path(path).name,
+                    "chunk_index": index,
+                    "page": None,
+                    "content": line[:700],
+                    "trace": {"doc_id": path, "source": path, "page": None},
+                }
+            )
+            if len(hits) >= limit:
+                return hits
+    return hits

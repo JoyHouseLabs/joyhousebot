@@ -1,0 +1,241 @@
+"""Lease-fenced distributed task-graph finalization."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+from joyhousebot.orchestration.aggregation import (
+    aggregate_task_results,
+    normalize_aggregation_policy,
+    synthesis_prompt,
+)
+from joyhousebot.runtime.context import CancellationToken
+from joyhousebot.runtime.models import (
+    AgentEvent,
+    AgentResult,
+    AgentUsage,
+    EventType,
+    RunStatus,
+    utc_now,
+)
+
+
+class GraphFinalizationMixin:
+    async def _try_finalize_graph(self, run_id: str) -> None:
+        record = await asyncio.to_thread(
+            self.store.claim_runtime_run,
+            run_id,
+            worker_id=self.worker_id,
+            lease_seconds=self.lease_seconds,
+        )
+        if record is None:
+            return
+        cancellation = CancellationToken()
+        started_at = record.started_at or utc_now()
+        owner_task = asyncio.current_task()
+
+        async def _heartbeat() -> None:
+            while True:
+                await asyncio.sleep(max(1.0, self.lease_seconds / 3))
+                owned = await asyncio.to_thread(
+                    self.store.heartbeat_runtime_run,
+                    run_id,
+                    worker_id=self.worker_id,
+                    lease_seconds=self.lease_seconds,
+                    lease_version=record.lease_version,
+                )
+                if not owned:
+                    cancellation.cancel("graph finalizer ownership lost")
+                    if owner_task is not None:
+                        owner_task.cancel()
+                    return
+
+        heartbeat = asyncio.create_task(
+            _heartbeat(), name=f"graph-finalizer-heartbeat:{run_id}"
+        )
+        try:
+            tasks = await asyncio.to_thread(
+                self.store.list_runtime_tasks, run_id=run_id, limit=5000
+            )
+            task_inputs = [
+                {
+                    "task_id": task.task_id,
+                    "spec_id": str(task.payload.get("spec_id") or task.task_id),
+                    "agent_id": task.agent_id,
+                    "status": task.status,
+                    "result": task.result
+                    or {
+                        "status": task.status,
+                        "error": (task.error or {}).get("message"),
+                    },
+                }
+                for task in tasks
+            ]
+            results = {item["spec_id"]: item["result"] for item in task_inputs}
+            failures = [
+                task for task in tasks if task.status in {"failed", "cancelled", "timed_out"}
+            ]
+            if bool(record.options.get("fail_fast")) and failures:
+                await self._finish_error(
+                    run_id,
+                    RunStatus.FAILED,
+                    EventType.RUN_FAILED,
+                    "task graph stopped after a task failure",
+                    started_at,
+                    worker_id=self.worker_id,
+                    lease_version=record.lease_version,
+                )
+                return
+            policy = normalize_aggregation_policy(
+                dict(record.options.get("aggregation_policy") or {}),
+                aggregate=bool(record.options.get("aggregate", True)),
+            )
+            await self.events.publish(
+                AgentEvent(
+                    run_id=run_id,
+                    type=EventType.AGGREGATION_STARTED.value,
+                    phase="finalizing",
+                    status="running",
+                    data={"policy": policy.to_dict(), "task_count": len(task_inputs)},
+                )
+            )
+            completed_outputs = [item for item in task_inputs if item["status"] == "completed"]
+            if policy.mode == "llm_synthesis" and completed_outputs:
+                content, tools, aggregate_usage = await self._call_agent(
+                    run_id=run_id,
+                    task_id=None,
+                    prompt=synthesis_prompt(goal=record.prompt, tasks=task_inputs, policy=policy),
+                    user_id=record.user_id,
+                    session_id=f"{record.session_id}:aggregate",
+                    agent_id=record.agent_id,
+                    channel="runtime",
+                    chat_id="aggregate",
+                    model=None,
+                    system_prompt=None,
+                    output_schema=None,
+                    timeout_seconds=300,
+                    max_turns=None,
+                    max_input_tokens=None,
+                    max_output_tokens=None,
+                    max_cost_usd=None,
+                    permission_mode="default",
+                    allowed_tools=[],
+                    disallowed_tools=[],
+                    cancellation=cancellation,
+                )
+                aggregation = {
+                    "policy": policy.to_dict(),
+                    "source_task_ids": [item["task_id"] for item in completed_outputs],
+                    "source_count": len(completed_outputs),
+                    "conflicts": [],
+                    "discarded": [],
+                    "execution": "llm_synthesis",
+                }
+            else:
+                deterministic = aggregate_task_results(task_inputs, policy)
+                content = deterministic.content
+                tools = []
+                aggregate_usage = AgentUsage()
+                aggregation = deterministic.audit
+            coordination = dict(
+                (record.options.get("metadata") or {}).get("coordination_usage") or {}
+            )
+            usage = AgentUsage(
+                input_tokens=sum(
+                    int((value.get("usage") or {}).get("input_tokens") or 0)
+                    for value in results.values()
+                )
+                + aggregate_usage.input_tokens
+                + int(coordination.get("input_tokens") or 0),
+                output_tokens=sum(
+                    int((value.get("usage") or {}).get("output_tokens") or 0)
+                    for value in results.values()
+                )
+                + aggregate_usage.output_tokens
+                + int(coordination.get("output_tokens") or 0),
+                cost_usd=sum(
+                    float((value.get("usage") or {}).get("cost_usd") or 0.0)
+                    for value in results.values()
+                )
+                + float(aggregate_usage.cost_usd or 0.0)
+                + float(coordination.get("cost_usd") or 0.0),
+                model=aggregate_usage.model,
+            )
+            usage.total_tokens = usage.input_tokens + usage.output_tokens
+            result = AgentResult(
+                run_id=run_id,
+                status=RunStatus.COMPLETED,
+                content=content,
+                structured_output={
+                    "tasks": results,
+                    "aggregation": {
+                        **aggregation,
+                        "result": deterministic.structured_output
+                        if policy.mode != "llm_synthesis"
+                        else None,
+                    },
+                },
+                stop_reason="completed",
+                usage=usage,
+                tools_used=tools,
+                started_at=started_at,
+                finished_at=utc_now(),
+            )
+            await asyncio.to_thread(
+                self.store.add_runtime_artifact,
+                artifact_id=f"{run_id}:final",
+                run_id=run_id,
+                name="final-output",
+                media_type="text/plain",
+                content=content,
+            )
+            await asyncio.to_thread(
+                self.store.add_runtime_artifact,
+                artifact_id=f"{run_id}:aggregation-audit",
+                run_id=run_id,
+                name="aggregation-audit",
+                media_type="application/json",
+                content=json.dumps(aggregation, ensure_ascii=False, sort_keys=True),
+            )
+            await self.events.publish(
+                AgentEvent(
+                    run_id=run_id,
+                    type=EventType.AGGREGATION_COMPLETED.value,
+                    phase="finalizing",
+                    status="completed",
+                    data={
+                        "policy": policy.to_dict(),
+                        "source_count": len(completed_outputs),
+                        "conflict_count": len(aggregation.get("conflicts") or []),
+                    },
+                )
+            )
+            saved = await self._commit_terminal(
+                run_id,
+                status=RunStatus.COMPLETED,
+                event_type=EventType.RUN_COMPLETED,
+                result=result.to_dict(),
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+            )
+            if saved:
+                await self._log(
+                    run_id,
+                    "graph.completed",
+                    "Distributed task graph completed",
+                    data={"task_count": len(tasks), "usage": usage.to_dict()},
+                )
+        except Exception as exc:
+            await self._finish_error(
+                run_id,
+                RunStatus.FAILED,
+                EventType.RUN_FAILED,
+                str(exc),
+                started_at,
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+            )
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)

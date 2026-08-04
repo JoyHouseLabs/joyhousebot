@@ -5,6 +5,7 @@ import pytest
 from joyhousebot.agent.tools.filesystem import _resolve_path
 from joyhousebot.agent.tools.shell import ExecTool
 from joyhousebot.agent.tools.web import _validate_url
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
 from joyhousebot.config.loader import load_config
 
 
@@ -21,8 +22,8 @@ def test_resolve_path_blocks_outside_allowed_dir(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_exec_tool_blocks_shell_metacharacters_when_restricted(tmp_path: Path) -> None:
     tool = ExecTool(restrict_to_workspace=True, working_dir=str(tmp_path))
-    result = await tool.execute("echo hello | wc -c", working_dir=str(tmp_path))
-    assert "shell metacharacters are not allowed" in result
+    with pytest.raises(ToolInvocationError, match="shell metacharacters are not allowed"):
+        await tool.execute("echo hello | wc -c", working_dir=str(tmp_path))
 
 
 def test_load_config_raises_on_invalid_json(tmp_path: Path) -> None:

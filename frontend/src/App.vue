@@ -34,10 +34,10 @@ onMounted(() => {
 const themeOverrides: GlobalThemeOverrides = {
   common: {
     fontFamily: 'var(--font-body)',
-    primaryColor: '#ff5c5c',
-    primaryColorHover: '#ff7070',
-    primaryColorPressed: '#e55050',
-    primaryColorSuppl: '#ff5c5c',
+    primaryColor: '#f47b3a',
+    primaryColorHover: '#ff9562',
+    primaryColorPressed: '#d95e21',
+    primaryColorSuppl: '#f47b3a',
     borderRadius: 'var(--radius-md)',
   },
   Card: {

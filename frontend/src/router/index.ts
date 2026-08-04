@@ -1,56 +1,38 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ShellLayout from '../components/ShellLayout.vue'
-import Chat from '../views/Chat.vue'
-import Config from '../views/Config.vue'
-import ControlLayout from '../views/control/ControlLayout.vue'
-import ControlOverview from '../views/control/ControlOverview.vue'
-import ControlChannels from '../views/control/ControlChannels.vue'
-import ControlInstances from '../views/control/ControlInstances.vue'
-import ControlCron from '../views/control/ControlCron.vue'
-import ControlCronNew from '../views/control/ControlCronNew.vue'
-import ControlSandbox from '../views/control/ControlSandbox.vue'
-import ControlQueue from '../views/control/ControlQueue.vue'
-import ControlTraces from '../views/control/ControlTraces.vue'
-import ControlDevices from '../views/control/ControlDevices.vue'
-import ControlApprovals from '../views/control/ControlApprovals.vue'
-import ControlUsage from '../views/control/ControlUsage.vue'
-import Agent from '../views/Agent.vue'
-import Skills from '../views/Skills.vue'
-import Workspace from '../views/Workspace.vue'
-import AppHost from '../views/AppHost.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: '/', alias: [''], component: ShellLayout, children: [
-      { path: '', redirect: 'chat' },
-      { path: 'chat', name: 'Chat', component: Chat },
-      { path: 'workspace', name: 'Workspace', component: Workspace },
-      {
-        path: 'control',
-        component: ControlLayout,
-        children: [
-          { path: '', redirect: 'overview' },
-          { path: 'overview', name: 'ControlOverview', component: ControlOverview },
-          { path: 'channels', name: 'ControlChannels', component: ControlChannels },
-          { path: 'queue', name: 'ControlQueue', component: ControlQueue },
-          { path: 'traces', name: 'ControlTraces', component: ControlTraces },
-          { path: 'instances', name: 'ControlInstances', component: ControlInstances },
-          { path: 'cron', name: 'ControlCron', component: ControlCron },
-          { path: 'cron/new', name: 'ControlCronNew', component: ControlCronNew },
-          { path: 'usage', name: 'ControlUsage', component: ControlUsage },
-          { path: 'devices', name: 'ControlDevices', component: ControlDevices },
-          { path: 'approvals', name: 'ControlApprovals', component: ControlApprovals },
-          { path: 'sandbox', name: 'ControlSandbox', component: ControlSandbox },
-        ],
-      },
-      { path: 'agent', name: 'Agent', component: Agent },
-      { path: 'skills', name: 'Skills', component: Skills },
-      { path: 'app', name: 'AppHost', component: AppHost },
-      { path: 'app/:appId', name: 'App', redirect: '/app' },
-      { path: 'config', name: 'Config', component: Config },
-    ] },
+    { path: '/login', name: 'Login', component: () => import('../views/Login.vue'), meta: { public: true } },
+    {
+      path: '/',
+      component: ShellLayout,
+      children: [
+        { path: '', redirect: '/overview' },
+        { path: 'overview', name: 'Overview', component: () => import('../views/Overview.vue') },
+        { path: 'runs', name: 'Runs', component: () => import('../views/Runs.vue') },
+        { path: 'chat', name: 'Chat', component: () => import('../views/Chat.vue') },
+        { path: 'agents', name: 'Agents', component: () => import('../views/Agents.vue') },
+        { path: 'skills', name: 'Skills', component: () => import('../views/CapabilityEditor.vue') },
+        { path: 'tools', name: 'Tools', component: () => import('../views/CapabilityEditor.vue') },
+        { path: 'mcp', name: 'MCP', component: () => import('../views/MCPServers.vue') },
+        { path: 'channels', name: 'Channels', component: () => import('../views/Channels.vue') },
+        { path: 'scenarios', name: 'Scenarios', component: () => import('../views/Scenarios.vue') },
+        { path: 'platform', name: 'Platform', component: () => import('../views/Platform.vue') },
+        { path: 'plugins/dinq', name: 'DinqPlugin', component: () => import('../views/DinqPlugin.vue') },
+        { path: 'workspace', redirect: '/runs' },
+      ],
+    },
   ],
+})
+
+router.beforeEach((to) => {
+  if (to.meta.public) return true
+  if (typeof window !== 'undefined' && localStorage.getItem('joyhousebot_auth_session') !== '1') {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  return true
 })
 
 export default router

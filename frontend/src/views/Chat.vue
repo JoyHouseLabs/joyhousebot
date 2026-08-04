@@ -1,792 +1,136 @@
 <template>
-  <div class="chat-page">
-    <div class="chat-header">
-      <div class="chat-header-left">
-        <h1 class="chat-title">Chat</h1>
-        <p class="chat-subtitle">直连网关对话，快速介入</p>
+  <div class="page playground-page">
+    <header class="page-heading playground-heading">
+      <div><span class="eyebrow">PLAYGROUND</span><h1>Agent 在线试用</h1><p>每条消息都会提交一个持久 Run；刷新页面后仍可恢复执行时间线。</p></div>
+      <div class="heading-actions">
+        <label class="inline-select"><span>Agent</span><select v-model="agentId" @change="changeAgent"><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name || agent.id }} · {{ agent.model }}</option></select></label>
+        <button class="secondary-button" type="button" @click="newSession">新会话</button>
       </div>
-      <div class="chat-header-right">
-        <n-button quaternary size="small" class="agent-select-btn" :loading="agentsLoading" @click="showAgentModal = true">
-          <span class="agent-select-label">{{ currentAgentLabel }}</span>
-          <span class="agent-select-arrow">▾</span>
-        </n-button>
-        <n-select
-          v-model:value="currentSessionKey"
-          :options="sessionOptions"
-          placeholder="选择会话"
-          size="small"
-          class="session-select"
-          :loading="sessionsLoading"
-          @update:value="onSessionChange"
-        />
-        <n-button quaternary circle size="small" @click="loadSessions" :loading="sessionsLoading" title="刷新会话列表">
-          <template #icon>
-            <span class="icon-refresh">↻</span>
-          </template>
-        </n-button>
-        <n-button quaternary size="small" @click="newSession" class="btn-header-new">新建</n-button>
-        <n-button quaternary size="small" class="btn-warm-orange btn-header-delete" :disabled="!currentSessionKey" @click="confirmDeleteSession">删除</n-button>
-      </div>
+    </header>
+
+    <div class="playground-shell">
+      <aside class="session-rail">
+        <div class="rail-heading"><div><span class="eyebrow">SESSIONS</span><strong>会话</strong></div><button type="button" @click="loadSessions">↻</button></div>
+        <button v-for="session in sessions" :key="session.key" type="button" class="session-item" :class="{ active: session.key === sessionId }" @click="selectSession(session.key)">
+          <span>{{ session.key.replace(/^ui:/, '') }}</span><small>{{ session.latest_status || 'history' }} · {{ formatRelative(session.updated_at) }}</small>
+        </button>
+        <div v-if="!sessions.length" class="rail-empty">暂无历史会话</div>
+      </aside>
+
+      <section class="conversation-panel">
+        <div class="conversation-topline">
+          <div><span class="live-dot" :class="{ active: running }" /><strong>{{ currentAgent?.name || agentId || 'Agent' }}</strong><small>{{ currentAgent?.model || '未配置模型' }}</small></div>
+          <div><code>{{ sessionId }}</code><button type="button" :disabled="running" @click="removeSession">删除</button></div>
+        </div>
+
+        <div ref="messageContainer" class="message-stream" @scroll="handleMessageScroll">
+          <div v-if="!messages.length && !running" class="playground-welcome">
+            <img :src="assistantAvatarUrl" alt="" />
+            <span class="eyebrow">READY</span>
+            <h2>把真实任务交给 Joyhousebot</h2>
+            <p>支持工具调用、持久记忆、子 Agent 和并行 Task。执行过程会以安全摘要公开，不展示模型隐藏思维链。</p>
+            <div class="prompt-suggestions"><button v-for="prompt in suggestions" :key="prompt" @click="input = prompt">{{ prompt }}</button></div>
+          </div>
+
+          <article v-for="messageItem in messages" :key="messageItem.id" class="message-block" :class="messageItem.role">
+            <div class="message-author"><img v-if="messageItem.role === 'assistant'" :src="assistantAvatarUrl" alt="" /><span v-else>YOU</span></div>
+            <div class="message-content"><strong>{{ messageItem.role === 'assistant' ? currentAgent?.name || 'Joyhousebot' : '你' }}</strong><MarkdownContent :content="messageItem.content" /><small v-if="messageItem.runId">Run {{ shortId(messageItem.runId) }}</small></div>
+          </article>
+
+          <article v-if="running" class="message-block assistant active-run">
+            <div class="message-author"><img :src="assistantAvatarUrl" alt="" /></div>
+            <div class="message-content">
+              <div class="active-run-heading"><strong>{{ currentAgent?.name || 'Joyhousebot' }}</strong><span>{{ latestRunSummary }}</span></div>
+              <ExecutionTimeline :events="events" :active="true" />
+              <div v-if="streaming !== null" class="streaming-answer"><span class="streaming-label">{{ streamingLabel }}</span><MarkdownContent :content="streaming" /><span class="cursor">▋</span></div>
+              <div class="run-controls"><code v-if="runId">{{ runId }}</code><button type="button" @click="cancelRun">取消执行</button></div>
+            </div>
+          </article>
+
+          <article v-if="pendingInputs.length" class="message-block assistant">
+            <div class="message-author"><img :src="assistantAvatarUrl" alt="" /></div>
+            <form class="message-content clarification-card" @submit.prevent="submitAnswers">
+              <span class="eyebrow">NEED INPUT</span><h3>{{ pendingInputs[0].question }}</h3>
+              <label v-for="field in pendingInputs[0].fields" :key="field.name"><span>{{ field.description || field.name }}</span>
+                <select v-if="field.enum?.length" v-model="answerValues[field.name]" :required="field.required"><option value="">请选择</option><option v-for="option in field.enum" :key="String(option)" :value="String(option)">{{ option }}</option></select>
+                <input v-else-if="field.value_type === 'boolean'" v-model="answerValues[field.name]" type="checkbox" />
+                <input v-else v-model="answerValues[field.name]" :type="['integer','number'].includes(field.value_type) ? 'number' : 'text'" :required="field.required" :placeholder="field.name" />
+              </label>
+              <div><code>继续同一 Run · {{ shortId(runId || '') }}</code><button class="primary-button" type="submit" :disabled="answering">{{ answering ? '提交中' : '提交并继续' }}</button></div>
+            </form>
+          </article>
+        </div>
+        <button v-if="!followLatest && (messages.length || running)" class="scroll-latest" type="button" @click="scrollBottom(true)">回到最新 ↓</button>
+
+        <form class="composer" @submit.prevent="send">
+          <textarea v-model="input" :disabled="busy || !agentId" rows="3" placeholder="描述目标、约束和希望得到的结果…" @keydown.enter.exact.prevent="send" />
+          <div class="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><button type="submit" :disabled="busy || !input.trim() || !agentId">{{ busy ? '处理中' : '提交 Run' }} <b>↑</b></button></div>
+        </form>
+      </section>
+
+      <aside class="run-inspector">
+        <span class="eyebrow">LIVE RUN</span><h3>执行状态</h3>
+        <dl><div><dt>状态</dt><dd><span class="status-badge" :class="runStatus">{{ statusLabel(runStatus) }}</span></dd></div><div><dt>阶段</dt><dd>{{ activeRun?.current_phase || '—' }}</dd></div><div><dt>Tasks</dt><dd>{{ activeRun?.completed_task_count ?? 0 }} / {{ activeRun?.total_task_count ?? 0 }}</dd></div><div><dt>下一步</dt><dd>{{ activeRun?.next_action || '—' }}</dd></div></dl>
+        <div class="inspector-events"><span>最近事件</span><article v-for="event in visibleEvents" :key="event.event_id"><i :class="event.status" /><div><strong>{{ event.summary || event.type }}</strong><small>{{ formatTime(event.created_at) }}</small></div></article><p v-if="!visibleEvents.length">执行开始后在此显示。</p></div>
+        <router-link v-if="runId" :to="`/runs?run=${runId}`" class="inspect-link">在运行中心打开 →</router-link>
+      </aside>
     </div>
-    <div class="chat-layout">
-      <div class="chat-messages" ref="messagesEl">
-        <div v-if="noAgentAvailable" class="chat-empty chat-empty-no-agent">
-          <span class="chat-empty-text">暂无可用 Agent</span>
-          <p class="chat-empty-hint">请确保网关已启动并已配置 Agent，或刷新页面重试。</p>
-          <n-button size="small" quaternary @click="loadAgents">刷新 Agent 列表</n-button>
-        </div>
-        <div v-else-if="messages.length === 0" class="chat-empty">
-          <span class="chat-empty-text">发送一条消息开始对话</span>
-        </div>
-        <div
-          v-for="(msg, i) in messages"
-          :key="i"
-          class="chat-message"
-          :class="msg.role"
-        >
-          <div class="chat-message-avatar" :class="msg.role">
-            <img v-if="msg.role === 'assistant'" :src="assistantAvatarUrl" alt="" class="chat-avatar-img" />
-            <span v-else>U</span>
-          </div>
-          <div class="chat-message-body">
-            <div class="chat-message-bubble">
-              <div class="chat-message-content">{{ msg.content }}</div>
-            </div>
-            <div class="chat-message-meta">{{ msg.role === 'user' ? 'You' : 'Assistant' }} {{ formatTime(msg.time) }}</div>
-          </div>
-        </div>
-        <div v-if="loading && streamingContent === null" class="chat-message assistant">
-          <div class="chat-message-avatar assistant">
-            <img :src="assistantAvatarUrl" alt="" class="chat-avatar-img" />
-          </div>
-          <div class="chat-message-body">
-            <div class="chat-message-bubble">
-              <n-spin size="small" />
-            </div>
-          </div>
-        </div>
-        <div v-if="loading && streamingContent !== null" class="chat-message assistant streaming">
-          <div class="chat-message-avatar assistant">
-            <img :src="assistantAvatarUrl" alt="" class="chat-avatar-img" />
-          </div>
-          <div class="chat-message-body">
-            <div class="chat-message-bubble">
-              <div class="chat-message-content">{{ streamingContent }}<span class="chat-cursor">▌</span></div>
-            </div>
-            <div class="chat-message-meta">Assistant {{ formatTime(Date.now()) }}</div>
-          </div>
-        </div>
-      </div>
-      <div class="chat-input-area">
-        <n-input
-          v-model:value="inputText"
-          type="textarea"
-          placeholder="Message (↵ 发送，Shift+↵ 换行，可粘贴图片)"
-          :autosize="{ minRows: 2, maxRows: 6 }"
-          :disabled="loading || noAgentAvailable"
-          class="chat-input"
-          @keydown.enter.exact.prevent="send"
-        />
-        <div class="chat-input-actions">
-          <n-button secondary @click="newSession" class="btn-new-session" :disabled="noAgentAvailable">新会话</n-button>
-          <n-button
-            secondary
-            :disabled="loading || transcribing || noAgentAvailable"
-            @click="toggleRecording"
-            class="btn-record"
-          >
-            {{ recording ? '停止录音' : transcribing ? '转写中…' : '录音' }}
-          </n-button>
-          <input
-            ref="voiceFileInputRef"
-            type="file"
-            accept="audio/*,.mp3,.wav,.webm,.m4a,.ogg"
-            class="voice-file-input"
-            @change="onVoiceFileChange"
-          />
-          <n-button secondary :disabled="loading || transcribing || noAgentAvailable" @click="triggerVoiceFileUpload" class="btn-upload-voice">
-            上传语音
-          </n-button>
-          <n-button type="primary" :loading="loading" :disabled="!inputText.trim() || recording || noAgentAvailable" @click="send" class="btn-send btn-warm-orange">
-            发送 →
-          </n-button>
-        </div>
-      </div>
-    </div>
-    <n-modal v-model:show="showAgentModal" preset="card" title="选择 Agent" class="agent-modal" style="width: 360px;">
-      <n-spin :show="agentsLoading">
-        <n-list v-if="activatedAgents.length > 0" class="agent-list">
-          <n-list-item
-            v-for="a in activatedAgents"
-            :key="a.id"
-            class="agent-list-item"
-            :class="{ selected: selectedAgentId === a.id }"
-            clickable
-            @click="selectAgent(a.id)"
-          >
-            <n-thing>
-              <template #header>{{ a.name || a.id }}</template>
-              <template #header-extra>
-                <n-tag v-if="a.is_default" size="tiny" type="info">默认</n-tag>
-              </template>
-              <template #description>
-                <span class="agent-meta">{{ a.model }}</span>
-              </template>
-            </n-thing>
-          </n-list-item>
-        </n-list>
-        <div v-else class="agent-empty">暂无可用 Agent</div>
-      </n-spin>
-    </n-modal>
-    <n-modal v-model:show="showDeleteConfirm" preset="dialog" title="删除会话" positive-text="删除" negative-text="取消" :loading="deleteLoading"
-      @positive-click="doDeleteSession" @negative-click="showDeleteConfirm = false">
-      <template #default>
-        确定要删除会话「{{ currentSessionKey }}」吗？删除后无法恢复。
-      </template>
-    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onUnmounted, computed } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { messageContentToText } from '../api/chat'
-import { transcribeAudio } from '../api/transcribe'
-import { useGatewayInject } from '../composables/useGateway'
-import { getSessions, getSessionHistory, deleteSession, type SessionItem } from '../api/sessions'
 import { getAgents, type AgentListItem } from '../api/agent'
 import { normalizeApiError } from '../api/error'
-import { useVoiceRecorder } from '../composables/useVoiceRecorder'
+import { deleteSession, getSessionHistory, getSessions, type SessionItem } from '../api/sessions'
+import { cancelRuntimeRun, getPendingRunInputs, getRuntimeRun, resolveRunInput, streamRuntimeEvents, submitRuntimeRun, type PendingRunInput, type RuntimeEvent, type RuntimeRun } from '../api/runtime'
+import ExecutionTimeline from '../components/ExecutionTimeline.vue'
+import MarkdownContent from '../components/MarkdownContent.vue'
 
-const route = useRoute()
-const router = useRouter()
-const message = useMessage()
-const gateway = useGatewayInject()
-const messages = ref<{ role: 'user' | 'assistant'; content: string; time?: number }[]>([])
-const inputText = ref('')
-const loading = ref(false)
-const streamingContent = ref<string | null>(null)
-const messagesEl = ref<HTMLElement | null>(null)
-const transcribing = ref(false)
-const voiceFileInputRef = ref<HTMLInputElement | null>(null)
-const { recording, startRecording, stopRecording } = useVoiceRecorder()
+interface ChatMessage { id: string; role: 'user' | 'assistant'; content: string; runId?: string }
+const route = useRoute(); const router = useRouter(); const toast = useMessage()
+const assistantAvatarUrl = `${import.meta.env.BASE_URL}joyhouse.png`
+const agents = ref<AgentListItem[]>([]); const sessions = ref<(SessionItem & { latest_status?: string })[]>([]); const agentId = ref(''); const sessionId = ref('ui:default')
+const messages = ref<ChatMessage[]>([]); const input = ref(''); const running = ref(false); const streaming = ref<string | null>(null); const events = ref<RuntimeEvent[]>([]); const runId = ref<string | null>(null); const activeRun = ref<RuntimeRun | null>(null); const messageContainer = ref<HTMLElement | null>(null); const followLatest = ref(true)
+const pendingInputs = ref<PendingRunInput[]>([]); const answerValues = ref<Record<string, string | boolean>>({}); const answering = ref(false)
+const seenEvents = new Set<string>(); let streamAbort: AbortController | null = null; let lastSequence = 0; let activeTurnId: string | null = null
+const suggestions = ['分析这个项目并给出三项可执行优化', '把一个复杂目标拆成可并行的多 Agent 任务', '总结我的长期偏好，并说明你会如何使用记忆']
 
-const assistantAvatarUrl = import.meta.env.BASE_URL + 'joyhouse.png'
-const agents = ref<AgentListItem[]>([])
-const agentsLoading = ref(false)
-const selectedAgentId = ref<string | null>(null)
-const sessions = ref<SessionItem[]>([])
-const sessionsLoading = ref(false)
-const currentSessionKey = ref('ui:default')
-const showDeleteConfirm = ref(false)
-const deleteLoading = ref(false)
-const showAgentModal = ref(false)
-/** When using RPC stream, the run we're waiting for; chat events are applied only when payload.runId === chatRunId */
-const chatRunId = ref<string | null>(null)
-/** 已处理过的 final 的 runId，避免同一 run 的 final 被推送两次导致同一条回复显示两遍 */
-const lastFinalizedRunId = ref<string | null>(null)
-let unsubscribeChat: (() => void) | null = null
+const currentAgent = computed(() => agents.value.find((agent) => agent.id === agentId.value))
+const runStatus = computed(() => activeRun.value?.status || (running.value ? 'queued' : 'idle'))
+const visibleEvents = computed(() => events.value.filter((event) => !['message.delta', 'usage.updated'].includes(event.type)).slice(-6).reverse())
+const latestRunSummary = computed(() => visibleEvents.value[0]?.summary || activeRun.value?.status_summary || '正在提交到 Runtime')
+const busy = computed(() => running.value || pendingInputs.value.length > 0)
+const streamingLabel = computed(() => events.value.some((event) => event.type === 'plan.created') ? '执行回复 · 实时输出' : '协调计划 · 实时输出')
 
-/** Only agents with activated !== false show in agent picker */
-const activatedAgents = computed(() =>
-  agents.value.filter((a) => a.activated !== false)
-)
+function storageKey() { return `joyhousebot_active_run:${agentId.value}:${sessionId.value}` }
+function syncRoute() { void router.replace({ query: { agent: agentId.value, session: sessionId.value } }) }
+async function loadAgents() { const response = await getAgents(); agents.value = response.agents; const requested = typeof route.query.agent === 'string' ? route.query.agent : ''; agentId.value = agents.value.some((agent) => agent.id === requested) ? requested : (agents.value[0]?.id || '') }
+async function loadSessions() { const response = await getSessions(agentId.value); sessions.value = response.sessions as (SessionItem & { latest_status?: string })[] }
+async function loadHistory() { try { const response = await getSessionHistory(sessionId.value, agentId.value); messages.value = response.messages.map((item, index) => ({ id: `${index}-${item.role}`, role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content, runId: (item as { run_id?: string }).run_id })) } catch { messages.value = [] } await scrollBottom(true) }
+async function changeAgent() { streamAbort?.abort(); running.value = false; runId.value = null; newSession(); await loadSessions() }
+async function selectSession(value: string) { if (value === sessionId.value) return; streamAbort?.abort(); running.value = false; sessionId.value = value; events.value = []; syncRoute(); await loadHistory(); await resumeRun() }
+function newSession() { streamAbort?.abort(); sessionId.value = `ui:${Date.now()}`; messages.value = []; events.value = []; streaming.value = null; runId.value = null; activeRun.value = null; pendingInputs.value = []; answerValues.value = {}; running.value = false; followLatest.value = true; syncRoute() }
+async function removeSession() { try { const result = await deleteSession(sessionId.value, agentId.value); if (result.removed) { toast.success('会话已删除'); newSession(); await loadSessions() } else toast.warning('会话不存在或仍有运行中的 Run') } catch (error) { toast.error(normalizeApiError(error)) } }
 
-/** 未选择 Agent 或暂无可用 Agent 时展示「暂无可用 Agent」提示 */
-const noAgentAvailable = computed(
-  () => !agentsLoading.value && (selectedAgentId.value == null || activatedAgents.value.length === 0)
-)
+function handleEvent(event: RuntimeEvent) { if (seenEvents.has(event.event_id)) return; seenEvents.add(event.event_id); events.value.push(event); lastSequence = Math.max(lastSequence, Number(event.sequence || 0)); localStorage.setItem(storageKey(), JSON.stringify({ runId: runId.value, sequence: lastSequence })); if (event.type === 'model.request.started' && event.turn_id !== activeTurnId) { activeTurnId = event.turn_id ?? null; streaming.value = '' } else if (event.type === 'message.delta') { if (event.turn_id && event.turn_id !== activeTurnId) { activeTurnId = event.turn_id; streaming.value = '' } const delta = event.data?.content; if (typeof delta === 'string') streaming.value = (streaming.value ?? '') + delta } else if (event.type === 'message.completed' && typeof event.data?.content === 'string') streaming.value = event.data.content; else if (event.type === 'user_input.requested') void loadPendingInput(event.run_id); void scrollBottom() }
+async function loadPendingInput(id: string) { streamAbort?.abort(); runId.value = id; activeRun.value = await getRuntimeRun(id); pendingInputs.value = await getPendingRunInputs(id); answerValues.value = Object.fromEntries((pendingInputs.value[0]?.fields || []).map((field) => [field.name, field.value_type === 'boolean' ? false : ''])); running.value = false; await scrollBottom() }
+async function attachRun(id: string, cursor = 0) { streamAbort?.abort(); streamAbort = new AbortController(); runId.value = id; running.value = true; try { await streamRuntimeEvents(id, handleEvent, { afterSequence: cursor, signal: streamAbort.signal }); await finalizeRun(id) } catch (error) { if ((error as DOMException)?.name === 'AbortError') return; try { activeRun.value = await getRuntimeRun(id); if (isTerminal(activeRun.value.status)) await finalizeRun(id); else window.setTimeout(() => void attachRun(id, lastSequence), 1000) } catch (retryError) { running.value = false; toast.error(normalizeApiError(retryError)) } } }
+async function finalizeRun(id: string) { activeRun.value = await getRuntimeRun(id); if (!isTerminal(activeRun.value.status)) return; const content = activeRun.value.result?.content || streaming.value || ''; if (activeRun.value.status === 'completed' && content && !messages.value.some((item) => item.runId === id && item.role === 'assistant')) messages.value.push({ id: crypto.randomUUID(), role: 'assistant', content, runId: id }); else if (activeRun.value.status !== 'completed') toast.error(activeRun.value.error?.message || `Run ${statusLabel(activeRun.value.status)}`); localStorage.removeItem(storageKey()); running.value = false; streaming.value = null; await loadSessions(); await scrollBottom() }
+async function resumeRun() { try { const stored = JSON.parse(localStorage.getItem(storageKey()) || '{}') as { runId?: string }; if (!stored.runId) return; activeRun.value = await getRuntimeRun(stored.runId); runId.value = stored.runId; if (isTerminal(activeRun.value.status)) await finalizeRun(stored.runId); else if (activeRun.value.status === 'waiting_input') await loadPendingInput(stored.runId); else { events.value = []; seenEvents.clear(); lastSequence = 0; void attachRun(stored.runId, 0) } } catch { localStorage.removeItem(storageKey()) } }
+async function send() { const prompt = input.value.trim(); if (!prompt || busy.value || !agentId.value) return; messages.value.push({ id: crypto.randomUUID(), role: 'user', content: prompt }); input.value = ''; pendingInputs.value = []; events.value = []; seenEvents.clear(); lastSequence = 0; activeTurnId = null; streaming.value = null; activeRun.value = null; running.value = true; await scrollBottom(); try { const run = await submitRuntimeRun({ prompt, sessionId: sessionId.value, agentId: agentId.value, channel: 'web-playground', chatId: sessionId.value }); runId.value = run.run_id; activeRun.value = run; localStorage.setItem(storageKey(), JSON.stringify({ runId: run.run_id, sequence: 0 })); if (run.status === 'waiting_input') await loadPendingInput(run.run_id); else if (isTerminal(run.status)) await finalizeRun(run.run_id); else void attachRun(run.run_id) } catch (error) { running.value = false; toast.error(normalizeApiError(error)) } }
+async function submitAnswers() { const request = pendingInputs.value[0]; if (!request || !runId.value) return; answering.value = true; try { const answers: Record<string, unknown> = {}; for (const field of request.fields) { const raw = answerValues.value[field.name]; if (field.value_type === 'integer') answers[field.name] = Number.parseInt(String(raw), 10); else if (field.value_type === 'number') answers[field.name] = Number(raw); else if (field.value_type === 'boolean') answers[field.name] = Boolean(raw); else if (field.value_type === 'array' || field.value_type === 'object') answers[field.name] = JSON.parse(String(raw)); else answers[field.name] = raw } const result = await resolveRunInput(runId.value, request.input_request_id, answers); activeRun.value = result.run; pendingInputs.value = result.pending_inputs; if (pendingInputs.value.length) await loadPendingInput(runId.value); else { running.value = true; void attachRun(runId.value, lastSequence) } } catch (error) { toast.error(normalizeApiError(error)) } finally { answering.value = false } }
+async function cancelRun() { if (!runId.value) return; try { await cancelRuntimeRun(runId.value); toast.info('已请求取消') } catch (error) { toast.error(normalizeApiError(error)) } }
+function isTerminal(status: string) { return ['completed', 'failed', 'cancelled', 'timed_out'].includes(status) }
+function statusLabel(status: string) { return ({ idle: '空闲', queued: '排队', running: '运行中', completed: '完成', failed: '失败', cancelled: '取消', timed_out: '超时', paused: '暂停', waiting_input: '等待输入' } as Record<string, string>)[status] ?? status }
+function shortId(value: string) { return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-5)}` : value }
+function formatTime(value: string) { return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
+function formatRelative(value?: string | null) { if (!value) return '新会话'; const delta = Date.now() - new Date(value).getTime(); return delta < 60_000 ? '刚刚' : delta < 3_600_000 ? `${Math.floor(delta / 60_000)} 分钟前` : new Date(value).toLocaleDateString('zh-CN') }
+function handleMessageScroll() { const element = messageContainer.value; if (!element) return; followLatest.value = element.scrollHeight - element.scrollTop - element.clientHeight < 56 }
+async function scrollBottom(force = false) { if (!force && !followLatest.value) return; await nextTick(); const element = messageContainer.value; if (!element) return; element.scrollTop = element.scrollHeight; followLatest.value = true }
 
-const currentAgentLabel = computed(() => {
-  if (!selectedAgentId.value) return '选择 Agent'
-  const a = activatedAgents.value.find((x) => x.id === selectedAgentId.value)
-  return a ? (a.name || a.id) : '选择 Agent'
-})
-
-function selectAgent(agentId: string) {
-  selectedAgentId.value = agentId
-  showAgentModal.value = false
-  onAgentChange(agentId)
-}
-
-const sessionOptions = computed(() => {
-  const list = sessions.value.map((s) => ({ label: s.key, value: s.key }))
-  if (currentSessionKey.value && !list.some((o) => o.value === currentSessionKey.value)) {
-    list.unshift({ label: currentSessionKey.value, value: currentSessionKey.value })
-  }
-  return list
-})
-
-function formatTime(ts?: number): string {
-  if (ts == null) return ''
-  const d = new Date(ts)
-  return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0')
-}
-
-function syncUrl(sessionKey?: string, agentId?: string | null) {
-  const q: Record<string, string> = { ...route.query } as Record<string, string>
-  if (sessionKey != null) q.session = sessionKey
-  if (agentId != null && agentId !== '') q.agent = agentId
-  router.replace({ query: q })
-}
-
-async function loadAgents() {
-  agentsLoading.value = true
-  try {
-    const res = await getAgents()
-    if (res.ok && res.agents?.length) {
-      agents.value = res.agents
-      const activated = res.agents.filter((a: AgentListItem) => a.activated !== false)
-      const hasCurrent = res.agents.some((a) => a.id === selectedAgentId.value)
-      const currentActivated = activated.some((a) => a.id === selectedAgentId.value)
-      if (activated.length === 0) {
-        selectedAgentId.value = null
-      } else if (selectedAgentId.value == null || !hasCurrent || !currentActivated) {
-        const defaultAgent = activated.find((a: AgentListItem) => a.is_default) ?? activated[0]
-        selectedAgentId.value = defaultAgent?.id ?? null
-      }
-    } else {
-      agents.value = []
-      selectedAgentId.value = null
-    }
-  } catch {
-    agents.value = []
-    selectedAgentId.value = null
-  } finally {
-    agentsLoading.value = false
-  }
-}
-
-async function loadSessions() {
-  sessionsLoading.value = true
-  try {
-    const res = await getSessions(selectedAgentId.value)
-    if (res.ok && res.sessions) sessions.value = res.sessions
-  } catch {
-    sessions.value = []
-  } finally {
-    sessionsLoading.value = false
-  }
-}
-
-async function loadHistory(key: string) {
-  try {
-    const res = await getSessionHistory(key, selectedAgentId.value)
-    if (res.ok && res.messages) {
-      messages.value = res.messages.map((m, idx) => ({
-        role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-        content: m.content || '',
-        time: (m as { timestamp?: number }).timestamp ?? Date.now() - (res.messages!.length - idx) * 60000,
-      }))
-    } else {
-      messages.value = []
-    }
-  } catch {
-    messages.value = []
-  }
-  nextTick(scrollToBottom)
-}
-
-function onAgentChange(agentId: string | null) {
-  selectedAgentId.value = agentId
-  syncUrl(currentSessionKey.value, agentId)
-  loadSessions().then(() => {
-    if (currentSessionKey.value && sessions.value.some((s) => s.key === currentSessionKey.value)) {
-      loadHistory(currentSessionKey.value)
-    } else {
-      newSession()
-    }
-  })
-}
-
-function onSessionChange(key: string | null) {
-  if (!key) return
-  currentSessionKey.value = key
-  syncUrl(key, selectedAgentId.value)
-  loadHistory(key)
-}
-
-function newSession() {
-  const key = `ui:${Date.now()}`
-  currentSessionKey.value = key
-  messages.value = []
-  syncUrl(key, selectedAgentId.value)
-}
-
-function confirmDeleteSession() {
-  if (!currentSessionKey.value) return
-  showDeleteConfirm.value = true
-}
-
-async function doDeleteSession() {
-  const key = currentSessionKey.value
-  if (!key) return
-  deleteLoading.value = true
-  try {
-    const res = await deleteSession(key, selectedAgentId.value)
-    if (res.ok && res.removed) {
-      message.success('会话已删除')
-      showDeleteConfirm.value = false
-      const rest = sessions.value.filter((s) => s.key !== key)
-      if (rest.length > 0) {
-        currentSessionKey.value = rest[0].key
-        syncUrl(rest[0].key, selectedAgentId.value)
-        await loadHistory(rest[0].key)
-      } else {
-        newSession()
-      }
-      await loadSessions()
-    } else {
-      message.warning(res.removed ? '已删除' : '会话不存在或删除失败')
-      showDeleteConfirm.value = false
-    }
-  } catch (e) {
-    message.error(normalizeApiError(e))
-    showDeleteConfirm.value = false
-  } finally {
-    deleteLoading.value = false
-  }
-}
-
-function handleChatEvent(payload: unknown) {
-  const p = payload as { runId?: string; sessionKey?: string; state?: string; message?: { content?: unknown }; error?: string; errorMessage?: string }
-  const sessionKey = currentSessionKey.value || 'ui:default'
-  if (p?.sessionKey !== sessionKey) return
-  if (p?.runId && chatRunId.value && p.runId !== chatRunId.value) {
-    if (p.state === 'final') loadSessions()
-    return
-  }
-  if (p?.state === 'delta') {
-    const text = messageContentToText(p?.message?.content)
-    if (typeof text === 'string') {
-      const cur = streamingContent.value ?? ''
-      if (!cur || text.length >= cur.length) {
-        streamingContent.value = text
-        nextTick(scrollToBottom)
-      }
-    }
-    return
-  }
-  if (p?.state === 'final') {
-    if (p?.runId && lastFinalizedRunId.value === p.runId) return
-    const final = streamingContent.value ?? messageContentToText(p?.message?.content) ?? ''
-    // 先清空流式状态，再 push，避免「流式气泡」和「列表新消息」同时出现导致同一条回复显示两遍
-    streamingContent.value = null
-    loading.value = false
-    messages.value.push({ role: 'assistant', content: final, time: Date.now() })
-    if (p?.runId) lastFinalizedRunId.value = p.runId
-    chatRunId.value = null
-    loadSessions()
-    nextTick(scrollToBottom)
-    return
-  }
-  if (p?.state === 'aborted' || p?.state === 'error') {
-    if (p?.state === 'error') {
-      message.error(p?.errorMessage ?? p?.error ?? 'chat error')
-    }
-    streamingContent.value = null
-    chatRunId.value = null
-    loading.value = false
-    nextTick(scrollToBottom)
-  }
-}
-
-onMounted(async () => {
-  await loadAgents()
-  const qSession = route.query.session
-  const qAgent = route.query.agent
-  if (typeof qAgent === 'string' && qAgent.trim() && agents.value.some((a) => a.id === qAgent.trim() && a.activated !== false)) {
-    selectedAgentId.value = qAgent.trim()
-  }
-  if (typeof qSession === 'string' && qSession.trim()) {
-    currentSessionKey.value = qSession.trim()
-  }
-  await loadSessions()
-  await loadHistory(currentSessionKey.value)
-  syncUrl(currentSessionKey.value, selectedAgentId.value)
-  if (gateway?.subscribe) {
-    unsubscribeChat = gateway.subscribe('chat', handleChatEvent)
-  }
-})
-
-onUnmounted(() => {
-  unsubscribeChat?.()
-  unsubscribeChat = null
-})
-
-async function send() {
-  const text = inputText.value.trim()
-  if (!text || loading.value) return
-  if (!gateway?.connected?.value || !gateway.request) {
-    message.warning('请先连接网关（刷新页面或检查网关地址）')
-    return
-  }
-  inputText.value = ''
-  const now = Date.now()
-  messages.value.push({ role: 'user', content: text, time: now })
-  loading.value = true
-  streamingContent.value = null
-  chatRunId.value = null
-  try {
-    const sessionKey = currentSessionKey.value || 'ui:default'
-    const agentId = selectedAgentId.value ?? undefined
-    const payload = await gateway.request<{
-      runId?: string
-      status?: string
-      state?: string
-      message?: { role?: string; content?: Array<{ type?: string; text?: string }> }
-      error?: string
-    }>('chat.send', {
-      message: text,
-      sessionKey,
-      agentId: agentId || undefined,
-      idempotencyKey: crypto.randomUUID?.() ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`,
-    })
-    if (payload?.runId) {
-      chatRunId.value = payload.runId
-      streamingContent.value = ''
-      if (payload?.status === 'in_flight' || payload?.status === 'queued') {
-        message.warning('会话忙，已加入队列')
-      }
-    } else if (payload?.status === 'queue_full') {
-      message.error('队列已满，请稍后再试')
-      loading.value = false
-    } else if (payload?.error) {
-      message.error(payload.error)
-      loading.value = false
-    } else {
-      message.warning('未收到 runId')
-      loading.value = false
-    }
-  } catch (e) {
-    message.error(normalizeApiError(e))
-    if ((streamingContent.value ?? '').length > 0) {
-      messages.value.push({ role: 'assistant', content: streamingContent.value ?? '', time: Date.now() })
-    }
-    chatRunId.value = null
-    loading.value = false
-  } finally {
-    if (!chatRunId.value) {
-      streamingContent.value = null
-      loading.value = false
-    }
-  }
-  await nextTick()
-  scrollToBottom()
-}
-
-async function toggleRecording() {
-  if (recording.value) {
-    const blob = await stopRecording()
-    if (!blob) return
-    transcribing.value = true
-    try {
-      const result = await transcribeAudio(blob, 'recording.webm')
-      if (result.text) inputText.value = result.text
-    } catch (e) {
-      message.error(normalizeApiError(e))
-    } finally {
-      transcribing.value = false
-    }
-  } else {
-    try {
-      await startRecording()
-    } catch (e) {
-      message.error(normalizeApiError(e))
-    }
-  }
-}
-
-function triggerVoiceFileUpload() {
-  voiceFileInputRef.value?.click()
-}
-
-async function onVoiceFileChange(ev: Event) {
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  transcribing.value = true
-  try {
-    const result = await transcribeAudio(file)
-    if (result.text) inputText.value = result.text
-  } catch (e) {
-    message.error(normalizeApiError(e))
-  } finally {
-    transcribing.value = false
-  }
-}
-
-function scrollToBottom() {
-  const el = messagesEl.value
-  if (el) el.scrollTop = el.scrollHeight
-}
-
-watch(messages, () => nextTick().then(scrollToBottom), { deep: true })
+onMounted(async () => { try { await loadAgents(); if (typeof route.query.session === 'string' && route.query.session.trim()) sessionId.value = route.query.session; await loadSessions(); await loadHistory(); syncRoute(); await resumeRun() } catch (error) { toast.error(normalizeApiError(error)) } })
+onUnmounted(() => streamAbort?.abort())
 </script>
-
-<style scoped>
-.chat-page {
-  height: calc(100vh - var(--shell-topbar-height, 56px) - 48px);
-  display: flex;
-  flex-direction: column;
-  width: 85%;
-  max-width: none;
-  margin: 0 auto;
-}
-.chat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-.chat-header-left {
-  flex: 1;
-  min-width: 0;
-}
-.chat-title {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 0 0 4px 0;
-  color: var(--text-strong);
-}
-.chat-subtitle {
-  font-size: 0.875rem;
-  color: var(--text-muted);
-  margin: 0;
-}
-.chat-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.agent-select-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-}
-.agent-select-label {
-  color: var(--text-strong);
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agent-select-arrow {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-.agent-modal .agent-list {
-  max-height: 320px;
-  overflow-y: auto;
-}
-.agent-modal .agent-list-item {
-  cursor: pointer;
-  border-radius: 8px;
-  padding: 8px 12px;
-}
-.agent-modal .agent-list-item:hover {
-  background: var(--hover);
-}
-.agent-modal .agent-list-item.selected {
-  background: var(--accent-subtle, rgba(0, 120, 212, 0.1));
-  color: var(--accent);
-}
-.agent-modal .agent-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.agent-modal .agent-empty {
-  padding: 24px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 14px;
-}
-.session-select {
-  min-width: 160px;
-  max-width: 240px;
-}
-.session-select :deep(.n-input) {
-  font-size: 12px;
-}
-.icon-refresh {
-  font-size: 16px;
-  line-height: 1;
-}
-.btn-header-new,
-.btn-header-delete {
-  font-size: 13px;
-}
-.chat-layout {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--card);
-}
-.chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-.chat-empty {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-}
-.chat-empty-no-agent {
-  flex-direction: column;
-  gap: 8px;
-  padding: 24px;
-}
-.chat-empty-no-agent .chat-empty-text {
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--text-color);
-}
-.chat-empty-hint {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-muted);
-  text-align: center;
-  max-width: 320px;
-}
-.chat-empty-text {
-  font-size: 14px;
-}
-.chat-message {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-.chat-message.user {
-  flex-direction: row-reverse;
-}
-.chat-message.user .chat-message-body {
-  align-items: flex-end;
-}
-.chat-message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 700;
-  flex-shrink: 0;
-  color: #fff;
-}
-.chat-message-avatar.user {
-  background: var(--accent);
-}
-.chat-message-avatar.assistant {
-  background: var(--accent);
-  color: #fff;
-}
-.chat-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 50%;
-}
-.chat-message-body {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  max-width: 85%;
-  min-width: 0;
-}
-.chat-message-bubble {
-  padding: 12px 16px;
-  border-radius: 14px;
-  line-height: 1.5;
-}
-.chat-message.user .chat-message-bubble {
-  background: var(--joyhouse-orange-light-bg, #fff3e0);
-  color: var(--joyhouse-orange-light-text, #e65100);
-}
-.chat-message.assistant .chat-message-bubble {
-  background: #f5f5f5;
-  color: var(--text-strong);
-}
-[data-theme="dark"] .chat-message.user .chat-message-bubble {
-  background: var(--accent-subtle);
-  color: var(--accent-hover);
-}
-[data-theme="dark"] .chat-message.assistant .chat-message-bubble {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.chat-message-content {
-  font-size: 14px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.chat-message-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 0 4px;
-}
-.chat-cursor {
-  display: inline-block;
-  animation: chat-cursor-blink 0.8s step-end infinite;
-  color: var(--accent);
-}
-@keyframes chat-cursor-blink {
-  50% { opacity: 0; }
-}
-.chat-input-area {
-  padding: 16px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.chat-input :deep(.n-input__textarea-el) {
-  font-size: 14px;
-}
-.chat-input-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.voice-file-input {
-  display: none;
-}
-.btn-new-session {
-  color: var(--text-muted);
-}
-.btn-send {
-  min-width: 90px;
-}
-/* 温暖橘色：发送按钮、删除按钮（替代红色） */
-.chat-page :deep(.btn-send) {
-  background-color: var(--accent) !important;
-  border-color: var(--accent) !important;
-}
-.chat-page :deep(.btn-send:hover),
-.chat-page :deep(.btn-send:focus) {
-  background-color: var(--accent-hover) !important;
-  border-color: var(--accent-hover) !important;
-}
-.chat-page :deep(.btn-header-delete) {
-  color: var(--accent);
-}
-.chat-page :deep(.btn-header-delete:hover) {
-  color: var(--accent-hover);
-}
-</style>

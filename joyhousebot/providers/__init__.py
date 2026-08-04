@@ -1,6 +1,12 @@
 """LLM provider abstraction module."""
 
+from joyhousebot.providers.anthropic import AnthropicProvider
 from joyhousebot.providers.base import LLMProvider, LLMResponse
-from joyhousebot.providers.litellm_provider import LiteLLMProvider
+from joyhousebot.providers.openai_compatible import OpenAICompatibleProvider
 
-__all__ = ["LLMProvider", "LLMResponse", "LiteLLMProvider"]
+__all__ = [
+    "AnthropicProvider",
+    "LLMProvider",
+    "LLMResponse",
+    "OpenAICompatibleProvider",
+]

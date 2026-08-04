@@ -20,10 +20,10 @@ from joyhousebot.channels.plugins.types import (
     ChatType,
     SendResult,
 )
+from joyhousebot.runtime.http_tracking import TrackedAsyncClient
 
 if TYPE_CHECKING:
     from joyhousebot.bus.events import OutboundMessage
-    from joyhousebot.bus.queue import MessageBus
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -67,22 +67,24 @@ class DiscordChannelPlugin(BaseChannelPlugin):
             text_chunk_limit=2000,
         )
 
-    def configure(self, config: dict[str, Any], bus: "MessageBus") -> None:
-        super().configure(config, bus)
+    def configure(self, config: dict[str, Any], run_adapter: Any) -> None:
+        super().configure(config, run_adapter)
         self._messages_config = config.get("messages_config")
-    
+
     async def start(self) -> None:
         token = self._config.get("token", "")
         if not token:
             self._log_error("Discord bot token not configured")
             return
-        
+
         self._log_start()
         self._set_running(True)
-        self._http = httpx.AsyncClient(timeout=30.0)
-        
-        gateway_url = self._config.get("gateway_url", "wss://gateway.discord.gg/?v=10&encoding=json")
-        
+        self._http = TrackedAsyncClient(timeout=30.0)
+
+        gateway_url = self._config.get(
+            "gateway_url", "wss://gateway.discord.gg/?v=10&encoding=json"
+        )
+
         while self._running:
             try:
                 logger.info(f"[{self.id}] Connecting to gateway...")
@@ -97,47 +99,47 @@ class DiscordChannelPlugin(BaseChannelPlugin):
                 if self._running:
                     logger.info(f"[{self.id}] Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
-        
+
         self._log_stopped()
 
     async def stop(self) -> None:
         self._log_stop()
         self._set_running(False)
-        
+
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
-        
+
         for task in self._typing_tasks.values():
             task.cancel()
         self._typing_tasks.clear()
-        
+
         if self._ws:
             await self._ws.close()
             self._ws = None
-        
+
         if self._http:
             await self._http.aclose()
             self._http = None
-        
+
         self._set_connected(False)
 
     async def send(self, msg: "OutboundMessage") -> SendResult:
         if not self._http:
             return SendResult(success=False, error="HTTP client not initialized")
-        
-        token = getattr(self._config, "token", "")
+
+        token = self._config_value("token", "")
         url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages"
         payload: dict[str, Any] = {"content": msg.content}
-        
+
         if msg.reply_to:
             payload["message_reference"] = {"message_id": msg.reply_to}
             payload["allowed_mentions"] = {"replied_user": False}
-        
+
         headers = {"Authorization": f"Bot {token}"}
         sent_ok = False
         message_id = None
-        
+
         try:
             for attempt in range(3):
                 try:
@@ -159,40 +161,48 @@ class DiscordChannelPlugin(BaseChannelPlugin):
                     await asyncio.sleep(1)
         finally:
             await self._stop_typing(msg.chat_id)
-        
+
         if sent_ok and message_id:
-            if self._messages_config and getattr(self._messages_config, "remove_ack_after_reply", False) and msg.reply_to:
-                emoji = (getattr(self._messages_config, "ack_reaction", "") or "").strip() or DEFAULT_ACK_REACTION
+            if (
+                self._messages_config
+                and getattr(self._messages_config, "remove_ack_after_reply", False)
+                and msg.reply_to
+            ):
+                emoji = (
+                    getattr(self._messages_config, "ack_reaction", "") or ""
+                ).strip() or DEFAULT_ACK_REACTION
                 try:
                     emoji_param = quote(emoji, safe="") if len(emoji) > 2 else emoji
                     url = f"{DISCORD_API_BASE}/channels/{msg.chat_id}/messages/{msg.reply_to}/reactions/{emoji_param}/@me"
                     await self._http.delete(url, headers={"Authorization": f"Bot {token}"})
                 except Exception as e:
                     logger.debug(f"[{self.id}] Remove reaction error: {e}")
-            
-            return SendResult(success=True, message_id=message_id, metadata={"chat_id": msg.chat_id})
-        
+
+            return SendResult(
+                success=True, message_id=message_id, metadata={"chat_id": msg.chat_id}
+            )
+
         return SendResult(success=False, error="Failed to send message")
 
     async def _gateway_loop(self) -> None:
         if not self._ws:
             return
-        
+
         async for raw in self._ws:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 logger.warning(f"[{self.id}] Invalid JSON: {raw[:100]}")
                 continue
-            
+
             op = data.get("op")
             event_type = data.get("t")
             seq = data.get("s")
             payload = data.get("d")
-            
+
             if seq is not None:
                 self._seq = seq
-            
+
             if op == 10:
                 interval_ms = payload.get("heartbeat_interval", 45000)
                 await self._start_heartbeat(interval_ms / 1000)
@@ -214,10 +224,10 @@ class DiscordChannelPlugin(BaseChannelPlugin):
     async def _identify(self) -> None:
         if not self._ws:
             return
-        
-        token = getattr(self._config, "token", "")
-        intents = getattr(self._config, "intents", 513)
-        
+
+        token = self._config_value("token", "")
+        intents = self._config_value("intents", 513)
+
         identify = {
             "op": 2,
             "d": {
@@ -235,7 +245,7 @@ class DiscordChannelPlugin(BaseChannelPlugin):
     async def _start_heartbeat(self, interval_s: float) -> None:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
-        
+
         async def heartbeat_loop() -> None:
             while self._running and self._ws:
                 payload = {"op": 1, "d": self._seq}
@@ -245,28 +255,28 @@ class DiscordChannelPlugin(BaseChannelPlugin):
                     logger.warning(f"[{self.id}] Heartbeat failed: {e}")
                     break
                 await asyncio.sleep(interval_s)
-        
+
         self._heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def _handle_message_create(self, payload: dict[str, Any]) -> None:
         author = payload.get("author") or {}
         if author.get("bot"):
             return
-        
+
         sender_id = str(author.get("id", ""))
         channel_id = str(payload.get("channel_id", ""))
         content = payload.get("content") or ""
-        
+
         if not sender_id or not channel_id:
             return
-        
+
         if not self.is_allowed(sender_id, self._config):
             return
-        
+
         content_parts = [content] if content else []
         media_paths: list[str] = []
         media_dir = Path.home() / ".joyhousebot" / "media"
-        
+
         for attachment in payload.get("attachments") or []:
             url = attachment.get("url")
             filename = attachment.get("filename") or "attachment"
@@ -278,7 +288,9 @@ class DiscordChannelPlugin(BaseChannelPlugin):
                 continue
             try:
                 media_dir.mkdir(parents=True, exist_ok=True)
-                file_path = media_dir / f"{attachment.get('id', 'file')}_{filename.replace('/', '_')}"
+                file_path = (
+                    media_dir / f"{attachment.get('id', 'file')}_{filename.replace('/', '_')}"
+                )
                 resp = await self._http.get(url)
                 resp.raise_for_status()
                 file_path.write_bytes(resp.content)
@@ -287,7 +299,7 @@ class DiscordChannelPlugin(BaseChannelPlugin):
             except Exception as e:
                 logger.warning(f"[{self.id}] Failed to download attachment: {e}")
                 content_parts.append(f"[attachment: {filename} - download failed]")
-        
+
         message_id = str(payload.get("id", ""))
         reply_to = (payload.get("referenced_message") or {}).get("id")
         guild_id = payload.get("guild_id")
@@ -298,11 +310,13 @@ class DiscordChannelPlugin(BaseChannelPlugin):
             or (self._bot_id and any(str(m.get("id")) == self._bot_id for m in mentions))
             or bool(payload.get("referenced_message"))
         )
-        
+
         if self._messages_config and self._messages_config.ack_reaction_scope:
             if should_send_ack(self._messages_config.ack_reaction_scope, is_direct, is_mention):
-                emoji = (getattr(self._messages_config, "ack_reaction", "") or "").strip() or DEFAULT_ACK_REACTION
-                token = getattr(self._config, "token", "")
+                emoji = (
+                    getattr(self._messages_config, "ack_reaction", "") or ""
+                ).strip() or DEFAULT_ACK_REACTION
+                token = self._config_value("token", "")
                 if emoji and self._http and message_id:
                     try:
                         emoji_param = quote(emoji, safe="") if len(emoji) > 2 else emoji
@@ -310,9 +324,9 @@ class DiscordChannelPlugin(BaseChannelPlugin):
                         await self._http.put(url, headers={"Authorization": f"Bot {token}"})
                     except Exception as e:
                         logger.debug(f"[{self.id}] Add reaction error: {e}")
-        
+
         await self._start_typing(channel_id)
-        
+
         await self._publish_inbound(
             sender_id=sender_id,
             chat_id=channel_id,
@@ -327,9 +341,9 @@ class DiscordChannelPlugin(BaseChannelPlugin):
 
     async def _start_typing(self, channel_id: str) -> None:
         await self._stop_typing(channel_id)
-        
-        token = getattr(self._config, "token", "")
-        
+
+        token = self._config_value("token", "")
+
         async def typing_loop() -> None:
             url = f"{DISCORD_API_BASE}/channels/{channel_id}/typing"
             headers = {"Authorization": f"Bot {token}"}
@@ -339,7 +353,7 @@ class DiscordChannelPlugin(BaseChannelPlugin):
                 except Exception:
                     pass
                 await asyncio.sleep(8)
-        
+
         self._typing_tasks[channel_id] = asyncio.create_task(typing_loop())
 
     async def _stop_typing(self, channel_id: str) -> None:

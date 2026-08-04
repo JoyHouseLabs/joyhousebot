@@ -21,7 +21,6 @@ def chunk_text(
     text = normalize_whitespace(text)
     if not text:
         return []
-    step = max(1, chunk_size - overlap)
     chunks: list[Chunk] = []
     start = 0
     while start < len(text):
@@ -44,5 +43,7 @@ def chunk_text(
                     meta={},
                 )
             )
-        start = end if end > start else start + chunk_size
+        if end >= len(text):
+            break
+        start = max(start + 1, end - max(0, overlap))
     return chunks
