@@ -93,6 +93,20 @@ api / bootstrap / channel adapters
 
 业务项目（例如 Dinq Discover）应通过独立插件包注册 Scenario、Capability、Tool、Skill 或 MCP Server，不把业务代码写入 `joyhousebot` 核心包。
 
+## 控制台示例
+
+Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
+
+- **运行监控**：查看 API、PostgreSQL、Worker 集群、运行数量和资源用量。
+- **运行中心**：分页查看 Run，按状态、Agent、Session 或摘要筛选，并进入独立详情页。
+- **全流程回放**：查看事件时间线、模型调用、工具调用、HTTP Trace、日志、产物、人工反馈和输入输出。
+
+![运行监控概览](docs/pictures/ScreenShot_2026-08-05_230508_778.png)
+
+![运行中心](docs/pictures/ScreenShot_2026-08-05_230608_764.png)
+
+![Run 详情与执行时间线](docs/pictures/ScreenShot_2026-08-05_230625_459.png)
+
 ## 快速启动
 
 本地需要 PostgreSQL：
