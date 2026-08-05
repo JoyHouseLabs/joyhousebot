@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from psycopg.types.json import Jsonb
-
 from joyhousebot.domain.agents import (
     AgentDefinition,
     AgentExecutionSnapshot,
@@ -14,6 +12,7 @@ from joyhousebot.domain.agents import (
     AgentRevision,
     PluginReleaseRequirement,
 )
+from joyhousebot.storage.json_codec import Jsonb
 
 
 class PostgresAgentStoreMixin:

@@ -1,6 +1,6 @@
 import { getApiHeaders } from './http'
 import { getIdentityHeaders } from './identity'
-import type { RuntimeArtifact, RuntimeEvent, RuntimeInvocation, RuntimeLog, RuntimeRun, RuntimeTask } from './runtime'
+import type { RunFeedback, RuntimeArtifact, RuntimeEvent, RuntimeInvocation, RuntimeLog, RuntimeRun, RuntimeTask } from './runtime'
 
 async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
@@ -167,6 +167,7 @@ export interface RunDiagnostics {
   reasoning: ReasoningSegment[]
   trace_blobs: TraceBlob[]
   replays: ReplayRun[]
+  feedback: RunFeedback[]
 }
 
 export interface ExecutionSpan {
@@ -333,12 +334,18 @@ export async function deletePlatformAdmin(userId: string) {
   return adminFetch<{ deleted: boolean }>(`/users/${encodeURIComponent(userId)}`, { method: 'DELETE' })
 }
 
-export async function listAdminRuns(filters: { userId?: string; agentId?: string; status?: string; limit?: number } = {}) {
-  const query = new URLSearchParams({ limit: String(filters.limit ?? 200) })
+export type AdminRunPage = {
+  items: RuntimeRun[]
+  pagination: { page: number; limit: number; total: number; total_pages: number }
+}
+
+export async function listAdminRuns(filters: { userId?: string; agentId?: string; status?: string; search?: string; page?: number; limit?: number } = {}) {
+  const query = new URLSearchParams({ limit: String(filters.limit ?? 10), page: String(filters.page ?? 1) })
   if (filters.userId) query.set('user_id', filters.userId)
   if (filters.agentId) query.set('agent_id', filters.agentId)
   if (filters.status) query.set('status', filters.status)
-  return (await adminFetch<{ items: RuntimeRun[] }>(`/runs?${query}`)).items
+  if (filters.search?.trim()) query.set('search', filters.search.trim())
+  return adminFetch<AdminRunPage>(`/runs?${query}`)
 }
 
 export const getAdminRunDiagnostics = (runId: string) =>

@@ -187,6 +187,7 @@ class MessageProcessorMixin:
             max_context_tokens=self.max_context_tokens,
             scope_key=scope_key,
             skill_names=list(run_context.skill_names),
+            skill_refs=list(run_context.skill_refs),
         )
         self._apply_run_instructions(initial_messages, run_context)
         final_content, tools_used, aborted, last_response = await self._run_agent_loop(
@@ -312,6 +313,7 @@ class MessageProcessorMixin:
             max_context_tokens=self.max_context_tokens,
             scope_key=scope_key,
             skill_names=list(run_context.skill_names),
+            skill_refs=list(run_context.skill_refs),
         )
         self._apply_run_instructions(initial_messages, run_context)
         final_content, _, _, last_response = await self._run_agent_loop(

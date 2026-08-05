@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :class="{ 'chat-active': route.path === '/chat' }">
+  <div class="app-shell" :class="{ 'chat-active': route.path === '/chat', 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="app-sidebar">
       <router-link class="brand" to="/overview">
         <img :src="logoSrc" alt="Joyhousebot" />
@@ -31,6 +31,9 @@
     <section class="app-stage" :class="{ 'chat-active': route.path === '/chat' }">
       <header class="app-topbar">
         <div class="mobile-brand"><img :src="logoSrc" alt="" /><strong>Joyhousebot</strong></div>
+        <button class="sidebar-toggle" type="button" :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSidebar">
+          {{ sidebarCollapsed ? '›' : '‹' }}
+        </button>
         <div class="service-state" :class="healthClass">
           <span class="state-dot" />
           <span>{{ healthText }}</span>
@@ -87,6 +90,7 @@ const theme = ref<Theme>((localStorage.getItem('joyhousebot-ui-theme') as Theme)
 const apiHealthy = ref(false)
 const dbHealthy = ref(false)
 const identityRole = ref('USER')
+const sidebarCollapsed = ref(localStorage.getItem('joyhousebot-sidebar-collapsed') === '1')
 let healthTimer: number | null = null
 
 const healthClass = computed(() => ({ healthy: apiHealthy.value && dbHealthy.value, partial: apiHealthy.value && !dbHealthy.value }))
@@ -105,6 +109,11 @@ function applyTheme() {
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
   applyTheme()
+}
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem('joyhousebot-sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
 }
 
 function logout() {

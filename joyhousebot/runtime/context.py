@@ -116,6 +116,9 @@ class RunContext:
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     worker_id: str | None = None
     skill_names: tuple[str, ...] = ()
+    # Prompt Skills are immutable capabilities too.  Keep their approved
+    # references with a Run so replay never silently reads a newer prompt.
+    skill_refs: tuple[dict[str, str], ...] = ()
 
     def for_tools(self) -> ToolExecutionContext:
         return ToolExecutionContext(

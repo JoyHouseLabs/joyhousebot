@@ -484,6 +484,10 @@ class AgentExecutionMixin(AgentTerminalMixin):
             cancellation=cancellation,
             worker_id=self.worker_id,
             skill_names=tuple(str(item) for item in (metadata or {}).get("skill_names", [])),
+            skill_refs=tuple(
+                dict(item) for item in (metadata or {}).get("skill_refs", [])
+                if isinstance(item, dict)
+            ),
         )
         conversation_key = context.session_key
         try:

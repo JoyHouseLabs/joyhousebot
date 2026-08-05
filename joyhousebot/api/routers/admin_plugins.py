@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from time import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from joyhousebot.api.dependencies import ContainerDep, PlatformAdminDep
+from joyhousebot.api.dependencies import ContainerDep, ContextDep, PlatformAdminDep
+from joyhousebot.api.schemas import PluginPlaygroundInvocationRequest
 from joyhousebot.application.plugins import run_plugin_diagnostics
+from joyhousebot.application.presenters import record_dict
+from joyhousebot.application.runs import GraphTaskCommand
+from joyhousebot.domain.capabilities import CapabilityRef
 
 router = APIRouter(prefix="/admin/plugins", tags=["plugin-control-plane"])
 
@@ -38,17 +43,27 @@ async def plugin_overview(plugin_id: str, principal: PlatformAdminDep, container
         asyncio.to_thread(container.store.list_plugin_workers, plugin_id),
         asyncio.to_thread(container.store.get_plugin_metrics, plugin_id),
     )
-    loaded = sum(1 for worker in workers if worker.get("execution_eligible"))
+    active_loaded = [
+        worker for worker in workers
+        if worker.get("healthy") and worker.get("plugin") is not None
+    ]
+    loaded = sum(1 for worker in active_loaded if worker.get("execution_eligible"))
     return {
         "release": release,
         "components": components,
         "metrics": metrics,
         "worker_summary": {
-            "total": len(workers),
+            # Only live execution processes that advertised this plugin are
+            # meaningful for plugin capacity. Historical rows and schedulers
+            # are exposed by /workers but must not dilute this health ratio.
+            "total": len(active_loaded),
+            "healthy_loaded": loaded,
+            "active_runtime_workers": sum(1 for worker in workers if worker.get("healthy")),
             "execution_eligible": loaded,
             "release_mismatch": sum(
                 1 for worker in workers
-                if worker.get("plugin") is not None and not worker.get("release_matched")
+                if worker.get("healthy") and worker.get("plugin") is not None
+                and not worker.get("release_matched")
             ),
         },
     }
@@ -129,11 +144,13 @@ async def plugin_health(plugin_id: str, principal: PlatformAdminDep, container: 
         asyncio.to_thread(container.store.list_plugin_workers, plugin_id),
         asyncio.to_thread(container.store.list_plugin_components, plugin_id),
     )
-    loaded = [item for item in workers if item.get("plugin")]
+    loaded = [
+        item for item in workers if item.get("healthy") and item.get("plugin") is not None
+    ]
     healthy = [item for item in loaded if item.get("execution_eligible")]
     baseline_checks = [
         {"name": "catalog", "status": "healthy" if components else "failed", "summary": f"{len(components)} registered components"},
-        {"name": "worker_release", "status": "healthy" if healthy else "degraded", "summary": f"{len(healthy)}/{len(workers)} workers match this exact release"},
+        {"name": "worker_release", "status": "healthy" if healthy else "degraded", "summary": f"{len(healthy)}/{len(loaded)} live plugin workers match this exact release"},
     ]
     persisted = await asyncio.to_thread(container.store.list_plugin_check_results, plugin_id)
     checks = persisted or baseline_checks
@@ -155,3 +172,73 @@ async def plugin_diagnostics(plugin_id: str, principal: PlatformAdminDep, contai
     except LookupError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"items": checks}
+
+
+@router.post("/{plugin_id}/playground/runs", status_code=202)
+async def create_plugin_playground_run(
+    plugin_id: str,
+    body: PluginPlaygroundInvocationRequest,
+    context: ContextDep,
+    principal: PlatformAdminDep,
+    container: ContainerDep,
+):
+    """Create one durable direct Tool Run without coordinator/model planning.
+
+    This remains inside the normal distributed task runtime so that input,
+    invocation, duration and produced Artifacts can be inspected or replayed.
+    It deliberately permits only a plugin-owned, enabled, side-effect-free
+    executable capability; the Playground cannot become an administrative
+    bypass for write operations.
+    """
+    del principal
+    release = await _release(container, plugin_id)
+    definition = await asyncio.to_thread(
+        container.store.get_capability_definition, body.capability_id
+    )
+    if definition is None:
+        raise HTTPException(status_code=404, detail="capability not found")
+    ref = CapabilityRef.from_dict(dict(definition.get("ref") or {}))
+    if ref.plugin_id != release["plugin_id"]:
+        raise HTTPException(status_code=422, detail="capability is not owned by this plugin")
+    if ref.kind.value not in {"tool", "connector"}:
+        raise HTTPException(status_code=422, detail="Playground only executes Tools or Connectors")
+    if str(definition.get("side_effect") or "none") != "none":
+        raise HTTPException(status_code=422, detail="Playground refuses capabilities with side effects")
+    settings = await asyncio.to_thread(
+        container.store.get_capability_runtime_settings, ref.capability_id
+    )
+    if not bool(settings.get("enabled", True)):
+        raise HTTPException(status_code=409, detail="capability is disabled")
+
+    agent_id = "main-coordinator" if plugin_id == "dinq.discover" else "default"
+    session_id = body.session_id or f"playground_{int(time() * 1000):x}"
+    try:
+        record = await container.runs.create_graph(
+            context,
+            goal=f"Tool Playground: {ref.capability_id}",
+            agent_id=agent_id,
+            session_id=session_id,
+            max_concurrent=1,
+            fail_fast=True,
+            aggregate=False,
+            tasks=[
+                GraphTaskCommand(
+                    id="direct-tool",
+                    name=f"Playground · {ref.capability_id}",
+                    prompt="Execute the pinned capability with the supplied Playground input.",
+                    timeout_seconds=float(definition.get("timeout_seconds") or 60),
+                    max_attempts=1,
+                    metadata={
+                        "source": "plugin_playground",
+                        "plugin_id": plugin_id,
+                        "direct_tool": True,
+                    },
+                    capability=ref,
+                    capability_input=body.input,
+                    allowed_tools=[ref.capability_id],
+                )
+            ],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return record_dict(record)

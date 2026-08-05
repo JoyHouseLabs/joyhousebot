@@ -322,6 +322,14 @@ def test_database_admin_membership_grants_platform_api_without_changing_user_sco
             "user-a",
             "user-b",
         }
+        assert platform.json()["pagination"] == {
+            "page": 1,
+            "limit": 10,
+            "total": 2,
+            "total_pages": 1,
+        }
+        assert "options" not in platform.json()["items"][0]
+        assert "result" not in platform.json()["items"][0]
         ordinary = client.get("/v1/runs", headers={"Authorization": "Bearer token-a"})
         assert {item["user_id"] for item in ordinary.json()["items"]} == {"user-a"}
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -30,6 +32,59 @@ ConfigOption = typer.Option(
     resolve_path=True,
     help=f"Deployment config file (env: {CONFIG_PATH_ENV}).",
 )
+
+
+async def _release_worker_presence(service: Any) -> None:
+    """Best-effort lease release before cancelling a systemd-managed service."""
+    runtime = getattr(service, "runtime", None)
+    store = getattr(runtime, "store", None)
+    worker_id = getattr(runtime, "worker_id", None)
+    unregister = getattr(store, "unregister_runtime_worker", None)
+    if worker_id and callable(unregister):
+        await asyncio.to_thread(unregister, worker_id)
+
+
+async def _run_service_until_stopped(service: Any) -> None:
+    """Turn SIGTERM into cooperative cancellation so worker leases are released.
+
+    systemd sends SIGTERM during deploys.  Without a handler Python exits
+    immediately, skipping the worker's ``finally`` block and leaving a live
+    looking registration until the heartbeat lease expires.
+    """
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    registered_signals: list[signal.Signals] = []
+    for value in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(value, stopping.set)
+            registered_signals.append(value)
+        except (NotImplementedError, RuntimeError):
+            # Windows and embedded event loops still receive normal task
+            # cancellation through asyncio.run; this is an optional upgrade.
+            continue
+    service_task = asyncio.create_task(service.run(), name="joyhousebot-service")
+    stop_task = asyncio.create_task(stopping.wait(), name="joyhousebot-stop-signal")
+    try:
+        done, _ = await asyncio.wait(
+            {service_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if service_task in done:
+            await service_task
+            return
+        # Do this before cancellation. Systemd may apply a hard kill after a
+        # short stop deadline, while this one tiny durable update is enough to
+        # remove the process from capacity and rollout calculations at once.
+        await _release_worker_presence(service)
+        service_task.cancel()
+        await asyncio.gather(service_task, return_exceptions=True)
+    finally:
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+        if not service_task.done():
+            service_task.cancel()
+            await asyncio.gather(service_task, return_exceptions=True)
+        for value in registered_signals:
+            loop.remove_signal_handler(value)
 
 
 @app.command()
@@ -68,7 +123,7 @@ def worker(config: Path | None = ConfigOption) -> None:
 
     _select_config(config)
     try:
-        asyncio.run(build_execution_worker().run())
+        asyncio.run(_run_service_until_stopped(build_execution_worker()))
     except KeyboardInterrupt:
         pass
 
@@ -80,7 +135,7 @@ def scheduler(config: Path | None = ConfigOption) -> None:
 
     _select_config(config)
     try:
-        asyncio.run(build_scheduler_worker().run())
+        asyncio.run(_run_service_until_stopped(build_scheduler_worker()))
     except KeyboardInterrupt:
         pass
 
@@ -92,7 +147,7 @@ def channel_worker(config: Path | None = ConfigOption) -> None:
 
     _select_config(config)
     try:
-        asyncio.run(build_channel_worker().run())
+        asyncio.run(_run_service_until_stopped(build_channel_worker()))
     except KeyboardInterrupt:
         pass
 

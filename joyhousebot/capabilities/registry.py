@@ -158,7 +158,14 @@ class CapabilityRegistry:
                         "description": str(definition.description),
                         "reference_id": str(definition.ref.capability_id),
                         "reference_version": str(definition.ref.version),
-                        "metadata": {"adapter": str(definition.adapter)},
+                        "metadata": {
+                            "adapter": str(definition.adapter),
+                            "input_schema": dict(definition.input_schema),
+                            "output_schema": dict(definition.output_schema),
+                            "permissions": list(definition.permissions),
+                            "connection_ids": list(definition.connection_ids),
+                            "side_effect": str(definition.side_effect),
+                        },
                     }
                 )
             self._store.sync_plugin_components(manifest.plugin_id, manifest.version, components)

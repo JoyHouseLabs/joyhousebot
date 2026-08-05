@@ -6,6 +6,8 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from joyhousebot.storage.json_codec import Jsonb
+
 
 class KnowledgeRepository:
     """Persist user-scoped knowledge; PostgreSQL provides indexed full-text search."""
@@ -76,8 +78,6 @@ class KnowledgeRepository:
                 "DELETE FROM knowledge_documents WHERE doc_id=%s AND user_id=%s",
                 (doc_id, user_id),
             )
-            from psycopg.types.json import Jsonb
-
             connection.execute(
                 """INSERT INTO knowledge_documents
                    (doc_id,user_id,agent_id,source_type,source_url,title,metadata,created_at_ms,updated_at_ms)

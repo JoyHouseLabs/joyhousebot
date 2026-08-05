@@ -7,7 +7,7 @@ from joyhousebot.api.app import create_app
 from joyhousebot.application.plugins import run_plugin_diagnostics
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.config.schema import Config, ToolsConfig
-from joyhousebot.contracts.plugins import PluginComponent, PluginManifest
+from joyhousebot.contracts.plugins import PluginComponent, PluginManifest, PluginQuickstart
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from tests.support.postgres_store import PostgresTestStore
 
@@ -71,6 +71,42 @@ def test_plugin_release_digest_cannot_be_overwritten(tmp_path: Path) -> None:
         )
 
 
+def test_plugin_manifest_projects_business_owned_quickstarts() -> None:
+    manifest = PluginManifest(
+        plugin_id="example.discover",
+        version="1.0.0",
+        name="Example Discover",
+        build_digest="sha256:test-example-discover",
+        quickstarts=(
+            PluginQuickstart(
+                quickstart_id="catalog-search",
+                title="Search the catalog",
+                description="Use the coordinator rather than calling a hidden tool.",
+                prompt="Find reinforcement learning engineers.",
+                scenario_id="example.catalog.search",
+                scenario_inputs={"query": "reinforcement learning"},
+                capability_ids=("example.search",),
+                required_connection_ids=("example-catalog",),
+            ),
+        ),
+    )
+    value = manifest.to_dict()
+    assert value["quickstarts"] == [
+        {
+            "quickstart_id": "catalog-search",
+            "title": "Search the catalog",
+            "description": "Use the coordinator rather than calling a hidden tool.",
+            "prompt": "Find reinforcement learning engineers.",
+            "agent_id": "main-coordinator",
+            "scenario_id": "example.catalog.search",
+            "scenario_inputs": {"query": "reinforcement learning"},
+            "capability_ids": ["example.search"],
+            "required_connection_ids": ["example-catalog"],
+            "expected_outcome": "",
+        }
+    ]
+
+
 def test_plugin_control_plane_api_requires_admin_and_projects_safe_metadata(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.create_api_access_token(user_id="operator", actor_id="test", token="plugin-token")
@@ -112,6 +148,42 @@ def test_capability_runtime_settings_api_requires_publish_permission(tmp_path: P
         assert response.json()["enabled"] is False
         invalid = client.put("/v1/admin/capabilities/example.search/runtime-settings", headers=headers, json={"enabled": True, "configuration": {"limit": "five"}})
         assert invalid.status_code == 422
+
+
+def test_plugin_playground_creates_a_direct_durable_tool_run(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.publish_capability(
+        CapabilityDefinition(
+            ref=CapabilityRef(
+                "example.search", "1.0.0", CapabilityKind.TOOL,
+                "example.discover", "1.0.0", "sha256:test-example-discover",
+            ),
+            name="Example search",
+            description="A safe test capability",
+            input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+            output_schema={"type": "object"},
+            adapter="example.search",
+            side_effect="none",
+        )
+    )
+    store.create_api_access_token(user_id="operator", actor_id="test", token="playground-token")
+    store.upsert_platform_admin(user_id="operator", permissions=["*"], actor_id="test")
+    container = build_api_container(config=Config(), store=store)
+    client = TestClient(create_app(container))
+    with client:
+        response = client.post(
+            "/v1/admin/plugins/example.discover/playground/runs",
+            headers={"Authorization": "Bearer playground-token"},
+            json={"capability_id": "example.search", "input": {"query": "Ada"}},
+        )
+    assert response.status_code == 202
+    body = response.json()
+    tasks = store.list_runtime_tasks(run_id=body["run_id"], limit=10)
+    assert body["prompt"] == "Tool Playground: example.search"
+    assert len(tasks) == 1
+    assert tasks[0].payload["capability"]["capability_id"] == "example.search"
+    assert tasks[0].payload["capability_input"] == {"query": "Ada"}
+    assert store.get_runtime_run(body["run_id"]).options["aggregate"] is False
 
 
 @pytest.mark.asyncio

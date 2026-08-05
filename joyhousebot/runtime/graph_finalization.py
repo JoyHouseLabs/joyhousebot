@@ -196,7 +196,7 @@ class GraphFinalizationMixin:
                 run_id=run_id,
                 name="aggregation-audit",
                 media_type="application/json",
-                content=json.dumps(aggregation, ensure_ascii=False, sort_keys=True),
+                content=json.dumps(aggregation, ensure_ascii=False, sort_keys=True, default=str),
             )
             await self.events.publish(
                 AgentEvent(

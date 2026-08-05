@@ -9,6 +9,7 @@ Joyhousebot 的核心只提供 Agent 云运行时和治理面；业务能力以�
 
 - `plugin_id`、`version`、wheel/image 的 `build_digest`；
 - 每个 Tool、Connector、Skill 的完整 `CapabilityRef`；
+- 面向业务人员的 `quickstarts`：真实用户提示、关联的 Scenario / Capability、必需连接和预期结果；
 - 连接依赖、数据分级、最小权限和成本策略；
 - 健康检查，只检查配置与可执行节点，不能在常规 health read 中发起搜索或泄露凭据。
 
@@ -24,11 +25,11 @@ Worker。
    若检索服务不与 Worker 同机，还要设置 `DINQ_PLATFORM_SEARCH_URL` 和
    `DINQ_PLATFORM_SEARCH_ALLOWED_HOSTS`。后者是逗号分隔的服务 DNS/IP 白名单；默认只允许 loopback，
    Tool 输入永远不能改变目标地址。
-3. 执行 `python -m dinq_plugin.discover.seed`。它发布 Dinq Capability、Skill 和新版 Scenario；所有
+3. 执行 `python -m dinq_plugin.discover.seed`。它只发布 Dinq Capability、Skill 和新版 Scenario；所有
    Scenario 任务持久化完整 CapabilityRef，绝不按名称选择最新 Tool。
-4. 通过控制面创建一个 Dinq Agent revision，并显式要求
-   `dinq.discover@0.4.0 + build_digest`；按实际启用能力至少授予
-   `dinq.search.read`，需要公网来源时再授予 `dinq.web.read`。
+4. 对 Dinq 服务部署，再显式执行 `python -m dinq_plugin.discover.bootstrap`。它在上述已发布 Catalog
+   基础上创建 `main-coordinator:v2`，固定 `dinq.discover@<version> + build_digest` 并只授予 `dinq.*`。
+   该命令是部署决策，普通 Joyhousebot 安装或仅安装插件时绝不会自动提升业务权限。
 5. 等目标 Worker 均为 `execution_eligible` 后，才将该 revision 设为默认或把流量路由给它。
 
 示例 Capability policy：
@@ -40,5 +41,7 @@ Worker。
 }
 ```
 
-业务 Agent 的默认选择是部署决策，不由插件种子过程擅自改变。这样通用 Joyhousebot 安装不会因某个业务
-插件而被耦合，Dinq 环境也能明确审计“谁启用了哪些业务权限”。
+业务 Agent 的默认选择是部署决策，不由插件种子过程擅自改变。插件的 `quickstarts` 会在控制台的插件
+页面中通用渲染；点击后只是把业务提示、目标 Agent 和 Scenario 线索带入在线试用，仍经由正常的
+Coordinator 路由、追问、权限校验和 Run 审计执行。这样通用 Joyhousebot 安装不会因某个业务插件而被
+耦合，Dinq 环境也能明确审计“谁启用了哪些业务权限”。

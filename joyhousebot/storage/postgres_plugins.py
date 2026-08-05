@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from psycopg.types.json import Jsonb
+from joyhousebot.storage.json_codec import Jsonb
 
 
 def _iso(value: Any) -> str | None:

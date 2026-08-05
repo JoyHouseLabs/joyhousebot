@@ -31,6 +31,10 @@ from joyhousebot.runtime.models import (
 _LOOP_ERROR_LOG_INTERVAL_SECONDS = 60.0
 # How often the coordinator purges expired runtime data.
 _PURGE_INTERVAL_SECONDS = 600.0
+# A worker row is a leased presence record. Reconcile abandoned rows promptly
+# after deployments or abrupt process termination without polling the database
+# on every work notification.
+_WORKER_RECONCILE_INTERVAL_SECONDS = 30.0
 
 
 def _env_int(name: str, default: int) -> int:
@@ -123,6 +127,7 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
     async def _runtime_coordinator_loop(self) -> None:
         """Continuously recover queued runs and maintain worker presence."""
         last_purge_at = 0.0
+        last_worker_reconcile_at = 0.0
         generation = 0
         while not self._closing:
             try:
@@ -133,6 +138,14 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
                 if heartbeat is not None:
                     await asyncio.to_thread(heartbeat, self.worker_id)
                 now = time.monotonic()
+                if now - last_worker_reconcile_at >= _WORKER_RECONCILE_INTERVAL_SECONDS:
+                    last_worker_reconcile_at = now
+                    expire_workers = getattr(self.store, "expire_stale_runtime_workers", None)
+                    if expire_workers is not None:
+                        await asyncio.to_thread(
+                            expire_workers,
+                            stale_after_seconds=max(120, self.lease_seconds * 2),
+                        )
                 if self.maintenance_enabled and now - last_purge_at >= _PURGE_INTERVAL_SECONDS:
                     last_purge_at = now
                     await self._purge_old_runtime_data()

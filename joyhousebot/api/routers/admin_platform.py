@@ -28,7 +28,7 @@ from joyhousebot.api.schemas import (
     CreateReplayRequest,
     SavePlatformAdminRequest,
 )
-from joyhousebot.application.presenters import record_dict
+from joyhousebot.application.presenters import record_dict, runtime_run_list_item
 from joyhousebot.runtime.narrative import public_event_dict
 
 router = APIRouter(prefix="/admin", tags=["platform-admin"])
@@ -47,17 +47,35 @@ async def list_runs(
     session_id: str | None = None,
     agent_id: str | None = None,
     status: str | None = None,
-    limit: int = Query(default=200, ge=1, le=1000),
+    search: str | None = Query(default=None, max_length=500),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=10, ge=1, le=100),
 ):
-    rows = await asyncio.to_thread(
+    filters = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "status": status,
+        "search": search,
+    }
+    rows, total = await asyncio.gather(
+        asyncio.to_thread(
         container.store.list_runtime_runs,
-        user_id=user_id,
-        session_id=session_id,
-        agent_id=agent_id,
-        status=status,
+        **filters,
         limit=limit,
+        offset=(page - 1) * limit,
+        ),
+        asyncio.to_thread(container.store.count_runtime_runs, **filters),
     )
-    return {"items": [record_dict(row) for row in rows]}
+    return {
+        "items": [runtime_run_list_item(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": max(1, (total + limit - 1) // limit),
+        },
+    }
 
 
 async def _admin_run(container, run_id: str):
@@ -100,6 +118,7 @@ async def run_diagnostics(
         reasoning,
         blobs,
         replays,
+        feedback,
     ) = await asyncio.gather(
         asyncio.to_thread(container.store.list_runtime_tasks, run_id=run_id, limit=5000),
         asyncio.to_thread(container.store.list_runtime_logs, run_id, after_sequence=after_sequence),
@@ -116,6 +135,7 @@ async def run_diagnostics(
         asyncio.to_thread(container.store.list_reasoning_segments, run_id),
         asyncio.to_thread(container.store.list_trace_blobs, run_id),
         asyncio.to_thread(container.store.list_replay_runs, run_id),
+        asyncio.to_thread(container.store.list_run_feedback, run_id, limit=5000),
     )
     traces = (
         await asyncio.to_thread(
@@ -156,6 +176,7 @@ async def run_diagnostics(
         ),
         "trace_blobs": [item.to_dict(include_content=False) for item in blobs],
         "replays": [item.to_dict() for item in replays],
+        "feedback": [item.to_dict() for item in feedback],
     }
 
 

@@ -8,8 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from psycopg.types.json import Jsonb
-
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.observability_records import (
     ExecutionSpanRecord,
     ModelInvocationRecord,
@@ -17,6 +16,7 @@ from joyhousebot.storage.observability_records import (
     ReplayRunRecord,
     TraceBlobRecord,
 )
+from joyhousebot.storage.platform_records import RunFeedbackRecord
 
 
 def _iso(value: Any) -> str | None:
@@ -148,6 +148,33 @@ class PostgresObservabilityStoreMixin:
             expires_at TIMESTAMPTZ
         );
         CREATE INDEX IF NOT EXISTS ix_model_cache_expiry ON model_response_cache(expires_at);
+
+        CREATE TABLE IF NOT EXISTS run_feedback (
+            feedback_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            agent_revision_id TEXT,
+            turn_id TEXT,
+            message_id TEXT,
+            feedback_type TEXT NOT NULL,
+            rating TEXT,
+            comment TEXT NOT NULL,
+            output_excerpt TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            reviewed_by TEXT,
+            reviewed_at TIMESTAMPTZ,
+            CHECK (feedback_type IN ('incorrect','missing_data','needs_optimization','helpful','other')),
+            CHECK (rating IS NULL OR rating IN ('positive','negative','neutral')),
+            CHECK (status IN ('open','reviewed','resolved','dismissed'))
+        );
+        CREATE INDEX IF NOT EXISTS ix_run_feedback_run_created ON run_feedback(run_id,created_at DESC);
+        CREATE INDEX IF NOT EXISTS ix_run_feedback_user_created ON run_feedback(user_id,created_at DESC);
+        CREATE INDEX IF NOT EXISTS ix_run_feedback_status_created ON run_feedback(status,created_at DESC);
         """
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341920,))
@@ -389,6 +416,58 @@ class PostgresObservabilityStoreMixin:
             ).fetchall()
         return [self._obs_replay(row) for row in rows]
 
+    def create_run_feedback(self, **kwargs: Any) -> RunFeedbackRecord:
+        comment = str(kwargs.get("comment") or "").strip()
+        if not comment:
+            raise ValueError("feedback comment is required")
+        if len(comment) > 10000:
+            raise ValueError("feedback comment is too long")
+        feedback_id = str(kwargs.get("feedback_id") or f"feedback_{uuid4().hex}")
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """INSERT INTO run_feedback
+                       (feedback_id,run_id,user_id,agent_id,session_id,agent_revision_id,
+                        turn_id,message_id,feedback_type,rating,comment,output_excerpt,
+                        status,metadata,created_at,updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                           COALESCE(%s::timestamptz,clock_timestamp()),
+                           COALESCE(%s::timestamptz,clock_timestamp()))
+                   RETURNING *""",
+                (
+                    feedback_id,
+                    kwargs["run_id"],
+                    kwargs["user_id"],
+                    kwargs["agent_id"],
+                    kwargs["session_id"],
+                    kwargs.get("agent_revision_id"),
+                    kwargs.get("turn_id"),
+                    kwargs.get("message_id"),
+                    kwargs.get("feedback_type") or "other",
+                    kwargs.get("rating"),
+                    comment,
+                    (str(kwargs.get("output_excerpt"))[:4000] if kwargs.get("output_excerpt") else None),
+                    kwargs.get("status") or "open",
+                    Jsonb(kwargs.get("metadata") or {}),
+                    kwargs.get("created_at"),
+                    kwargs.get("updated_at"),
+                ),
+            ).fetchone()
+        return self._obs_feedback(row)
+
+    def list_run_feedback(
+        self, run_id: str, *, user_id: str | None = None, limit: int = 200
+    ) -> list[RunFeedbackRecord]:
+        query = "SELECT * FROM run_feedback WHERE run_id=%s"
+        params: list[Any] = [run_id]
+        if user_id is not None:
+            query += " AND user_id=%s"
+            params.append(user_id)
+        query += " ORDER BY created_at DESC LIMIT %s"
+        params.append(max(1, min(int(limit), 5000)))
+        with self._pool.connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._obs_feedback(row) for row in rows]
+
     def get_model_response_cache(self, cache_key: str) -> dict[str, Any] | None:
         with self._pool.connection() as conn:
             row = conn.execute(
@@ -420,6 +499,29 @@ class PostgresObservabilityStoreMixin:
                 (cache_key, kwargs["provider"], kwargs["model"], Jsonb(kwargs["response"]),
                  kwargs.get("source_invocation_id"), kwargs.get("created_at"), kwargs.get("expires_at")),
             )
+
+    @staticmethod
+    def _obs_feedback(row: Any) -> RunFeedbackRecord:
+        return RunFeedbackRecord(
+            feedback_id=str(row["feedback_id"]),
+            run_id=str(row["run_id"]),
+            user_id=str(row["user_id"]),
+            agent_id=str(row["agent_id"]),
+            session_id=str(row["session_id"]),
+            feedback_type=str(row["feedback_type"]),
+            comment=str(row["comment"]),
+            agent_revision_id=row["agent_revision_id"],
+            turn_id=row["turn_id"],
+            message_id=row["message_id"],
+            rating=row["rating"],
+            output_excerpt=row["output_excerpt"],
+            status=str(row["status"]),
+            metadata=dict(row["metadata"] or {}),
+            created_at=_iso(row["created_at"]),
+            updated_at=_iso(row["updated_at"]),
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=_iso(row["reviewed_at"]),
+        )
 
     @staticmethod
     def _obs_blob(row: Any) -> TraceBlobRecord:

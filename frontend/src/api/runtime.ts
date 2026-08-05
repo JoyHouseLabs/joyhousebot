@@ -41,6 +41,27 @@ export interface RuntimeUsage {
   model?: string | null
 }
 
+export type RunFeedbackType = 'incorrect' | 'missing_data' | 'needs_optimization' | 'helpful' | 'other'
+
+export interface RunFeedback {
+  feedback_id: string
+  run_id: string
+  user_id: string
+  agent_id: string
+  session_id: string
+  agent_revision_id?: string | null
+  turn_id?: string | null
+  message_id?: string | null
+  feedback_type: RunFeedbackType
+  rating?: 'positive' | 'negative' | 'neutral' | null
+  comment: string
+  output_excerpt?: string | null
+  status: string
+  metadata?: Record<string, unknown>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export interface RuntimeTask {
   task_id: string
   run_id: string
@@ -158,6 +179,8 @@ export async function submitRuntimeRun(input: {
   prompt: string
   sessionId: string
   agentId: string
+  scenarioId?: string
+  scenarioInputs?: Record<string, unknown>
   channel?: string
   chatId?: string
   idempotencyKey?: string
@@ -173,6 +196,8 @@ export async function submitRuntimeRun(input: {
       input: { type: 'message', content: input.prompt },
       session_id: input.sessionId,
       agent_id: input.agentId,
+      scenario_id: input.scenarioId,
+      scenario_inputs: input.scenarioInputs,
       metadata: { channel: input.channel ?? 'web', chat_id: input.chatId ?? input.sessionId },
     }),
   })
@@ -273,6 +298,31 @@ export async function cancelRuntimeRun(runId: string): Promise<void> {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw new Error('取消任务失败')
+}
+
+export async function listRunFeedback(runId: string): Promise<RunFeedback[]> {
+  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/feedback`, {
+    headers: getIdentityHeaders(),
+  })
+  if (!response.ok) throw await readError(response, '读取人工反馈失败')
+  return (await response.json()).items ?? []
+}
+
+export async function createRunFeedback(
+  runId: string,
+  value: Pick<RunFeedback, 'feedback_type' | 'comment'> & Partial<Pick<RunFeedback, 'rating' | 'output_excerpt' | 'turn_id' | 'message_id'>>,
+): Promise<RunFeedback> {
+  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/feedback`, {
+    method: 'POST',
+    headers: {
+      ...getIdentityHeaders(),
+      'Content-Type': 'application/json',
+      'Idempotency-Key': crypto.randomUUID(),
+    },
+    body: JSON.stringify(value),
+  })
+  if (!response.ok) throw await readError(response, '提交人工反馈失败')
+  return response.json()
 }
 
 /** Consume durable SSE with an explicit cursor and authenticated fetch. */

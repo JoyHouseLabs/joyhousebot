@@ -34,6 +34,28 @@ class ResolveRunInputRequest(BaseModel):
     answers: dict[str, Any] = Field(min_length=1)
 
 
+class CreateRunFeedbackRequest(BaseModel):
+    """Human evaluation of a concrete Run output."""
+
+    feedback_type: Literal[
+        "incorrect", "missing_data", "needs_optimization", "helpful", "other"
+    ] = "other"
+    rating: Literal["positive", "negative", "neutral"] | None = None
+    comment: str = Field(min_length=1, max_length=10000)
+    output_excerpt: str | None = Field(default=None, max_length=4000)
+    turn_id: str | None = Field(default=None, max_length=128)
+    message_id: str | None = Field(default=None, max_length=128)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PluginPlaygroundInvocationRequest(BaseModel):
+    """Administrator-only direct invocation of a safe plugin Tool."""
+
+    capability_id: str = Field(pattern=_ID_PATTERN)
+    input: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = Field(default=None, min_length=1, pattern=_ID_PATTERN)
+
+
 class SavePlatformAdminRequest(BaseModel):
     role: Literal["admin", "operator", "viewer"] = "admin"
     permissions: list[str] = Field(default_factory=list)

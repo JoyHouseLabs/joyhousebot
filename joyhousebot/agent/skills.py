@@ -40,17 +40,19 @@ class SkillsLoader:
             )
         return sorted(skills, key=lambda item: item["name"])
 
-    def load_skill(self, name: str) -> str | None:
-        definition = self.runtime_store.get_capability_definition(f"skill.{name}")
+    def load_skill(self, name: str, version: str | None = None) -> str | None:
+        definition = self.runtime_store.get_capability_definition(f"skill.{name}", version)
         if definition is None or not self._runtime_settings(f"skill.{name}")["enabled"]:
             return None
         content = self._configuration(definition).get("instruction_content")
         return content if isinstance(content, str) and content.strip() else None
 
-    def load_skills_for_context(self, skill_names: list[str]) -> str:
+    def load_skills_for_context(
+        self, skill_names: list[str], *, versions: dict[str, str] | None = None
+    ) -> str:
         parts = []
         for name in skill_names:
-            content = self.load_skill(name)
+            content = self.load_skill(name, (versions or {}).get(name))
             if content:
                 parts.append(f"### Skill: {name}\n\n{self._strip_frontmatter(content)}")
         return "\n\n---\n\n".join(parts)

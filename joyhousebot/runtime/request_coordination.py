@@ -295,6 +295,11 @@ class RequestCoordinationMixin:
                 for item in selected_scenario.allowed_capabilities
                 if item.kind.value == "skill"
             ]
+            metadata["skill_refs"] = [
+                item.to_dict()
+                for item in selected_scenario.allowed_capabilities
+                if item.kind.value == "skill"
+            ]
             prompt += (
                 "\n\n## Validated scenario context\n"
                 f"scenario_id: {selected_scenario.scenario_id}\n"

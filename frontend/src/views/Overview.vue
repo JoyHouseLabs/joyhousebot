@@ -152,7 +152,7 @@ async function refresh() {
   if (identityResult.status === 'fulfilled') Object.assign(identity, identityResult.value)
   if (platformResult.status === 'fulfilled') Object.assign(platform, platformResult.value)
   if (workersResult.status === 'fulfilled') workerList.value = workersResult.value
-  if (runsResult.status === 'fulfilled') runs.value = runsResult.value
+  if (runsResult.status === 'fulfilled') runs.value = runsResult.value.items
   if (schedulesResult.status === 'fulfilled') schedules.value = schedulesResult.value
   if (metricsResult.status === 'fulfilled') Object.assign(metrics, metricsResult.value)
   const rejected = results.find((item) => item.status === 'rejected') as PromiseRejectedResult | undefined
@@ -164,7 +164,6 @@ async function refresh() {
 function statusLabel(status: string) { return ({ queued: '排队', running: '运行中', completed: '完成', failed: '失败', cancelled: '取消', timed_out: '超时', paused: '暂停', waiting_input: '等待输入' } as Record<string, string>)[status] ?? status }
 function taskProgress(run: RuntimeRun) { return Math.round(((run.completed_task_count ?? 0) / Math.max(1, run.total_task_count ?? 0)) * 100) }
 function compactNumber(value = 0) { return new Intl.NumberFormat('zh-CN', { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value) }
-function formatCost(value = 0) { return value > 0 ? `$${value.toFixed(4)} 费用` : '暂无费用记录' }
 function formatAge(seconds = 0) { if (seconds < 60) return `${Math.round(seconds)} 秒`; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`; return `${(seconds / 3600).toFixed(1)} 小时` }
 function formatClock(value: Date) { return value.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
 function relativeTime(value?: string) { if (!value) return '—'; const delta = Date.now() - new Date(value).getTime(); if (delta < 60_000) return '刚刚'; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`; return new Date(value).toLocaleDateString('zh-CN') }

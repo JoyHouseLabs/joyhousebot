@@ -37,7 +37,10 @@ class ContextBuilder:
         self.skills = SkillsLoader(runtime_store)
 
     def build_system_prompt(
-        self, skill_names: list[str] | None = None, scope_key: str | None = None
+        self,
+        skill_names: list[str] | None = None,
+        scope_key: str | None = None,
+        skill_refs: list[dict[str, str]] | None = None,
     ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
@@ -67,13 +70,25 @@ class ContextBuilder:
         selected = list(dict.fromkeys([*always_skills, *(skill_names or [])]))
         if enabled_skill_names is not None:
             selected = [name for name in selected if name in enabled_skill_names]
+        pinned_skill_versions = {
+            str(item.get("capability_id") or "").removeprefix("skill."): str(item.get("version") or "")
+            for item in (skill_refs or [])
+            if str(item.get("capability_id") or "").startswith("skill.")
+            and str(item.get("version") or "")
+        }
         available = {
             item["name"] for item in self.skills.list_skills(filter_unavailable=True)
         }
+        available.update(
+            name for name, version in pinned_skill_versions.items()
+            if self.skills.load_skill(name, version) is not None
+        )
         selected = [name for name in selected if name in available]
         if selected:
             logger.debug(f"Building context: selected skills={selected}")
-            content = self.skills.load_skills_for_context(selected)
+            content = self.skills.load_skills_for_context(
+                selected, versions=pinned_skill_versions
+            )
             if content:
                 parts.append(f"# Active Skills\n\n{content}")
 
@@ -254,6 +269,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
         history: list[dict[str, Any]],
         current_message: str,
         skill_names: list[str] | None = None,
+        skill_refs: list[dict[str, str]] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
@@ -279,7 +295,9 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
         messages = []
 
         # System prompt
-        system_prompt = self.build_system_prompt(skill_names=skill_names, scope_key=scope_key)
+        system_prompt = self.build_system_prompt(
+            skill_names=skill_names, scope_key=scope_key, skill_refs=skill_refs
+        )
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

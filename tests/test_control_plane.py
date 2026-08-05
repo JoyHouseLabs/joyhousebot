@@ -107,6 +107,25 @@ def test_unknown_permissions_are_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_stale_worker_lease_is_reconciled_without_hiding_live_workers(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "worker-leases.db")
+    store.register_runtime_worker(worker_id="stale-agent", capabilities={"agent": True})
+    store.register_runtime_worker(worker_id="live-agent", capabilities={"agent": True})
+    with store._pool.connection() as connection:  # noqa: SLF001 - integration fixture setup
+        connection.execute(
+            """UPDATE runtime_workers
+               SET last_heartbeat=clock_timestamp()-INTERVAL '10 minutes'
+               WHERE worker_id='stale-agent'"""
+        )
+
+    assert store.expire_stale_runtime_workers(stale_after_seconds=120) == 1
+    workers = {item["worker_id"]: item for item in store.list_runtime_workers()}
+    assert workers["stale-agent"]["status"] == "offline"
+    assert workers["stale-agent"]["healthy"] is False
+    assert workers["live-agent"]["status"] == "online"
+    assert workers["live-agent"]["healthy"] is True
+
+
 @pytest.mark.postgres
 def test_postgres_staged_rollout_round_trip() -> None:
     database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()

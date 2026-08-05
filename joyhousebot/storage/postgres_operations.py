@@ -11,8 +11,8 @@ from uuid import uuid4
 from psycopg import sql
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
 
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_locks import (
     RUNTIME_PURGE_LOCK_ID,
     SCHEMA_MIGRATION_LOCK_ID,
@@ -247,6 +247,26 @@ class PostgresOperationsStoreMixin:
                 "UPDATE runtime_workers SET status='offline',last_heartbeat=clock_timestamp() WHERE worker_id=%s",
                 (worker_id,),
             )
+
+    def expire_stale_runtime_workers(self, *, stale_after_seconds: int = 120) -> int:
+        """Fence crashed or force-stopped workers out of the live worker set.
+
+        Worker ids are intentionally process-unique.  A clean shutdown marks
+        its own row offline, but a host crash, SIGKILL, or deployment timeout
+        cannot run that path.  The heartbeat is therefore a lease, not merely
+        a UI freshness indicator: stale rows must no longer participate in
+        plugin health, rollouts, or capacity reporting.
+        """
+        timeout = max(15, min(int(stale_after_seconds), 3600))
+        with self._pool.connection() as conn:
+            cursor = conn.execute(
+                """UPDATE runtime_workers
+                   SET status='offline'
+                   WHERE status='online'
+                     AND last_heartbeat < clock_timestamp() - (%s * INTERVAL '1 second')""",
+                (timeout,),
+            )
+            return max(0, cursor.rowcount)
 
     def list_runtime_workers(self, *, limit: int = 500) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:

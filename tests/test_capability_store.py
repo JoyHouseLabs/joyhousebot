@@ -114,6 +114,31 @@ def test_published_skill_content_is_worker_shared_and_not_public(tmp_path: Path)
     assert "configuration" not in public_capability_definition(stored)
 
 
+def test_skill_loader_can_pin_an_immutable_skill_version(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "versioned-skills.db")
+    for version, instruction in (("1.0.0", "legacy policy"), ("1.0.1", "current policy")):
+        store.publish_capability(
+            CapabilityDefinition(
+                ref=CapabilityRef(
+                    "skill.enrich", version, CapabilityKind.SKILL,
+                    "test.plugin", "1.0.0", "sha256:test",
+                ),
+                name="enrich",
+                description="Versioned enrich policy",
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                adapter="prompt-skill:enrich",
+                configuration={"instruction_content": instruction},
+            )
+        )
+    loader = SkillsLoader(store)
+    assert loader.load_skill("enrich") == "current policy"
+    assert loader.load_skill("enrich", "1.0.0") == "legacy policy"
+    assert loader.load_skills_for_context(["enrich"], versions={"enrich": "1.0.0"}) == (
+        "### Skill: enrich\n\nlegacy policy"
+    )
+
+
 def test_runtime_capability_settings_are_validated_audited_and_overlay_skill(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "runtime-settings.db")
     store.publish_capability(

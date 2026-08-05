@@ -113,7 +113,11 @@ def aggregate_task_results(tasks: list[dict[str, Any]], policy: AggregationPolic
             "selected": [_public_source(source) for source in selected],
             "best": _public_source(selected[0]) if selected else None,
         }
-        content = str(selected[0]["content"]) if selected else json.dumps(value, ensure_ascii=False)
+        content = (
+            str(selected[0]["content"])
+            if selected
+            else json.dumps(value, ensure_ascii=False, default=str)
+        )
         return AggregationResult(content=content, structured_output=value, audit=audit)
     if policy.mode == "structured_merge":
         merged: Any = {}
@@ -149,7 +153,7 @@ def synthesis_prompt(*, goal: str, tasks: list[dict[str, Any]], policy: Aggregat
     return (
         f"Synthesize a final answer for this goal: {goal}\n\n"
         f"Aggregation instructions: {instructions}\n\n"
-        f"Task evidence:\n{json.dumps(evidence, ensure_ascii=False)[:50000]}"
+        f"Task evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)[:50000]}"
     )
 
 
@@ -232,7 +236,7 @@ def _public_source(source: dict[str, Any]) -> dict[str, Any]:
 
 def _result(value: Any, audit: dict[str, Any]) -> AggregationResult:
     return AggregationResult(
-        content=json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+        content=json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str),
         structured_output=value,
         audit=audit,
     )

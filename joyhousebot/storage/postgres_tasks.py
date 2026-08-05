@@ -6,9 +6,8 @@ import json
 from datetime import datetime
 from typing import Any
 
-from psycopg.types.json import Jsonb
-
 from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.runtime_store import (
     RuntimeTaskRecord,
 )

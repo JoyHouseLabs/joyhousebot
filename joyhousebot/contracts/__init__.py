@@ -19,6 +19,7 @@ from joyhousebot.contracts.plugins import (
     PluginHealthContext,
     PluginHealthResult,
     PluginManifest,
+    PluginQuickstart,
     PluginRegistry,
 )
 
@@ -34,5 +35,6 @@ __all__ = [
     "PluginHealthContext",
     "PluginHealthResult",
     "PluginManifest",
+    "PluginQuickstart",
     "PluginRegistry",
 ]

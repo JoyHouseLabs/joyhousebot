@@ -7,9 +7,8 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
-from psycopg.types.json import Jsonb
-
 from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_quotas import check_top_level_submission_quota
 from joyhousebot.storage.runtime_store import (
     RuntimeRunRecord,
@@ -360,7 +359,9 @@ class PostgresRunStoreMixin:
         status: str | None = None,
         root_run_id: str | None = None,
         parent_run_id: str | None = None,
+        search: str | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[RuntimeRunRecord]:
         clauses, params = [], []
         if user_id:
@@ -381,11 +382,18 @@ class PostgresRunStoreMixin:
         if parent_run_id:
             clauses.append("parent_run_id=%s")
             params.append(parent_run_id)
+        if search and search.strip():
+            pattern = f"%{search.strip()}%"
+            clauses.append(
+                "(run_id ILIKE %s OR session_id ILIKE %s OR agent_id ILIKE %s "
+                "OR COALESCE(status_summary, '') ILIKE %s OR COALESCE(prompt, '') ILIKE %s)"
+            )
+            params.extend([pattern] * 5)
         query = "SELECT * FROM runtime_runs"
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY created_at DESC LIMIT %s"
-        params.append(max(1, min(1000, limit)))
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([max(1, min(1000, limit)), max(0, min(100_000, offset))])
         with self._pool.connection() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._run(row) for row in rows]

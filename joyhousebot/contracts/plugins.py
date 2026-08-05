@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -24,6 +25,49 @@ class PluginComponent:
 
 
 @dataclass(frozen=True, slots=True)
+class PluginQuickstart:
+    """A versioned, business-owned example that enters the normal Run path.
+
+    The framework renders and executes this metadata generically; a plugin
+    owns the business wording, suggested request and expected capabilities.
+    Quickstarts are deliberately prompts rather than hidden tool calls, so
+    the coordinator, policy checks, scenario routing and full audit trail all
+    remain in the execution path.
+    """
+
+    quickstart_id: str
+    title: str
+    description: str
+    prompt: str
+    agent_id: str = "main-coordinator"
+    scenario_id: str | None = None
+    scenario_inputs: dict[str, Any] = field(default_factory=dict)
+    capability_ids: tuple[str, ...] = ()
+    required_connection_ids: tuple[str, ...] = ()
+    expected_outcome: str = ""
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", self.quickstart_id):
+            raise ValueError("plugin quickstart id is invalid")
+        if not self.title.strip() or not self.description.strip() or not self.prompt.strip():
+            raise ValueError("plugin quickstart title, description, and prompt are required")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", self.agent_id):
+            raise ValueError("plugin quickstart agent_id is invalid")
+        if self.scenario_id and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", self.scenario_id):
+            raise ValueError("plugin quickstart scenario_id is invalid")
+        if not isinstance(self.scenario_inputs, dict):
+            raise ValueError("plugin quickstart scenario_inputs must be an object")
+        if any(not item.strip() for item in (*self.capability_ids, *self.required_connection_ids)):
+            raise ValueError("plugin quickstart references must be non-empty")
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["capability_ids"] = list(self.capability_ids)
+        value["required_connection_ids"] = list(self.required_connection_ids)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class PluginManifest:
     """Safe, durable description of an installed plugin release."""
 
@@ -35,6 +79,7 @@ class PluginManifest:
     build_digest: str = ""
     runtime_contract_version: int = 1
     dependencies: tuple[dict[str, Any], ...] = ()
+    quickstarts: tuple[PluginQuickstart, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.plugin_id.strip() or not self.version.strip() or not self.name.strip():
@@ -48,10 +93,14 @@ class PluginManifest:
                 "database", "http", "queue", "object_store", "credential", "service",
             }:
                 raise ValueError("plugin dependency kind is invalid")
+        quickstart_ids = [item.quickstart_id for item in self.quickstarts]
+        if len(quickstart_ids) != len(set(quickstart_ids)):
+            raise ValueError("plugin quickstart ids must be unique")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["dependencies"] = list(self.dependencies)
+        value["quickstarts"] = [item.to_dict() for item in self.quickstarts]
         return value
 
 

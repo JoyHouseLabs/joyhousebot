@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from jsonschema import Draft202012Validator, ValidationError
-from psycopg.types.json import Jsonb
 
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityInvocation
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.platform_records import CapabilityInvocationRecord
 
 

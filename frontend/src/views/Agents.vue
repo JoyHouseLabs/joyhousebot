@@ -50,9 +50,9 @@
       <main class="panel agent-editor">
         <div class="editor-header">
           <div>
-            <span class="eyebrow">{{ selectedAgentId ? 'REVISION DRAFT' : 'NEW DEFINITION' }}</span>
+            <span class="eyebrow">{{ selectedAgentId ? (draftSaved ? 'REVISION DRAFT' : 'NEW DRAFT FROM PUBLISHED') : 'NEW DEFINITION' }}</span>
             <h2>{{ draft.name || '新建 Agent' }}</h2>
-            <p v-if="draft.agent_id"><code>{{ draft.revision_id }}</code> · v{{ draft.version }}</p>
+            <p v-if="draft.agent_id"><code>{{ draft.revision_id }}</code> · v{{ draft.version }}<span v-if="skillBindingsSourceRevision && !draftSaved"> · 基于 {{ skillBindingsSourceRevision }}</span></p>
           </div>
           <div class="editor-actions">
             <span v-if="activeRevision" class="status-badge" :class="revisionClass(activeRevision.status)">{{ activeRevision.status }}</span>
@@ -115,6 +115,12 @@
         <div v-else-if="editorTab === 'abilities'" class="abilities-pane">
           <section class="form-section ability-section">
             <header><div><span>03</span><h3>工具与能力</h3></div><p>选择此 Agent 可调用的 Tool、Connector、Workflow 或子 Agent。</p></header>
+            <div v-if="draft.capability_mode === 'catalog'" class="catalog-summary">
+              <div><strong>使用整个已发布目录 · {{ effectiveCapabilityCount }} 项</strong><p>此 Agent 会随发布目录获得可用能力；无需逐项勾选。需要强边界时再切换为白名单。</p></div>
+              <button class="secondary-button" type="button" @click="draft.capability_mode = 'allowlist'">改为白名单</button>
+              <div class="catalog-groups"><span v-for="group in catalogGroups" :key="group.name"><b>{{ group.count }}</b>{{ group.name }}</span></div>
+            </div>
+            <template v-else>
             <div class="ability-toolbar">
               <label><span>能力模式</span><select v-model="draft.capability_mode"><option value="catalog">整个已发布目录</option><option value="allowlist">仅允许已选择能力</option></select></label>
               <input v-model.trim="capabilitySearch" type="search" placeholder="筛选能力" />
@@ -127,6 +133,7 @@
               </label>
               <div v-if="!filteredExecutableCapabilities.length" class="empty-state compact"><span>＋</span><strong>目录中暂无可执行能力</strong></div>
             </div>
+            </template>
           </section>
         </div>
 
@@ -170,7 +177,7 @@
 
         <div v-else-if="editorTab === 'skills'" class="skills-pane">
           <section class="form-section">
-            <header><div><span>06</span><h3>Skill 绑定</h3></div><p>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
+            <header><div><span>06</span><h3>Skill 绑定</h3></div><p v-if="draftSaved">Skill 绑定到已保存 Draft，发布后随 Agent 版本冻结。</p><p v-else-if="skillBindingsSourceRevision">当前展示 {{ skillBindingsSourceRevision }} 的冻结绑定；保存新的 Draft 后才能修改，已有绑定会自动继承。</p><p v-else>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
             <form class="skill-bind-form" @submit.prevent="addSkillBinding">
               <label><span>Skill</span><select v-model="skillDraft.skill_id" required><option value="" disabled>选择已发布 Skill</option><option v-for="skill in skillCapabilities" :key="skill.ref.capability_id" :value="skill.ref.capability_id">{{ skill.name }} · {{ skill.ref.version }}</option></select></label>
               <label><span>激活方式</span><select v-model="skillDraft.activation_mode"><option value="coordinator_selected">协调器选择</option><option value="always">始终启用</option><option value="scenario_required">场景要求</option></select></label>
@@ -183,7 +190,7 @@
                 <div><strong>{{ skillName(binding.skill_id) }}</strong><small>{{ binding.skill_id }} · {{ binding.skill_version }}</small></div>
                 <span>{{ activationLabel(binding.activation_mode) }}</span><code>P{{ binding.priority }}</code>
               </article>
-              <div v-if="!skillBindings.length" class="empty-state compact"><span>◇</span><strong>此 Draft 尚未绑定 Skill</strong><p>先保存 Draft，再添加需要的 Skill。</p></div>
+              <div v-if="!skillBindings.length" class="empty-state compact"><span>◇</span><strong>{{ draftSaved ? '此 Draft 尚未绑定 Skill' : '当前发布版本未绑定 Skill' }}</strong><p>目录中有 {{ skillCapabilities.length }} 个可选 Skill；先保存 Draft，再添加需要的 Skill。</p></div>
             </div>
           </section>
         </div>
@@ -244,6 +251,7 @@ const agents = ref<AdminAgent[]>([])
 const capabilities = ref<AdminCapability[]>([])
 const revisions = ref<AgentRevision[]>([])
 const skillBindings = ref<AgentSkillBinding[]>([])
+const skillBindingsSourceRevision = ref('')
 const selectedAgentId = ref('')
 const editorTab = ref<EditorTab>('profile')
 const search = ref('')
@@ -275,12 +283,22 @@ const activeRevision = computed(() => revisions.value.find((item) => item.revisi
 const filteredAgents = computed(() => { const term = search.value.toLowerCase(); return agents.value.filter((item) => !term || `${item.name} ${item.agent_id} ${item.description}`.toLowerCase().includes(term)) })
 const skillCapabilities = computed(() => capabilities.value.filter((item) => item.ref.kind === 'skill'))
 const executableCapabilities = computed(() => capabilities.value.filter((item) => item.ref.kind !== 'skill'))
+const effectiveCapabilityCount = computed(() => draft.capability_mode === 'catalog' ? executableCapabilities.value.length : draft.allowed_capabilities.length)
 const filteredExecutableCapabilities = computed(() => { const term = capabilitySearch.value.toLowerCase(); return executableCapabilities.value.filter((item) => !term || `${item.name} ${item.ref.capability_id} ${item.description}`.toLowerCase().includes(term)) })
+const catalogGroups = computed(() => {
+  const values = new Map<string, number>()
+  for (const item of executableCapabilities.value) {
+    const id = item.ref.capability_id
+    const name = id.startsWith('dinq.') ? 'Dinq Discover' : kindLabel(item.ref.kind)
+    values.set(name, (values.get(name) || 0) + 1)
+  }
+  return [...values].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count)
+})
 const draftSaved = computed(() => Boolean(activeRevision.value?.status === 'draft' && savedFingerprint.value === fingerprint()))
 const canSave = computed(() => Boolean(draft.agent_id && draft.name && draft.revision_id && draft.primary_model))
 const editorTabs = computed(() => [
   { id: 'profile' as const, label: '身份指令' }, { id: 'model' as const, label: '模型策略' },
-  { id: 'abilities' as const, label: '工具与能力', count: draft.allowed_capabilities.length },
+  { id: 'abilities' as const, label: '工具与能力', count: effectiveCapabilityCount.value },
   { id: 'planning' as const, label: '规划策略' },
   { id: 'memory' as const, label: '记忆策略' },
   { id: 'skills' as const, label: 'Skills', count: skillBindings.value.length },
@@ -349,7 +367,7 @@ async function loadCatalog() {
 }
 
 async function selectAgent(agentId: string) {
-  selectedAgentId.value = agentId; editorTab.value = 'profile'; skillBindings.value = []
+  selectedAgentId.value = agentId; editorTab.value = 'profile'; skillBindings.value = []; skillBindingsSourceRevision.value = ''
   try {
     revisions.value = await getAgentRevisions(agentId)
     const agent = agents.value.find((item) => item.agent_id === agentId)
@@ -358,15 +376,16 @@ async function selectAgent(agentId: string) {
     const nextVersion = Math.max(0, ...revisions.value.map((item) => item.version)) + 1
     const targetId = latestDraft?.revision_id || `${agentId}:v${nextVersion}`
     fillDraft(agent, base, targetId, latestDraft?.version || nextVersion)
-    if (latestDraft) {
-      skillBindings.value = await getAgentSkillBindings(agentId, latestDraft.revision_id)
-      savedFingerprint.value = fingerprint()
-    } else savedFingerprint.value = ''
+    if (base) {
+      skillBindings.value = await getAgentSkillBindings(agentId, base.revision_id)
+      skillBindingsSourceRevision.value = base.revision_id
+    }
+    savedFingerprint.value = latestDraft ? fingerprint() : ''
   } catch (value) { message.error(errorText(value)) }
 }
 
 function createAgent() {
-  selectedAgentId.value = ''; revisions.value = []; skillBindings.value = []; savedFingerprint.value = ''
+  selectedAgentId.value = ''; revisions.value = []; skillBindings.value = []; skillBindingsSourceRevision.value = ''; savedFingerprint.value = ''
   Object.assign(draft, blankDraft()); Object.assign(policyBase, { persona: {}, model: {}, planning: {}, capability: {}, memory: {}, output: {} }); editorTab.value = 'profile'
 }
 
@@ -410,10 +429,19 @@ async function saveDraft() {
   if (!canSave.value) return
   saving.value = true
   try {
+    const inheritedBindings = !activeRevision.value
+      ? skillBindings.value.map((item) => ({ ...item, configuration: { ...item.configuration } }))
+      : []
     await saveAgentRevision(draft.agent_id, draft.revision_id, payload())
+    if (inheritedBindings.length) {
+      await Promise.all(inheritedBindings.map((item) => bindAgentSkill(draft.agent_id, draft.revision_id, {
+        skill_id: item.skill_id, skill_version: item.skill_version,
+        activation_mode: item.activation_mode, priority: item.priority, configuration: item.configuration,
+      })))
+    }
     selectedAgentId.value = draft.agent_id; message.success('Agent Draft 已保存')
     const [agentItems, revisionItems] = await Promise.all([getAdminAgents(), getAgentRevisions(draft.agent_id)])
-    agents.value = agentItems; revisions.value = revisionItems; savedFingerprint.value = fingerprint()
+    agents.value = agentItems; revisions.value = revisionItems; skillBindings.value = await getAgentSkillBindings(draft.agent_id, draft.revision_id); skillBindingsSourceRevision.value = draft.revision_id; savedFingerprint.value = fingerprint()
   } catch (value) { message.error(errorText(value)) } finally { saving.value = false }
 }
 
@@ -465,7 +493,7 @@ watch(() => draft.agent_id, (agentId, previous) => {
 .editor-tabs { display: flex; overflow-x: auto; padding: 0 18px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.editor-tabs button { display: flex; align-items: center; gap: 6px; padding: 13px 12px 11px; color: var(--text-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; }.editor-tabs button.active { color: var(--text-strong); border-bottom-color: var(--accent); }.editor-tabs small { min-width: 17px; padding: 1px 4px; color: var(--accent); background: var(--accent-subtle); border-radius: 99px; font: 9px var(--font-mono); }
 .agent-form,.skills-pane,.revision-pane { padding: 22px; }.form-section { border: 1px solid var(--border); border-radius: 13px; overflow: hidden; }.form-section>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px 18px; background: var(--surface-raised); border-bottom: 1px solid var(--border); }.form-section>header>div { display: flex; align-items: center; gap: 9px; }.form-section>header span { color: var(--accent); font: 600 9px var(--font-mono); }.form-section h3 { margin: 0; color: var(--text-strong); font-size: 14px; }.form-section>header p { margin: 0; color: var(--text-muted); font-size: 10px; text-align: right; }
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; padding: 18px; }.form-grid label,.skill-bind-form label,.ability-toolbar label { display: grid; gap: 6px; color: var(--text-muted); font-size: 10px; }.form-grid label.wide { grid-column: 1/-1; }.form-grid input,.form-grid select,.form-grid textarea,.skill-bind-form input,.skill-bind-form select,.ability-toolbar select { width: 100%; padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border-strong); border-radius: 9px; outline: none; }.form-grid textarea { resize: vertical; line-height: 1.65; }.form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-subtle); }.switch-label { display: flex !important; flex-direction: row !important; align-items: center; gap: 10px !important; min-height: 54px; padding: 9px 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; }.switch-label input { width: auto; }.switch-label span { display: grid; gap: 2px; }.switch-label strong { color: var(--text); font-size: 11px; }.switch-label small { color: var(--text-muted); }
-.abilities-pane { padding: 22px; }.ability-toolbar { display: grid; grid-template-columns: minmax(190px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.capability-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: center; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card>span:last-child { min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; }.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { grid-column: 1/-1; color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }
+.abilities-pane { padding: 22px; }.catalog-summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; padding:20px; }.catalog-summary strong{color:var(--text-strong);font-size:14px}.catalog-summary p{margin:6px 0 0;color:var(--text-muted);font-size:11px;line-height:1.6}.catalog-groups{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.catalog-groups span{display:flex;gap:6px;align-items:center;padding:7px 10px;color:var(--text-muted);background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;font-size:10px}.catalog-groups b{color:var(--accent);font:600 11px var(--font-mono)}.ability-toolbar { display: grid; grid-template-columns: minmax(190px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.capability-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: center; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card>span:last-child { min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; }.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { grid-column: 1/-1; color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }
 .skill-bind-form { display: grid; grid-template-columns: 1.3fr 1fr 110px auto; gap: 12px; align-items: end; padding: 18px; border-bottom: 1px solid var(--border); }.binding-list article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto auto; gap: 11px; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--border); }.binding-list article:last-child { border-bottom: 0; }.binding-list article>div { min-width: 0; display: grid; gap: 2px; }.binding-list strong { color: var(--text-strong); font-size: 11px; }.binding-list small,.binding-list article>span:nth-last-child(2),.binding-list code { color: var(--text-muted); font-size: 9px; }
 .revision-list { padding: 4px 18px 18px; }.revision-list article { position: relative; display: grid; grid-template-columns: 12px minmax(0,1fr) auto auto; gap: 12px; align-items: center; min-height: 66px; padding: 11px 0; border-bottom: 1px solid var(--border); }.revision-list article.current { background: linear-gradient(90deg,var(--accent-subtle),transparent); }.revision-node { width: 9px; height: 9px; border: 2px solid var(--accent); border-radius: 50%; }.revision-list article>div { min-width: 0; display: grid; gap: 3px; }.revision-list strong { color: var(--text-strong); font-size: 11px; }.revision-list small { color: var(--text-muted); font: 9px var(--font-mono); }.current-label { color: var(--accent); font: 600 8px var(--font-mono); }
 .role-guide { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: -2px; }

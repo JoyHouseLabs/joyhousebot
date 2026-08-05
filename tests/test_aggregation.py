@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 from joyhousebot.orchestration.aggregation import (
     aggregate_task_results,
     normalize_aggregation_policy,
+    synthesis_prompt,
 )
 
 
@@ -65,3 +68,19 @@ def test_policy_rejects_unknown_modes() -> None:
         assert "unsupported aggregation" in str(error)
     else:
         raise AssertionError("invalid policy should fail")
+
+
+def test_dynamic_datetime_evidence_is_serializable() -> None:
+    task = _task("dynamic", "")
+    task["result"] = {
+        "status": "completed",
+        "content": "",
+        "capability_result": {
+            "data": {"observed_at": datetime(2026, 8, 5, tzinfo=timezone.utc)},
+        },
+    }
+    policy = normalize_aggregation_policy({"mode": "structured_merge"})
+    result = aggregate_task_results([task], policy)
+    assert result.structured_output["observed_at"].isoformat() == "2026-08-05T00:00:00+00:00"
+    assert "2026-08-05" in result.content
+    assert "2026-08-05" in synthesis_prompt(goal="test", tasks=[task], policy=policy)

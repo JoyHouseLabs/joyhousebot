@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import APIRouter, Header, Query, Request, Response
 
 from joyhousebot.api.dependencies import ContainerDep, ContextDep
-from joyhousebot.api.schemas import CreateGraphRequest, CreateRunRequest, ResolveRunInputRequest
+from joyhousebot.api.schemas import (
+    CreateGraphRequest,
+    CreateRunFeedbackRequest,
+    CreateRunRequest,
+    ResolveRunInputRequest,
+)
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import CreateRunCommand, GraphTaskCommand
 from joyhousebot.runtime.narrative import public_event_dict
@@ -102,6 +108,58 @@ async def list_runs(
 @router.get("/{run_id}")
 async def get_run(run_id: str, context: ContextDep, container: ContainerDep):
     return record_dict(await container.runs.get(context, run_id))
+
+
+@router.get("/{run_id}/feedback")
+async def list_feedback(run_id: str, context: ContextDep, container: ContainerDep):
+    """List feedback visible to the owner of this Run."""
+    await container.runs.get(context, run_id)
+    rows = await asyncio.to_thread(
+        container.store.list_run_feedback,
+        run_id,
+        user_id=context.user_id,
+        limit=200,
+    )
+    return {"items": [record_dict(row) for row in rows]}
+
+
+@router.post("/{run_id}/feedback", status_code=201)
+async def create_feedback(
+    run_id: str,
+    body: CreateRunFeedbackRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    """Persist human feedback with the Run's execution snapshot for audit/replay."""
+    run = await container.runs.get(context, run_id)
+    snapshot = await asyncio.to_thread(container.store.get_run_execution_snapshot, run_id)
+    row = await asyncio.to_thread(
+        container.store.create_run_feedback,
+        run_id=run_id,
+        user_id=context.user_id,
+        agent_id=run.agent_id,
+        session_id=run.session_id,
+        agent_revision_id=snapshot.agent_revision_id if snapshot else None,
+        turn_id=body.turn_id,
+        message_id=body.message_id,
+        feedback_type=body.feedback_type,
+        rating=body.rating,
+        comment=body.comment.strip(),
+        output_excerpt=body.output_excerpt,
+        metadata={**body.metadata, "source": "web-playground"},
+    )
+    await asyncio.to_thread(
+        container.store.append_runtime_log,
+        run_id=run_id,
+        stage="feedback.created",
+        message="Human feedback recorded for Run output",
+        data={
+            "feedback_id": row.feedback_id,
+            "feedback_type": row.feedback_type,
+            "actor": context.user_id,
+        },
+    )
+    return record_dict(row)
 
 
 @router.post("/{run_id}/cancel")

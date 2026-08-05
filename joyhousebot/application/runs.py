@@ -90,14 +90,24 @@ class RunService:
         agent_definition = await asyncio.to_thread(
             self.store.get_agent_definition, command.agent_id
         )
-        # A coordinator Agent must always inspect the request before a routed
-        # scenario runs.  Deterministic routing is only a candidate selection:
-        # the coordinator extracts scenario inputs and narrows the executable
-        # tool set.  Otherwise a natural-language request such as a Dinq
-        # talent search would enter a fixed graph with empty template inputs.
+        # A coordinator inspects ordinary routed requests before a Scenario
+        # runs: rule matches are merely candidate selection.  An *explicit*,
+        # fully populated fixed Scenario is different: it is an operator or
+        # plugin-owned contract (for example a control-plane quickstart), so
+        # it may dispatch its deterministic graph directly.  This preserves
+        # the coordinator for user intent recognition while making repeatable
+        # tests and integrations independent of model tool-call dialects.
+        explicit_fixed_scenario = bool(
+            command.scenario_id
+            and scenario is not None
+            and scenario.planning_mode == "fixed"
+        )
         coordinator_required = (
-            getattr(agent_definition, "role", None) == "coordinator"
-            or bool(command.metadata.get("coordinator_required"))
+            not explicit_fixed_scenario
+            and (
+                getattr(agent_definition, "role", None) == "coordinator"
+                or bool(command.metadata.get("coordinator_required"))
+            )
         )
         metadata = {
             **command.metadata,
@@ -125,6 +135,11 @@ class RunService:
             else []
         )
         metadata["skill_names"] = skill_names
+        metadata["skill_refs"] = [
+            item.to_dict()
+            for item in (scenario.allowed_capabilities if scenario else ())
+            if item.kind.value == "skill"
+        ]
         options = AgentOptions(
             prompt=command.input,
             user_id=context.user_id,
@@ -406,6 +421,7 @@ class RunService:
         tasks: list[GraphTaskCommand],
         max_concurrent: int = 4,
         fail_fast: bool = True,
+        aggregate: bool = True,
     ) -> Any:
         if not goal.strip() or not tasks:
             raise ValidationError("goal and tasks are required")
@@ -469,6 +485,7 @@ class RunService:
             agent_id=agent_id,
             max_concurrent=max_concurrent,
             fail_fast=fail_fast,
+            aggregate=aggregate,
             idempotency_key=context.idempotency_key,
             tasks=[
                 GraphTaskSpec(

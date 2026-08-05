@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -122,3 +122,30 @@ class InputRequestRecord:
     expires_at: str | None
     created_at: str
     resolved_at: str | None
+
+
+@dataclass(slots=True)
+class RunFeedbackRecord:
+    """Human feedback anchored to an immutable run/output snapshot."""
+
+    feedback_id: str
+    run_id: str
+    user_id: str
+    agent_id: str
+    session_id: str
+    feedback_type: str
+    comment: str
+    agent_revision_id: str | None = None
+    turn_id: str | None = None
+    message_id: str | None = None
+    rating: str | None = None
+    output_excerpt: str | None = None
+    status: str = "open"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

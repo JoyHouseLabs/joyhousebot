@@ -111,6 +111,11 @@ class ScenarioPlanner:
                     metadata={
                         "scenario_id": scenario.scenario_id,
                         "scenario_version": scenario.version,
+                        "skill_refs": [
+                            item.to_dict()
+                            for item in scenario.allowed_capabilities
+                            if item.kind.value == "skill"
+                        ],
                     },
                 )
             )

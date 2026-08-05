@@ -67,9 +67,9 @@ def test_default_agents_are_seeded_from_database(tmp_path: Path) -> None:
 
     default = store.get_agent_profile()
     assert default is not None
-    assert default.definition.agent_id == "joy"
+    assert default.definition.agent_id == "main-coordinator"
     assert default.definition.is_default
-    assert default.revision.revision_id == "joy:v1"
+    assert default.revision.revision_id == "main-coordinator:v1"
     assert {profile.definition.agent_id for profile in store.list_agent_profiles()} == {
         "joy",
         "main-coordinator",

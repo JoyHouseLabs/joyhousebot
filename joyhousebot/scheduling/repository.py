@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from joyhousebot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+from joyhousebot.storage.json_codec import Jsonb
 
 
 class ScheduleRepository:
@@ -109,8 +110,6 @@ class ScheduleRepository:
         columns = """schedule_id,user_id,name,agent_id,enabled,schedule,payload,
             next_run_at_ms,last_run_at_ms,last_status,last_error,delete_after_run,
             lease_owner,lease_until_ms,lease_version,created_at_ms,updated_at_ms"""
-        from psycopg.types.json import Jsonb
-
         values = (
                 job.id,
                 job.user_id,
@@ -183,8 +182,6 @@ class ScheduleRepository:
         schedule = vars(job.schedule)
         payload = vars(job.payload)
         p = "%s"
-        from psycopg.types.json import Jsonb
-
         schedule_value: Any = Jsonb(schedule)
         payload_value: Any = Jsonb(payload)
         schedule_column = "schedule"

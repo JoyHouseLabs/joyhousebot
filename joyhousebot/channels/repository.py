@@ -8,6 +8,8 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator, Sequence
 
+from joyhousebot.storage.json_codec import Jsonb
+
 
 class ChannelRepository:
     """Coordinate channel workers with fenced leases and a transactional outbox."""
@@ -135,8 +137,6 @@ class ChannelRepository:
             now_ms,
             now_ms,
         )
-        from psycopg.types.json import Jsonb
-
         values = (*values[:6], Jsonb(values[6]), Jsonb(values[7]), *values[8:])
         query = """INSERT INTO channel_outbox
                 (outbound_id,user_id,channel,chat_id,content,reply_to,media,metadata,

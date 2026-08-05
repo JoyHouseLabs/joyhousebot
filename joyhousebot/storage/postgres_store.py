@@ -16,9 +16,9 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_admins import PostgresAdminStoreMixin
 from joyhousebot.storage.postgres_agents import PostgresAgentStoreMixin
 from joyhousebot.storage.postgres_capabilities import PostgresCapabilityStoreMixin
@@ -31,6 +31,7 @@ from joyhousebot.storage.postgres_operations import PostgresOperationsStoreMixin
 from joyhousebot.storage.postgres_plugins import PostgresPluginStoreMixin
 from joyhousebot.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
 from joyhousebot.storage.postgres_rollouts import PostgresRolloutStoreMixin
+from joyhousebot.storage.postgres_run_listing import PostgresRunListingStoreMixin
 from joyhousebot.storage.postgres_runs import PostgresRunStoreMixin
 from joyhousebot.storage.postgres_scenarios import PostgresScenarioStoreMixin
 from joyhousebot.storage.postgres_tasks import PostgresTaskStoreMixin
@@ -70,6 +71,7 @@ class PostgresRuntimeStore(
     PostgresClarificationStoreMixin,
     PostgresScenarioStoreMixin,
     PostgresGraphStoreMixin,
+    PostgresRunListingStoreMixin,
     PostgresRunStoreMixin,
     PostgresTaskStoreMixin,
     PostgresRateLimitStoreMixin,

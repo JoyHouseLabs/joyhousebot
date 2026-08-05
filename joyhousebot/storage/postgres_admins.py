@@ -7,9 +7,8 @@ import secrets
 from typing import Any
 from uuid import uuid4
 
-from psycopg.types.json import Jsonb
-
 from joyhousebot.application.permissions import normalize_permissions
+from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.platform_records import PlatformAdminRecord
 
 _ROLES = {"admin", "operator", "viewer"}

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from psycopg.types.json import Jsonb
-
 from joyhousebot.domain.scenarios import ScenarioVersion
 from joyhousebot.domain.scenarios.models import ScenarioVersion as ScenarioModel
+from joyhousebot.storage.json_codec import Jsonb
 
 
 class PostgresScenarioStoreMixin:

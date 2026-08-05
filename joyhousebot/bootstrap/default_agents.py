@@ -27,6 +27,11 @@ def default_agent_profiles() -> tuple[tuple[AgentDefinition, AgentRevision], ...
                 name="Main Coordinator",
                 description="识别意图、选择场景并编排多 Agent 工作流",
                 role="coordinator",
+                # The cloud entrypoint is a coordinator.  It owns routing,
+                # clarification, policy checks and delegation; business
+                # plugins then contribute capabilities without becoming the
+                # platform's default Agent.
+                is_default=True,
             ),
             AgentRevision(
                 revision_id="main-coordinator:v1",
@@ -64,7 +69,6 @@ def default_agent_profiles() -> tuple[tuple[AgentDefinition, AgentRevision], ...
                 name="JoyAgent",
                 description="通用任务执行 Agent",
                 role="executor",
-                is_default=True,
             ),
             AgentRevision(
                 revision_id="joy:v1",

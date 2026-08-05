@@ -1,8 +1,11 @@
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.runs import CreateRunCommand, RunService
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import (
     ClarificationEdge,
@@ -150,3 +153,63 @@ def test_fixed_graph_omits_missing_optional_fields_from_capability_input(tmp_pat
     )
     assert graph is not None
     assert graph.tasks[0].capability_input == {"query": "python"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_fixed_scenario_bypasses_coordinator_and_submits_graph(tmp_path: Path) -> None:
+    backing = PostgresTestStore(tmp_path / "explicit-fixed-scenario.db")
+    tool = CapabilityDefinition(
+        name="Echo",
+        ref=CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+        description="Echo input",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        adapter="echo",
+    )
+    backing.publish_capability(tool)
+    scenario = ScenarioVersion(
+        scenario_id="explicit.echo", version=1, name="Explicit echo", description="A fixed quickstart",
+        fields=(ScenarioField("query", "string", required=True),), nodes=(), edges=(),
+        allowed_capabilities=(tool.ref,), planning_mode="fixed",
+        execution_policy={"tasks": [{"id": "echo", "capability": tool.ref.to_dict(), "input": {"query": "${query}"}}]},
+    )
+    backing.save_scenario_version(scenario, status="published")
+
+    class StoreProxy:
+        saved_states: list[dict] = []
+
+        def __getattr__(self, name):
+            return getattr(backing, name)
+
+        def save_run_scenario_state(self, **kwargs):
+            self.saved_states.append(kwargs)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.graph = None
+            self.events = SimpleNamespace(publish=self._publish)
+
+        async def _publish(self, _event) -> None:
+            return None
+
+        async def submit_graph(self, graph):
+            self.graph = graph
+            return SimpleNamespace(run_id="run-explicit")
+
+        async def submit_run(self, *_args, **_kwargs):
+            raise AssertionError("explicit fixed scenario must not ask the coordinator to create a text run")
+
+    store = StoreProxy()
+    runtime = Runtime()
+    result = await RunService(runtime, store).create(
+        RequestContext(Principal("user-a", "user-a"), "request-a"),
+        CreateRunCommand(
+            agent_id="main-coordinator", session_id="session-a", input="Run the echo quickstart",
+            scenario_id="explicit.echo", scenario_inputs={"query": "ready"},
+        ),
+    )
+
+    assert result.run_id == "run-explicit"
+    assert runtime.graph is not None
+    assert runtime.graph.tasks[0].capability_input == {"query": "ready"}
+    assert store.saved_states[0]["scenario_id"] == "explicit.echo"
