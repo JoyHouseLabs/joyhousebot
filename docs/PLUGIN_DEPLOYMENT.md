@@ -28,7 +28,7 @@ Worker。
 3. 执行 `python -m dinq_plugin.discover.seed`。它只发布 Dinq Capability、Skill 和新版 Scenario；所有
    Scenario 任务持久化完整 CapabilityRef，绝不按名称选择最新 Tool。
 4. 对 Dinq 服务部署，再显式执行 `python -m dinq_plugin.discover.bootstrap`。它在上述已发布 Catalog
-   基础上创建 `main-coordinator:v2`，固定 `dinq.discover@<version> + build_digest` 并只授予 `dinq.*`。
+   基础上创建当前版本的 `main-coordinator` Revision，固定 `dinq.discover@<version> + build_digest` 并只授予 `dinq.*`。
    该命令是部署决策，普通 Joyhousebot 安装或仅安装插件时绝不会自动提升业务权限。
 5. 等目标 Worker 均为 `execution_eligible` 后，才将该 revision 设为默认或把流量路由给它。
 
