@@ -22,8 +22,8 @@ Worker。
 1. 在每个 Agent Worker 安装相同版本的 `dinq-plugin`，并在 Joyhousebot 配置的
    `tools.capability_plugins` 中加入 `dinq_plugin.discover.plugin`（或采用 entry point discovery）。
 2. 以相同的 `DINQ_PLUGIN_BUILD_DIGEST` 启动 Worker；Worker heartbeat 会报告加载的发布单元。
-   若检索服务不与 Worker 同机，还要设置 `DINQ_PLATFORM_SEARCH_URL` 和
-   `DINQ_PLATFORM_SEARCH_ALLOWED_HOSTS`。后者是逗号分隔的服务 DNS/IP 白名单；默认只允许 loopback，
+   本地检索能力使用 `DINQ_LOCAL_SEARCH_URL`（默认 `http://127.0.0.1:8200/search`）和
+   `DINQ_LOCAL_SEARCH_ALLOWED_HOSTS`。后者是逗号分隔的服务 DNS/IP 白名单；默认只允许 loopback，
    Tool 输入永远不能改变目标地址。
 3. 执行 `python -m dinq_plugin.discover.seed`。它只发布 Dinq Capability、Skill 和新版 Scenario；所有
    Scenario 任务持久化完整 CapabilityRef，绝不按名称选择最新 Tool。

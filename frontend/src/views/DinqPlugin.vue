@@ -104,7 +104,7 @@ const playgroundSamples: Record<string, { input?: string; prompt?: string }> = {
   "sources": [{"source": "github", "results": [{"login": "ada", "name": "Ada Lovelace", "html_url": "https://github.com/ada"}]}],
   "target_count": 10
 }` },
-  'dinq.platform.search': { input: `{"query":"machine learning","entity":"person","mode":"lexical","limit":1}` },
+  'dinq.local.search': { input: `{"query":"machine learning","entity":"person","mode":"lexical","limit":1}` },
   'dinq.talent.filter': { input: `{"query":"machine learning","platform":"github","limit":1}` },
   // This id is present in the configured Dinq talent catalog and makes the
   // first Playground run useful out of the box.  `github:ada` is not seeded
@@ -124,7 +124,7 @@ const playgroundSamples: Record<string, { input?: string; prompt?: string }> = {
   'dinq.candidate.enrich': { prompt: '请核验 GitHub 候选人 torvalds', input: `{"identifier":"torvalds","platform_hint":"github"}` },
   'dinq.discover.search': { prompt: '在 Dinq 中调研机器学习研究人员', input: '{}' },
   'dinq.talent.filter:scenario': { prompt: '筛选 GitHub 人才', input: `{"platform":"github","limit":10}` },
-  'dinq.platform.search:scenario': { prompt: '在 Dinq 中搜索机器学习研究人员', input: `{"query":"machine learning","entity":"person","limit":3}` },
+  'dinq.local.search:scenario': { prompt: '在本地 Dinq 服务中搜索机器学习研究人员', input: `{"query":"machine learning","entity":"person","limit":3}` },
 }
 const playgroundComponentId = ref(''); const playgroundInput = ref('{}'); const scenarioPrompt = ref(''); const scenarioInputsText = ref('{}')
 const playgroundRun = ref<RuntimeRun | null>(null); const playgroundArtifact = ref<RuntimeArtifact | null>(null); const playgroundRunning = ref(false); const playgroundRefreshing = ref(false)
@@ -144,7 +144,7 @@ async function openSettings(item: PluginComponent) { selectedComponent.value = i
 function closeSettings() { selectedComponent.value = null; settings.value = null; settingsText.value = '{}' }; function resetSettings() { settingsText.value = savedSettingsText.value }
 async function saveSettings() { if (!selectedComponent.value || !settings.value) return; let configuration: Record<string, unknown>; try { const parsed = JSON.parse(settingsText.value); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('配置必须是 JSON 对象'); configuration = parsed as Record<string, unknown> } catch (cause) { error.value = cause instanceof Error ? cause.message : '配置 JSON 无效'; return } settingsSaving.value = true; error.value = ''; try { const value = await saveCapabilityRuntimeSettings(selectedComponent.value.reference_id, { enabled: settings.value.enabled, configuration }); settings.value = { ...settings.value, ...value, configuration_schema: settings.value.configuration_schema }; settingsText.value = pretty(value.configuration); savedSettingsText.value = settingsText.value } catch (cause) { error.value = cause instanceof Error ? cause.message : '保存组件配置失败' } finally { settingsSaving.value = false } }
 function openRun(runId: string) { void router.push({ path: '/runs', query: { run: runId } }) }
-function playgroundSample(item: PluginComponent | null) { if (!item) return {}; return playgroundSamples[item.component_type === 'scenario' && item.reference_id === 'dinq.talent.filter' ? 'dinq.talent.filter:scenario' : item.component_type === 'scenario' && item.reference_id === 'dinq.platform.search' ? 'dinq.platform.search:scenario' : item.reference_id] || {} }
+function playgroundSample(item: PluginComponent | null) { if (!item) return {}; return playgroundSamples[item.component_type === 'scenario' && item.reference_id === 'dinq.talent.filter' ? 'dinq.talent.filter:scenario' : item.component_type === 'scenario' && item.reference_id === 'dinq.local.search' ? 'dinq.local.search:scenario' : item.reference_id] || {} }
 function resetPlayground() { const sample = playgroundSample(playgroundComponent.value); playgroundInput.value = sample.input || '{}'; scenarioInputsText.value = sample.input || '{}'; scenarioPrompt.value = sample.prompt || `测试 ${playgroundComponent.value?.name || '组件'}`; playgroundArtifact.value = null; playgroundRun.value = null; scenarioResult.value = null; skillResult.value = null }
 function selectPlaygroundComponent(item: PluginComponent) { playgroundComponentId.value = item.component_id; resetPlayground() }
 function openComponentPlayground(item: PluginComponent) { tab.value = 'playground'; selectPlaygroundComponent(item) }
