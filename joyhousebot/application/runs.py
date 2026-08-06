@@ -154,6 +154,74 @@ class RunService:
             idempotency_key=context.idempotency_key,
             request_id=context.request_id,
         )
+        # Scenario clarification is a durable submission concern, not an
+        # optional side effect of the coordinator model.  In particular, a
+        # coordinator-owned dynamic scenario must never be queued for model
+        # execution while required fields are missing: the former behaviour
+        # let the model write a prose follow-up and complete the Run instead
+        # of creating a resumable input request.
+        if scenario is not None:
+            step = self.clarifications.evaluate(scenario, decision.extracted_inputs)
+            if not step.complete:
+                record = await self.runtime.submit_run(options, initial_status="waiting_input")
+                await self.runtime.events.publish(
+                    AgentEvent(
+                        run_id=record.run_id,
+                        type=EventType.DECISION_RECORDED.value,
+                        status="completed",
+                        data={
+                            "source": "runtime_decision",
+                            "kind": "scenario_routing",
+                            "decision": decision.to_dict(),
+                        },
+                    )
+                )
+                await asyncio.to_thread(
+                    self.store.save_run_scenario_state,
+                    run_id=record.run_id,
+                    user_id=context.user_id,
+                    scenario_id=scenario.scenario_id,
+                    scenario_version=scenario.version,
+                    status="waiting_input",
+                    collected_inputs=step.collected_inputs,
+                    missing_inputs=list(step.missing_inputs),
+                    current_node_id=step.node.node_id if step.node else None,
+                    routing_decision=decision.to_dict(),
+                )
+                request = await asyncio.to_thread(
+                    self.clarifications.create_request,
+                    run_id=record.run_id,
+                    user_id=context.user_id,
+                    scenario=scenario,
+                    step=step,
+                )
+                await self.runtime.events.publish(
+                    AgentEvent(
+                        run_id=record.run_id,
+                        type=EventType.DECISION_RECORDED.value,
+                        phase="clarifying",
+                        status="waiting_input",
+                        summary="搜索条件不完整，正在等待补充",
+                        data={"missing_fields": list(step.missing_inputs)},
+                    )
+                )
+                await self.runtime.events.publish(
+                    AgentEvent(
+                        run_id=record.run_id,
+                        type=EventType.USER_INPUT_REQUESTED.value,
+                        phase="clarifying",
+                        status="waiting_input",
+                        summary=request.question,
+                        data={
+                            "input_request_id": request.input_request_id,
+                            "scenario_id": scenario.scenario_id,
+                            "question": request.question,
+                            "fields": request.fields,
+                            "presentation": request.presentation,
+                        },
+                    )
+                )
+                return await self.get(context, record.run_id)
         if coordinator_required or scenario is None or decision.next_action == "plan":
             graph = None
             if scenario is not None and not coordinator_required:
