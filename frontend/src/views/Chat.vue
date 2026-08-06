@@ -4,7 +4,7 @@
       <div><span class="eyebrow">PLAYGROUND</span><h1>Agent 在线试用</h1><p>每条消息都会提交一个持久 Run；刷新页面后仍可恢复执行时间线。</p></div>
       <div class="heading-actions">
         <label class="inline-select"><span>Agent</span><select v-model="agentId" @change="changeAgent"><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name || agent.id }} · {{ agent.model }}</option></select></label>
-        <button class="secondary-button" type="button" @click="newSession">新会话</button>
+        <button class="secondary-button" type="button" @click="newSession">{{ dinqMode ? '新的搜索' : '新会话' }}</button>
       </div>
     </header>
 
