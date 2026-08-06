@@ -48,6 +48,20 @@ def test_dinq_projection_is_empty_for_generic_run() -> None:
     assert projection["selected_candidate"] is None
 
 
+def test_dinq_projection_exposes_confirmed_search_conditions() -> None:
+    projection = build_dinq_projection(
+        run={"run_id": "run-brief", "status": "waiting_input", "prompt": "找强化学习的人员", "options": {}},
+        artifacts=[], events=[], invocations=[],
+        scenario_state=SimpleNamespace(
+            collected_inputs={"research_topic": "强化学习 / Deep RL", "limit": 20},
+            missing_inputs=["candidate_type", "region"],
+        ),
+    )
+    assert projection["search"]["query"] == "找强化学习的人员"
+    assert projection["search"]["conditions"] == {"research_topic": "强化学习 / Deep RL", "limit": 20}
+    assert projection["search"]["missing_conditions"] == ["candidate_type", "region"]
+
+
 def test_dinq_projection_reads_nested_invocation_output_and_repr_artifact() -> None:
     run = {"run_id": "run-3", "status": "completed", "prompt": "search", "options": {}}
     invocation = {

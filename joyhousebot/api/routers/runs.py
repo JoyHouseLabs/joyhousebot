@@ -202,10 +202,11 @@ async def get_run_projection(
 
         raise HTTPException(status_code=400, detail=f"unsupported projection view: {view}")
     run = await container.runs.get(context, run_id)
-    artifacts, events, invocations = await asyncio.gather(
+    artifacts, events, invocations, scenario_state = await asyncio.gather(
         container.runs.artifacts(context, run_id),
         asyncio.to_thread(container.store.list_runtime_events, run_id, user_id=context.user_id, limit=5000),
         container.runs.invocations(context, run_id),
+        asyncio.to_thread(container.store.get_run_scenario_state, run_id, expected_user_id=context.user_id),
     )
     return build_dinq_projection(
         run=run,
@@ -213,6 +214,7 @@ async def get_run_projection(
         events=events,
         invocations=invocations,
         candidate_id=candidate_id,
+        scenario_state=scenario_state,
     )
 
 

@@ -38,6 +38,8 @@ export interface DinqRunProjection {
     phase?: string | null
     next_action?: string | null
     summary?: string | null
+    conditions?: Record<string, unknown>
+    missing_conditions?: string[]
     total_candidates: number
     verified_candidates: number
     tool_calls: number

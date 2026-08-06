@@ -140,6 +140,7 @@ def build_dinq_projection(
     events: list[Any],
     invocations: list[Any],
     candidate_id: str | None = None,
+    scenario_state: Any | None = None,
 ) -> dict[str, Any]:
     """Build a stable, UI-oriented projection from opaque runtime records."""
     candidates: dict[str, dict[str, Any]] = {}
@@ -218,6 +219,16 @@ def build_dinq_projection(
         record = vars(run)
     options = record.get("options") if isinstance(record.get("options"), dict) else {}
     status = record.get("status")
+    collected_inputs = (
+        dict(getattr(scenario_state, "collected_inputs", {}) or {})
+        if scenario_state is not None
+        else {}
+    )
+    missing_inputs = (
+        list(getattr(scenario_state, "missing_inputs", []) or [])
+        if scenario_state is not None
+        else []
+    )
     verified = sum(1 for item in ordered if item.get("enrichment_status") in {"ready", "verified", "completed"})
     return {
         "schema_version": 1,
@@ -230,6 +241,11 @@ def build_dinq_projection(
             "phase": record.get("current_phase"),
             "next_action": record.get("next_action"),
             "summary": record.get("status_summary"),
+            # Keep the original natural-language request for auditability, but
+            # expose the confirmed structured brief separately.  The planner
+            # receives these exact values when it materializes the task graph.
+            "conditions": collected_inputs,
+            "missing_conditions": missing_inputs,
             "total_candidates": len(ordered),
             "verified_candidates": verified,
             "tool_calls": len(invocations),
