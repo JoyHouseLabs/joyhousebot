@@ -11,6 +11,7 @@ from joyhousebot.domain.scenarios import (
     ScenarioVersion,
 )
 from joyhousebot.orchestration import ClarificationEngine, ScenarioRouter
+from joyhousebot.runtime.request_coordination import _enforce_routed_scenario
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -98,6 +99,27 @@ def test_router_explains_match_and_exclusion_deterministically(tmp_path: Path) -
     assert matched["matched"] is True and matched["matched_any"] == []
     excluded = router.explain_match(scenario, "删除 Dinq 搜索结果")[0]
     assert excluded["matched"] is False and excluded["matched_excluded"] == ["删除"]
+
+
+def test_coordinator_cannot_replace_deterministic_route_with_open_agent_plan() -> None:
+    scenario = _scenario()
+    plan = {
+        "scenario_id": None,
+        "scenario_inputs": {"voice": "model-extracted"},
+        "clarification": None,
+    }
+    enforced = _enforce_routed_scenario(
+        plan,
+        scenarios=[scenario],
+        routing_decision={"scenario_id": "tts"},
+        supplied_inputs={"text": "来自 API 的文本"},
+    )
+    assert enforced["scenario_id"] == "tts"
+    assert enforced["scenario_inputs"] == {
+        "text": "来自 API 的文本",
+        "voice": "model-extracted",
+    }
+    assert enforced["routing_enforced"] is True
 
 
 def test_clarification_resumes_same_run_after_all_answers(tmp_path: Path) -> None:

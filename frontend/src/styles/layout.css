@@ -301,6 +301,10 @@
 .run-controls code { max-width: 80%; overflow: hidden; color: var(--text-muted); font-size: 8px; text-overflow: ellipsis; }
 .run-controls button { border: 0; color: var(--danger); background: transparent; font-size: 10px; cursor: pointer; }
 .composer { flex: none; margin: 0 clamp(18px, 4vw, 58px) 18px; overflow: hidden; background: var(--input); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 12px 35px rgba(0, 0, 0, .14); }
+.composer-locked { display: grid; gap: 4px; flex: none; margin: 0 clamp(18px, 4vw, 58px) 18px; padding: 13px 15px; background: var(--surface-raised); border: 1px dashed var(--accent-border); border-radius: 14px; }
+.composer-locked .eyebrow { color: var(--accent); font-size: 9px; letter-spacing: .14em; }
+.composer-locked strong { color: var(--text-strong); font-size: 12px; }
+.composer-locked small { color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 .composer:focus-within { border-color: var(--accent-border); box-shadow: 0 12px 35px rgba(0, 0, 0, .14), 0 0 0 3px var(--accent-subtle); }
 .composer textarea { width: 100%; resize: none; padding: 14px 15px 7px; outline: none; color: var(--text); background: transparent; border: 0; line-height: 1.55; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 8px 15px; }
@@ -418,6 +422,7 @@
   .worker-summary-row { grid-template-columns: 10px minmax(0, 1fr) 65px; }
   .worker-summary-plugin, .worker-summary-row time { display: none; }
   .composer { margin: 0 10px 10px; }
+  .composer-locked { margin: 0 10px 10px; }
   .composer-footer > span { display: none; }
   .composer-footer { justify-content: flex-end; }
   .clarification-card { padding: 18px 16px 16px; border-radius: 14px; }

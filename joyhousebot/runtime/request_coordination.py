@@ -123,6 +123,18 @@ class RequestCoordinationMixin:
         raw_plan = parse_structured_output(content, COORDINATOR_OUTPUT_SCHEMA)
         scenario_values = [item.to_dict() for item in scenarios]
         plan = normalize_coordinator_plan(raw_plan, capability_catalog, scenario_values)
+        # A deterministic route (including an explicit scenario selected by a
+        # plugin or the Scenario Studio) is a contract, not merely a hint. The
+        # coordinator may still extract values from the user's natural-language
+        # request, but it must not replace the selected scenario with an open
+        # agent plan. Otherwise the model can emit a prose question and finish
+        # the Run instead of entering the durable waiting_input protocol.
+        plan = _enforce_routed_scenario(
+            plan,
+            scenarios=scenarios,
+            routing_decision=dict(options.metadata.get("routing_decision") or {}),
+            supplied_inputs=dict(options.metadata.get("scenario_inputs") or {}),
+        )
         await self._publish_coordination_progress(
             record.run_id,
             f"已识别意图：{plan['intent']}",
@@ -412,3 +424,43 @@ class RequestCoordinationMixin:
             )
         )
         return prompt, tools, metadata, coordination_usage
+
+
+def _enforce_routed_scenario(
+    plan: dict[str, Any],
+    *,
+    scenarios: list[Any],
+    routing_decision: dict[str, Any],
+    supplied_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    """Pin a coordinator plan to a deterministic scenario route.
+
+    The model remains responsible for extracting values such as a username
+    from free text. Scenario selection itself is decided by the router and is
+    therefore enforced before clarification evaluation. This keeps every
+    missing field on the same durable ``waiting_input`` path.
+    """
+
+    routed_id = str(routing_decision.get("scenario_id") or "").strip()
+    if not routed_id:
+        return plan
+    selected = next(
+        (item for item in scenarios if str(getattr(item, "scenario_id", "")) == routed_id),
+        None,
+    )
+    if selected is None:
+        return plan
+    known_fields = {str(item.name) for item in selected.fields}
+    extracted = {
+        str(key): value
+        for key, value in dict(plan.get("scenario_inputs") or {}).items()
+        if str(key) in known_fields
+    }
+    # Explicit scenario_inputs supplied by an API/plugin take precedence over
+    # model extraction; model-extracted values fill the remaining fields.
+    merged = {**extracted, **{key: value for key, value in supplied_inputs.items() if key in known_fields}}
+    enforced = dict(plan)
+    enforced["scenario_id"] = routed_id
+    enforced["scenario_inputs"] = merged
+    enforced["routing_enforced"] = True
+    return enforced

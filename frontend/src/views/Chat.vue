@@ -69,7 +69,12 @@
         </div>
         <button v-if="!followLatest && (messages.length || running)" class="scroll-latest" type="button" @click="scrollBottom(true)">回到最新 ↓</button>
 
-        <form class="composer" @submit.prevent="send">
+        <div v-if="pendingInputs.length" class="composer-locked">
+          <span class="eyebrow">STRUCTURED INPUT</span>
+          <strong>当前 Run 正在等待上面的字段</strong>
+          <small>请使用追问表单提交；提交后会继续同一个 Run，不会创建新会话。</small>
+        </div>
+        <form v-else class="composer" @submit.prevent="send">
           <small v-if="pendingScenarioId" class="scenario-hint">本次将按预置场景执行：{{ pendingScenarioId }}</small>
           <textarea v-model="input" :disabled="busy || !agentId" rows="3" placeholder="描述目标、约束和希望得到的结果…" @keydown.enter.exact.prevent="send" />
           <div class="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><button type="submit" :disabled="busy || !input.trim() || !agentId">{{ busy ? '处理中' : '提交 Run' }} <b>↑</b></button></div>

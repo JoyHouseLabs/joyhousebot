@@ -142,7 +142,9 @@ async def test_main_coordinator_can_select_scenario_pause_and_resume_same_run(
                     {
                         "intent": "speech_generation",
                         "summary": "生成语音前需要选择声音",
-                        "scenario_id": "speech",
+                        # The deterministic router already selected speech;
+                        # the runtime must keep it even if the model omits it.
+                        "scenario_id": None,
                         "scenario_inputs": {},
                         "execution_class": "interactive",
                         "estimated_duration_seconds": 30,
@@ -160,7 +162,15 @@ async def test_main_coordinator_can_select_scenario_pause_and_resume_same_run(
             prompt="Please make audio",
             user_id="user-a",
             session_id="session-a",
-            metadata={"coordinator_required": True},
+            metadata={
+                "coordinator_required": True,
+                "routing_decision": {
+                    "scenario_id": "speech",
+                    "scenario_version": 1,
+                    "reason_code": "RULE_CONTAINS",
+                },
+                "scenario_inputs": {},
+            },
         )
     )
     waiting = await runtime.wait(submitted.run_id, timeout=2)
