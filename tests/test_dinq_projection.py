@@ -46,3 +46,14 @@ def test_dinq_projection_is_empty_for_generic_run() -> None:
     projection = build_dinq_projection(run=run, artifacts=[], events=[], invocations=[])
     assert projection["candidates"] == []
     assert projection["selected_candidate"] is None
+
+
+def test_dinq_projection_reads_nested_invocation_output_and_repr_artifact() -> None:
+    run = {"run_id": "run-3", "status": "completed", "prompt": "search", "options": {}}
+    invocation = {
+        "capability_id": "dinq.platform.search",
+        "result": {"data": {"output": {"items": [{"person_id": "orcid:ada", "full_name": "Ada", "score": 0.8}]}}},
+    }
+    artifacts = [{"name": "Search deployed Dinq catalog-output", "content": "{'output': {'items': [{'person_id': 'orcid:grace', 'full_name': 'Grace'}]}}"}]
+    projection = build_dinq_projection(run=run, artifacts=artifacts, events=[], invocations=[invocation])
+    assert {item["candidate_id"] for item in projection["candidates"]} == {"orcid:ada", "orcid:grace"}

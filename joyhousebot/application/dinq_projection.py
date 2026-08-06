@@ -7,6 +7,8 @@ putting Dinq business logic into the runtime scheduler or storage schema.
 
 from __future__ import annotations
 
+import ast
+import json
 from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -40,11 +42,20 @@ def _artifact_type(artifact: dict[str, Any]) -> str:
 
 
 def _content(artifact: dict[str, Any]) -> Any:
-    return artifact.get("content", artifact.get("data", artifact.get("payload")))
+    value = artifact.get("content", artifact.get("data", artifact.get("payload")))
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            try:
+                return ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                return value
+    return value
 
 
 def _candidate_id(value: dict[str, Any]) -> str | None:
-    for key in ("candidate_id", "candidateId", "user_id", "userId", "identifier", "id"):
+    for key in ("candidate_id", "candidateId", "person_id", "personId", "user_id", "userId", "identifier", "id"):
         item = _text(value.get(key))
         if item:
             return item
@@ -62,9 +73,9 @@ def _candidate_from(value: Any) -> dict[str, Any] | None:
     if not identifier:
         return None
     profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
-    name = _text(item.get("name")) or _text(profile.get("name")) or identifier
+    name = _text(item.get("name")) or _text(item.get("full_name")) or _text(profile.get("name")) or identifier
     title = _text(item.get("title")) or _text(item.get("headline")) or _text(profile.get("title")) or _text(profile.get("headline"))
-    company = _text(item.get("company")) or _text(item.get("company_name")) or _text(profile.get("company")) or _text(profile.get("company_name"))
+    company = _text(item.get("company")) or _text(item.get("company_name")) or _text(item.get("current_institution")) or _text(profile.get("company")) or _text(profile.get("company_name"))
     score = item.get("match_score", item.get("score", item.get("match")))
     try:
         score = float(score) if score is not None else None
@@ -103,6 +114,12 @@ def _items(value: Any) -> Iterable[Any]:
             nested = value.get(key)
             if isinstance(nested, list):
                 return nested
+            if isinstance(nested, dict):
+                if _candidate_id(nested):
+                    return [nested]
+                nested_items = _items(nested)
+                if nested_items:
+                    return nested_items
         if _candidate_id(value):
             return [value]
     return []
@@ -121,7 +138,7 @@ def build_dinq_projection(
     profiles: dict[str, dict[str, Any]] = {}
 
     def ingest(kind: str, payload: Any) -> None:
-        if kind in _COLLECTION_TYPES or "candidate" in kind or "talent" in kind:
+        if kind in _COLLECTION_TYPES or "candidate" in kind or "talent" in kind or "search" in kind:
             for raw in _items(payload):
                 candidate = _candidate_from(raw)
                 if candidate:
