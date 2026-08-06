@@ -159,7 +159,7 @@ onBeforeRouteUpdate(async (to) => {
   await load(); await loadSessions()
   const nextProjection = projection.value as DinqRunProjection | null
   if (!nextProjection || isTerminalStatus(nextProjection.search.status)) return
-  await startStream()
+  void startStream()
 })
 onUnmounted(() => { abortController?.abort(); if (refreshTimer) window.clearTimeout(refreshTimer) })
 </script>
