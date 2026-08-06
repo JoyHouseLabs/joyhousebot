@@ -72,7 +72,15 @@ def _candidate_from(value: Any) -> dict[str, Any] | None:
     identifier = _candidate_id(item)
     if not identifier:
         return None
-    profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
+    profile = dict(item.get("profile")) if isinstance(item.get("profile"), dict) else {}
+    if not profile:
+        excluded = {
+            "candidate_id", "candidateId", "person_id", "personId", "user_id", "userId",
+            "identifier", "id", "name", "full_name", "title", "headline", "score",
+            "match_score", "match", "match_reasons", "match_reason", "reasons", "sources",
+            "source", "enrichment", "enrichment_status", "enrichmentStatus", "evidence",
+        }
+        profile = {key: value for key, value in item.items() if key not in excluded and value not in (None, "", [], {})}
     name = _text(item.get("name")) or _text(item.get("full_name")) or _text(profile.get("name")) or identifier
     title = _text(item.get("title")) or _text(item.get("headline")) or _text(profile.get("title")) or _text(profile.get("headline"))
     company = _text(item.get("company")) or _text(item.get("company_name")) or _text(item.get("current_institution")) or _text(profile.get("company")) or _text(profile.get("company_name"))
@@ -99,7 +107,7 @@ def _candidate_from(value: Any) -> dict[str, Any] | None:
         "match_score": score,
         "match_reasons": [str(reason) for reason in reasons],
         "sources": sources,
-        "profile": profile or item.get("profile"),
+        "profile": profile or None,
         "enrichment": item.get("enrichment") if isinstance(item.get("enrichment"), dict) else None,
         "enrichment_status": _text(item.get("enrichment_status")) or _text(item.get("enrichmentStatus")) or "not_requested",
         "evidence": item.get("evidence", []),
