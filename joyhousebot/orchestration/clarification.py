@@ -51,14 +51,35 @@ class ClarificationEngine:
 
     @staticmethod
     def _progress(scenario: ScenarioVersion, node: ClarificationNode | None) -> dict[str, int]:
-        questions = [item for item in scenario.nodes if item.kind != "terminal"]
+        # Scenario nodes are persisted independently and are not guaranteed to be
+        # read back in authoring order.  Derive the visible question sequence from
+        # the graph so a root question is always shown as "1 / N".
+        by_id = {item.node_id: item for item in scenario.nodes}
+        outgoing: dict[str, list[str]] = {node_id: [] for node_id in by_id}
+        incoming: set[str] = set()
+        for edge in scenario.edges:
+            if edge.source_node_id in outgoing and edge.target_node_id in by_id:
+                outgoing[edge.source_node_id].append(edge.target_node_id)
+                incoming.add(edge.target_node_id)
+
+        questions = [item for item in by_id.values() if item.kind != "terminal"]
         if node is None:
             return {"current": len(questions), "total": len(questions)}
+
+        roots = sorted(node_id for node_id in by_id if node_id not in incoming)
+        # Use graph distance rather than persistence order.  Branches at the same
+        # decision point therefore both display the same step number.
+        distances = {root: 1 for root in roots}
+        frontier = list(roots)
+        while frontier:
+            source = frontier.pop(0)
+            for target in sorted(outgoing[source]):
+                distance = distances[source] + 1
+                if target not in distances or distance < distances[target]:
+                    distances[target] = distance
+                    frontier.append(target)
         return {
-            "current": next(
-                (index for index, item in enumerate(questions, start=1) if item.node_id == node.node_id),
-                1,
-            ),
+            "current": distances.get(node.node_id, 1),
             "total": len(questions),
         }
 

@@ -227,10 +227,12 @@ def test_clarification_follows_condition_edge_and_validates_multi_choice(tmp_pat
             ScenarioField("research_area", "string", required=True),
         ),
         nodes=(
-            ClarificationNode("ask_goal", "question", "主要目标是什么？", ("goal",)),
-            ClarificationNode("ask_sources", "question", "选择数据来源", ("sources",)),
+            # Deliberately unordered: persisted scenario nodes have no meaningful
+            # row order, so the UI progress must follow graph depth instead.
             ClarificationNode("ask_area", "question", "研究方向？", ("research_area",)),
             ClarificationNode("ready", "terminal", ""),
+            ClarificationNode("ask_goal", "question", "主要目标是什么？", ("goal",)),
+            ClarificationNode("ask_sources", "question", "选择数据来源", ("sources",)),
         ),
         edges=(
             ClarificationEdge("ask_goal", "ask_sources", "goal == 'recruit'", priority=100),
