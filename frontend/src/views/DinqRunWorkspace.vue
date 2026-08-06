@@ -88,26 +88,26 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { getDinqRunProjection, type DinqActivity, type DinqCandidate, type DinqRunProjection } from '../api/dinq'
 import { getSessions, type SessionItem } from '../api/sessions'
 import { createRunFeedback, streamRuntimeEvents, submitRuntimeRun, type RunFeedbackType } from '../api/runtime'
 
-const route = useRoute(); const router = useRouter(); const runId = String(route.params.runId)
+const route = useRoute(); const router = useRouter(); const runId = ref(String(route.params.runId))
 const projection = ref<DinqRunProjection | null>(null); const sessions = ref<SessionItem[]>([]); const selectedId = ref<string | null>(null); const loading = ref(false); const error = ref(''); const composerInput = ref(''); const sending = ref(false); const feedbackType = ref<RunFeedbackType>('needs_optimization'); const feedbackComment = ref(''); const feedbackSaving = ref(false); const feedbackSent = ref(false); const activityExpanded = ref(false); const activityPreference = ref<boolean | null>(null)
 const selectedCandidate = computed<DinqCandidate | null>(() => projection.value?.selected_candidate || projection.value?.candidates.find((item) => item.candidate_id === selectedId.value) || null)
 let abortController: AbortController | null = null
 let refreshTimer: number | null = null
 
-async function load(candidateId = selectedId.value) { loading.value = true; error.value = ''; try { const firstLoad = !projection.value; projection.value = await getDinqRunProjection(runId, candidateId); selectedId.value = projection.value.selected_candidate_id || selectedId.value || projection.value.candidates[0]?.candidate_id || null; if (firstLoad && activityPreference.value === null) activityExpanded.value = !isTerminalStatus(projection.value.search.status) } catch (cause) { error.value = cause instanceof Error ? cause.message : '读取 Dinq 工作区失败' } finally { loading.value = false } }
+async function load(candidateId = selectedId.value) { loading.value = true; error.value = ''; try { const firstLoad = !projection.value; projection.value = await getDinqRunProjection(runId.value, candidateId); selectedId.value = projection.value.selected_candidate_id || selectedId.value || projection.value.candidates[0]?.candidate_id || null; if (firstLoad && activityPreference.value === null) activityExpanded.value = !isTerminalStatus(projection.value.search.status) } catch (cause) { error.value = cause instanceof Error ? cause.message : '读取 Dinq 工作区失败' } finally { loading.value = false } }
 async function loadSessions() { try { sessions.value = (await getSessions(projection.value?.session.agent_id)).sessions } catch { /* session rail is optional */ } }
 function selectCandidate(id: string) { selectedId.value = id; feedbackSent.value = false; feedbackComment.value = ''; void load(id) }
 function submitFeedback() {
   if (!feedbackComment.value.trim() || feedbackSaving.value) return
   feedbackSaving.value = true
-  void createRunFeedback(runId, { feedback_type: feedbackType.value, comment: feedbackComment.value.trim(), output_excerpt: selectedCandidate.value ? pretty(selectedCandidate.value).slice(0, 4000) : undefined }).then(() => { feedbackSent.value = true }).catch((cause) => { error.value = cause instanceof Error ? cause.message : '提交反馈失败' }).finally(() => { feedbackSaving.value = false })
+  void createRunFeedback(runId.value, { feedback_type: feedbackType.value, comment: feedbackComment.value.trim(), output_excerpt: selectedCandidate.value ? pretty(selectedCandidate.value).slice(0, 4000) : undefined }).then(() => { feedbackSent.value = true }).catch((cause) => { error.value = cause instanceof Error ? cause.message : '提交反馈失败' }).finally(() => { feedbackSaving.value = false })
 }
-function openSession(id?: string) { if (id && id !== runId) void router.push(`/dinq/runs/${encodeURIComponent(id)}`) }
+function openSession(id?: string) { if (id && id !== runId.value) void router.push(`/dinq/runs/${encodeURIComponent(id)}`) }
 function startNewSearch() { void router.push({ name: 'Chat', query: { agent: projection.value?.session.agent_id || 'main-coordinator', session: `ui:dinq-${Date.now()}`, plugin: 'dinq', workspace: 'new' } }) }
 function toggleActivity() { activityExpanded.value = !activityExpanded.value; activityPreference.value = activityExpanded.value }
 async function continueRun() {
@@ -135,16 +135,31 @@ function formatDate(value?: string | null) { return value ? new Date(value).toLo
 function initials(value: string) { return value.split(/\s+/).map((item) => item[0]).join('').slice(0, 2).toUpperCase() || 'D' }
 function sourceLabel(value: unknown) { if (typeof value === 'string') return value.replace(/^https?:\/\//, '').split('/')[0]; if (value && typeof value === 'object') return String((value as Record<string, unknown>).source || (value as Record<string, unknown>).name || 'source'); return String(value) }
 function pretty(value: unknown) { return JSON.stringify(value, null, 2) }
-onMounted(async () => {
-  await load(); await loadSessions()
-  if (projection.value && ['completed', 'failed', 'cancelled', 'timed_out'].includes(projection.value.search.status)) return
+async function startStream() {
   abortController = new AbortController()
   try {
-    await streamRuntimeEvents(runId, () => {
+    await streamRuntimeEvents(runId.value, () => {
       if (refreshTimer) window.clearTimeout(refreshTimer)
       refreshTimer = window.setTimeout(() => { void load(selectedId.value) }, 120)
     }, { afterSequence: projection.value?.events_cursor || 0, signal: abortController.signal })
   } catch { /* completed streams and disconnects are expected */ }
+}
+onMounted(async () => {
+  await load(); await loadSessions()
+  if (projection.value && ['completed', 'failed', 'cancelled', 'timed_out'].includes(projection.value.search.status)) return
+  await startStream()
+})
+onBeforeRouteUpdate(async (to) => {
+  const nextRunId = String(to.params.runId)
+  if (!nextRunId || nextRunId === runId.value) return
+  abortController?.abort()
+  if (refreshTimer) window.clearTimeout(refreshTimer)
+  runId.value = nextRunId
+  projection.value = null; selectedId.value = null; activityPreference.value = null; activityExpanded.value = false; feedbackSent.value = false; feedbackComment.value = ''
+  await load(); await loadSessions()
+  const nextProjection = projection.value as DinqRunProjection | null
+  if (!nextProjection || isTerminalStatus(nextProjection.search.status)) return
+  await startStream()
 })
 onUnmounted(() => { abortController?.abort(); if (refreshTimer) window.clearTimeout(refreshTimer) })
 </script>
