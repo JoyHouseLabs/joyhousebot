@@ -258,6 +258,18 @@ class ScenarioVersion:
         value = self.to_dict()
         value.pop("status", None)
         value.pop("published_at", None)
+        # PostgreSQL stores clarification nodes and edges in normalized tables.
+        # Their SQL read order is deliberately canonical rather than insertion
+        # order, so immutability comparison must use the same semantic ordering.
+        # Field and capability positions remain meaningful and are left intact.
+        value["nodes"] = sorted(value["nodes"], key=lambda item: str(item["node_id"]))
+        value["edges"] = sorted(
+            value["edges"],
+            key=lambda item: (
+                str(item["source_node_id"]), str(item["target_node_id"]),
+                int(item.get("priority") or 0), str(item.get("condition") or ""),
+            ),
+        )
         return value
 
 
