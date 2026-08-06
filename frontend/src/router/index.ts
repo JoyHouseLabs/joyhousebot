@@ -13,6 +13,7 @@ const router = createRouter({
         { path: 'overview', name: 'Overview', component: () => import('../views/Overview.vue') },
         { path: 'runs', name: 'Runs', component: () => import('../views/Runs.vue') },
         { path: 'runs/:runId', name: 'RunDetail', component: () => import('../views/Runs.vue') },
+        { path: 'dinq/runs/:runId', name: 'DinqRunWorkspace', component: () => import('../views/DinqRunWorkspace.vue') },
         { path: 'chat', name: 'Chat', component: () => import('../views/Chat.vue') },
         { path: 'agents', name: 'Agents', component: () => import('../views/Agents.vue') },
         { path: 'skills', name: 'Skills', component: () => import('../views/CapabilityEditor.vue') },

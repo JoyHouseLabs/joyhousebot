@@ -14,6 +14,7 @@ from joyhousebot.api.schemas import (
     CreateRunRequest,
     ResolveRunInputRequest,
 )
+from joyhousebot.application.dinq_projection import build_dinq_projection
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import CreateRunCommand, GraphTaskCommand
 from joyhousebot.runtime.narrative import public_event_dict
@@ -180,6 +181,39 @@ async def list_tasks(run_id: str, context: ContextDep, container: ContainerDep):
 @router.get("/{run_id}/artifacts")
 async def list_artifacts(run_id: str, context: ContextDep, container: ContainerDep):
     return {"items": await container.runs.artifacts(context, run_id)}
+
+
+@router.get("/{run_id}/projection")
+async def get_run_projection(
+    run_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+    view: str = Query(default="dinq.search"),
+    candidate_id: str | None = None,
+):
+    """Return a plugin-owned read model assembled from generic runtime records.
+
+    The endpoint is intentionally opt-in and view-named: generic clients keep
+    using the normal Run/Task/Event APIs, while a Dinq UI can render one stable
+    workspace without coupling to storage tables.
+    """
+    if view != "dinq.search":
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail=f"unsupported projection view: {view}")
+    run = await container.runs.get(context, run_id)
+    artifacts, events, invocations = await asyncio.gather(
+        container.runs.artifacts(context, run_id),
+        asyncio.to_thread(container.store.list_runtime_events, run_id, user_id=context.user_id, limit=5000),
+        container.runs.invocations(context, run_id),
+    )
+    return build_dinq_projection(
+        run=run,
+        artifacts=artifacts,
+        events=events,
+        invocations=invocations,
+        candidate_id=candidate_id,
+    )
 
 
 @router.get("/{run_id}/invocations")
