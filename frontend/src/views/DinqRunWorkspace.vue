@@ -51,8 +51,8 @@
             </div>
           </section>
 
-          <div v-if="conversation.length" class="conversation-list">
-            <article v-for="(message, index) in conversation" :key="`${message.run_id || 'message'}-${index}`" :class="['conversation-message', message.role]">
+          <div v-if="visibleConversation.length" class="conversation-list">
+            <article v-for="(message, index) in visibleConversation" :key="`${message.run_id || 'message'}-${index}`" :class="['conversation-message', message.role]">
               <span class="message-role">{{ message.role === 'user' ? 'YOU' : 'DINQ' }}</span>
               <MarkdownContent :content="message.content" />
             </article>
@@ -131,6 +131,11 @@ const route = useRoute(); const router = useRouter(); const runId = ref(String(r
 const projection = ref<DinqRunProjection | null>(null); const sessions = ref<SessionItem[]>([]); const conversation = ref<SessionHistoryMessage[]>([]); const pendingInputs = ref<PendingRunInput[]>([]); const answerValues = ref<Record<string, any>>({}); const otherValues = ref<Record<string, string>>({}); const selectedId = ref<string | null>(null); const loading = ref(false); const error = ref(''); const composerInput = ref(''); const sending = ref(false); const answering = ref(false); const enriching = ref(false); const feedbackType = ref<RunFeedbackType>('needs_optimization'); const feedbackComment = ref(''); const feedbackSaving = ref(false); const feedbackSent = ref(false); const activityExpanded = ref(true); const activityPreference = ref<boolean | null>(null); const sessionsCollapsed = ref(true); const dialogueScroll = ref<HTMLElement | null>(null)
 const pendingRequest = computed(() => pendingInputs.value[0] || null)
 const selectedCandidate = computed<DinqCandidate | null>(() => projection.value?.selected_candidate || projection.value?.candidates.find((item) => item.candidate_id === selectedId.value) || null)
+const visibleConversation = computed<SessionHistoryMessage[]>(() => conversation.value.length
+  ? conversation.value
+  : projection.value?.run.prompt
+    ? [{ role: 'user', content: projection.value.run.prompt }]
+    : [])
 let abortController: AbortController | null = null; let refreshTimer: number | null = null
 
 function initialiseAnswers(request?: PendingRunInput | null) { answerValues.value = Object.fromEntries((request?.fields || []).map((field) => [field.name, inputMode(field) === 'multi_choice' ? [] : field.value_type === 'boolean' ? false : ''])); otherValues.value = {} }
