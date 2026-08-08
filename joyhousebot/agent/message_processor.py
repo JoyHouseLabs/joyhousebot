@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from joyhousebot.agent.context_budget import context_candidate
+from joyhousebot.agent.context_manifest import source_entry
 from joyhousebot.agent.response_prefix import resolve_response_prefix
 from joyhousebot.bus.events import InboundMessage, OutboundMessage
 from joyhousebot.runtime.context import (
@@ -158,7 +160,9 @@ class MessageProcessorMixin:
 
             temp_session = Session(key=session.key)
             temp_session.messages = messages_to_archive
-            await self._consolidate_memory(temp_session, archive_all=True)
+            await self._consolidate_memory(
+                temp_session, archive_all=True, run_context=run_context
+            )
             return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
@@ -176,9 +180,13 @@ class MessageProcessorMixin:
             )
 
         if len(session.messages) > self.memory_window:
-            await self._consolidate_memory(session)
+            await self._consolidate_memory(session, run_context=run_context)
 
-        initial_messages = self.context.build_messages(
+        (
+            initial_messages,
+            context_sources,
+            context_candidates,
+        ) = self.context.build_messages_with_candidates(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
             media=msg.media if msg.media else None,
@@ -188,8 +196,43 @@ class MessageProcessorMixin:
             scope_key=scope_key,
             skill_names=list(run_context.skill_names),
             skill_refs=list(run_context.skill_refs),
+            context_timestamp=run_context.context_timestamp,
         )
-        self._apply_run_instructions(initial_messages, run_context)
+        run_instructions = self._apply_run_instructions(initial_messages, run_context)
+        if run_instructions:
+            instruction_source = source_entry(
+                source_kind="run_instruction",
+                source_id="run:execution-policy",
+                content=run_instructions,
+                classification="internal",
+                authority="runtime",
+                freshness="run_snapshot",
+                priority=100,
+                included_reason="run_execution_contract",
+            )
+            context_sources.append(instruction_source)
+            context_candidates.append(
+                context_candidate(
+                    candidate_id="system:run-instruction",
+                    target="system",
+                    content=run_instructions,
+                    source_keys=[("run_instruction", "run:execution-policy")],
+                    priority=100,
+                    required=True,
+                    order=len(context_candidates),
+                    separator="\n\n",
+                )
+            )
+        run_context = replace(
+            run_context,
+            context_sources=tuple(context_sources),
+            context_candidates=tuple(context_candidates),
+            context_initial_message_count=len(initial_messages),
+            context_budget_tokens=self.max_context_tokens,
+            context_budget_strategy=(
+                "priority_budget_v1" if self.max_context_tokens else "unbounded_v1"
+            ),
+        )
         final_content, tools_used, aborted, last_response = await self._run_agent_loop(
             initial_messages,
             stream_callback=stream_callback,
@@ -305,7 +348,11 @@ class MessageProcessorMixin:
                 memory_policy=dict(getattr(self, "memory_policy", {})),
             )
         )
-        initial_messages = self.context.build_messages(
+        (
+            initial_messages,
+            context_sources,
+            context_candidates,
+        ) = self.context.build_messages_with_candidates(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
             channel=origin_channel,
@@ -314,8 +361,43 @@ class MessageProcessorMixin:
             scope_key=scope_key,
             skill_names=list(run_context.skill_names),
             skill_refs=list(run_context.skill_refs),
+            context_timestamp=run_context.context_timestamp,
         )
-        self._apply_run_instructions(initial_messages, run_context)
+        run_instructions = self._apply_run_instructions(initial_messages, run_context)
+        if run_instructions:
+            instruction_source = source_entry(
+                source_kind="run_instruction",
+                source_id="run:execution-policy",
+                content=run_instructions,
+                classification="internal",
+                authority="runtime",
+                freshness="run_snapshot",
+                priority=100,
+                included_reason="run_execution_contract",
+            )
+            context_sources.append(instruction_source)
+            context_candidates.append(
+                context_candidate(
+                    candidate_id="system:run-instruction",
+                    target="system",
+                    content=run_instructions,
+                    source_keys=[("run_instruction", "run:execution-policy")],
+                    priority=100,
+                    required=True,
+                    order=len(context_candidates),
+                    separator="\n\n",
+                )
+            )
+        run_context = replace(
+            run_context,
+            context_sources=tuple(context_sources),
+            context_candidates=tuple(context_candidates),
+            context_initial_message_count=len(initial_messages),
+            context_budget_tokens=self.max_context_tokens,
+            context_budget_strategy=(
+                "priority_budget_v1" if self.max_context_tokens else "unbounded_v1"
+            ),
+        )
         final_content, _, _, last_response = await self._run_agent_loop(
             initial_messages,
             run_context=run_context,

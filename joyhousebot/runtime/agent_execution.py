@@ -3,11 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
+from joyhousebot.runtime.agent_execution_outcomes import (
+    fail_loop_guard,
+    suspend_for_action,
+)
+from joyhousebot.runtime.agent_finalization import finalize_agent_result
 from joyhousebot.runtime.agent_terminal import AgentTerminalMixin
-from joyhousebot.runtime.context import CancellationToken, RunBudgetExceededError, RunContext
+from joyhousebot.runtime.context import (
+    ActionApprovalRequiredError,
+    ActionOutcomeUnknownError,
+    AgentLoopExhaustedError,
+    AgentLoopStalledError,
+    CancellationToken,
+    PlannerLoopExhaustedError,
+    RunBudgetExceededError,
+    RunContext,
+    VerificationFailedError,
+)
 from joyhousebot.runtime.models import (
     AgentEvent,
     AgentOptions,
@@ -23,6 +39,7 @@ from joyhousebot.runtime.tracking import (
     append_trace_event_async,
     ensure_tracking_ids,
 )
+from joyhousebot.runtime.verification import verify_output
 
 
 class AgentExecutionMixin(AgentTerminalMixin):
@@ -149,6 +166,9 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 sender_id=options.sender_id or record.user_id,
                 media=options.media,
                 metadata=execution_metadata,
+                verification_policy=options.verification_policy,
+                max_repairs=options.max_repairs,
+                run_lease_version=record.lease_version,
             )
             usage.input_tokens += coordinator_usage.input_tokens
             usage.output_tokens += coordinator_usage.output_tokens
@@ -157,93 +177,21 @@ class AgentExecutionMixin(AgentTerminalMixin):
             await self._ensure_run_owned(
                 record.run_id, cancellation, lease_version=record.lease_version
             )
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.VERIFICATION_STARTED.value,
-                    data={
-                        "method": "output_schema" if options.output_schema else "completion",
-                    },
-                )
-            )
             structured_output = (
                 parse_structured_output(content, options.output_schema)
                 if options.output_schema
                 else None
             )
-            result = AgentResult(
-                run_id=record.run_id,
-                status=RunStatus.COMPLETED,
+            return await finalize_agent_result(
+                self,
+                record=record,
+                cancellation=cancellation,
                 content=content,
                 structured_output=structured_output,
-                stop_reason="completed",
                 usage=usage,
                 tools_used=tools_used,
                 started_at=started_at,
-                finished_at=utc_now(),
             )
-            await asyncio.to_thread(
-                self.store.add_runtime_artifact,
-                artifact_id=f"{record.run_id}:final",
-                run_id=record.run_id,
-                name="final-output",
-                media_type="application/json" if structured_output is not None else "text/plain",
-                content=structured_output if structured_output is not None else content,
-            )
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.ARTIFACT_CREATED.value,
-                    data={
-                        "artifact_id": f"{record.run_id}:final",
-                        "name": "final-output",
-                        "media_type": (
-                            "application/json" if structured_output is not None else "text/plain"
-                        ),
-                    },
-                )
-            )
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.VERIFICATION_PASSED.value,
-                    data={
-                        "method": "output_schema" if options.output_schema else "completion",
-                        "verified": bool(options.output_schema),
-                        "note": (
-                            "output matches requested schema"
-                            if options.output_schema
-                            else "execution completed; no explicit output schema was requested"
-                        ),
-                    },
-                )
-            )
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.PHASE_COMPLETED.value,
-                    phase="finalizing",
-                    data={"name": "execution"},
-                )
-            )
-            persisted = await self._commit_terminal(
-                record.run_id,
-                status=RunStatus.COMPLETED,
-                event_type=EventType.RUN_COMPLETED,
-                result=result.to_dict(),
-                worker_id=self.worker_id,
-                lease_version=record.lease_version,
-            )
-            if persisted is None:
-                cancellation.cancel("run reached a terminal state on another worker")
-                raise asyncio.CancelledError(cancellation.reason)
-            await self._log(
-                record.run_id,
-                "run.completed",
-                "Agent run completed",
-                data={"usage": usage.to_dict(), "tools_used": tools_used},
-            )
-            return result
         except TimeoutError:
             return await self._finish_error(
                 record.run_id,
@@ -265,6 +213,18 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 lease_version=record.lease_version,
             )
             raise
+        except (ActionOutcomeUnknownError, ActionApprovalRequiredError) as exc:
+            return await suspend_for_action(self, record, cancellation, started_at, exc)
+        except AgentLoopExhaustedError as exc:
+            return await fail_loop_guard(
+                self, record, started_at, exc, stop_reason="loop_exhausted"
+            )
+        except PlannerLoopExhaustedError as exc:
+            return await fail_loop_guard(
+                self, record, started_at, exc, stop_reason="max_replans_exhausted"
+            )
+        except AgentLoopStalledError as exc:
+            return await fail_loop_guard(self, record, started_at, exc, stop_reason="loop_stalled")
         except RunBudgetExceededError as exc:
             return await self._finish_error(
                 record.run_id,
@@ -291,6 +251,20 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 str(exc),
                 started_at,
                 stop_reason="structured_output_error",
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+            )
+        except VerificationFailedError as exc:
+            schema_only = bool(exc.failures) and all(
+                item.get("type") == "schema" for item in exc.failures
+            )
+            return await self._finish_error(
+                record.run_id,
+                RunStatus.FAILED,
+                EventType.RUN_FAILED,
+                str(exc),
+                started_at,
+                stop_reason="structured_output_error" if schema_only else "verification_failed",
                 worker_id=self.worker_id,
                 lease_version=record.lease_version,
             )
@@ -331,6 +305,11 @@ class AgentExecutionMixin(AgentTerminalMixin):
         sender_id: str | None = None,
         media: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        verification_policy: dict[str, Any] | None = None,
+        max_repairs: int | None = None,
+        run_lease_version: int | None = None,
+        task_lease_version: int | None = None,
+        turn_scope: str = "execution",
     ) -> tuple[str | None, list[str], AgentUsage]:
         tools_used: list[str] = []
         usage = AgentUsage(model=model)
@@ -339,7 +318,6 @@ class AgentExecutionMixin(AgentTerminalMixin):
             try:
                 return await asyncio.to_thread(getattr(self.store, method), *args, **kwargs)
             except Exception:
-                # Diagnostics must not turn a healthy user task into a failure.
                 return None
 
         async def _execution_event(event_type: str, payload: dict[str, Any]) -> None:
@@ -353,6 +331,15 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 "provider_fallback": EventType.MODEL_PROVIDER_FALLBACK.value,
                 "model_retry": EventType.MODEL_RETRY_SCHEDULED.value,
                 "cache_hit": EventType.MODEL_CACHE_HIT.value,
+                "context_built": EventType.CONTEXT_BUILT.value,
+                "turn_started": EventType.TURN_STARTED.value,
+                "turn_recovered": EventType.TURN_RECOVERED.value,
+                "turn_completed": EventType.TURN_COMPLETED.value,
+                "verification_started": EventType.VERIFICATION_STARTED.value,
+                "verification_passed": EventType.VERIFICATION_PASSED.value,
+                "verification_failed": EventType.VERIFICATION_FAILED.value,
+                "loop_stalled": EventType.LOOP_STALLED.value,
+                "loop_exhausted": EventType.LOOP_EXHAUSTED.value,
                 "tool_requested": EventType.CAPABILITY_REQUESTED.value,
                 "permission_requested": EventType.CAPABILITY_PERMISSION_REQUESTED.value,
                 "permission_resolved": EventType.CAPABILITY_PERMISSION_RESOLVED.value,
@@ -416,6 +403,19 @@ class AgentExecutionMixin(AgentTerminalMixin):
                     task_id=task_id,
                     type=mapped,
                     data=payload,
+                    event_id=(
+                        str(payload["event_id"])
+                        if payload.get("event_id")
+                        else f"{payload['verification_id']}:{mapped}"
+                        if payload.get("verification_id")
+                        and mapped
+                        in {
+                            EventType.VERIFICATION_STARTED.value,
+                            EventType.VERIFICATION_PASSED.value,
+                            EventType.VERIFICATION_FAILED.value,
+                        }
+                        else uuid4().hex
+                    ),
                     turn_id=str(payload.get("turn_id") or "") or None,
                     span_id=str(payload.get("span_id") or "") or None,
                     parent_span_id=str(payload.get("parent_span_id") or "") or None,
@@ -426,7 +426,13 @@ class AgentExecutionMixin(AgentTerminalMixin):
                     status=(
                         "failed"
                         if (
-                            mapped == EventType.CAPABILITY_FAILED.value
+                            mapped
+                            in {
+                                EventType.CAPABILITY_FAILED.value,
+                                EventType.LOOP_STALLED.value,
+                                EventType.LOOP_EXHAUSTED.value,
+                                EventType.VERIFICATION_FAILED.value,
+                            }
                             or (
                                 mapped == EventType.MODEL_RESPONSE_COMPLETED.value
                                 and payload.get("finish_reason") == "error"
@@ -438,6 +444,8 @@ class AgentExecutionMixin(AgentTerminalMixin):
                             EventType.CAPABILITY_COMPLETED.value,
                             EventType.MODEL_RESPONSE_COMPLETED.value,
                             EventType.MESSAGE_COMPLETED.value,
+                            EventType.TURN_COMPLETED.value,
+                            EventType.VERIFICATION_PASSED.value,
                         }
                         else "running"
                     ),
@@ -450,7 +458,15 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 )
             )
             if event_type not in {"llm_delta", "reasoning_delta"}:
-                level = "error" if mapped == EventType.CAPABILITY_FAILED.value else "info"
+                level = (
+                    "error"
+                    if mapped
+                    in {
+                        EventType.CAPABILITY_FAILED.value,
+                        EventType.VERIFICATION_FAILED.value,
+                    }
+                    else "info"
+                )
                 await self._log(
                     run_id,
                     mapped,
@@ -481,9 +497,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 int(getattr(scenario_state, "scenario_version", 0) or 0),
             )
             if scenario is not None:
-                scenario_execution_policy = dict(
-                    getattr(scenario, "execution_policy", {}) or {}
-                )
+                scenario_execution_policy = dict(getattr(scenario, "execution_policy", {}) or {})
         execution_metadata = {
             "scenario_id": str(getattr(scenario_state, "scenario_id", "") or ""),
             "scenario_version": int(getattr(scenario_state, "scenario_version", 0) or 0),
@@ -493,6 +507,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
         context = RunContext(
             run_id=run_id,
             task_id=task_id,
+            turn_scope=turn_scope,
             root_run_id=(runtime_record.root_run_id if runtime_record else None) or run_id,
             parent_run_id=runtime_record.parent_run_id if runtime_record else None,
             parent_task_id=runtime_record.parent_task_id if runtime_record else None,
@@ -510,6 +525,8 @@ class AgentExecutionMixin(AgentTerminalMixin):
             model=model,
             system_prompt=system_prompt,
             output_schema=output_schema,
+            verification_policy=dict(verification_policy or {}),
+            max_repairs=max_repairs,
             max_turns=max_turns,
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
@@ -520,9 +537,13 @@ class AgentExecutionMixin(AgentTerminalMixin):
             granted_permissions=granted_permissions,
             cancellation=cancellation,
             worker_id=self.worker_id,
+            run_lease_version=run_lease_version,
+            task_lease_version=task_lease_version,
+            context_timestamp=runtime_record.created_at if runtime_record else None,
             skill_names=tuple(str(item) for item in (metadata or {}).get("skill_names", [])),
             skill_refs=tuple(
-                dict(item) for item in (metadata or {}).get("skill_refs", [])
+                dict(item)
+                for item in (metadata or {}).get("skill_refs", [])
                 if isinstance(item, dict)
             ),
             metadata=execution_metadata,
@@ -557,6 +578,12 @@ class AgentExecutionMixin(AgentTerminalMixin):
             agent = await self._resolve_execution_agent(run_id, agent_id)
             if agent is None:
                 raise ValueError(f"agent not found: {agent_id}")
+            revision = getattr(agent, "agent_revision", None)
+            revision_policy = dict(getattr(revision, "output_policy", {}) or {})
+            context = replace(
+                context,
+                verification_policy={**revision_policy, **context.verification_policy},
+            )
             async with asyncio.timeout(max(0.001, timeout_seconds)):
                 content = await agent.process_direct(
                     content=prompt,
@@ -569,6 +596,15 @@ class AgentExecutionMixin(AgentTerminalMixin):
                     execution_stream_callback=_execution_event,
                     run_context=context,
                 )
+                verification = await verify_output(
+                    context,
+                    content,
+                    turn_id=None,
+                    attempt=None,
+                    event_callback=_execution_event,
+                )
+                if not verification.passed:
+                    raise VerificationFailedError(verification.failures, verification.attempt)
             await append_trace_event_async(
                 store=self.store,
                 tracker_id=tracker_id,

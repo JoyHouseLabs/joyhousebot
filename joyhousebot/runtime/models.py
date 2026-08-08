@@ -34,11 +34,14 @@ class TaskStatus(str, Enum):
     QUEUED = "queued"
     BLOCKED = "blocked"
     RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    WAITING_EXTERNAL = "waiting_external"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
     TIMED_OUT = "timed_out"
     SKIPPED = "skipped"
+    DORMANT = "dormant"
 
 
 class EventType(str, Enum):
@@ -64,10 +67,19 @@ class EventType(str, Enum):
     PHASE_COMPLETED = "phase.completed"
     PLAN_CREATED = "plan.created"
     PLAN_UPDATED = "plan.updated"
+    GRAPH_PATCHED = "graph.patched"
+    GRAPH_PATCH_PROPOSED = "graph.patch_proposed"
+    GRAPH_PATCH_RESOLVED = "graph.patch_resolved"
     PLAN_STEP_STARTED = "plan.step.started"
     PLAN_STEP_COMPLETED = "plan.step.completed"
     PLAN_STEP_FAILED = "plan.step.failed"
     DECISION_RECORDED = "decision.recorded"
+    CONTEXT_BUILT = "context.built"
+    TURN_STARTED = "turn.started"
+    TURN_RECOVERED = "turn.recovered"
+    TURN_COMPLETED = "turn.completed"
+    LOOP_STALLED = "loop.stalled"
+    LOOP_EXHAUSTED = "loop.exhausted"
     MODEL_REQUEST_STARTED = "model.request.started"
     MODEL_THINKING_STARTED = "model.thinking.started"
     MODEL_THINKING_COMPLETED = "model.thinking.completed"
@@ -79,6 +91,10 @@ class EventType(str, Enum):
     CAPABILITY_REQUESTED = "capability.requested"
     CAPABILITY_PERMISSION_REQUESTED = "capability.permission_requested"
     CAPABILITY_PERMISSION_RESOLVED = "capability.permission_resolved"
+    APPROVAL_REQUESTED = "approval.requested"
+    APPROVAL_RESOLVED = "approval.resolved"
+    OPERATION_RECONCILIATION_REQUESTED = "operation.reconciliation_requested"
+    OPERATION_RECONCILIATION_RESOLVED = "operation.reconciliation_resolved"
     CAPABILITY_STARTED = "capability.started"
     CAPABILITY_PROGRESS = "capability.progress"
     CAPABILITY_COMPLETED = "capability.completed"
@@ -90,6 +106,20 @@ class EventType(str, Enum):
     TASK_FAILED = "task.failed"
     TASK_CANCELLED = "task.cancelled"
     TASK_SKIPPED = "task.skipped"
+    BRANCH_EVALUATED = "branch.evaluated"
+    FOREACH_EXPANDED = "foreach.expanded"
+    FOREACH_COMPLETED = "foreach.completed"
+    LOOP_ITERATION_STARTED = "loop.iteration_started"
+    LOOP_ITERATION_COMPLETED = "loop.iteration_completed"
+    EVENT_WAITING = "event.waiting"
+    EVENT_RECEIVED = "event.received"
+    EVENT_EXPIRED = "event.expired"
+    COMPENSATION_STARTED = "compensation.started"
+    COMPENSATION_COMPLETED = "compensation.completed"
+    COMPENSATION_FAILED = "compensation.failed"
+    SAGA_STARTED = "saga.started"
+    SAGA_COMPLETED = "saga.completed"
+    SAGA_FAILED = "saga.failed"
     SUBAGENT_SPAWNED = "subagent.spawned"
     SUBAGENT_CLAIMED = "subagent.claimed"
     SUBAGENT_PROGRESS = "subagent.progress"
@@ -132,6 +162,9 @@ class AgentOptions:
     model: str | None = None
     system_prompt: str | None = None
     output_schema: dict[str, Any] | None = None
+    verification_policy: dict[str, Any] = field(default_factory=dict)
+    max_repairs: int | None = None
+    max_replans: int | None = None
     timeout_seconds: float = 300.0
     max_turns: int | None = None
     max_input_tokens: int | None = None
@@ -235,14 +268,56 @@ class GraphTaskSpec:
     capability: CapabilityRef | None = None
     capability_input: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
+    verification_policy: dict[str, Any] = field(default_factory=dict)
+    max_repairs: int | None = None
     allowed_tools: list[str] = field(default_factory=list)
     skill_names: list[str] = field(default_factory=list)
+    node_type: str | None = None
+    branch: dict[str, Any] = field(default_factory=dict)
+    foreach: dict[str, Any] = field(default_factory=dict)
+    wait_event: dict[str, Any] = field(default_factory=dict)
+    approval: dict[str, Any] = field(default_factory=dict)
+    verify: dict[str, Any] = field(default_factory=dict)
+    compensation: dict[str, Any] = field(default_factory=dict)
+    bounded_loop: dict[str, Any] = field(default_factory=dict)
+    aggregate: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.capability, dict):
             self.capability = CapabilityRef.from_dict(self.capability)
         if self.capability is not None and not isinstance(self.capability, CapabilityRef):
             raise ValueError("graph task capability must be a pinned CapabilityRef")
+        resolved_type = self.node_type or ("capability" if self.capability else "agent")
+        if resolved_type not in {
+            "agent",
+            "capability",
+            "branch",
+            "foreach",
+            "wait_event",
+            "approval",
+            "verify",
+            "compensation",
+            "bounded_loop",
+            "aggregate",
+        }:
+            raise ValueError("unsupported graph node type")
+        if (
+            resolved_type
+            in {
+                "branch",
+                "foreach",
+                "wait_event",
+                "approval",
+                "verify",
+                "bounded_loop",
+                "aggregate",
+            }
+            and self.capability is not None
+        ):
+            raise ValueError(f"{resolved_type} nodes cannot directly invoke a capability")
+        if resolved_type in {"capability", "compensation"} and self.capability is None:
+            raise ValueError(f"{resolved_type} nodes require a pinned CapabilityRef")
+        self.node_type = resolved_type
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "GraphTaskSpec":
@@ -268,8 +343,21 @@ class GraphTaskSpec:
             ),
             capability_input=dict(value.get("capability_input") or {}),
             output_schema=(dict(value["output_schema"]) if value.get("output_schema") else None),
+            verification_policy=dict(value.get("verification_policy") or {}),
+            max_repairs=(
+                int(value["max_repairs"]) if value.get("max_repairs") is not None else None
+            ),
             allowed_tools=[str(item) for item in value.get("allowed_tools", [])],
             skill_names=[str(item) for item in value.get("skill_names", [])],
+            node_type=(str(value["node_type"]) if value.get("node_type") else None),
+            branch=dict(value.get("branch") or {}),
+            foreach=dict(value.get("foreach") or {}),
+            wait_event=dict(value.get("wait_event") or {}),
+            approval=dict(value.get("approval") or {}),
+            verify=dict(value.get("verify") or {}),
+            compensation=dict(value.get("compensation") or {}),
+            bounded_loop=dict(value.get("bounded_loop") or {}),
+            aggregate=dict(value.get("aggregate") or {}),
         )
 
 
@@ -282,6 +370,7 @@ class TaskGraphSpec:
     agent_id: str = "default"
     max_concurrent: int = 4
     fail_fast: bool = False
+    failure_policy: dict[str, Any] = field(default_factory=dict)
     aggregate: bool = True
     # Frozen with the graph at submission time.  See orchestration.aggregation.
     aggregation_policy: dict[str, Any] = field(default_factory=dict)

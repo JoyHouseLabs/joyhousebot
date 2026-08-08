@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities.tool_adapter import ToolInvocationError, ToolOutput
+from joyhousebot.contracts import OperationReconciliationResult
 from joyhousebot.runtime.context import ToolExecutionContext
 
 if TYPE_CHECKING:
@@ -15,6 +16,10 @@ class SpawnTool(Tool):
 
     def __init__(self, manager: "SubagentManager"):
         self._manager = manager
+
+    side_effect = "internal"
+    idempotent = True
+    retryable = True
 
     @property
     def name(self) -> str:
@@ -72,4 +77,15 @@ class SpawnTool(Tool):
             output_schema=output_schema,
             origin_channel=tool_context.channel,
             origin_chat_id=tool_context.chat_id,
+            idempotency_key=tool_context.idempotency_key,
         )
+
+    async def reconcile_operation(
+        self, operation: dict[str, Any], **kwargs: Any
+    ) -> OperationReconciliationResult:
+        tool_context = kwargs.get("tool_context")
+        if not isinstance(tool_context, ToolExecutionContext):
+            return OperationReconciliationResult(
+                status="unknown", summary="Spawn reconciliation requires run context"
+            )
+        return await self._manager.reconcile(operation, user_id=tool_context.user_id)

@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from joyhousebot.agent.memory_candidates import MemoryWriteController
 from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.agent.tools.base import Tool
 from joyhousebot.runtime.context import ToolExecutionContext
@@ -174,6 +175,29 @@ def _scoped_memory_store(
     )
 
 
+def _write_scoped_memory(
+    scoped: tuple[Any, str],
+    content: str,
+    *,
+    tool_context: ToolExecutionContext,
+    source_kind: str,
+) -> str:
+    policy = EffectiveMemoryPolicy.from_dict(tool_context.memory_policy)
+    receipt = MemoryWriteController(
+        scoped[0].runtime_store,
+        scope_key=scoped[0].scope_key,
+        policy=policy,
+        context=tool_context,
+    ).replace(scoped[1], content, source_kind=source_kind)
+    if receipt.mode == "candidate":
+        state = "created" if receipt.created else "already exists"
+        return (
+            f"Memory update candidate {state}: {receipt.candidate_id}. "
+            "The durable Memory document is unchanged until its owner accepts the candidate."
+        )
+    return f"Successfully wrote {len(content)} bytes to scoped memory {scoped[1]}"
+
+
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
@@ -235,6 +259,8 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
 
+    side_effect = "write"
+
     def __init__(
         self,
         allowed_dir: Path | None = None,
@@ -280,11 +306,14 @@ class WriteFileTool(Tool):
             runtime_store=self._runtime_store,
             tool_context=kwargs.get("tool_context"),
             operation="write",
-            direct=True,
         )
         if scoped is not None:
-            scoped[0].write_relative(scoped[1], content)
-            return f"Successfully wrote {len(content)} bytes to scoped memory {scoped[1]}"
+            return _write_scoped_memory(
+                scoped,
+                content,
+                tool_context=kwargs["tool_context"],
+                source_kind="tool.write_file",
+            )
         file_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(file_path, content)
         return f"Successfully wrote {len(content)} bytes to {path}"
@@ -292,6 +321,8 @@ class WriteFileTool(Tool):
 
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
+
+    side_effect = "write"
 
     def __init__(
         self,
@@ -339,7 +370,6 @@ class EditFileTool(Tool):
             runtime_store=self._runtime_store,
             tool_context=kwargs.get("tool_context"),
             operation="write",
-            direct=True,
         )
         if scoped is not None:
             context = kwargs.get("tool_context")
@@ -367,7 +397,13 @@ class EditFileTool(Tool):
 
         new_content = content.replace(old_text, new_text, 1)
         if scoped is not None:
-            scoped[0].write_relative(scoped[1], new_content)
+            result = _write_scoped_memory(
+                scoped,
+                new_content,
+                tool_context=kwargs["tool_context"],
+                source_kind="tool.edit_file",
+            )
+            return result
         else:
             _atomic_write_text(file_path, new_content)
 

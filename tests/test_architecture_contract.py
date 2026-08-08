@@ -25,8 +25,8 @@ def test_removed_public_stacks_do_not_return() -> None:
         "joyhousebot/services/skills",
         "joyhousebot/services/tasks",
         "joyhousebot/cli/commands.py",
-        "frontend/src/services/gateway-client.ts",
-        "frontend/src/composables/useGateway.ts",
+        "apps/console/src/services/gateway-client.ts",
+        "apps/console/src/composables/useGateway.ts",
         "plugin_host",
         "examples/native-plugins",
         "scripts/rpc_compat_smoke.py",
@@ -143,8 +143,6 @@ PACKAGE_TIERS = {
 KNOWN_LAYER_VIOLATIONS = {
     # domain -> orchestration -> runtime -> domain 环：__post_init__ 里的 deferred import
     ("domain/scenarios/models.py", "joyhousebot.orchestration.aggregation"),
-    # runtime <-> capabilities 环：coordinator 依赖 dispatcher
-    ("runtime/coordinator.py", "joyhousebot.capabilities.dispatcher"),
     # capabilities <-> agent 环：registry/tool_adapter 依赖 agent.tools.base.Tool
     ("capabilities/registry.py", "joyhousebot.agent.tools.base"),
     ("capabilities/tool_adapter.py", "joyhousebot.agent.tools.base"),

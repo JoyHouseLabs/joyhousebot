@@ -69,6 +69,19 @@ class PostgresMigrationMixin:
         """
         with self.schema_migration_lock():
             self.migrate()
+            self.migrate_graph_revisions()
+            self.migrate_graph_sagas()
+            self.migrate_graph_patches()
+            self.migrate_evals()
+            self.migrate_works()
+            self.migrate_graph_event_waits()
+            self.migrate_execution_loop()
+            self.migrate_context_manifests()
+            self.migrate_memory_candidates()
+            self.migrate_loop_decisions()
+            self.migrate_verifications()
+            self.migrate_approvals()
+            self.migrate_reconciliations()
             self.migrate_admins()
             self.migrate_agents()
             self.migrate_capabilities()
@@ -94,9 +107,7 @@ class PostgresMigrationMixin:
             autocommit=True,
             application_name=f"{self.application_name}-migration-lock",
         ) as lock_connection:
-            lock_connection.execute(
-                "SELECT pg_advisory_lock(%s)", (SCHEMA_MIGRATION_LOCK_ID,)
-            )
+            lock_connection.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_MIGRATION_LOCK_ID,))
             try:
                 yield
             finally:
@@ -117,8 +128,7 @@ class PostgresMigrationMixin:
         conn.execute(_HISTORY_DDL)
         checksum = migration_checksum(ddl)
         row = conn.execute(
-            "SELECT checksum FROM schema_migration_history"
-            " WHERE name=%s AND version=%s",
+            "SELECT checksum FROM schema_migration_history WHERE name=%s AND version=%s",
             (name, version),
         ).fetchone()
         if row is None:
@@ -413,9 +423,7 @@ class PostgresMigrationMixin:
                     name="runtime",
                     version=3,
                     ddl=ddl,
-                    description=(
-                        "observable multi-agent event envelope and projections"
-                    ),
+                    description=("observable multi-agent event envelope and projections"),
                 )
 
     def _migrate_runtime_columns(self, conn: Any) -> None:

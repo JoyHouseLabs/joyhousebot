@@ -51,10 +51,7 @@ class CapabilityRef:
     plugin_build_digest: str = ""
 
     def __post_init__(self) -> None:
-        if any(
-            not value.strip()
-            for value in (self.capability_id, self.version)
-        ):
+        if any(not value.strip() for value in (self.capability_id, self.version)):
             raise ValueError("capability id and version are required")
         plugin_values = (
             self.plugin_id,
@@ -131,6 +128,7 @@ class CapabilityDefinition:
     idempotent: bool = True
     retryable: bool = True
     side_effect: str = "none"
+    compensation: CapabilityRef | None = None
     # Invocation concurrency is deliberately separate from the durable Task
     # graph's ``execution_mode``.  It describes whether *independent calls
     # returned in a single model response* may overlap.  The Agent/Scenario
@@ -165,6 +163,14 @@ class CapabilityDefinition:
             raise ValueError("invalid capability data classification")
         if any(not item.strip() for item in self.connection_ids):
             raise ValueError("capability connection ids must be non-empty")
+        if self.compensation is not None:
+            self.compensation.require_bound()
+            if self.compensation.kind not in {CapabilityKind.TOOL, CapabilityKind.CONNECTOR}:
+                raise ValueError("compensation capability must be a Tool or Connector")
+            if self.compensation.identity == self.ref.identity:
+                raise ValueError("capability cannot compensate itself")
+            if self.side_effect in {"none", "read"}:
+                raise ValueError("read-only capability cannot declare compensation")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -172,6 +178,10 @@ class CapabilityDefinition:
         value["tags"] = list(self.tags)
         value["permissions"] = list(self.permissions)
         value["connection_ids"] = list(self.connection_ids)
+        if self.compensation is None:
+            value.pop("compensation", None)
+        else:
+            value["compensation"] = self.compensation.to_dict()
         # Preserve compatibility with already-published built-in capability
         # versions. Plugin provenance is explicit when present, but an empty
         # optional field must not mutate legacy immutable definitions.
@@ -231,6 +241,8 @@ class CapabilityResult:
             raise ValueError("failed capability result requires an error")
         if self.status != InvocationStatus.FAILED and self.error is not None:
             raise ValueError("only failed capability results may contain an error")
+        if self.status == InvocationStatus.ACCEPTED and not self.operation:
+            raise ValueError("accepted capability result requires an operation descriptor")
 
     @property
     def terminal(self) -> bool:

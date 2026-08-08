@@ -18,6 +18,17 @@ from tests.support.postgres_store import TEST_DATABASE_URL
 
 _CORE_DOMAINS = {
     "runtime",
+    "graph_revisions",
+    "graph_patches",
+    "graph_sagas",
+    "graph_event_waits",
+    "execution_loop",
+    "context_manifests",
+    "memory_candidates",
+    "loop_decisions",
+    "verifications",
+    "approvals",
+    "operation_reconciliations",
     "admins",
     "agents",
     "capabilities",
@@ -51,13 +62,16 @@ def _history_row(store: PostgresRuntimeStore, name: str, version: int) -> dict |
 def test_core_migrations_are_recorded(store: PostgresRuntimeStore) -> None:
     with store._pool.connection() as conn:
         rows = conn.execute(
-            "SELECT name, version, checksum FROM schema_migration_history"
-            " WHERE name = ANY(%s)",
+            "SELECT DISTINCT ON (name) name, version, checksum"
+            " FROM schema_migration_history WHERE name = ANY(%s)"
+            " ORDER BY name, version DESC",
             (sorted(_CORE_DOMAINS),),
         ).fetchall()
     recorded = {row["name"]: row for row in rows}
     assert set(recorded) == _CORE_DOMAINS
     assert recorded["runtime"]["version"] == 3
+    assert recorded["execution_loop"]["version"] == 2
+    assert recorded["approvals"]["version"] == 2
     for row in recorded.values():
         assert len(row["checksum"]) == 64
 
@@ -190,12 +204,8 @@ def test_plugin_migration_serializes_with_core_lock(
 def test_record_plugin_migration(store: PostgresRuntimeStore) -> None:
     name = f"plugin:test-{uuid4().hex}"
     ddl = "CREATE SCHEMA IF NOT EXISTS plugintest;"
-    store.record_plugin_migration(
-        name=name, version=1, ddl=ddl, description="test plugin schema"
-    )
-    store.record_plugin_migration(
-        name=name, version=1, ddl=ddl, description="test plugin schema"
-    )
+    store.record_plugin_migration(name=name, version=1, ddl=ddl, description="test plugin schema")
+    store.record_plugin_migration(name=name, version=1, ddl=ddl, description="test plugin schema")
     row = _history_row(store, name, 1)
     assert row is not None
     assert row["checksum"] == migration_checksum(ddl)

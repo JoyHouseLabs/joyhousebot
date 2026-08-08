@@ -22,6 +22,77 @@ class RunBudgetExceededError(RuntimeError):
     """Raised when a per-run token, cost, or turn budget is exceeded."""
 
 
+class ContextBudgetExceededError(RunBudgetExceededError):
+    """Raised before a model call when required context cannot fit its input budget."""
+
+    def __init__(self, *, budget_tokens: int, required_tokens: int) -> None:
+        super().__init__(
+            "required model context exceeds budget: "
+            f"required={required_tokens} tokens, budget={budget_tokens} tokens"
+        )
+        self.budget_tokens = budget_tokens
+        self.required_tokens = required_tokens
+
+
+class AgentLoopExhaustedError(RuntimeError):
+    """Raised when a loop consumes its turn budget without a final answer."""
+
+    def __init__(self, max_turns: int) -> None:
+        super().__init__(f"agent loop exhausted after {max_turns} turns without a final result")
+        self.max_turns = max_turns
+
+
+class AgentLoopStalledError(RuntimeError):
+    """Raised when consecutive turns propose the same action without progress."""
+
+    def __init__(self, turn_index: int) -> None:
+        super().__init__(
+            f"agent loop stalled at turn {turn_index}: repeated action without progress"
+        )
+        self.turn_index = turn_index
+
+
+class PlannerLoopExhaustedError(RuntimeError):
+    """Raised when coordinator planning consumes its bounded replan budget."""
+
+    def __init__(self, max_replans: int, attempt: int) -> None:
+        super().__init__(
+            "coordinator planning exhausted after "
+            f"{attempt} attempts ({max_replans} replans allowed)"
+        )
+        self.max_replans = max_replans
+        self.attempt = attempt
+
+
+class VerificationFailedError(RuntimeError):
+    """Raised when required output verification cannot be repaired."""
+
+    def __init__(self, failures: tuple[dict[str, Any], ...], attempt: int) -> None:
+        summary = "; ".join(str(item.get("message") or "failed") for item in failures)
+        super().__init__(f"required output verification failed: {summary}")
+        self.failures = failures
+        self.attempt = attempt
+
+
+class ActionOutcomeUnknownError(RuntimeError):
+    """Raised when replay safety cannot prove whether an action took effect."""
+
+    def __init__(self, action_id: str, invocation_id: str) -> None:
+        super().__init__(f"action outcome is unknown and requires reconciliation: {action_id}")
+        self.action_id = action_id
+        self.invocation_id = invocation_id
+
+
+class ActionApprovalRequiredError(RuntimeError):
+    """Raised after a frozen Action has created a durable approval request."""
+
+    def __init__(self, approval_id: str, action_id: str, required_role: str) -> None:
+        super().__init__(f"action requires {required_role} approval: {action_id}")
+        self.approval_id = approval_id
+        self.action_id = action_id
+        self.required_role = required_role
+
+
 class CancellationToken:
     """Cooperative, run-scoped cancellation signal."""
 
@@ -78,6 +149,11 @@ class ToolExecutionContext:
     granted_permissions: frozenset[str] = field(default_factory=frozenset)
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     worker_id: str | None = None
+    turn_id: str | None = None
+    turn_index: int | None = None
+    action_index: int | None = None
+    action_id: str | None = None
+    idempotency_key: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -95,6 +171,7 @@ class RunContext:
     memory_scope: str | None = None
     memory_policy: dict[str, Any] = field(default_factory=dict)
     task_id: str | None = None
+    turn_scope: str = "execution"
     root_run_id: str | None = None
     parent_run_id: str | None = None
     parent_task_id: str | None = None
@@ -106,6 +183,8 @@ class RunContext:
     model: str | None = None
     system_prompt: str | None = None
     output_schema: dict[str, Any] | None = None
+    verification_policy: dict[str, Any] = field(default_factory=dict)
+    max_repairs: int | None = None
     max_turns: int | None = None
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
@@ -116,16 +195,34 @@ class RunContext:
     granted_permissions: frozenset[str] = field(default_factory=frozenset)
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     worker_id: str | None = None
+    run_lease_version: int | None = None
+    task_lease_version: int | None = None
+    context_timestamp: str | None = None
     skill_names: tuple[str, ...] = ()
     # Prompt Skills are immutable capabilities too.  Keep their approved
     # references with a Run so replay never silently reads a newer prompt.
     skill_refs: tuple[dict[str, str], ...] = ()
+    # Content-free provenance captured while assembling the initial messages.
+    # DurableTurnJournal extends it with Tool schemas and later loop messages.
+    context_sources: tuple[dict[str, Any], ...] = ()
+    context_candidates: tuple[dict[str, Any], ...] = field(
+        default_factory=tuple, repr=False, compare=False
+    )
+    context_initial_message_count: int = 0
+    context_budget_tokens: int | None = None
+    context_budget_strategy: str = "history_tail_v1"
     # Immutable-by-convention execution metadata. Scenario inputs are copied
     # here so every capability can enforce the same confirmed constraints;
     # plugins must never need direct access to framework storage.
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def for_tools(self) -> ToolExecutionContext:
+    def for_tools(
+        self,
+        *,
+        turn_id: str | None = None,
+        turn_index: int | None = None,
+        action_index: int | None = None,
+    ) -> ToolExecutionContext:
         return ToolExecutionContext(
             run_id=self.run_id,
             user_id=self.user_id,
@@ -150,6 +247,9 @@ class RunContext:
             granted_permissions=self.granted_permissions,
             cancellation=self.cancellation,
             worker_id=self.worker_id,
+            turn_id=turn_id,
+            turn_index=turn_index,
+            action_index=action_index,
             metadata=dict(self.metadata),
         )
 

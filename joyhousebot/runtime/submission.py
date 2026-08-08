@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
+from joyhousebot.orchestration.control_nodes import validate_compensation_declarations
+from joyhousebot.orchestration.failure_policy import validate_saga_declarations
 from joyhousebot.orchestration.task_graph import graph_task_id, validate_and_order_graph
 from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.graph_materialization import GraphMaterializationMixin
+from joyhousebot.runtime.graph_revision import (
+    freeze_graph_revision,
+    graph_options,
+    graph_task_rows,
+)
 from joyhousebot.runtime.models import (
     AgentEvent,
     AgentOptions,
@@ -90,9 +97,7 @@ class SubmissionMixin(GraphMaterializationMixin):
             raise ValueError("timeout_seconds must be greater than zero")
         # Child runs spawned by the runtime itself (subagents, graph tasks)
         # stay exempt: their fan-out is already bounded by the parent run.
-        top_level = not (
-            options.root_run_id or options.parent_run_id or options.parent_task_id
-        )
+        top_level = not (options.root_run_id or options.parent_run_id or options.parent_task_id)
         for name, value in (
             ("max_turns", options.max_turns),
             ("max_input_tokens", options.max_input_tokens),
@@ -102,6 +107,10 @@ class SubmissionMixin(GraphMaterializationMixin):
                 raise ValueError(f"{name} must be greater than zero")
         if options.max_cost_usd is not None and options.max_cost_usd <= 0:
             raise ValueError("max_cost_usd must be greater than zero")
+        if options.max_repairs is not None and not 0 <= options.max_repairs <= 10:
+            raise ValueError("max_repairs must be between zero and ten")
+        if options.max_replans is not None and not 0 <= options.max_replans <= 10:
+            raise ValueError("max_replans must be between zero and ten")
         for field_name, referenced_run_id in (
             ("root_run_id", options.root_run_id),
             ("parent_run_id", options.parent_run_id),
@@ -241,50 +250,20 @@ class SubmissionMixin(GraphMaterializationMixin):
         if spec.agent_id != profile.definition.agent_id:
             spec = replace(spec, agent_id=profile.definition.agent_id)
         ordered = validate_and_order_graph(spec.tasks)
+        catalog = await asyncio.to_thread(self.store.list_capability_definitions)
+        validate_compensation_declarations(ordered, catalog)
+        validate_saga_declarations(
+            ordered,
+            catalog,
+            spec.failure_policy,
+            max_concurrent=spec.max_concurrent,
+        )
         max_active_per_user = _env_int("JOYHOUSEBOT_MAX_RUNS_PER_USER", 4)
         max_submissions_per_minute = _env_int("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", 30)
         run_id = run_id or uuid4().hex
-        options = {
-            "goal": spec.goal,
-            "user_id": spec.user_id,
-            "session_id": spec.session_id,
-            "agent_id": spec.agent_id,
-            "max_concurrent": max(1, spec.max_concurrent),
-            "fail_fast": spec.fail_fast,
-            "aggregate": spec.aggregate,
-            "aggregation_policy": dict(spec.aggregation_policy),
-            "idempotency_key": spec.idempotency_key,
-            "request_id": request_id,
-            "tracker_id": tracker_id,
-            "parent_request_id": spec.parent_request_id,
-            "metadata": {**spec.metadata, "_runtime_initial_events_required": True},
-            "tasks": [asdict(task) for task in ordered],
-        }
-        graph_rows = [
-            {
-                "task_id": graph_task_id(run_id, task.id),
-                "agent_id": task.agent_id or spec.agent_id,
-                "name": task.name or task.id,
-                "payload": {
-                    "spec_id": task.id,
-                    "agent_id": task.agent_id or spec.agent_id,
-                    "prompt": task.prompt,
-                    "metadata": task.metadata,
-                    "timeout_seconds": task.timeout_seconds,
-                    "capability": task.capability.to_dict() if task.capability else None,
-                    "capability_input": task.capability_input,
-                    "output_schema": task.output_schema,
-                    "allowed_tools": task.allowed_tools,
-                    "skill_names": task.skill_names,
-                },
-                "dependencies": [
-                    graph_task_id(run_id, dependency) for dependency in task.dependencies
-                ],
-                "priority": index,
-                "max_attempts": task.max_attempts,
-            }
-            for index, task in enumerate(ordered)
-        ]
+        revision = freeze_graph_revision(run_id, spec, ordered, source="explicit_submission")
+        options = graph_options({}, spec, revision, initial_events_required=True)
+        graph_rows = graph_task_rows(run_id, revision)
         create_graph = getattr(self.store, "create_runtime_graph", None)
         if create_graph is not None:
             record, created = await asyncio.to_thread(
@@ -296,6 +275,8 @@ class SubmissionMixin(GraphMaterializationMixin):
                 prompt=spec.goal,
                 options=options,
                 tasks=graph_rows,
+                revision=revision,
+                created_by=f"runtime:{self.worker_id}",
                 idempotency_key=spec.idempotency_key,
                 max_active_per_user=max_active_per_user,
                 max_submissions_per_minute=max_submissions_per_minute,
@@ -362,7 +343,11 @@ class SubmissionMixin(GraphMaterializationMixin):
                     run_id=record.run_id,
                     type=EventType.RUN_ACCEPTED.value,
                     status=RunStatus.QUEUED.value,
-                    data={"kind": "graph", "task_count": len(ordered)},
+                    data={
+                        "kind": "graph",
+                        "task_count": len(ordered),
+                        "graph_revision_id": revision["revision_id"],
+                    },
                 )
             )
             await self.events.publish(
@@ -376,6 +361,7 @@ class SubmissionMixin(GraphMaterializationMixin):
                         "agent_id": record.agent_id,
                         "kind": "graph",
                         "task_count": len(ordered),
+                        "graph_revision_id": revision["revision_id"],
                     },
                 )
             )
@@ -386,12 +372,14 @@ class SubmissionMixin(GraphMaterializationMixin):
                     phase="planning",
                     data={
                         "goal": spec.goal,
+                        "graph_revision_id": revision["revision_id"],
                         "steps": [
                             {
                                 "task_id": graph_task_id(record.run_id, task.id),
                                 "name": task.name or task.id,
                                 "agent_id": task.agent_id or spec.agent_id,
                                 "dependencies": task.dependencies,
+                                "node_type": task.node_type,
                             }
                             for task in ordered
                         ],
@@ -399,6 +387,12 @@ class SubmissionMixin(GraphMaterializationMixin):
                 )
             )
             for task in ordered:
+                if (
+                    dict(revision["settings"].get("failure_policy") or {}).get("mode")
+                    == "saga"
+                    and task.node_type == "compensation"
+                ):
+                    continue
                 await self.events.publish(
                     AgentEvent(
                         run_id=record.run_id,

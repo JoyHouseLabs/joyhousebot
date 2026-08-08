@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
 from joyhousebot.application.context import RequestContext
 from joyhousebot.application.errors import NotFoundError, ValidationError
-from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.application.graph_validation import validate_graph_catalog
+from joyhousebot.application.run_commands import CreateRunCommand, GraphTaskCommand
 from joyhousebot.orchestration import ClarificationEngine, ScenarioPlanner, ScenarioRouter
+from joyhousebot.orchestration.failure_policy import validate_saga_declarations
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
 from joyhousebot.runtime.models import (
     AgentEvent,
     AgentOptions,
@@ -19,46 +21,6 @@ from joyhousebot.runtime.models import (
     GraphTaskSpec,
     TaskGraphSpec,
 )
-
-
-@dataclass(slots=True)
-class CreateRunCommand:
-    agent_id: str
-    session_id: str | None
-    input: str
-    scenario_id: str | None = None
-    scenario_inputs: dict[str, Any] = field(default_factory=dict)
-    execution_mode: str = "auto"
-    model: str | None = None
-    system_prompt: str | None = None
-    timeout_seconds: float = 300.0
-    max_turns: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class GraphTaskCommand:
-    id: str
-    prompt: str
-    agent_id: str | None = None
-    dependencies: list[str] = field(default_factory=list)
-    name: str | None = None
-    timeout_seconds: float | None = None
-    max_attempts: int = 1
-    metadata: dict[str, Any] = field(default_factory=dict)
-    capability: CapabilityRef | None = None
-    capability_input: dict[str, Any] = field(default_factory=dict)
-    output_schema: dict[str, Any] | None = None
-    allowed_tools: list[str] = field(default_factory=list)
-    skill_names: list[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        if isinstance(self.capability, dict):
-            self.capability = CapabilityRef.from_dict(self.capability)
-        if self.capability is not None and not isinstance(self.capability, CapabilityRef):
-            raise ValidationError("graph task capability must be a pinned CapabilityRef")
-        if not self.prompt.strip() and self.capability is None:
-            raise ValidationError("graph task prompt or capability is required")
 
 
 class RunService:
@@ -98,16 +60,11 @@ class RunService:
         # the coordinator for user intent recognition while making repeatable
         # tests and integrations independent of model tool-call dialects.
         explicit_fixed_scenario = bool(
-            command.scenario_id
-            and scenario is not None
-            and scenario.planning_mode == "fixed"
+            command.scenario_id and scenario is not None and scenario.planning_mode == "fixed"
         )
-        coordinator_required = (
-            not explicit_fixed_scenario
-            and (
-                getattr(agent_definition, "role", None) == "coordinator"
-                or bool(command.metadata.get("coordinator_required"))
-            )
+        coordinator_required = not explicit_fixed_scenario and (
+            getattr(agent_definition, "role", None) == "coordinator"
+            or bool(command.metadata.get("coordinator_required"))
         )
         metadata = {
             **command.metadata,
@@ -147,8 +104,12 @@ class RunService:
             session_id=session_id,
             model=command.model,
             system_prompt=command.system_prompt,
+            output_schema=command.output_schema,
+            verification_policy=command.verification_policy,
             timeout_seconds=command.timeout_seconds,
             max_turns=command.max_turns,
+            max_repairs=command.max_repairs,
+            max_replans=command.max_replans,
             metadata=metadata,
             allowed_tools=allowed_tools,
             idempotency_key=context.idempotency_key,
@@ -489,63 +450,16 @@ class RunService:
         tasks: list[GraphTaskCommand],
         max_concurrent: int = 4,
         fail_fast: bool = True,
+        failure_policy: dict[str, Any] | None = None,
         aggregate: bool = True,
+        aggregation_policy: dict[str, Any] | None = None,
     ) -> Any:
         if not goal.strip() or not tasks:
             raise ValidationError("goal and tasks are required")
-        catalog = await asyncio.to_thread(self.store.list_capability_definitions)
-        definitions = {
-            CapabilityRef.from_dict(dict(item["ref"])).identity: item
-            for item in catalog
-        }
-        for task in tasks:
-            executable = [*(task.allowed_tools or [])]
-            if task.capability:
-                executable.append(task.capability.capability_id)
-                definition = await asyncio.to_thread(
-                    self.store.get_capability_definition,
-                    task.capability.capability_id,
-                    task.capability.version,
-                )
-                kind = (definition or {}).get("ref", {}).get("kind")
-                if (
-                    kind not in {"tool", "connector"}
-                    or definition is None
-                    or CapabilityRef.from_dict(dict(definition["ref"])).identity
-                    != task.capability.identity
-                ):
-                    raise ValidationError(
-                        "graph task references unavailable pinned executable capability: "
-                        f"{task.capability.capability_id}@{task.capability.version}"
-                    )
-            for capability_id in executable:
-                definition = next(
-                    (
-                        item
-                        for identity, item in definitions.items()
-                        if identity[0] == capability_id
-                    ),
-                    None,
-                )
-                kind = (definition or {}).get("ref", {}).get("kind")
-                if kind not in {"tool", "connector"}:
-                    raise ValidationError(
-                        f"graph task references unavailable executable capability: {capability_id}"
-                    )
-            for skill_name in task.skill_names:
-                capability_id = (
-                    skill_name if skill_name.startswith("skill.") else f"skill.{skill_name}"
-                )
-                definition = next(
-                    (
-                        item
-                        for identity, item in definitions.items()
-                        if identity[0] == capability_id
-                    ),
-                    None,
-                )
-                if (definition or {}).get("ref", {}).get("kind") != "skill":
-                    raise ValidationError(f"graph task references unavailable skill: {skill_name}")
+        try:
+            catalog = await asyncio.to_thread(validate_graph_catalog, self.store, tasks)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         spec = TaskGraphSpec(
             goal=goal,
             user_id=context.user_id,
@@ -553,7 +467,9 @@ class RunService:
             agent_id=agent_id,
             max_concurrent=max_concurrent,
             fail_fast=fail_fast,
+            failure_policy=dict(failure_policy or {}),
             aggregate=aggregate,
+            aggregation_policy=dict(aggregation_policy or {}),
             idempotency_key=context.idempotency_key,
             tasks=[
                 GraphTaskSpec(
@@ -568,12 +484,33 @@ class RunService:
                     capability=item.capability,
                     capability_input=item.capability_input,
                     output_schema=item.output_schema,
+                    verification_policy=item.verification_policy,
+                    max_repairs=item.max_repairs,
                     allowed_tools=item.allowed_tools,
                     skill_names=item.skill_names,
+                    node_type=item.node_type,
+                    branch=item.branch,
+                    foreach=item.foreach,
+                    wait_event=item.wait_event,
+                    approval=item.approval,
+                    verify=item.verify,
+                    compensation=item.compensation,
+                    bounded_loop=item.bounded_loop,
+                    aggregate=item.aggregate,
                 )
                 for item in tasks
             ],
         )
+        try:
+            validate_and_order_graph(spec.tasks)
+            validate_saga_declarations(
+                spec.tasks,
+                catalog,
+                spec.failure_policy,
+                max_concurrent=spec.max_concurrent,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         return await self.runtime.submit_graph(spec)
 
     async def get(self, context: RequestContext, run_id: str) -> Any:
@@ -620,6 +557,14 @@ class RunService:
     async def tasks(self, context: RequestContext, run_id: str) -> list[Any]:
         await self.get(context, run_id)
         return await asyncio.to_thread(self.store.list_runtime_tasks, run_id=run_id, limit=5000)
+
+    async def graph_revisions(self, context: RequestContext, run_id: str) -> list[Any]:
+        await self.get(context, run_id)
+        return await asyncio.to_thread(
+            self.store.list_graph_revisions,
+            run_id,
+            expected_user_id=context.user_id,
+        )
 
     async def artifacts(self, context: RequestContext, run_id: str) -> list[dict[str, Any]]:
         await self.get(context, run_id)

@@ -2,12 +2,14 @@
 
 import json
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import json_repair
 from loguru import logger
 
 from joyhousebot.agent.memory import MemoryStore
+from joyhousebot.agent.memory_candidates import MemoryWriteController
 from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.runtime.context import (
     RunContext,
@@ -24,7 +26,7 @@ if TYPE_CHECKING:
 
 class MemoryLifecycleMixin:
     @staticmethod
-    def _apply_run_instructions(messages: list[dict], run_context: RunContext) -> None:
+    def _apply_run_instructions(messages: list[dict], run_context: RunContext) -> str | None:
         instructions: list[str] = []
         if run_context.system_prompt:
             instructions.append(run_context.system_prompt.strip())
@@ -33,16 +35,27 @@ class MemoryLifecycleMixin:
                 "Return only JSON matching this JSON Schema:\n"
                 + json.dumps(run_context.output_schema, ensure_ascii=False)[:20000]
             )
+        if (run_context.verification_policy or {}).get("verifiers"):
+            instructions.append(
+                "Your final answer must pass this completion verification policy:\n"
+                + json.dumps(run_context.verification_policy, ensure_ascii=False)[:20000]
+            )
         if not instructions:
-            return
+            return None
         extra = "\n\n".join(item for item in instructions if item)
         for message in messages:
             if message.get("role") == "system":
                 message["content"] = f"{message.get('content') or ''}\n\n{extra}".strip()
-                return
+                return extra
         messages.insert(0, {"role": "system", "content": extra})
+        return extra
 
-    async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        run_context: RunContext | None = None,
+    ) -> None:
         """Consolidate old messages into MEMORY.md + HISTORY.md.
 
         Args:
@@ -54,8 +67,8 @@ class MemoryLifecycleMixin:
             logger.debug("Memory consolidation skipped: disabled by Agent memory policy")
             return
 
-        scope_key = None
-        if self.config:
+        scope_key = run_context.memory_scope if run_context is not None else None
+        if scope_key is None and self.config:
             retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
             if retrieval:
                 mode = getattr(retrieval, "memory_scope", "user") or "user"
@@ -64,7 +77,22 @@ class MemoryLifecycleMixin:
                 elif mode == "user":
                     scope_key = (session.metadata or {}).get("last_memory_scope_key") or session.key
         memory = MemoryStore(self.runtime_store, scope_key=scope_key)
-        if policy.layer_enabled("episodic", "write"):
+        if run_context is None:
+            raise RuntimeError("Memory consolidation requires an authenticated RunContext")
+        memory_timestamp = run_context.context_timestamp or datetime.now(timezone.utc).isoformat()
+        try:
+            memory_date = datetime.fromisoformat(
+                memory_timestamp.replace("Z", "+00:00")
+            ).date().isoformat()
+        except ValueError:
+            memory_date = datetime.now(timezone.utc).date().isoformat()
+        writer = MemoryWriteController(
+            self.runtime_store,
+            scope_key=memory.scope_key,
+            policy=policy,
+            context=run_context,
+        )
+        if policy.write_mode == "direct" and policy.layer_enabled("episodic", "write"):
             memory.ensure_memory_structure()
 
         if archive_all:
@@ -104,9 +132,10 @@ class MemoryLifecycleMixin:
                 f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}"
             )
         conversation = "\n".join(lines)
-        raw_memory = (
-            memory.read_long_term() if policy.layer_enabled("long_term", "read") else ""
-        )
+        source_fingerprint = sha256(
+            f"{session.key}\0{conversation}".encode("utf-8")
+        ).hexdigest()
+        raw_memory = memory.read_long_term() if policy.layer_enabled("long_term", "read") else ""
         raw_profile = memory.read_profile() if policy.layer_enabled("profile", "read") else ""
         # Strip leading updated_at comment for prompt so LLM sees only body and does not echo it
         if raw_memory.startswith("<!-- updated_at=") and " -->" in raw_memory:
@@ -135,7 +164,7 @@ class MemoryLifecycleMixin:
                 )
         except Exception:
             pass
-        if flush_enabled and flush_prompt:
+        if flush_enabled and flush_prompt and policy.write_mode == "direct":
             try:
                 flush_user = f"{flush_prompt}\n\n## Recent conversation\n{conversation[:4000]}"
                 flush_response = await self.provider.chat(
@@ -155,9 +184,12 @@ class MemoryLifecycleMixin:
                             isinstance(flush_result.get("daily_log_entry"), str)
                             and flush_result["daily_log_entry"].strip()
                         ):
-                            date_str = datetime.now(timezone.utc).date().isoformat()
-                            memory.append_l2_daily(
-                                date_str, flush_result["daily_log_entry"].strip()
+                            date_str = memory_date
+                            writer.append(
+                                f"{date_str}.md",
+                                flush_result["daily_log_entry"].strip(),
+                                source_kind="consolidation.flush.daily",
+                                source_fingerprint=source_fingerprint,
                             )
                         if (
                             isinstance(flush_result.get("memory_additions"), str)
@@ -172,9 +204,18 @@ class MemoryLifecycleMixin:
                                 )
                                 else raw_memory
                             )
-                            memory.write_long_term(
-                                body.rstrip() + "\n\n" + flush_result["memory_additions"].strip(),
-                                updated_at=datetime.now(timezone.utc).isoformat(),
+                            updated = (
+                                "<!-- updated_at="
+                                f"{memory_timestamp} -->\n"
+                                + body.rstrip()
+                                + "\n\n"
+                                + flush_result["memory_additions"].strip()
+                            )
+                            writer.replace(
+                                "MEMORY.md",
+                                updated,
+                                source_kind="consolidation.flush.long_term",
+                                source_fingerprint=source_fingerprint,
                             )
                             raw_memory = memory.read_long_term()
                             current_memory = (
@@ -245,24 +286,55 @@ Respond with ONLY valid JSON, no markdown fences."""
                 pass
 
             if (entry := result.get("history_entry")) and policy.layer_enabled("episodic", "write"):
-                memory.append_history(entry, max_entries=history_max_entries)
-                date_str = datetime.now(timezone.utc).date().isoformat()
-                memory.append_l2_daily(date_str, entry)
-            if (update := result.get("memory_update")) and policy.layer_enabled("long_term", "write"):
-                if update != current_memory:
-                    memory.write_long_term(
-                        update, updated_at=datetime.now(timezone.utc).isoformat()
-                    )
-            if (profile_update := result.get("profile_update")) and policy.layer_enabled("profile", "write"):
-                if profile_update != raw_profile:
-                    memory.write_profile(
-                        str(profile_update), updated_at=datetime.now(timezone.utc).isoformat()
-                    )
-            if (l0_update := result.get("l0_update")) and policy.layer_enabled(
-                "episodic", "write"
+                writer.append(
+                    "HISTORY.md",
+                    str(entry),
+                    source_kind="consolidation.history",
+                    source_fingerprint=source_fingerprint,
+                    max_entries=history_max_entries,
+                    fact_type="episode",
+                )
+                date_str = memory_date
+                writer.append(
+                    f"{date_str}.md",
+                    str(entry),
+                    source_kind="consolidation.daily",
+                    source_fingerprint=source_fingerprint,
+                    fact_type="episode",
+                )
+            if (update := result.get("memory_update")) and policy.layer_enabled(
+                "long_term", "write"
             ):
+                if update != current_memory:
+                    writer.replace(
+                        "MEMORY.md",
+                        "<!-- updated_at="
+                        f"{memory_timestamp} -->\n{update}",
+                        source_kind="consolidation.long_term",
+                        source_fingerprint=source_fingerprint,
+                        fact_type="long_term_fact",
+                    )
+            if (profile_update := result.get("profile_update")) and policy.layer_enabled(
+                "profile", "write"
+            ):
+                if profile_update != raw_profile:
+                    writer.replace(
+                        "PROFILE.md",
+                        "<!-- updated_at="
+                        f"{memory_timestamp} -->\n{profile_update}",
+                        source_kind="consolidation.profile",
+                        source_fingerprint=source_fingerprint,
+                        fact_type="profile_attribute",
+                    )
+            if (l0_update := result.get("l0_update")) and policy.layer_enabled("episodic", "write"):
                 if isinstance(l0_update, str) and l0_update.strip():
-                    memory.update_l0_abstract(l0_update.strip())
+                    writer.replace(
+                        ".abstract",
+                        l0_update.strip(),
+                        source_kind="consolidation.abstract",
+                        source_fingerprint=source_fingerprint,
+                        fact_type="memory_index",
+                    )
 
             if archive_all:
                 session.last_consolidated = 0

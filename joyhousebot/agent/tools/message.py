@@ -11,6 +11,9 @@ from joyhousebot.runtime.context import ToolExecutionContext
 class MessageTool(Tool):
     """Tool to send messages to users on chat channels."""
 
+    side_effect = "external"
+    idempotent = False
+
     def __init__(
         self,
         send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,

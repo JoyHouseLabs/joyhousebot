@@ -7,14 +7,21 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from joyhousebot.application.approvals import ApprovalService
+from joyhousebot.application.evals import EvalService
 from joyhousebot.application.feedback import FeedbackService
+from joyhousebot.application.graph_events import GraphEventService
+from joyhousebot.application.graph_patches import GraphPatchService
+from joyhousebot.application.memory_candidates import MemoryCandidateService
 from joyhousebot.application.platform import PlatformService
 from joyhousebot.application.plugins import configured_plugin_registry
+from joyhousebot.application.reconciliations import ReconciliationService
 from joyhousebot.application.replays import ReplayService
 from joyhousebot.application.runs import RunService
 from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.application.schedules import ScheduleService
 from joyhousebot.application.sessions import SessionService
+from joyhousebot.application.works import WorkService
 from joyhousebot.bootstrap.agent_catalog import default_agent_id
 from joyhousebot.config.access import get_config
 from joyhousebot.cron.service import CronService
@@ -28,12 +35,19 @@ class ApplicationContainer:
     store: Any
     runtime: NativeAgentRuntime
     runs: RunService
+    approvals: ApprovalService
+    reconciliations: ReconciliationService
+    memory_candidates: MemoryCandidateService
+    graph_events: GraphEventService
+    graph_patches: GraphPatchService
     sessions: SessionService
     schedules: ScheduleService
     platform: PlatformService
     replays: ReplayService
     feedback: FeedbackService
+    evals: EvalService
     scenarios: ScenarioStudioService
+    works: WorkService
     plugins: Any
     owns_store: bool = True
 
@@ -77,12 +91,19 @@ def build_api_container(
         store=store,
         runtime=runtime,
         runs=runs,
+        approvals=ApprovalService(runtime, runs, store),
+        reconciliations=ReconciliationService(runtime, runs, store),
+        memory_candidates=MemoryCandidateService(store),
+        graph_events=GraphEventService(runtime, runs, store),
+        graph_patches=GraphPatchService(runtime, runs, store),
         sessions=SessionService(store),
         schedules=ScheduleService(schedules, config=config),
         platform=PlatformService(store),
         replays=ReplayService(runtime, store),
         feedback=FeedbackService(runs, store),
+        evals=EvalService(store),
         scenarios=ScenarioStudioService(store),
+        works=WorkService(store),
         plugins=configured_plugin_registry(config),
         owns_store=owns_store,
     )

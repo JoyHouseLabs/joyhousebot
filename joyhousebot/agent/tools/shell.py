@@ -54,6 +54,9 @@ def _cleanup_old_scratch(scratch_root: Path) -> None:
 class ExecTool(Tool):
     """Tool to execute shell commands directly or in a fail-closed container."""
 
+    side_effect = "external"
+    idempotent = False
+
     def __init__(
         self,
         timeout: int = 60,

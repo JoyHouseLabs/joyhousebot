@@ -7,15 +7,11 @@ import json
 from typing import Any
 
 from joyhousebot.orchestration.clarification import ClarificationEngine
-from joyhousebot.orchestration.coordinator_agent import (
-    COORDINATOR_OUTPUT_SCHEMA,
-    build_coordinator_prompt,
-    normalize_coordinator_plan,
-)
+from joyhousebot.orchestration.coordinator_agent import normalize_coordinator_plan
 from joyhousebot.orchestration.planner import ScenarioPlanner, build_coordinator_graph
 from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.models import AgentEvent, AgentOptions, AgentUsage, EventType
-from joyhousebot.runtime.structured import parse_structured_output
+from joyhousebot.runtime.planning_loop import run_coordinator_planning
 
 
 class RequestCoordinationMixin:
@@ -86,55 +82,39 @@ class RequestCoordinationMixin:
             "正在识别请求意图",
             stage="intent_classification",
         )
-        content, _, coordination_usage = await self._call_agent(
-            run_id=record.run_id,
-            task_id=None,
-            prompt=build_coordinator_prompt(
-                (
-                    f"{options.prompt}\n\n## Answers already supplied by the user\n"
-                    f"{json.dumps(dynamic_inputs, ensure_ascii=False)}"
-                    if dynamic_inputs
-                    else options.prompt
-                ),
-                scenarios=[item.to_dict() for item in scenarios],
-                capabilities=capability_catalog,
-                routing_decision=dict(options.metadata.get("routing_decision") or {}),
-            ),
-            user_id=record.user_id,
-            session_id=f"{options.session_id}:coordinator",
-            agent_id=record.agent_id,
-            channel="runtime",
-            chat_id="coordinator",
-            model=options.model,
-            system_prompt=None,
-            output_schema=COORDINATOR_OUTPUT_SCHEMA,
-            timeout_seconds=min(options.timeout_seconds, 90),
-            max_turns=1,
-            max_input_tokens=options.max_input_tokens,
-            max_output_tokens=min(options.max_output_tokens or 2048, 2048),
-            max_cost_usd=options.max_cost_usd,
-            permission_mode="coordinator",
-            allowed_tools=[],
-            disallowed_tools=[],
-            cancellation=cancellation,
-            sender_id=options.sender_id or record.user_id,
-            metadata={"phase": "coordination"},
-        )
-        raw_plan = parse_structured_output(content, COORDINATOR_OUTPUT_SCHEMA)
         scenario_values = [item.to_dict() for item in scenarios]
-        plan = normalize_coordinator_plan(raw_plan, capability_catalog, scenario_values)
-        # A deterministic route (including an explicit scenario selected by a
-        # plugin or the Scenario Studio) is a contract, not merely a hint. The
-        # coordinator may still extract values from the user's natural-language
-        # request, but it must not replace the selected scenario with an open
-        # agent plan. Otherwise the model can emit a prose question and finish
-        # the Run instead of entering the durable waiting_input protocol.
-        plan = _enforce_routed_scenario(
-            plan,
-            scenarios=scenarios,
-            routing_decision=dict(options.metadata.get("routing_decision") or {}),
-            supplied_inputs=dict(options.metadata.get("scenario_inputs") or {}),
+        routing_decision = dict(options.metadata.get("routing_decision") or {})
+
+        def normalize(raw_plan: dict[str, Any]) -> dict[str, Any]:
+            normalized = normalize_coordinator_plan(
+                raw_plan, capability_catalog, scenario_values
+            )
+            # A deterministic route is a contract, not merely a model hint.
+            return _enforce_routed_scenario(
+                normalized,
+                scenarios=scenarios,
+                routing_decision=routing_decision,
+                supplied_inputs=dict(options.metadata.get("scenario_inputs") or {}),
+            )
+
+        planning = await run_coordinator_planning(
+            self,
+            record=record,
+            options=options,
+            cancellation=cancellation,
+            user_prompt=(
+                f"{options.prompt}\n\n## Answers already supplied by the user\n"
+                f"{json.dumps(dynamic_inputs, ensure_ascii=False)}"
+                if dynamic_inputs
+                else options.prompt
+            ),
+            scenarios=scenario_values,
+            capabilities=capability_catalog,
+            routing_decision=routing_decision,
+            normalize=normalize,
         )
+        plan = planning.plan
+        coordination_usage = planning.usage
         await self._publish_coordination_progress(
             record.run_id,
             f"已识别意图：{plan['intent']}",

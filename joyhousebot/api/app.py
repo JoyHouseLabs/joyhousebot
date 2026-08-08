@@ -24,13 +24,17 @@ from joyhousebot.api.mcp_gateway import MCPGateway
 from joyhousebot.api.rate_limit import RateLimitMiddleware
 from joyhousebot.api.routers import (
     admin_catalog,
+    admin_evals,
     admin_platform,
     admin_plugins,
     admin_scenarios,
+    graph_events,
+    memory,
     runs,
     schedules,
     sessions,
     system,
+    works,
 )
 from joyhousebot.application.errors import (
     ApplicationError,
@@ -86,7 +90,9 @@ def _prometheus_metrics(data: dict) -> str:
         lines.append(f"joyhousebot_provider_requests_total{{{labels}}} {row['count']}")
         lines.append(f"joyhousebot_provider_duration_ms_avg{{{labels}}} {row['avg_duration_ms']}")
         lines.append(f"joyhousebot_provider_ttft_ms_avg{{{labels}}} {row['avg_ttft_ms']}")
-        lines.append(f"joyhousebot_provider_duration_ms_p95{{{labels}}} {row.get('p95_duration_ms', 0)}")
+        lines.append(
+            f"joyhousebot_provider_duration_ms_p95{{{labels}}} {row.get('p95_duration_ms', 0)}"
+        )
         lines.append(f"joyhousebot_provider_ttft_ms_p95{{{labels}}} {row.get('p95_ttft_ms', 0)}")
         lines.append(f"joyhousebot_provider_cost_usd_total{{{labels}}} {row['cost_usd']}")
     queue = data.get("queue") or {}
@@ -177,6 +183,7 @@ def create_app(
             "Prefer",
             "X-Request-Id",
             "X-Impersonate-User-ID",
+            "X-Joyhouse-Event-Token",
             "X-User-Id",
         ],
         expose_headers=["Location", "Preference-Applied", "X-Request-Id"],
@@ -265,12 +272,16 @@ def create_app(
     if surface in {"combined", "control"}:
         app.include_router(admin_platform.router, prefix=prefix)
         app.include_router(admin_catalog.router, prefix=prefix)
+        app.include_router(admin_evals.router, prefix=prefix)
         app.include_router(admin_plugins.router, prefix=prefix)
         app.include_router(admin_scenarios.router, prefix=prefix)
     if surface in {"combined", "public"}:
+        app.include_router(graph_events.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)
+        app.include_router(memory.router, prefix=prefix)
         app.include_router(sessions.router, prefix=prefix)
         app.include_router(schedules.router, prefix=prefix)
+        app.include_router(works.router, prefix=prefix)
         app.mount("/mcp", mcp_gateway.asgi_app, name="mcp")
 
     ui_dir = Path(__file__).resolve().parent.parent / "static" / "ui"

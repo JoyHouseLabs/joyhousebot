@@ -3,6 +3,11 @@
 Joyhousebot 的核心只提供 Agent 云运行时和治理面；业务能力以独立 Python 包发布。Dinq Discover 是第一
 个采用该边界的业务插件。
 
+Smart Study 是完整业务闭环插件的参考实现，源码位于相邻业务仓库
+`smart-study/packages/joyhousebot-smart-study`。它证明业务数据库无需进入核心：插件只声明版本化
+Connector，通过固定、受白名单保护的 HTTP origin 调用 Smart Study API，并沿用 Runtime 传入的
+`action_id/idempotency_key`。
+
 ## 不可变发布单元
 
 每次插件发布必须具有新的语义版本或新的发布版本，并提供：
@@ -61,3 +66,21 @@ Coordinator 路由、追问、权限校验和 Run 审计执行。这样通用 Jo
 Dinq 的 `dinq` schema 由 `dinq_plugin.discover.postgres_store.DinqPostgresStore.migrate()` 按
 第二种方式接入。DDL 变更后 `schema_migration_history` 中 checksum 不一致会产生 warning 日志，
 用于发现 schema 漂移。
+
+## Smart Study 接入顺序
+
+1. 构建并安装 `joyhousebot-smart-study` wheel，以实际 SHA-256 设置
+   `SMARTSTUDY_PLUGIN_BUILD_DIGEST`。
+2. 设置固定 `SMARTSTUDY_API_URL`、`SMARTSTUDY_API_ALLOWED_HOSTS` 和
+   `SMARTSTUDY_BRIDGE_TOKEN`；Capability 输入不能覆盖它们。
+3. 开启 entry point discovery，或在 `tools.capability_plugins` 显式加入
+   `smartstudy_joyhousebot.plugin`。
+4. 在 Smart Study API 设置对应 `JOYHOUSEBOT_BRIDGE_TOKEN` 并升级迁移；内部 API 为空时 fail closed。
+5. 运行插件 `configuration` 与 `api` 诊断；确认所有 Worker heartbeat 的插件版本和 digest 一致。
+6. 发布只含所需 `smartstudy.*` 权限的新 Agent revision。读取可自动执行，写行动、打卡和复盘按业务
+   场景要求用户确认。
+
+Smart Study 的身份契约是 JoyhouseBot `user_id` 等于十进制 Smart Study `User.id`。写请求携带 Durable
+Action 的稳定 operation ID，Smart Study 的 `joyhousebot_operations` 再冻结参数 hash 和结果；重复请求
+回放原结果，同键换参数拒绝。复盘和个人成果作为 confidential Artifact 返回，公开分享只能走
+JoyhouseBot Work 的版本、分级、发布、撤销与审计链。

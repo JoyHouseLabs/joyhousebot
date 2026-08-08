@@ -15,6 +15,8 @@ from joyhousebot.utils.exceptions import sanitize_error_message
 class FetchUrlToKnowledgebaseTool(Tool):
     """Fetch a URL and save its extracted content into workspace/knowledgebase. The knowledge pipeline will then convert and index it. Use this to add web pages to the knowledge base."""
 
+    side_effect = "write"
+
     def __init__(self, runtime_store: Any):
         self.runtime_store = runtime_store
         self.repository = None

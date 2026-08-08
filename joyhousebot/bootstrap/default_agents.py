@@ -43,7 +43,7 @@ def default_agent_profiles() -> tuple[tuple[AgentDefinition, AgentRevision], ...
                     "ask for required information, and create an executable plan."
                 ),
                 model_policy=dict(common_model),
-                planning_policy={"max_steps": 32, "max_fan_out": 10},
+                planning_policy={"max_steps": 32, "max_fan_out": 10, "max_replans": 2},
                 capability_policy={"mode": "catalog"},
                 memory_policy={
                     "enabled": False,
@@ -81,7 +81,11 @@ def default_agent_profiles() -> tuple[tuple[AgentDefinition, AgentRevision], ...
                 },
                 instructions="Complete the assigned task and ground the answer in evidence.",
                 model_policy=dict(common_model),
-                planning_policy={"allow_subagents": True, "max_fan_out": 10},
+                planning_policy={
+                    "allow_subagents": True,
+                    "max_fan_out": 10,
+                    "max_replans": 2,
+                },
                 capability_policy={"mode": "catalog"},
                 memory_policy={
                     "enabled": True,

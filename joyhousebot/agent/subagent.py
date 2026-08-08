@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import uuid
 from typing import Any
 
 from loguru import logger
 
 from joyhousebot.capabilities.tool_adapter import ToolInvocationError, ToolOutput
+from joyhousebot.contracts import OperationReconciliationResult
+from joyhousebot.domain.capabilities import InvocationStatus
 from joyhousebot.runtime.context import get_current_run_context
 from joyhousebot.runtime.models import AgentEvent, AgentOptions, EventType
 
@@ -31,6 +35,7 @@ class SubagentManager:
         output_schema: dict[str, Any] | None = None,
         origin_channel: str = "api",
         origin_chat_id: str = "direct",
+        idempotency_key: str | None = None,
     ) -> ToolOutput:
         if self._runtime is None:
             raise RuntimeError("distributed runtime is not attached to this Agent worker")
@@ -38,8 +43,10 @@ class SubagentManager:
         if not description:
             raise ValueError("subagent task is required")
 
-        task_id = uuid.uuid4().hex[:8]
-        child_run_id = uuid.uuid4().hex
+        operation_key = idempotency_key or f"direct:{uuid.uuid4().hex}"
+        digest = hashlib.sha256(operation_key.encode("utf-8")).hexdigest()
+        task_id = digest[:12]
+        child_run_id = f"sub_{digest[:32]}"
         display_label = label or description[:30] + ("..." if len(description) > 30 else "")
         parent = get_current_run_context()
         user_id = parent.user_id if parent else "system"
@@ -77,7 +84,7 @@ class SubagentManager:
                     parent_run_id=parent_run_id,
                     parent_task_id=parent_task_id,
                     max_children_per_root=self.max_spawns_per_run,
-                    idempotency_key=f"subagent:{parent_run_id}:{parent_task_id}:{task_id}",
+                    idempotency_key=f"subagent:{operation_key}",
                 ),
                 run_id=child_run_id,
             )
@@ -109,7 +116,54 @@ class SubagentManager:
                 "root_run_id": root_run_id or record.run_id,
                 "parent_run_id": parent_run_id,
                 "status": "queued",
+                "idempotency_key": operation_key,
             },
+            status=InvocationStatus.ACCEPTED,
+        )
+
+    async def reconcile(
+        self, operation: dict[str, Any], *, user_id: str
+    ) -> OperationReconciliationResult:
+        if self._runtime is None:
+            return OperationReconciliationResult(
+                status="unknown", summary="distributed runtime is not attached"
+            )
+        store = getattr(self._runtime, "store", None)
+        run_id = str(operation.get("run_id") or "")
+        if store is None or not run_id:
+            return OperationReconciliationResult(
+                status="unknown", summary="child Run identity is unavailable"
+            )
+        record = await asyncio.to_thread(
+            store.get_runtime_run, run_id, expected_user_id=user_id
+        )
+        if record is None:
+            return OperationReconciliationResult(
+                status="unknown", summary="child Run was not found"
+            )
+        if record.status == "completed":
+            return OperationReconciliationResult(
+                status="succeeded",
+                summary="子 Agent 已完成",
+                output=record.result or {},
+                operation={**operation, "status": record.status},
+            )
+        if record.status in {"failed", "cancelled", "timed_out"}:
+            error = dict(record.error or {})
+            return OperationReconciliationResult(
+                status="failed",
+                summary=str(error.get("message") or f"child Run {record.status}"),
+                error={
+                    "code": str(error.get("code") or f"CHILD_RUN_{record.status.upper()}"),
+                    "message": str(error.get("message") or f"child Run {record.status}"),
+                },
+                operation={**operation, "status": record.status},
+            )
+        return OperationReconciliationResult(
+            status="pending",
+            summary=f"子 Agent 状态：{record.status}",
+            operation={**operation, "status": record.status},
+            retry_after_seconds=2,
         )
 
     @staticmethod

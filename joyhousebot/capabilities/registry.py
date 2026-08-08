@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from joyhousebot.agent.tools.base import Tool
@@ -12,8 +13,12 @@ from joyhousebot.capabilities.tool_adapter import (
     ToolInvocationError,
     ToolOutput,
 )
-from joyhousebot.contracts import CapabilityContext
-from joyhousebot.domain.capabilities import CapabilityResult
+from joyhousebot.contracts import CapabilityContext, OperationReconciliationResult
+from joyhousebot.domain.capabilities import (
+    CapabilityDefinition,
+    CapabilityResult,
+    InvocationStatus,
+)
 from joyhousebot.runtime.context import ToolExecutionContext
 from joyhousebot.runtime.permissions import permission_engine
 from joyhousebot.utils.permissions import missing_permissions
@@ -39,6 +44,10 @@ class _PluginTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return dict(self._definition.input_schema)
 
+    @property
+    def supports_reconciliation(self) -> bool:
+        return callable(getattr(self._handler, "reconcile_operation", None))
+
     async def execute(self, **kwargs: Any) -> Any:
         tool_context = kwargs.pop("tool_context", None)
         if tool_context is None:
@@ -46,17 +55,69 @@ class _PluginTool(Tool):
         settings = self._settings()
         if not settings["enabled"]:
             raise ToolInvocationError("CAPABILITY_DISABLED", f"Capability '{self.name}' is disabled by an operator")
+        context = self._context(tool_context, settings)
+        result = await self._handler.execute(context, kwargs)
+        if not result.success:
+            error = result.error or {}
+            raise ToolInvocationError(
+                str(error.get("code") or "PLUGIN_CAPABILITY_FAILED"),
+                str(error.get("message") or "plugin capability failed"),
+                retryable=bool(error.get("retryable", False)),
+            )
+        status = InvocationStatus(result.status)
+        if isinstance(result.output, ToolOutput):
+            return replace(
+                result.output,
+                status=status,
+                operation=result.operation or result.output.operation,
+            )
+        data = (
+            {"content": result.output}
+            if isinstance(result.output, str)
+            else {"output": result.output}
+        )
+        return ToolOutput(
+            content=str(result.output or result.metadata.get("summary") or "accepted"),
+            data=data,
+            artifacts=tuple(item.to_dict() for item in result.artifacts),
+            operation=result.operation,
+            status=status,
+        )
+
+    async def reconcile_operation(
+        self, operation: dict[str, Any], **kwargs: Any
+    ) -> OperationReconciliationResult:
+        reconcile = getattr(self._handler, "reconcile_operation", None)
+        if not callable(reconcile):
+            return OperationReconciliationResult(
+                status="unknown", summary="plugin does not expose operation reconciliation"
+            )
+        tool_context = kwargs.get("tool_context")
+        if tool_context is None:
+            raise ValueError("plugin reconciliation requires tool context")
+        return await reconcile(self._context(tool_context, self._settings()), operation)
+
+    @staticmethod
+    def _context(tool_context: Any, settings: dict[str, Any]) -> CapabilityContext:
         metadata = dict(getattr(tool_context, "metadata", {}) or {})
         # Capability handlers receive the grants that were frozen in the
         # Agent execution snapshot.  They are useful for independently
         # invokable plugins, while the dispatcher remains the authoritative
         # enforcement point for the native Tool path.
         metadata["permissions"] = sorted(tool_context.granted_permissions)
+        # Business write APIs must deduplicate with the exact durable Action
+        # identity chosen by the framework.  Keeping these values in metadata
+        # preserves the stable public contract while preventing plugins from
+        # inventing a weaker, process-local idempotency key.
+        if getattr(tool_context, "action_id", None):
+            metadata["action_id"] = tool_context.action_id
+        if getattr(tool_context, "idempotency_key", None):
+            metadata["idempotency_key"] = tool_context.idempotency_key
         # This is the only configuration contract plugins receive.  It is
         # run-scoped, non-secret, and has already been validated by the
         # control plane against the capability's declared JSON Schema.
         metadata["capability_configuration"] = settings["configuration"]
-        context = CapabilityContext(
+        return CapabilityContext(
             user_id=tool_context.user_id,
             session_id=tool_context.session_id,
             run_id=tool_context.run_id,
@@ -64,23 +125,6 @@ class _PluginTool(Tool):
             agent_id=tool_context.agent_id,
             request_id=getattr(tool_context, "request_id", None),
             metadata=metadata,
-        )
-        result = await self._handler.execute(context, kwargs)
-        if not result.success:
-            message = (result.error or {}).get("message", "plugin capability failed")
-            raise RuntimeError(message)
-        if isinstance(result.output, ToolOutput):
-            return result.output
-        if isinstance(result.output, str):
-            return ToolOutput(
-                content=result.output,
-                data={"content": result.output},
-                artifacts=tuple(item.to_dict() for item in result.artifacts),
-            )
-        return ToolOutput(
-            content=str(result.output),
-            data={"output": result.output},
-            artifacts=tuple(item.to_dict() for item in result.artifacts),
         )
 
     def _settings(self) -> dict[str, Any]:
@@ -187,8 +231,14 @@ class CapabilityRegistry:
     async def invoke_capability(self, name: str, params: dict[str, Any], *, context: Any, version: str | None = None):
         return await self.plugins.invoke(name, params, context=context, version=version)
 
-    def register_tool(self, tool: Tool, *, optional: bool = False) -> None:
-        adapter = ToolCapabilityAdapter(tool)
+    def register_tool(
+        self,
+        tool: Tool,
+        *,
+        optional: bool = False,
+        definition: CapabilityDefinition | None = None,
+    ) -> None:
+        adapter = ToolCapabilityAdapter(tool, definition=definition)
         self._adapters[tool.name] = adapter
         self._versioned_adapters[(tool.name, str(adapter.definition.ref.version))] = adapter
         if optional:

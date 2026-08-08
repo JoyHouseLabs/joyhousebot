@@ -49,7 +49,11 @@ Privileged diagnostics may inspect reasoning/thinking blocks actually returned b
 
 ### Replay and improvement
 
-Offline, frozen, branch, and live replays support incident analysis, deterministic comparison, and controlled re-execution. Model caching reuses only equivalent requests and still records Invocation, Span, and audit data.
+Offline, frozen, branch, and live replays support incident analysis, deterministic comparison, and controlled re-execution. Versioned Eval datasets, deterministic scorers, and exact Agent/Scenario/Capability release gates prevent a failing revision from activating. Model caching reuses only equivalent requests and still records Invocation, Span, and audit data.
+
+### From artifacts to shareable work
+
+Run Artifacts can enter an immutable Work version chain. Owners explicitly choose private, unlisted, or public visibility and manage classification, published versions, collaborators, revocable/expiring version-pinned links, and access audit. Producing an Artifact never publishes personal data automatically.
 
 ### Distributed execution
 
@@ -91,7 +95,7 @@ api / bootstrap / channel adapters
        dedicated PostgreSQL repositories
 ```
 
-Business applications such as Dinq Discover should register Scenarios, Capabilities, Tools, Skills, or MCP servers through an independent plugin package rather than adding business code to the `joyhousebot` core package.
+Business applications such as Dinq Discover and Smart Study should register Scenarios, Capabilities, Tools, Skills, or MCP servers through an independent plugin package rather than adding business code to the `joyhousebot` core package. The Smart Study reference plugin also demonstrates forwarding the Runtime's Durable Action idempotency identity to a business API and returning reviews/outcomes as governed Artifacts.
 
 ## Start locally
 
@@ -140,7 +144,7 @@ Use a database-issued Bearer Token in production.
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/ruff check joyhousebot tests
-cd frontend && npm run build
+cd apps/console && npm run build
 ```
 
 ## License

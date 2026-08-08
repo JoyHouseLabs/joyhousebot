@@ -106,6 +106,12 @@ class ScenarioPlanner:
                     output_schema=(
                         dict(raw["output_schema"]) if raw.get("output_schema") else None
                     ),
+                    verification_policy=dict(raw.get("verification_policy") or {}),
+                    max_repairs=(
+                        int(raw["max_repairs"])
+                        if raw.get("max_repairs") is not None
+                        else None
+                    ),
                     allowed_tools=sorted(tool_capabilities),
                     skill_names=sorted(skills),
                     metadata={
@@ -127,6 +133,7 @@ class ScenarioPlanner:
             agent_id=agent_id,
             max_concurrent=int(scenario.execution_policy.get("max_concurrent") or 4),
             fail_fast=bool(scenario.execution_policy.get("fail_fast", True)),
+            failure_policy=dict(scenario.execution_policy.get("failure_policy") or {}),
             aggregate=bool(scenario.execution_policy.get("aggregate", True)),
             aggregation_policy=dict(scenario.execution_policy.get("aggregation_policy") or {}),
             idempotency_key=idempotency_key,

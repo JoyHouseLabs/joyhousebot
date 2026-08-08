@@ -51,9 +51,7 @@ class GraphFinalizationMixin:
                         owner_task.cancel()
                     return
 
-        heartbeat = asyncio.create_task(
-            _heartbeat(), name=f"graph-finalizer-heartbeat:{run_id}"
-        )
+        heartbeat = asyncio.create_task(_heartbeat(), name=f"graph-finalizer-heartbeat:{run_id}")
         try:
             tasks = await asyncio.to_thread(
                 self.store.list_runtime_tasks, run_id=run_id, limit=5000
@@ -62,6 +60,7 @@ class GraphFinalizationMixin:
                 {
                     "task_id": task.task_id,
                     "spec_id": str(task.payload.get("spec_id") or task.task_id),
+                    "parent_task_id": task.parent_task_id,
                     "agent_id": task.agent_id,
                     "status": task.status,
                     "result": task.result
@@ -72,10 +71,44 @@ class GraphFinalizationMixin:
                 }
                 for task in tasks
             ]
-            results = {item["spec_id"]: item["result"] for item in task_inputs}
+            top_level_inputs = [
+                item
+                for item, task in zip(task_inputs, tasks, strict=True)
+                if item["parent_task_id"] is None
+                and not bool(task.payload.get("saga_managed"))
+            ]
+            results = {item["spec_id"]: item["result"] for item in top_level_inputs}
+            usage_results = [
+                dict(task.result or {})
+                for task in tasks
+                if str(task.payload.get("node_type") or "agent") in {"agent", "capability"}
+            ]
             failures = [
                 task for task in tasks if task.status in {"failed", "cancelled", "timed_out"}
             ]
+            failure_mode = dict(record.options.get("failure_policy") or {}).get("mode")
+            if failure_mode == "saga" and failures:
+                saga = await asyncio.to_thread(self.store.reconcile_runtime_saga, run_id)
+                if saga is None or saga["status"] == "running":
+                    raise RuntimeError("Saga state is incomplete while Graph has no active Tasks")
+                compensated = saga["status"] == "completed"
+                await self._finish_error(
+                    run_id,
+                    RunStatus.FAILED,
+                    EventType.RUN_FAILED,
+                    (
+                        "task graph failed and declared side effects were compensated"
+                        if compensated
+                        else "task graph failed and declared compensation also failed"
+                    ),
+                    started_at,
+                    stop_reason=(
+                        "saga_compensated" if compensated else "saga_compensation_failed"
+                    ),
+                    worker_id=self.worker_id,
+                    lease_version=record.lease_version,
+                )
+                return
             if bool(record.options.get("fail_fast")) and failures:
                 await self._finish_error(
                     run_id,
@@ -97,15 +130,21 @@ class GraphFinalizationMixin:
                     type=EventType.AGGREGATION_STARTED.value,
                     phase="finalizing",
                     status="running",
-                    data={"policy": policy.to_dict(), "task_count": len(task_inputs)},
+                    data={
+                        "policy": policy.to_dict(),
+                        "task_count": len(top_level_inputs),
+                        "runtime_task_count": len(task_inputs),
+                    },
                 )
             )
-            completed_outputs = [item for item in task_inputs if item["status"] == "completed"]
+            completed_outputs = [item for item in top_level_inputs if item["status"] == "completed"]
             if policy.mode == "llm_synthesis" and completed_outputs:
                 content, tools, aggregate_usage = await self._call_agent(
                     run_id=run_id,
                     task_id=None,
-                    prompt=synthesis_prompt(goal=record.prompt, tasks=task_inputs, policy=policy),
+                    prompt=synthesis_prompt(
+                        goal=record.prompt, tasks=top_level_inputs, policy=policy
+                    ),
                     user_id=record.user_id,
                     session_id=f"{record.session_id}:aggregate",
                     agent_id=record.agent_id,
@@ -123,6 +162,7 @@ class GraphFinalizationMixin:
                     allowed_tools=[],
                     disallowed_tools=[],
                     cancellation=cancellation,
+                    run_lease_version=record.lease_version,
                 )
                 aggregation = {
                     "policy": policy.to_dict(),
@@ -133,7 +173,7 @@ class GraphFinalizationMixin:
                     "execution": "llm_synthesis",
                 }
             else:
-                deterministic = aggregate_task_results(task_inputs, policy)
+                deterministic = aggregate_task_results(top_level_inputs, policy)
                 content = deterministic.content
                 tools = []
                 aggregate_usage = AgentUsage()
@@ -144,19 +184,19 @@ class GraphFinalizationMixin:
             usage = AgentUsage(
                 input_tokens=sum(
                     int((value.get("usage") or {}).get("input_tokens") or 0)
-                    for value in results.values()
+                    for value in usage_results
                 )
                 + aggregate_usage.input_tokens
                 + int(coordination.get("input_tokens") or 0),
                 output_tokens=sum(
                     int((value.get("usage") or {}).get("output_tokens") or 0)
-                    for value in results.values()
+                    for value in usage_results
                 )
                 + aggregate_usage.output_tokens
                 + int(coordination.get("output_tokens") or 0),
                 cost_usd=sum(
                     float((value.get("usage") or {}).get("cost_usd") or 0.0)
-                    for value in results.values()
+                    for value in usage_results
                 )
                 + float(aggregate_usage.cost_usd or 0.0)
                 + float(coordination.get("cost_usd") or 0.0),

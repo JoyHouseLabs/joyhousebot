@@ -204,6 +204,12 @@ ScenarioWriterDep = Annotated[
 ScenarioPublisherDep = Annotated[
     Principal, Depends(_permission_dependency("scenarios.publish", "scenario publish permission required"))
 ]
+EvalsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("evals.read", "evaluation read permission required"))
+]
+EvalsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("evals.write", "evaluation write permission required"))
+]
 
 
 async def require_reasoning_reader(principal: PrincipalDep) -> Principal:

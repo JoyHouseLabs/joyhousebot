@@ -12,6 +12,8 @@ from joyhousebot.runtime.context import ToolExecutionContext
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
 
+    side_effect = "write"
+
     def __init__(self, cron_service: CronService):
         self._cron = cron_service
 

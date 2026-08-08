@@ -10,6 +10,8 @@ from joyhousebot.contracts.capabilities import (
     CapabilityContext,
     CapabilityHandler,
     CapabilityResult,
+    OperationReconciler,
+    OperationReconciliationResult,
 )
 from joyhousebot.contracts.events import DomainEvent
 from joyhousebot.contracts.plugins import (
@@ -34,6 +36,8 @@ __all__ = [
     "CapabilityContext",
     "CapabilityHandler",
     "CapabilityResult",
+    "OperationReconciler",
+    "OperationReconciliationResult",
     "DomainEvent",
     "Plugin",
     "PluginComponent",

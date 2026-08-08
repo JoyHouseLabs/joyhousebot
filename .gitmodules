@@ -1,0 +1,3 @@
+[submodule "apps/browser-extension"]
+	path = apps/browser-extension
+	url = git@github.com:JoyHouseLabs/ext-joyhousebot.git

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from joyhousebot.application.evals import require_release_gate
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
 from joyhousebot.domain.capabilities import CapabilityDefinition
 
@@ -59,6 +60,14 @@ class PlatformService:
     async def publish_agent_revision(
         self, agent_id: str, revision_id: str, *, actor_id: str
     ) -> dict[str, Any]:
+        await require_release_gate(
+            self.store,
+            target_type="agent",
+            target_id=agent_id,
+            target_revision_id=revision_id,
+            purpose="publish_agent_revision",
+            actor_id=actor_id,
+        )
         profile = await asyncio.to_thread(
             self.store.publish_agent_revision,
             agent_id,
@@ -76,6 +85,14 @@ class PlatformService:
     async def publish_capability(
         self, definition: CapabilityDefinition, *, actor_id: str
     ) -> dict[str, Any]:
+        await require_release_gate(
+            self.store,
+            target_type="capability",
+            target_id=definition.ref.capability_id,
+            target_revision_id=definition.ref.version,
+            purpose="publish_capability_version",
+            actor_id=actor_id,
+        )
         await asyncio.to_thread(
             self.store.publish_capability, definition, actor_id=actor_id
         )

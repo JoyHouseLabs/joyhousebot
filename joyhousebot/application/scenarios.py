@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from joyhousebot.application.errors import ConflictError, NotFoundError
+from joyhousebot.application.evals import require_release_gate
 from joyhousebot.domain.capabilities.models import CapabilityRef
 from joyhousebot.orchestration import ClarificationEngine, ScenarioRouter
 
@@ -18,6 +19,14 @@ class ScenarioStudioService:
 
     async def publish(self, scenario_id: str, version: int, *, actor_id: str) -> dict[str, Any]:
         draft = await self._version(scenario_id, version)
+        await require_release_gate(
+            self.store,
+            target_type="scenario",
+            target_id=scenario_id,
+            target_revision_id=str(version),
+            purpose="publish_scenario_version",
+            actor_id=actor_id,
+        )
         checks = await asyncio.gather(
             *(
                 asyncio.to_thread(

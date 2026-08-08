@@ -6,6 +6,21 @@ Joyhousebot 不是单 Agent 客户端，也不是模型供应商 SDK。它解决
 
 它提供一个 PostgreSQL-first 的控制面与运行面，让企业可以统一构建、发布、运行和治理多个 Agent 应用。
 
+## 项目结构
+
+```text
+joyhousebot/
+├── joyhousebot/              # 开源 Runtime：API、Worker、Agent、任务、工具、存储与权限
+├── apps/
+│   ├── console/              # 运行监控、Agent 配置、场景与回放控制台
+│   ├── website/              # joyhousebot.com 官网
+│   └── browser-extension/    # 浏览器智能外挂（独立仓库 submodule）
+├── docs/                     # 架构、部署、CLI 与集成文档
+├── deploy/                   # Runtime 与官网部署模板
+├── bridges/                  # 渠道桥接实现
+└── tests/                    # Runtime 契约与集成测试
+```
+
 ## 治理模型
 
 ```text
@@ -49,7 +64,14 @@ PostgreSQL 事实源
 
 ### 回放与持续改进
 
-支持 offline、frozen、branch 和 live 回放，用于故障分析、结果比较和受控重试。模型缓存只复用等价请求，仍然保留 Invocation、Span 和审计记录。
+支持 offline、frozen、branch 和 live 回放，用于故障分析、结果比较和受控重试。版本化 Eval dataset、
+确定性 scorer 与精确 Agent/Scenario/Capability 发布门禁保证未通过回归的 revision 不会激活。模型缓存只
+复用等价请求，仍然保留 Invocation、Span 和审计记录。
+
+### 从产物到成果作品
+
+Run Artifact 可进入 Work 的不可变版本链。所有者可以显式选择 private、unlisted 或 public，管理数据
+分级、发布版本、协作者、可撤销/可过期的固定版本分享链接和访问审计；生成产物不会自动公开个人数据。
 
 ### 分布式执行
 
@@ -91,7 +113,9 @@ api / bootstrap / channel adapters
        dedicated PostgreSQL repositories
 ```
 
-业务项目（例如 Dinq Discover）应通过独立插件包注册 Scenario、Capability、Tool、Skill 或 MCP Server，不把业务代码写入 `joyhousebot` 核心包。
+业务项目（例如 Dinq Discover 与 Smart Study）应通过独立插件包注册 Scenario、Capability、Tool、Skill
+或 MCP Server，不把业务代码写入 `joyhousebot` 核心包。Smart Study 参考插件还演示了如何把 Runtime 的
+Durable Action 幂等键传入业务 API，并把复盘/个人成果返回为受治理 Artifact。
 
 ## 控制台示例
 
@@ -100,6 +124,7 @@ Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
 - **运行监控**：查看 API、PostgreSQL、Worker 集群、运行数量和资源用量。
 - **运行中心**：分页查看 Run，按状态、Agent、Session 或摘要筛选，并进入独立详情页。
 - **全流程回放**：查看事件时间线、模型调用、工具调用、HTTP Trace、日志、产物、人工反馈和输入输出。
+- **Eval 与成果**：维护回归门禁，并把已验证 Artifact 形成可版本化、可分享、可撤销的作品。
 
 ![运行监控概览](docs/pictures/ScreenShot_2026-08-05_230508_778.png)
 
@@ -154,7 +179,7 @@ curl -X POST http://127.0.0.1:18790/v1/runs \
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/ruff check joyhousebot tests
-cd frontend && npm run build
+cd apps/console && npm run build
 ```
 
 ## 许可证

@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from datetime import datetime
 from typing import Any
 
 from loguru import logger
 
-from joyhousebot.capabilities.dispatcher import capability_result_prompt
-from joyhousebot.domain.capabilities import CapabilityRef, InvocationStatus
 from joyhousebot.orchestration.planner import ScenarioPlanner
-from joyhousebot.orchestration.task_graph import render_value
-from joyhousebot.runtime.context import CancellationToken, ToolExecutionContext
 from joyhousebot.runtime.graph_finalization import GraphFinalizationMixin
+from joyhousebot.runtime.graph_saga_execution import reconcile_graph_saga
+from joyhousebot.runtime.graph_task_execution import GraphTaskExecutionMixin
 from joyhousebot.runtime.maintenance import (
     _PURGE_INTERVAL_SECONDS,
     RuntimeMaintenanceMixin,
@@ -23,10 +20,8 @@ from joyhousebot.runtime.maintenance import (
 )
 from joyhousebot.runtime.models import (
     AgentEvent,
-    AgentUsage,
     EventType,
     RunStatus,
-    TaskStatus,
 )
 
 # Exceptions in the background loops are logged at most once per minute per
@@ -50,7 +45,9 @@ def _parse_timestamp(value: str | None) -> float | None:
         return None
 
 
-class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
+class RuntimeCoordinatorMixin(
+    GraphTaskExecutionMixin, GraphFinalizationMixin, RuntimeMaintenanceMixin
+):
     def _log_loop_exception(self, loop_name: str) -> None:
         """Log a background-loop exception, rate limited to one per minute."""
         now = time.monotonic()
@@ -121,6 +118,12 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
             self._graph_active_count += 1
             try:
                 await self._execute_claimed_graph_task(task)
+            except asyncio.CancelledError:
+                if self._closing:
+                    raise
+                current = asyncio.current_task()
+                if current is not None:
+                    current.uncancel()
             finally:
                 self._graph_active_count -= 1
                 self._graph_task_queue.task_done()
@@ -217,6 +220,7 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
                     in {
                         RunStatus.QUEUED.value,
                         RunStatus.RUNNING.value,
+                        RunStatus.WAITING_EXTERNAL.value,
                     }
                 ):
                     await self._schedule_record(record.run_id, wake_source=wake_source)
@@ -225,6 +229,34 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
                 continue
             if not self.scheduler_enabled:
                 continue
+            expire_waits = getattr(self.store, "expire_due_graph_event_waits", None)
+            if expire_waits is not None:
+                expired_waits = await asyncio.to_thread(
+                    expire_waits, run_id=record.run_id, limit=128
+                )
+                for wait in expired_waits:
+                    await self.events.publish(
+                        AgentEvent(
+                            run_id=wait.run_id,
+                            task_id=wait.task_id,
+                            type=EventType.EVENT_EXPIRED.value,
+                            status="expired",
+                            data={
+                                "wait_id": wait.wait_id,
+                                "event_type": wait.event_type,
+                                "deadline_at": wait.deadline_at,
+                            },
+                        )
+                    )
+                    await self.events.publish(
+                        AgentEvent(
+                            run_id=wait.run_id,
+                            task_id=wait.task_id,
+                            type=EventType.TASK_FAILED.value,
+                            status="failed",
+                            data={"reason": "event_deadline_expired"},
+                        )
+                    )
             if self._graph_deadline_exceeded(record):
                 await asyncio.to_thread(self.store.cancel_runtime_tasks, record.run_id)
                 await self._finish_error(
@@ -236,11 +268,25 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
                 )
                 continue
             counts = await asyncio.to_thread(self.store.reconcile_runtime_graph, record.run_id)
+            if dict(record.options.get("failure_policy") or {}).get("mode") == "saga":
+                await reconcile_graph_saga(self, record)
+                counts = await asyncio.to_thread(
+                    self.store.reconcile_runtime_graph, record.run_id
+                )
             observed_tasks = sum(int(value) for value in counts.values())
             if (
                 record.total_task_count > 0
                 and observed_tasks >= record.total_task_count
-                and not any(counts.get(status, 0) for status in ("queued", "blocked", "running"))
+                and not any(
+                    counts.get(status, 0)
+                    for status in (
+                        "queued",
+                        "blocked",
+                        "running",
+                        "waiting_approval",
+                        "waiting_external",
+                    )
+                )
             ):
                 if bool(record.options.get("aggregate", True)) and self.agent is None:
                     # A scheduler-only process has no model. Leave aggregation
@@ -285,347 +331,6 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
         if queued:
             await asyncio.to_thread(self.store.notify_work, record.run_id)
 
-    async def _execute_claimed_graph_task(self, task: Any) -> None:
-        run = await asyncio.to_thread(self.store.get_runtime_run, task.run_id)
-        if (
-            run is None
-            or run.kind != "graph"
-            or run.status in {"completed", "failed", "cancelled", "timed_out"}
-        ):
-            await asyncio.to_thread(
-                self.store.update_runtime_task,
-                task.task_id,
-                status=TaskStatus.CANCELLED.value,
-                error={"message": "parent run is not executable"},
-                worker_id=self.worker_id,
-                lease_version=task.lease_version,
-            )
-            return
-
-        started = await asyncio.to_thread(self.store.start_runtime_graph, run.run_id)
-        if started:
-            await self.events.publish(
-                AgentEvent(
-                    run_id=run.run_id,
-                    type=EventType.RUN_STARTED.value,
-                    data={"kind": "graph", "distributed": True},
-                )
-            )
-            await self._log(
-                run.run_id,
-                "graph.started",
-                "Distributed graph execution started",
-            )
-
-        cancellation = CancellationToken()
-        owner_task = asyncio.current_task()
-
-        async def _heartbeat() -> None:
-            while True:
-                await asyncio.sleep(max(1.0, self.lease_seconds / 3))
-                owned = await asyncio.to_thread(
-                    self.store.heartbeat_runtime_task,
-                    task.task_id,
-                    worker_id=self.worker_id,
-                    lease_seconds=self.lease_seconds,
-                    lease_version=task.lease_version,
-                )
-                if not owned:
-                    await self.events.publish(
-                        AgentEvent(
-                            run_id=run.run_id,
-                            task_id=task.task_id,
-                            type=EventType.LEASE_LOST.value,
-                            worker_id=self.worker_id,
-                            lease_version=task.lease_version,
-                            data={"reason": "task lease ownership lost"},
-                        )
-                    )
-                    cancellation.cancel("task ownership lost")
-                    if owner_task is not None:
-                        owner_task.cancel()
-                    return
-
-        heartbeat = asyncio.create_task(_heartbeat(), name=f"task-heartbeat:{task.task_id}")
-        await self._log(
-            run.run_id,
-            "task.claimed",
-            "Graph task claimed",
-            task_id=task.task_id,
-            data={"attempt": task.attempt, "lease_version": task.lease_version},
-        )
-        claim_details = self._task_claim_details.pop(task.task_id, {})
-        available_at = _parse_timestamp(task.available_at) or _parse_timestamp(task.created_at)
-        if available_at is not None:
-            # Include any very short hand-off through the local execution queue.
-            claim_details["queue_wait_ms"] = max(
-                0, int((time.time() - available_at) * 1000)
-            )
-        await self.events.publish(
-            AgentEvent(
-                run_id=run.run_id,
-                task_id=task.task_id,
-                type=EventType.TASK_STARTED.value,
-                data={
-                    "attempt": task.attempt,
-                    "name": task.name,
-                    "worker_id": self.worker_id,
-                    **claim_details,
-                },
-            )
-        )
-        capability = (
-            CapabilityRef.from_dict(dict(task.payload["capability"]))
-            if task.payload.get("capability")
-            else None
-        )
-        capability_id = capability.capability_id if capability else ""
-        capability_result = None
-        try:
-            dependencies = await asyncio.to_thread(
-                self.store.get_runtime_task_dependencies, task.task_id
-            )
-            dependency_context: dict[str, Any] = {}
-            for dependency_id in dependencies:
-                dependency = await asyncio.to_thread(self.store.get_runtime_task, dependency_id)
-                if dependency is not None:
-                    key = str(dependency.payload.get("spec_id") or dependency.task_id)
-                    dependency_context[key] = (dependency.result or {}).get("content")
-            prompt = str(task.payload.get("prompt") or "")
-            if dependency_context:
-                prompt += (
-                    "\n\nContext from dependency tasks:\n"
-                    + json.dumps(dependency_context, ensure_ascii=False)[:20000]
-                )
-            spec_id = str(task.payload.get("spec_id") or task.task_id)
-            if capability_id:
-                variables = {
-                    f"tasks.{key}.content": value for key, value in dependency_context.items()
-                }
-                capability_input = render_value(
-                    dict(task.payload.get("capability_input") or {}), variables
-                )
-                agent = await self._resolve_execution_agent(run.run_id, task.agent_id)
-                registry = getattr(agent, "capabilities", None)
-                if registry is None:
-                    raise RuntimeError(f"agent has no capability registry: {task.agent_id}")
-                scenario_state = await asyncio.to_thread(
-                    self.store.get_run_scenario_state,
-                    run.run_id,
-                    expected_user_id=run.user_id,
-                )
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=run.run_id,
-                        task_id=task.task_id,
-                        type=EventType.CAPABILITY_REQUESTED.value,
-                        data={"capability_id": capability_id},
-                    )
-                )
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=run.run_id,
-                        task_id=task.task_id,
-                        type=EventType.CAPABILITY_STARTED.value,
-                        status="running",
-                        data={"capability_id": capability_id},
-                    )
-                )
-                capability_result = await registry.invoke_tool(
-                    capability_id,
-                    capability_input,
-                    version=capability.version,
-                    context=ToolExecutionContext(
-                        run_id=run.run_id,
-                        task_id=task.task_id,
-                        root_run_id=run.root_run_id,
-                        session_key=f"{run.user_id}:{task.agent_id}:{run.session_id}",
-                        session_id=run.session_id,
-                        channel="runtime",
-                        chat_id=spec_id,
-                        user_id=run.user_id,
-                        agent_id=task.agent_id,
-                        allowed_tools=frozenset({capability_id}),
-                        granted_permissions=await self._execution_permissions(
-                            run.run_id, task.agent_id
-                        ),
-                        cancellation=cancellation,
-                        worker_id=self.worker_id,
-                        metadata={
-                            "scenario_id": str(
-                                getattr(scenario_state, "scenario_id", "") or ""
-                            ),
-                            "scenario_version": int(
-                                getattr(scenario_state, "scenario_version", 0) or 0
-                            ),
-                            "scenario_inputs": dict(
-                                getattr(scenario_state, "collected_inputs", {}) or {}
-                            ),
-                        },
-                    ),
-                    tool_call_id=task.task_id,
-                )
-                if capability_result.status != InvocationStatus.SUCCEEDED:
-                    error = capability_result.error
-                    raise RuntimeError(error.message if error else capability_result.summary)
-                content = capability_result_prompt(capability_result)
-                tools = [capability_id]
-                usage = AgentUsage()
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=run.run_id,
-                        task_id=task.task_id,
-                        type=EventType.CAPABILITY_COMPLETED.value,
-                        status="completed",
-                        data={
-                            "capability_id": capability_id,
-                            "invocation_id": capability_result.invocation_id,
-                            "summary": capability_result.summary,
-                        },
-                    )
-                )
-            else:
-                content, tools, usage = await self._call_agent(
-                    run_id=run.run_id,
-                    task_id=task.task_id,
-                    prompt=prompt,
-                    user_id=run.user_id,
-                    session_id=f"{run.session_id}:task:{spec_id}",
-                    agent_id=task.agent_id,
-                    channel="runtime",
-                    chat_id=spec_id,
-                    model=None,
-                    system_prompt=None,
-                    output_schema=(
-                        dict(task.payload["output_schema"])
-                        if task.payload.get("output_schema")
-                        else None
-                    ),
-                    timeout_seconds=float(task.payload.get("timeout_seconds") or 300),
-                    max_turns=None,
-                    max_input_tokens=None,
-                    max_output_tokens=None,
-                    max_cost_usd=None,
-                    permission_mode="default",
-                    allowed_tools=[str(item) for item in task.payload.get("allowed_tools") or []],
-                    disallowed_tools=[],
-                    cancellation=cancellation,
-                    metadata={
-                        **dict(task.payload.get("metadata") or {}),
-                        "skill_names": list(task.payload.get("skill_names") or []),
-                    },
-                )
-            value = {
-                "status": "completed",
-                "content": content,
-                "tools_used": tools,
-                "usage": usage.to_dict(),
-                "capability_result": (
-                    capability_result.to_dict() if capability_result is not None else None
-                ),
-            }
-            await asyncio.to_thread(
-                self.store.add_runtime_artifact,
-                artifact_id=f"{task.task_id}:output",
-                run_id=run.run_id,
-                task_id=task.task_id,
-                name=f"{task.name}-output",
-                media_type="text/plain",
-                content=content,
-            )
-            saved = await asyncio.to_thread(
-                self.store.update_runtime_task,
-                task.task_id,
-                status=TaskStatus.COMPLETED.value,
-                result=value,
-                worker_id=self.worker_id,
-                lease_version=task.lease_version,
-            )
-            if not saved:
-                raise asyncio.CancelledError("task completion fenced by a newer lease")
-            await self.events.publish(
-                AgentEvent(
-                    run_id=run.run_id,
-                    task_id=task.task_id,
-                    type=EventType.TASK_COMPLETED.value,
-                    data=value,
-                )
-            )
-            await self._log(
-                run.run_id,
-                "task.completed",
-                "Graph task completed",
-                task_id=task.task_id,
-                data={"attempt": task.attempt, "usage": usage.to_dict()},
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            retry = task.attempt < task.max_attempts
-            if capability_id:
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=run.run_id,
-                        task_id=task.task_id,
-                        type=EventType.CAPABILITY_FAILED.value,
-                        status="failed",
-                        data={
-                            "capability_id": capability_id,
-                            "invocation_id": (
-                                capability_result.invocation_id
-                                if capability_result is not None
-                                else None
-                            ),
-                            "error": str(exc),
-                            "retry": retry,
-                        },
-                    )
-                )
-            status = TaskStatus.QUEUED.value if retry else TaskStatus.FAILED.value
-            saved = await asyncio.to_thread(
-                self.store.update_runtime_task,
-                task.task_id,
-                status=status,
-                error={"message": str(exc)},
-                retry_delay_seconds=min(30.0, 2 ** max(0, task.attempt - 1)) if retry else None,
-                worker_id=self.worker_id,
-                lease_version=task.lease_version,
-            )
-            if saved:
-                event_type = EventType.TASK_QUEUED if retry else EventType.TASK_FAILED
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=run.run_id,
-                        task_id=task.task_id,
-                        type=event_type.value,
-                        data={"attempt": task.attempt, "error": str(exc), "retry": retry},
-                    )
-                )
-                await self._log(
-                    run.run_id,
-                    "task.retry" if retry else "task.failed",
-                    str(exc),
-                    level="warning" if retry else "error",
-                    task_id=task.task_id,
-                    data={"attempt": task.attempt, "retry": retry},
-                )
-        finally:
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
-
-        counts = await asyncio.to_thread(self.store.reconcile_runtime_graph, run.run_id)
-        if bool(run.options.get("fail_fast")) and counts.get("failed", 0):
-            await asyncio.to_thread(self.store.cancel_runtime_tasks, run.run_id)
-            counts = await asyncio.to_thread(self.store.reconcile_runtime_graph, run.run_id)
-        await self._publish_graph_progress(run.run_id, counts=counts)
-        await self._log(
-            run.run_id,
-            "graph.reconciled",
-            "Graph dependency state reconciled",
-            data={"counts": counts},
-        )
-        if not any(counts.get(status, 0) for status in ("queued", "blocked", "running")):
-            await self._try_finalize_graph(run.run_id)
 
     async def _publish_graph_progress(
         self, run_id: str, *, counts: dict[str, int] | None = None

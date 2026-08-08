@@ -75,10 +75,32 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
 公共接口位于 `/v1`：
 
 - `POST/GET /v1/runs`，以及 run 的 cancel、resume、events、tasks、artifacts、logs、
-  invocations、pending inputs 和 input resolve。
-- `POST /v1/runs/graphs` 提交显式 DAG；普通请求也可由主协调器自动提升为 Graph。
+  invocations、verifications、decisions、context-manifest、approvals、operations、pending inputs 和 input resolve。提交可携带
+  `output_schema`、由 schema/artifact/deterministic verifier 组成的 `verification_policy`，以及
+  `max_repairs`、`max_replans`；所有 required verifier 通过后 Run 才能完成，协调器计划重试耗尽后
+  Run 以 `max_replans_exhausted` 明确失败。
+- `POST /v1/runs/graphs` 提交显式 DAG；每个 Task 可声明 `output_schema`、
+  `verification_policy` 和 `max_repairs`，普通请求也可由主协调器自动提升为 Graph。Graph 在执行前冻结为
+  不可变 revision；`GET /v1/runs/{run_id}/graph-revisions` 返回 owner 隔离的节点、边、定义 hash 和版本来源。
+  `branch` 节点只允许从直连上游已验证的 `structured_output` 读取值，并使用 allowlist 运算符选择已冻结的
+  直连目标，不执行表达式或模型生成代码。`foreach` 只从已验证数组展开最多 64 个模板实例，并同时受
+  节点级和 Run 级并发上限约束；`bounded_loop` 只允许最多 32 轮的显式状态迭代；`wait_event` 冻结
+  事件类型、Payload Schema 和最长七天 deadline。
+  `approval` 将上游结果 hash 冻结为审批主体，`verify` 验收一个直连上游的不可变结果；`compensation`
+  只能调用源 Capability 版本明确声明的 pinned 补偿 Capability。
+- `POST /v1/runs/{run_id}/graph-patches` 对非终态 Graph 提交受控变更，当前只接受 `append` 和
+  `replace_pending`；`GET /v1/runs/{run_id}/graph-patches` 返回 owner 隔离的原因、提出者、完整变更、差异和
+  校验结果。Patch 只能复用父 revision 已冻结的 Agent/Capability/Tool/Skill 范围，高风险变更必须显式
+  `approve_high_risk=true`。
+- `GET /v1/runs/{run_id}/event-waits` 查询 owner 可见的外部事件等待；
+  `POST /v1/runs/{run_id}/event-waits/{wait_id}/token` 轮换并仅返回一次投递 token。外部系统使用
+  `POST /v1/run-events/{wait_id}` 和 `X-Joyhouse-Event-Token` 投递；数据库只保存 token SHA-256，Payload
+  必须通过冻结 Schema，重复投递只有在事件类型和 Payload hash 相同时才幂等成功。
 - `GET/DELETE /v1/sessions`。
 - `GET/POST/PATCH/DELETE /v1/schedules`。
+- `GET /v1/memory/candidates` 和 `POST /v1/memory/candidates/{candidate_id}/resolve`
+  提供 owner 隔离的候选查看、接受与拒绝；候选正文属于用户私有数据，不进入公开 Run 事件或
+  ContextManifest。
 - `GET /v1/agents`、`GET /v1/capabilities`、`GET /v1/scenarios`、`GET /v1/me`、
   `GET /v1/usage`。
 - `/v1/admin/scenarios` 提供草稿、发布、模拟和能力目录，分别要求 scenarios.read/write/publish。
@@ -93,6 +115,25 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   MCP 仅是协议适配层，不构成第二套执行运行时。
 
 SSE 使用事件 sequence 恢复，断开客户端不会取消 Run。Router 只做 DTO、认证上下文和错误映射；业务入口位于 `application/`。
+
+每次真正进入模型的 durable Turn 都先写入不可变 `ContextManifest`，再发出 `context.built`，最后调用
+Provider。清单覆盖系统身份、Agent Revision、Memory、Skill、会话历史、当前请求、媒体、Run 指令、
+Tool Schema，以及第二轮以后新增的 Tool/Assistant/跟进消息；只持久化来源、数据等级、权限、hash、
+Token 估算和纳入/剔除原因，不持久化正文。Run 创建时间作为动态身份时间锚点，恢复时若 request hash
+漂移会明确冲突而不会静默换上下文。写入同时校验 Run 或 Task lease version，旧 Worker 不能在接管后
+继续发起模型请求。配置 `max_context_tokens` 后使用 `priority_budget_v1`：System 身份、Agent Revision、
+当前请求、Run 指令、已选 Skill、授权 Tool Schema 和协议必需消息不可静默删除；历史、Memory 与 Skill
+Catalog 按优先级竞争同一预算。超大的 Tool Result 可执行确定性的 `head_tail_v1` 压缩，Manifest 保留
+原始 hash、有效 hash、压缩前后 Token 估算；硬约束仍无法放入时，在零次 Provider 调用下以
+`budget_exceeded` 失败。Admission 同时记录未发布、被禁用或不可用 Skill 的剔除原因。
+
+Agent 的长期记忆写入统一经过 `MemoryWriteController`。`write_mode=direct` 才能立即更新
+`memory_documents`；`write_mode=candidate` 下，`write_file`、`edit_file` 和会话归档只能写入
+`memory_candidates`，不会修改 PROFILE/MEMORY/HISTORY/每日记录。候选冻结 owner、Agent、目标层、
+操作、正文 hash、来源 Run/Task/Turn/Action、策略快照、置信度、有效期、数据等级、证据引用和
+supersedes。接受候选时，候选状态转换与文档写入位于同一个数据库事务；append 并发接受至多应用一次，
+replace 使用提议时的文档 version/hash 做乐观检查，目标已变化时进入 `conflicted` 而不覆盖新内容。
+候选可拒绝、过期，重复同一决议保持幂等。
 
 同一代码可以用 `joyhousebot api --surface public|control|combined` 部署为公网数据面、私有控制面或本地一体化进程。`public` 不注册 `/v1/admin/*`，`control` 不注册用户 Run/Session/Schedule 写接口；`combined` 供内网控制台和本地试用。
 
@@ -140,7 +181,9 @@ manifest；部署者创建或发布业务 Agent revision，显式写入该插件
 
 当前实现的专用表：
 
-- 执行：`runtime_runs`、`runtime_tasks`、`runtime_task_dependencies`、`runtime_events`、`runtime_logs`、`runtime_artifacts`、`runtime_workers`。
+- 执行：`runtime_runs`、`runtime_tasks`、`runtime_task_dependencies`、`runtime_events`、`runtime_logs`、
+  `runtime_artifacts`、`runtime_workers`、`runtime_turns`、`action_intents`、`action_observations`、
+  `loop_decisions`、`approval_requests`、`operation_reconciliations`、`verification_records`。
 - 能力：`capability_definitions`、`capability_versions`、`capability_invocations`。
 - 场景：`scenario_definitions`、`scenario_versions`、`scenario_fields`、
   `scenario_clarification_nodes`、`scenario_clarification_edges`、`scenario_capabilities`、
@@ -148,7 +191,7 @@ manifest；部署者创建或发布业务 Agent revision，显式写入该插件
 - 会话与追踪：`conversation_sessions`、`request_trace_events`、`execution_spans`、
   `model_invocations`、`model_reasoning_segments`、`trace_blobs`、`replay_runs`、
   `model_response_cache`。
-- 记忆与知识：`memory_documents`、`knowledge_documents`、`knowledge_chunks`。
+- 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`。
 - 调度：`schedules`、`schedule_occurrences`。
 - Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。
 - Provider：`provider_profile_health`。
@@ -238,7 +281,8 @@ api / bootstrap / channel adapter
 
 - `api/`：FastAPI composition root、身份依赖、版本化 Router 和 DTO；不加载模型与 NativeAgentExecutor。
 - `application/`：用户边界内的 Run、Session、Schedule 用例，以及控制面 Catalog/Rollout 用例。
-- `runtime/`：Run/Graph 提交、claim、lease/fencing、执行、事件叙事、取消与恢复。
+- `runtime/`：Run/Graph 提交、claim、lease/fencing、执行、事件叙事、取消与恢复；Graph Capability
+  Task 通过独立执行模块复用 Durable Turn/Action、审批、外部对账和 Verification。
 - `agent/`：共享 NativeAgentExecutor，拆分为模型调用、轮次引擎、Tool runtime、消息处理、记忆生命周期；每次执行状态来自不可变 `RunContext`。
 - `storage/`：PostgreSQL RuntimeStore；使用连接池、advisory migration lock、`SKIP LOCKED` 和 LISTEN/NOTIFY 唤醒。空闲 Worker 不做全量扫描：NOTIFY 命中立即扫描，poll 唤醒只做轻量 EXISTS 探测且间隔指数退避（0.2s 起步封顶 2s），另有 30s 深扫兜底防丢通知。
 - `scheduling/`、`channels/`、`services/retrieval/`：Schedule、Channel outbox/lease、Knowledge 的专用 Repository。
@@ -250,6 +294,73 @@ api / bootstrap / channel adapter
 单步骤交给主 Agent；固定场景或两步以上开放计划会在同一 Run 上原子生成 Task Graph。
 Task 可由不同 Worker/Agent 并行执行，最终协调 Agent聚合全部结果。所有模型输出使用 JSON Schema
 校验，所有 Tool/Connector 调用使用 CapabilityResult 和持久 Invocation。
+
+显式提交和协调器物化 Graph 时，节点、依赖边、执行设置与 pinned Agent/Capability 定义会先写入
+`graph_revisions`、`graph_revision_nodes` 和 `graph_revision_edges`；revision 与 Runtime Task 在同一事务中
+创建，数据库拒绝原地更新 revision。Run 和每个 Task 都保存 `graph_revision_id`，因此执行、审计和后续
+frozen replay 不依赖可变请求体。安全 `branch` 的选择、分支节点完成和未选目标 `skipped` 也在同一
+PostgreSQL 事务中提交，并受 Task lease/version fencing；重复 Worker 不能产生两次不同路由。
+
+`GraphPatch` 不修改父 revision，而是创建 `revision_number + 1` 的不可变子 revision，并在同一事务中
+写入 `graph_patches` ledger、切换 Run revision 指针、替换从未启动的 Runtime Task 或追加新 Task 及依赖边。
+替换目标及其下游闭包必须仍为 `queued/blocked`，且 `attempt=0`、无 `started_at/result/error/lease`；已完成、
+已跳过、等待中、重试过或正在执行的节点均不可改。Patch 使用 base revision 乐观并发，完全相同的请求按
+内容 hash 幂等，不同 Patch 竞争同一 base 时只有一个提交。Finalizer claim 会确认没有活动 Task；反向地，
+持有有效 finalization Run lease 时拒绝 Patch，因此追加节点与 Run 终态提交不会越过彼此。Patch 仍会重新
+执行 DAG 无环、节点上限、foreach fan-out、配置、已发布 pinned Capability、补偿声明和父快照权限校验。
+
+Graph Task 的 `waiting_approval` 与 `waiting_external` 是非终态：暂停由当前 Task lease owner/version
+fencing，恢复不增加 attempt，并继续同一个冻结 Action。对账到期后 Worker claim 的仍是原 Task，只查询
+既有 provider operation；Task 完成或再次等待时，Graph Run 的等待摘要在同一数据库事务中重新计算。
+Verification 在普通 Agent Run 上受 Run lease 保护，在 Graph Task 上受 Task lease 保护。
+
+显式 `approval` 节点复用 `approval_requests`，但 `subject_type=graph_node` 且不创建虚假的 Action；审批
+冻结 Graph revision、节点、上游结果 hash、角色、风险和期限。approve 在同一事务内完成审批节点并唤醒
+后继，reject/request_changes/expire 明确失败；审批解决、到期与双 Worker 竞争均由审批行和 Task 行锁
+串行化。现有 owner/operator API 同时处理 Action 审批和 Graph gate，跨用户仍不可见。
+
+显式 `verify` 节点只读取一个直连上游的冻结结果，复用 Task-lease-fenced `verification_records`，支持
+schema、artifact 和 allowlist deterministic verifier；它不会修改或“修复”已完成上游，失败会保留证据并
+使节点失败。通过后输出 verified `structured_output`，可安全作为后续 branch/foreach 的数据源。
+
+显式 `compensation` 节点本质仍是一个 durable Capability Action，但提交时必须证明：源节点是直连的
+Capability 节点、源 Capability 的不可变定义声明了同一个补偿 CapabilityRef、补偿版本当前可用。执行会
+关联 source Task/Action 与 compensation Action，并产生 `compensation.started/completed/failed` 事件；
+补偿自身仍遵守审批、幂等、对账和 Task lease 规则。Graph 的自动 Saga failure policy 会按已完成副作用
+的逆拓扑顺序创建确定性补偿 Task；调度账本、状态推进和 Run 收敛都在 PostgreSQL 中完成，并由 per-run
+advisory lock、行锁与 lease/version fencing 保证双 Worker 只有一个调度结果。没有显式 compensation 的
+副作用不会被假装回滚，而是进入明确的 failed/escalated 状态。
+
+`foreach` revision 冻结的是模板和 `max_items/max_concurrent`，运行时实例不是可变 GraphPatch：Worker 从
+已验证的上游数组计算确定性 expansion ID、item hash 和 child Task ID，再用一个事务插入全部子 Task、
+增加父节点动态依赖并更新 `total_task_count`。父节点等待子项后做确定性聚合；恢复或整图 resume 复用同一
+展开，不重复创建子项。最终 Graph 聚合只消费顶层节点，动态子 Task 仍完整保留在 Task/Event/Turn/Action
+时间线中，Token 与费用只按真实执行节点统计一次。
+
+`bounded_loop` revision 冻结初始状态来源、`state_path`、安全退出条件、`max_iterations` 和单轮模板。
+初始状态只能来自直连上游已经验证的 `structured_output` 或不超过 64 KiB 的静态 JSON；每轮模板必须声明
+`output_schema`，退出判断仅支持 allowlist 运算符，不解释表达式，也不运行模型生成代码。Worker 每次只在
+一个 PostgreSQL 事务中创建一个确定性 child Task、增加父节点动态依赖、更新 `total_task_count` 并释放父
+Task lease；下一轮状态只读取该 child 已验证的 `structured_output`。循环最多 32 轮且严格串行，父节点
+`max_attempts` 固定为 1，后续 claim 复用原 attempt 和已提交迭代账本。Worker 崩溃或整图 resume 会复用原
+child ID；达到上限产生唯一 `loop.exhausted` 并明确失败，子迭代失败由父循环节点收敛为明确失败后再应用
+Graph 的 fail-fast 策略。
+
+`aggregate` 是独立节点而非协调 Agent 的隐式特例。它只读取冻结上游结果，支持
+`structured_merge/evidence_merge/rank_and_select/raw/llm_synthesis`；确定性模式校验结构、证据与排序，
+LLM synthesis 固定模型策略并保存输入摘要和验证记录。聚合输出经过 `output_schema` 后才可成为后续
+branch/foreach/verify 的输入。
+
+模型或 Agent 可以提交 GraphPatch proposal，但不能直接改运行图。proposal 冻结 base revision、差异、
+理由、风险、提出者和完整校验结果；低风险策略可自动批准，高风险进入独立 approval 状态。批准后才在
+同一套 GraphPatch 乐观并发与 Task/finalizer 锁下激活，不批准或过期不会改变当前 revision。
+
+`wait_event` 使用独立 `graph_event_waits` 状态机。Task lease owner 原子创建等待并进入
+`waiting_external`；token 可轮换，签发日志记录 actor 与版本，但明文不入库、不进 Event/Log。投递事务
+锁定等待记录，校验当前 token、
+事件类型、deadline 和 JSON Schema，再同时写入 Payload hash、完成 Task、唤醒后继和恢复 Graph Run。
+deadline 到期由 PostgreSQL `SKIP LOCKED` 单赢家转为 `expired` 并使 Task 明确失败；取消 Run 会撤销所有
+pending wait，旧 token 不能恢复已取消或已过期执行。
 
 追问不是普通聊天文本，而是冻结在 Run 上的 `InputRequest` 协议：一个字段可声明文本、单选、多选、
 确认或数字控件，选项标签、`Other`、最少/最多选择数和展示说明随场景版本保存。用户回答写入
@@ -269,6 +380,10 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
 - 场景工作台负责路由、追问 DAG 与执行策略配置，可编辑单选、多选、Other、选项说明和条件边；试用页将
   InputRequest 渲染为可提交的交互卡片，并显示题目进度。
 - Agent 试用仍以当前 `user_id` 提交普通用户 Run，用于验证真实业务链路，不绕过用户隔离。
+- Eval 工作台维护版本化 dataset、case、确定性 scorer、观察结果和发布门禁；Agent、Scenario、Capability
+  只有通过精确 revision gate 才能激活，失败继续保留旧版本。
+- Work 工作台把 Run Artifact 转为不可变成果版本，支持 private/unlisted/public、数据分级、协作者、
+  可撤销且可过期的固定版本分享链接和访问审计。Artifact 本身永远不因生成而自动公开。
 - 代用户操作是显式动作：控制台默认只携带 operator 自身身份，只有操作员在常驻代操作入口显式设置
   目标用户后才发送 `X-Impersonate-User-ID`（选择存 sessionStorage，关标签页即失效，代操作中界面
   有常驻醒目提示）。control token 只存 sessionStorage，不落 localStorage。

@@ -5,12 +5,12 @@
 
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FRONTEND="$ROOT/frontend"
+FRONTEND="$ROOT/apps/console"
 STATIC="$ROOT/joyhousebot/static/ui"
 
 cd "$FRONTEND"
 if ! command -v npm &>/dev/null; then
-  echo "npm not found; skip frontend build. Install Node.js to build the UI." >&2
+  echo "npm not found; skip console build. Install Node.js to build the UI." >&2
   exit 0
 fi
 # Use npm install so lock file can be updated when out of sync with package.json

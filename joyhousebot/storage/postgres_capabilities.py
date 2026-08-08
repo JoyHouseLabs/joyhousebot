@@ -265,6 +265,16 @@ class PostgresCapabilityStoreMixin:
         assert row is not None
         return self._capability_invocation(row), bool(row["created"])
 
+    def get_capability_invocation(
+        self, invocation_id: str
+    ) -> CapabilityInvocationRecord | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM capability_invocations WHERE invocation_id=%s",
+                (invocation_id,),
+            ).fetchone()
+        return self._capability_invocation(row) if row else None
+
     def start_capability_invocation(self, invocation_id: str, *, worker_id: str) -> bool:
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(

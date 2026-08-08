@@ -20,21 +20,39 @@ from psycopg_pool import ConnectionPool
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_admins import PostgresAdminStoreMixin
 from joyhousebot.storage.postgres_agents import PostgresAgentStoreMixin
+from joyhousebot.storage.postgres_approvals import PostgresApprovalStoreMixin
 from joyhousebot.storage.postgres_cancel import PostgresRunCancelMixin
 from joyhousebot.storage.postgres_capabilities import PostgresCapabilityStoreMixin
 from joyhousebot.storage.postgres_clarifications import PostgresClarificationStoreMixin
+from joyhousebot.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
+from joyhousebot.storage.postgres_evals import PostgresEvalStoreMixin
+from joyhousebot.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
+from joyhousebot.storage.postgres_graph_actions import PostgresGraphActionStoreMixin
+from joyhousebot.storage.postgres_graph_branches import PostgresGraphBranchStoreMixin
+from joyhousebot.storage.postgres_graph_control_nodes import PostgresGraphControlNodeStoreMixin
+from joyhousebot.storage.postgres_graph_foreach import PostgresGraphForeachStoreMixin
+from joyhousebot.storage.postgres_graph_loops import PostgresGraphLoopStoreMixin
+from joyhousebot.storage.postgres_graph_patches import PostgresGraphPatchStoreMixin
+from joyhousebot.storage.postgres_graph_revisions import PostgresGraphRevisionStoreMixin
+from joyhousebot.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
+from joyhousebot.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
 from joyhousebot.storage.postgres_graphs import PostgresGraphStoreMixin
+from joyhousebot.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
 from joyhousebot.storage.postgres_mcp import PostgresMCPStoreMixin
+from joyhousebot.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
 from joyhousebot.storage.postgres_migrations import PostgresMigrationMixin
 from joyhousebot.storage.postgres_observability import PostgresObservabilityStoreMixin
 from joyhousebot.storage.postgres_operations import PostgresOperationsStoreMixin
 from joyhousebot.storage.postgres_plugins import PostgresPluginStoreMixin
 from joyhousebot.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
+from joyhousebot.storage.postgres_reconciliations import PostgresReconciliationStoreMixin
 from joyhousebot.storage.postgres_rollouts import PostgresRolloutStoreMixin
 from joyhousebot.storage.postgres_run_listing import PostgresRunListingStoreMixin
 from joyhousebot.storage.postgres_runs import PostgresRunStoreMixin
 from joyhousebot.storage.postgres_scenarios import PostgresScenarioStoreMixin
 from joyhousebot.storage.postgres_tasks import PostgresTaskStoreMixin
+from joyhousebot.storage.postgres_verifications import PostgresVerificationStoreMixin
+from joyhousebot.storage.postgres_works import PostgresWorkStoreMixin
 from joyhousebot.storage.runtime_store import (
     RuntimeRunRecord,
     RuntimeTaskRecord,
@@ -65,12 +83,30 @@ def _json(value: Any, default: Any = None) -> Any:
 
 class PostgresRuntimeStore(
     PostgresMigrationMixin,
+    PostgresGraphRevisionStoreMixin,
+    PostgresGraphSagaStoreMixin,
+    PostgresGraphPatchStoreMixin,
+    PostgresEvalStoreMixin,
+    PostgresWorkStoreMixin,
+    PostgresGraphWaitEventStoreMixin,
     PostgresAdminStoreMixin,
     PostgresAgentStoreMixin,
     PostgresCapabilityStoreMixin,
+    PostgresExecutionLoopStoreMixin,
+    PostgresContextManifestStoreMixin,
+    PostgresMemoryCandidateStoreMixin,
+    PostgresLoopDecisionStoreMixin,
+    PostgresVerificationStoreMixin,
+    PostgresApprovalStoreMixin,
+    PostgresReconciliationStoreMixin,
     PostgresClarificationStoreMixin,
     PostgresScenarioStoreMixin,
     PostgresGraphStoreMixin,
+    PostgresGraphBranchStoreMixin,
+    PostgresGraphForeachStoreMixin,
+    PostgresGraphLoopStoreMixin,
+    PostgresGraphControlNodeStoreMixin,
+    PostgresGraphActionStoreMixin,
     PostgresRunListingStoreMixin,
     PostgresRunStoreMixin,
     PostgresRunCancelMixin,
@@ -150,6 +186,7 @@ class PostgresRuntimeStore(
             last_progress_at=_iso(row.get("last_progress_at")),
             cancel_requested_at=_iso(row.get("cancel_requested_at")),
             cancel_reason=row.get("cancel_reason"),
+            graph_revision_id=row.get("graph_revision_id"),
         )
 
     @staticmethod

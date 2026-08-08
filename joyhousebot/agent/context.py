@@ -7,6 +7,10 @@ from typing import Any
 
 from loguru import logger
 
+from joyhousebot.agent.context_budget import allocate_context, context_candidate
+from joyhousebot.agent.context_manifest import source_entry
+from joyhousebot.agent.context_media import media_sources
+from joyhousebot.agent.context_memory import build_memory_context
 from joyhousebot.agent.memory import MemoryStore
 from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.agent.skills import SkillsLoader
@@ -41,6 +45,7 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         scope_key: str | None = None,
         skill_refs: list[dict[str, str]] | None = None,
+        context_timestamp: str | None = None,
     ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
@@ -52,45 +57,197 @@ class ContextBuilder:
         Returns:
             Complete system prompt.
         """
-        parts = []
+        prompt, _sources = self.build_system_prompt_with_sources(
+            skill_names=skill_names,
+            scope_key=scope_key,
+            skill_refs=skill_refs,
+            context_timestamp=context_timestamp,
+        )
+        return prompt
 
-        parts.append(self._get_identity())
+    def build_system_prompt_with_sources(
+        self,
+        skill_names: list[str] | None = None,
+        scope_key: str | None = None,
+        skill_refs: list[dict[str, str]] | None = None,
+        context_timestamp: str | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Build the system prompt and content-free provenance descriptors."""
+        prompt, sources, _candidates = self._build_system_context(
+            skill_names=skill_names,
+            scope_key=scope_key,
+            skill_refs=skill_refs,
+            context_timestamp=context_timestamp,
+        )
+        return prompt, sources
+
+    def _build_system_context(
+        self,
+        skill_names: list[str] | None = None,
+        scope_key: str | None = None,
+        skill_refs: list[dict[str, str]] | None = None,
+        context_timestamp: str | None = None,
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build system text, public descriptors, and private budget candidates."""
+        parts: list[str] = []
+        sources: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+
+        def add_candidate(
+            candidate_id: str,
+            content: str,
+            linked_sources: list[dict[str, Any]],
+            *,
+            priority: int,
+            required: bool,
+            separator: str = "\n\n---\n\n",
+        ) -> None:
+            candidates.append(
+                context_candidate(
+                    candidate_id=candidate_id,
+                    target="system",
+                    content=content,
+                    source_keys=[
+                        (str(item["source_kind"]), str(item["source_id"]))
+                        for item in linked_sources
+                    ],
+                    priority=priority,
+                    required=required,
+                    order=len(candidates),
+                    separator=separator,
+                )
+            )
+
+        identity = self._get_identity(context_timestamp)
+        parts.append(identity)
+        identity_source = source_entry(
+            source_kind="system_identity",
+            source_id="joyhousebot:identity:v1",
+            content=identity,
+            classification="internal",
+            authority="system",
+            freshness="request",
+            priority=100,
+            included_reason="required_system_policy",
+        )
+        sources.append(identity_source)
+        add_candidate(
+            "system:identity",
+            identity,
+            [identity_source],
+            priority=100,
+            required=True,
+            separator="",
+        )
         profile = self._get_agent_profile()
         if profile:
             parts.append(profile)
+            revision = self.agent_revision
+            profile_source = source_entry(
+                source_kind="agent_revision",
+                source_id=f"agent:{revision.revision_id}" if revision else "agent:default",
+                content=profile,
+                classification="internal",
+                authority="administrator",
+                freshness="immutable_revision",
+                priority=100,
+                included_reason="selected_agent_revision",
+            )
+            sources.append(profile_source)
+            add_candidate(
+                "system:agent-revision",
+                profile,
+                [profile_source],
+                priority=100,
+                required=True,
+            )
 
         # Durable memory documents are resolved from the shared runtime store.
-        memory = self._get_memory_context(scope_key=scope_key)
+        memory, memory_sources = self._get_memory_context_with_sources(scope_key=scope_key)
         if memory:
-            parts.append(f"# Memory\n\n{memory}")
+            memory_block = f"# Memory\n\n{memory}"
+            parts.append(memory_block)
+            sources.extend(memory_sources)
+            add_candidate(
+                "system:memory",
+                memory_block,
+                memory_sources,
+                priority=min(int(item["priority"]) for item in memory_sources),
+                required=False,
+            )
 
         # Skills are coordinator-selected prompt policies, not model-callable tools.
         enabled_skill_names = self._get_enabled_skill_names()
         always_skills = self.skills.get_always_skills(allowed_names=enabled_skill_names)
         selected = list(dict.fromkeys([*always_skills, *(skill_names or [])]))
+        requested_skills = list(selected)
         if enabled_skill_names is not None:
             selected = [name for name in selected if name in enabled_skill_names]
         pinned_skill_versions = {
-            str(item.get("capability_id") or "").removeprefix("skill."): str(item.get("version") or "")
+            str(item.get("capability_id") or "").removeprefix("skill."): str(
+                item.get("version") or ""
+            )
             for item in (skill_refs or [])
             if str(item.get("capability_id") or "").startswith("skill.")
             and str(item.get("version") or "")
         }
-        available = {
-            item["name"] for item in self.skills.list_skills(filter_unavailable=True)
-        }
+        available = {item["name"] for item in self.skills.list_skills(filter_unavailable=True)}
         available.update(
-            name for name, version in pinned_skill_versions.items()
+            name
+            for name, version in pinned_skill_versions.items()
             if self.skills.load_skill(name, version) is not None
         )
         selected = [name for name in selected if name in available]
+        for name in requested_skills:
+            if name in selected:
+                continue
+            sources.append(
+                source_entry(
+                    source_kind="skill",
+                    source_id=f"skill:{name}:unadmitted",
+                    content={"name": name},
+                    classification="internal",
+                    authority="platform",
+                    freshness="configuration",
+                    priority=90,
+                    included=False,
+                    excluded_reason="skill_not_admitted",
+                )
+            )
         if selected:
             logger.debug(f"Building context: selected skills={selected}")
-            content = self.skills.load_skills_for_context(
-                selected, versions=pinned_skill_versions
-            )
+            skill_parts: list[str] = []
+            active_skill_sources: list[dict[str, Any]] = []
+            for name in selected:
+                version = pinned_skill_versions.get(name)
+                raw_content = self.skills.load_skill(name, version)
+                if not raw_content:
+                    continue
+                rendered = f"### Skill: {name}\n\n{self.skills._strip_frontmatter(raw_content)}"
+                skill_parts.append(rendered)
+                skill_source = source_entry(
+                    source_kind="skill",
+                    source_id=f"skill:{name}:{version or 'published'}",
+                    content=rendered,
+                    classification="internal",
+                    authority="administrator",
+                    freshness="immutable_revision" if version else "published_revision",
+                    priority=90,
+                    included_reason="coordinator_selected_skill",
+                )
+                sources.append(skill_source)
+                active_skill_sources.append(skill_source)
+            content = "\n\n---\n\n".join(skill_parts)
             if content:
-                parts.append(f"# Active Skills\n\n{content}")
+                active_skills = f"# Active Skills\n\n{content}"
+                parts.append(active_skills)
+                add_candidate(
+                    "system:active-skills",
+                    active_skills,
+                    active_skill_sources,
+                    priority=90,
+                    required=True,
+                )
 
         skills_summary = self.skills.build_skills_summary(allowed_names=enabled_skill_names)
         if skills_summary:
@@ -100,56 +257,43 @@ class ContextBuilder:
             logger.debug(
                 f"Building context: skills summary for {len(all_skills)} skills (names: {[s['name'] for s in all_skills]})"
             )
-            parts.append(f"""# Skills
+            catalog = f"""# Skills
 
 The coordinator has bound the applicable full skill instructions under Active Skills.
 The catalog below is discovery metadata only; do not attempt to read host paths or invoke skills.
 
-{skills_summary}""")
+{skills_summary}"""
+            parts.append(catalog)
+            catalog_source = source_entry(
+                source_kind="skill_catalog",
+                source_id="skills:published-catalog",
+                content=catalog,
+                classification="internal",
+                authority="platform",
+                freshness="published_revision",
+                priority=40,
+                included_reason="skill_discovery_metadata",
+            )
+            sources.append(catalog_source)
+            add_candidate(
+                "system:skill-catalog",
+                catalog,
+                [catalog_source],
+                priority=40,
+                required=False,
+            )
 
-        return "\n\n---\n\n".join(parts)
+        return "\n\n---\n\n".join(parts), sources, candidates
 
     def _get_memory_context(self, scope_key: str | None = None) -> str:
         """Resolve scoped long-term memory and optional recent daily logs."""
-        if not self.memory_policy.can_read_context:
-            return ""
-        memory_first = False
-        include_daily = False
-        try:
-            from joyhousebot.config.access import get_config
+        return self._get_memory_context_with_sources(scope_key)[0]
 
-            config = get_config()
-            retrieval = getattr(getattr(config, "tools", None), "retrieval", None)
-            if retrieval is not None:
-                memory_first = getattr(retrieval, "memory_first", False)
-                include_daily = getattr(retrieval, "memory_include_daily_in_context", False)
-        except Exception:
-            pass
-        store = MemoryStore(self.runtime_store, scope_key=scope_key) if scope_key else self.memory
-        sections: list[str] = []
-        if self.memory_policy.layer_enabled("profile", "read"):
-            profile = store.read_profile()
-            if profile:
-                sections.append(f"## User Profile\n{profile}")
-        if self.memory_policy.layer_enabled("long_term", "read"):
-            long_term = store.read_long_term()
-            if long_term:
-                sections.append(f"## Long-term Memory\n{long_term}")
-        memory = "\n\n".join(sections)
-        if include_daily and self.memory_policy.layer_enabled("episodic", "read"):
-            daily = store.read_daily_logs_today_yesterday()
-            if daily:
-                memory = (
-                    (memory + "\n\n## Recent daily log (today + yesterday)\n\n" + daily)
-                    if memory
-                    else ("## Recent daily log (today + yesterday)\n\n" + daily)
-                )
-        if memory and memory_first:
-            memory = (
-                memory
-                + '\n\nWhen answering, consider consulting memory first: read memory/.abstract or use retrieve(scope="memory", query=...) before searching the knowledge base.'
-            )
-        return memory
+    def _get_memory_context_with_sources(
+        self, scope_key: str | None = None
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Resolve memory text together with source-level provenance."""
+        return build_memory_context(self, scope_key)
 
     def _get_enabled_skill_names(self) -> set[str] | None:
         """Get set of enabled skill names from config (None = all enabled)."""
@@ -166,15 +310,21 @@ The catalog below is discovery metadata only; do not attempt to read host paths 
         except Exception:
             return None
 
-    def _get_identity(self) -> str:
+    def _get_identity(self, context_timestamp: str | None = None) -> str:
         """Get the core identity section."""
         import time as _time
         from datetime import datetime
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = _time.strftime("%Z") or "UTC"
+        instant = datetime.now()
+        if context_timestamp:
+            try:
+                instant = datetime.fromisoformat(context_timestamp).astimezone()
+            except ValueError:
+                pass
+        now = instant.strftime("%Y-%m-%d %H:%M (%A)")
+        tz = instant.tzname() or _time.strftime("%Z") or "UTC"
         memory_guidance = (
-            "- Durable memory is enabled for this Agent. Use `memory_get` or `retrieve(scope=\"memory\")` to recall it."
+            '- Durable memory is enabled for this Agent. Use `memory_get` or `retrieve(scope="memory")` to recall it.'
             if self.memory_policy.can_read_context
             else "- Durable personal memory is disabled for this Agent; do not read or write user memory."
         )
@@ -216,53 +366,13 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
             f"Revision: {revision.revision_id}",
         ]
         if revision.persona:
-            persona = ", ".join(
-                f"{key}={value}" for key, value in sorted(revision.persona.items())
-            )
+            persona = ", ".join(f"{key}={value}" for key, value in sorted(revision.persona.items()))
             parts.append(f"Persona: {persona}")
         if revision.instructions.strip():
             parts.append(f"## Instructions\n\n{revision.instructions.strip()}")
         if revision.output_policy:
             parts.append(f"Output policy: {revision.output_policy}")
         return "\n\n".join(parts)
-
-    @staticmethod
-    def _estimate_message_tokens(msg: dict[str, Any]) -> int:
-        """Rough token count for one message (chars / 4 + overhead)."""
-        n = 4  # role + structure
-        content = msg.get("content")
-        if isinstance(content, str):
-            n += max(0, len(content)) // 4
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text" and "text" in part:
-                    n += max(0, len(str(part["text"]))) // 4
-                else:
-                    n += 64  # placeholder for image/other
-        if msg.get("tool_calls"):
-            n += sum(max(0, len(str(t))) // 4 for t in msg.get("tool_calls", []))
-        return n
-
-    @classmethod
-    def trim_history_by_tokens(
-        cls,
-        history: list[dict[str, Any]],
-        max_tokens: int,
-    ) -> list[dict[str, Any]]:
-        """Trim history from the front so that total estimated tokens of kept messages <= max_tokens (keep tail)."""
-        if max_tokens <= 0 or not history:
-            return history
-        total = 0
-        start = len(history)
-        for i in range(len(history) - 1, -1, -1):
-            total += cls._estimate_message_tokens(history[i])
-            if total > max_tokens:
-                start = i + 1
-                break
-            start = i
-        if start <= 0:
-            return history
-        return history[start:]
 
     def build_messages(
         self,
@@ -275,6 +385,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
         chat_id: str | None = None,
         max_context_tokens: int | None = None,
         scope_key: str | None = None,
+        context_timestamp: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -286,32 +397,163 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
-            max_context_tokens: When set, trim history from front so total history tokens <= this (in addition to memory_window).
+            max_context_tokens: Full model-input budget across all admitted context sources.
             scope_key: When set, use per-session/per-user memory for system prompt.
 
         Returns:
             List of messages including system prompt.
         """
-        messages = []
+        messages, _sources = self.build_messages_with_sources(
+            history=history,
+            current_message=current_message,
+            skill_names=skill_names,
+            skill_refs=skill_refs,
+            media=media,
+            channel=channel,
+            chat_id=chat_id,
+            max_context_tokens=max_context_tokens,
+            scope_key=scope_key,
+            context_timestamp=context_timestamp,
+        )
+        return messages
 
-        # System prompt
-        system_prompt = self.build_system_prompt(
-            skill_names=skill_names, scope_key=scope_key, skill_refs=skill_refs
+    def build_messages_with_sources(
+        self,
+        history: list[dict[str, Any]],
+        current_message: str,
+        skill_names: list[str] | None = None,
+        skill_refs: list[dict[str, str]] | None = None,
+        media: list[str] | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
+        max_context_tokens: int | None = None,
+        scope_key: str | None = None,
+        context_timestamp: str | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build model messages plus source descriptors without storing source content."""
+        messages, sources, _candidates = self.build_messages_with_candidates(
+            history=history,
+            current_message=current_message,
+            skill_names=skill_names,
+            skill_refs=skill_refs,
+            media=media,
+            channel=channel,
+            chat_id=chat_id,
+            max_context_tokens=max_context_tokens,
+            scope_key=scope_key,
+            context_timestamp=context_timestamp,
+        )
+        return messages, sources
+
+    def build_messages_with_candidates(
+        self,
+        history: list[dict[str, Any]],
+        current_message: str,
+        skill_names: list[str] | None = None,
+        skill_refs: list[dict[str, str]] | None = None,
+        media: list[str] | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
+        max_context_tokens: int | None = None,
+        scope_key: str | None = None,
+        context_timestamp: str | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build messages and retain private candidates for per-Turn reallocation."""
+        _system_prompt, sources, candidates = self._build_system_context(
+            skill_names=skill_names,
+            scope_key=scope_key,
+            skill_refs=skill_refs,
+            context_timestamp=context_timestamp,
         )
         if channel and chat_id:
-            system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
-        messages.append({"role": "system", "content": system_prompt})
+            session_context = f"## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+            session_source = source_entry(
+                source_kind="session_metadata",
+                source_id="session:routing",
+                content=session_context,
+                classification="internal",
+                authority="runtime",
+                freshness="request",
+                priority=95,
+                included_reason="channel_tool_routing",
+            )
+            sources.append(session_source)
+            candidates.append(
+                context_candidate(
+                    candidate_id="system:session",
+                    target="system",
+                    content=session_context,
+                    source_keys=[("session_metadata", "session:routing")],
+                    priority=95,
+                    required=True,
+                    order=len(candidates),
+                    separator="\n\n",
+                )
+            )
 
-        # History (optionally trimmed by token budget)
-        if max_context_tokens is not None and max_context_tokens > 0:
-            history = self.trim_history_by_tokens(history, max_context_tokens)
-        messages.extend(history)
+        for index, message in enumerate(history):
+            role = str(message.get("role") or "unknown")
+            history_source = source_entry(
+                source_kind="conversation_history",
+                source_id=f"history:{index}",
+                content=message,
+                classification="confidential",
+                authority="user" if role == "user" else "runtime",
+                freshness="session",
+                priority=55 + min(index, 20),
+                included_reason="conversation_window",
+                metadata={"role": role, "history_index": index},
+            )
+            sources.append(history_source)
+            candidates.append(
+                context_candidate(
+                    candidate_id=f"history:{index}",
+                    target="message",
+                    content=dict(message),
+                    source_keys=[("conversation_history", f"history:{index}")],
+                    priority=int(history_source["priority"]),
+                    required=False,
+                    order=10_000 + index,
+                )
+            )
 
-        # Current message (with optional image attachments)
         user_content = self._build_user_content(current_message, media)
-        messages.append({"role": "user", "content": user_content})
+        request_source = source_entry(
+            source_kind="current_request",
+            source_id="request:current",
+            content=current_message,
+            classification="confidential",
+            authority="user",
+            freshness="request",
+            priority=100,
+            included_reason="current_user_request",
+        )
+        media_sources = self._media_sources(media)
+        sources.append(request_source)
+        sources.extend(media_sources)
+        linked = [request_source, *(item for item in media_sources if item["included"])]
+        candidates.append(
+            context_candidate(
+                candidate_id="request:current",
+                target="message",
+                content={"role": "user", "content": user_content},
+                source_keys=[(str(item["source_kind"]), str(item["source_id"])) for item in linked],
+                priority=100,
+                required=True,
+                order=20_000,
+            )
+        )
+        prepared = allocate_context(
+            base_candidates=candidates,
+            base_sources=sources,
+            budget_tokens=max_context_tokens,
+        )
 
-        return messages
+        return prepared.messages, prepared.entries, candidates
+
+    @staticmethod
+    def _media_sources(media: list[str] | None) -> list[dict[str, Any]]:
+        return media_sources(media)
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""

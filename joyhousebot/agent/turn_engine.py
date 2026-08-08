@@ -5,14 +5,24 @@ import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from joyhousebot.agent.context_budget import allocate_context
+from joyhousebot.agent.context_scope import ContextScopeMixin
+from joyhousebot.agent.durable_loop import (
+    DurableTurnJournal,
+    guard_repeated_actions,
+    response_from_durable_payload,
+)
 from joyhousebot.agent.tool_execution import build_tool_execution_batches
+from joyhousebot.agent.verification_loop import accept_or_repair_final_response
 from joyhousebot.capabilities.dispatcher import capability_result_prompt
 from joyhousebot.providers.base import LLMResponse
+from joyhousebot.runtime.action_identity import durable_turn_id
 from joyhousebot.runtime.context import (
+    ActionOutcomeUnknownError,
+    AgentLoopExhaustedError,
     RunBudgetExceededError,
     RunContext,
     bind_run_context,
@@ -23,71 +33,13 @@ from joyhousebot.utils.exceptions import (
     sanitize_error_message,
 )
 
-if TYPE_CHECKING:
-    pass
-
-# Default user message sent after tool results when messages.after_tool_results_prompt is not set
 _default_after_tool_results_prompt = (
     "Summarize the tool results briefly for the user (1-4 sentences). "
     "If the task is done, give the outcome; if more steps are needed, state the next action only."
 )
 
 
-class TurnEngineMixin:
-    def _resolve_memory_scope_key(
-        self,
-        session_key: str,
-        sender_id: str = "",
-        metadata: dict | None = None,
-        run_context: RunContext | None = None,
-    ) -> str | None:
-        """Resolve the DB memory scope key from config.
-
-        Returns the shared cluster scope for "shared", the session key for
-        "session", and a per-user key for "user". Returns None only when memory
-        is not configured at all; callers must treat None as "memory disabled",
-        never as a fallback to host-local storage.
-        """
-        if not self.config:
-            return None
-        retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
-        if not retrieval:
-            return None
-        scope = getattr(retrieval, "memory_scope", "user") or "user"
-        if scope == "shared":
-            # Explicit project-wide opt-in: one DB-backed scope shared by all
-            # users and runs, matching MemoryStore's default "shared" scope.
-            return "shared"
-        if scope == "session":
-            return session_key
-        if scope == "user":
-            if run_context is not None and run_context.user_id:
-                return f"user:{run_context.user_id}:agent:{run_context.agent_id}"
-            from_id = getattr(retrieval, "memory_user_id_from", "sender_id") or "sender_id"
-            meta_key = getattr(retrieval, "memory_user_id_metadata_key", "user_id") or "user_id"
-            meta = metadata or {}
-            if from_id == "metadata":
-                candidate = (
-                    (meta.get(meta_key) or "").strip()
-                    if isinstance(meta.get(meta_key), str)
-                    else ""
-                )
-                # Channel senders control message metadata, so a metadata
-                # user id is only trusted when it matches the authenticated
-                # run identity; otherwise a sender could read/write another
-                # user's memory scope. Fall back to the sender id.
-                if candidate and run_context is not None and candidate == run_context.user_id:
-                    user_id = candidate
-                else:
-                    user_id = (sender_id or "").strip()
-            else:
-                user_id = (sender_id or "").strip()
-            if not user_id:
-                user_id = session_key.split(":", 1)[-1] if ":" in session_key else session_key
-            channel = session_key.split(":", 1)[0] if ":" in session_key else "unknown"
-            return f"{channel}:{user_id}"
-        return None
-
+class TurnEngineMixin(ContextScopeMixin):
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -125,19 +77,9 @@ class TurnEngineMixin:
         check_abort_requested: Callable[[str], bool] | None,
         run_context: RunContext,
     ) -> tuple[str | None, list[str], bool, LLMResponse | None]:
-        """
-        Run the agent iteration loop.
-
-        Args:
-            initial_messages: Starting messages for the LLM conversation.
-            stream_callback: If set and provider supports chat_stream, called with each content delta.
-            execution_stream_callback: If set, called with (event_type, payload) for llm_delta, tool_start, tool_output, tool_end, final.
-            check_abort_requested: If set, called at start of each iteration with current run_id; when True, loop breaks and returns (None, tools_used, True, None).
-
-        Returns:
-            Tuple of (final_content, list_of_tools_used, aborted, last_response for usage persistence).
-        """
+        """Run provider/tool turns and return content, tools, abort state, and usage."""
         messages = initial_messages
+        base_message_count = len(messages)
         iteration = 0
         final_content = None
         last_response: LLMResponse | None = None
@@ -149,6 +91,9 @@ class TurnEngineMixin:
         total_input_tokens = 0
         total_output_tokens = 0
         total_cost_usd = 0.0
+        previous_action_signature: str | None = None
+        repairs_used = 0
+        journal = await DurableTurnJournal.open(run_context)
 
         current_turn_id: str | None = None
 
@@ -162,7 +107,12 @@ class TurnEngineMixin:
 
         while iteration < effective_max_iterations:
             iteration += 1
-            current_turn_id = uuid.uuid4().hex
+            current_turn_id = durable_turn_id(
+                run_context.run_id,
+                run_context.task_id,
+                iteration,
+                scope=run_context.turn_scope,
+            )
             turn_started_at = time.monotonic()
 
             if run_context.cancellation.is_cancelled:
@@ -177,58 +127,110 @@ class TurnEngineMixin:
             logger.debug(
                 f"Calling LLM (iteration {iteration}), model={active_model}, messages={len(messages)}"
             )
-            if execution_stream_callback:
-                await execution_stream_callback(
-                    "model_request_start",
-                    {
-                        "turn_id": current_turn_id,
-                        "iteration": iteration,
-                        "model": active_model,
-                        "message_count": len(messages),
-                    },
-                )
-                await execution_stream_callback(
-                    "thinking_start",
-                    {"turn_id": current_turn_id, "iteration": iteration},
-                )
-            use_stream = (
-                stream_callback is not None or execution_stream_callback is not None
-            ) and hasattr(self.provider, "chat_stream")
-            response, used_model = await self._call_provider_with_fallback(
-                messages=messages,
+            prepared_context = allocate_context(
+                base_candidates=list(run_context.context_candidates),
+                base_sources=list(run_context.context_sources),
+                dynamic_messages=messages[base_message_count:],
                 tools=self.capabilities.get_tool_definitions(run_context.for_tools()),
-                primary_model=active_model,
-                stream_callback=_stream_cb if use_stream else None,
-                allow_stream=use_stream,
-                lifecycle_callback=(
-                    (
-                        lambda kind, payload: execution_stream_callback(
-                            kind, {**payload, "turn_id": current_turn_id, "iteration": iteration}
-                        )
-                    )
-                    if execution_stream_callback
-                    else None
-                ),
-                turn_id=current_turn_id,
+                budget_tokens=run_context.context_budget_tokens,
             )
-            last_response = response
-            if execution_stream_callback:
+            messages = prepared_context.messages
+            turn_tools = prepared_context.tools
+            base_message_count = prepared_context.base_message_count
+            durable_turn, created = await journal.begin(
+                turn_id=current_turn_id,
+                turn_index=iteration,
+                model=active_model,
+                messages=messages,
+                tools=turn_tools,
+                manifest_entries=prepared_context.entries,
+            )
+            manifest_event = journal.context_event()
+            if manifest_event and execution_stream_callback:
+                await execution_stream_callback("context_built", manifest_event)
+            if journal.enabled and execution_stream_callback:
                 await execution_stream_callback(
-                    "thinking_end",
-                    {"turn_id": current_turn_id, "iteration": iteration},
-                )
-                await execution_stream_callback(
-                    "model_response_end",
+                    "turn_started",
                     {
                         "turn_id": current_turn_id,
                         "iteration": iteration,
-                        "model": used_model,
-                        "finish_reason": response.finish_reason,
-                        "has_tool_calls": response.has_tool_calls,
-                        "tool_call_count": len(response.tool_calls),
-                        "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
+                        "recovered": not created,
                     },
                 )
+
+            recovered_response = bool(durable_turn and durable_turn.response is not None)
+            if recovered_response:
+                response = response_from_durable_payload(durable_turn.response or {})
+                used_model = durable_turn.model or active_model
+                if execution_stream_callback:
+                    await execution_stream_callback(
+                        "turn_recovered",
+                        {
+                            "turn_id": current_turn_id,
+                            "iteration": iteration,
+                            "model": used_model,
+                            "status": durable_turn.status,
+                        },
+                    )
+            else:
+                if execution_stream_callback:
+                    await execution_stream_callback(
+                        "model_request_start",
+                        {
+                            "turn_id": current_turn_id,
+                            "iteration": iteration,
+                            "model": active_model,
+                            "message_count": len(messages),
+                        },
+                    )
+                    await execution_stream_callback(
+                        "thinking_start",
+                        {"turn_id": current_turn_id, "iteration": iteration},
+                    )
+                use_stream = (
+                    stream_callback is not None or execution_stream_callback is not None
+                ) and hasattr(self.provider, "chat_stream")
+                response, used_model = await self._call_provider_with_fallback(
+                    messages=messages,
+                    tools=turn_tools,
+                    primary_model=active_model,
+                    stream_callback=_stream_cb if use_stream else None,
+                    allow_stream=use_stream,
+                    lifecycle_callback=(
+                        (
+                            lambda kind, payload: execution_stream_callback(
+                                kind,
+                                {
+                                    **payload,
+                                    "turn_id": current_turn_id,
+                                    "iteration": iteration,
+                                },
+                            )
+                        )
+                        if execution_stream_callback
+                        else None
+                    ),
+                    turn_id=current_turn_id,
+                )
+                await journal.record_response(current_turn_id, model=used_model, response=response)
+                if execution_stream_callback:
+                    await execution_stream_callback(
+                        "thinking_end",
+                        {"turn_id": current_turn_id, "iteration": iteration},
+                    )
+                    await execution_stream_callback(
+                        "model_response_end",
+                        {
+                            "turn_id": current_turn_id,
+                            "iteration": iteration,
+                            "model": used_model,
+                            "finish_reason": response.finish_reason,
+                            "has_tool_calls": response.has_tool_calls,
+                            "tool_call_count": len(response.tool_calls),
+                            "duration_ms": int((time.monotonic() - turn_started_at) * 1000),
+                        },
+                    )
+            last_response = response
             usage = response.usage or {}
             total_input_tokens += int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
             total_output_tokens += int(
@@ -276,6 +278,14 @@ class TurnEngineMixin:
                 )
 
             if response.has_tool_calls:
+                previous_action_signature = await guard_repeated_actions(
+                    journal,
+                    response,
+                    previous_action_signature,
+                    turn_id=current_turn_id,
+                    turn_index=iteration,
+                    event_callback=execution_stream_callback,
+                )
                 tool_call_dicts = [
                     {
                         "id": tc.id,
@@ -310,7 +320,12 @@ class TurnEngineMixin:
                 capability_policy_for = getattr(
                     self.capabilities,
                     "get_tool_invocation_policy",
-                    lambda _name: {"mode": "sequential", "max_concurrent": 1, "idempotent": False, "side_effect": "unknown"},
+                    lambda _name: {
+                        "mode": "sequential",
+                        "max_concurrent": 1,
+                        "idempotent": False,
+                        "side_effect": "unknown",
+                    },
                 )
                 batches = build_tool_execution_batches(
                     response.tool_calls,
@@ -319,7 +334,13 @@ class TurnEngineMixin:
                     capability_policy_for=capability_policy_for,
                 )
 
-                async def _execute_tool_call(tool_call, *, batch_size: int, parallel: bool):
+                async def _execute_tool_call(
+                    tool_call,
+                    *,
+                    action_index: int,
+                    batch_size: int,
+                    parallel: bool,
+                ):
                     tool_name = (
                         (tool_call.name or "").strip() if isinstance(tool_call.name, str) else ""
                     )
@@ -370,30 +391,20 @@ class TurnEngineMixin:
                     # line forgery.
                     safe_args = args_str[:200].replace("\n", "\\n").replace("\r", "\\r")
                     logger.debug(f"Tool call: {tool_name}({safe_args})")
+                    tool_event = {
+                        "tool": tool_name,
+                        "tool_call_id": tool_call.id,
+                        "turn_id": current_turn_id,
+                        "span_id": tool_span_id,
+                        "batch_size": batch_size,
+                        "execution_mode": "parallel" if parallel else "sequential",
+                    }
                     if execution_stream_callback:
                         await execution_stream_callback(
-                            "tool_requested",
-                            {
-                                "tool": tool_name,
-                                "args": tool_args,
-                                "tool_call_id": tool_call.id,
-                                "turn_id": current_turn_id,
-                                "span_id": tool_span_id,
-                                "batch_size": batch_size,
-                                "execution_mode": "parallel" if parallel else "sequential",
-                            },
+                            "tool_requested", {**tool_event, "args": tool_args}
                         )
                         await execution_stream_callback(
-                            "tool_start",
-                            {
-                                "tool": tool_name,
-                                "args": tool_args,
-                                "tool_call_id": tool_call.id,
-                                "turn_id": current_turn_id,
-                                "span_id": tool_span_id,
-                                "batch_size": batch_size,
-                                "execution_mode": "parallel" if parallel else "sequential",
-                            },
+                            "tool_start", {**tool_event, "args": tool_args}
                         )
 
                     async def _tool_progress(kind: str, payload: dict) -> None:
@@ -402,12 +413,8 @@ class TurnEngineMixin:
                                 kind,
                                 {
                                     **payload,
+                                    **tool_event,
                                     "tool": payload.get("tool") or tool_name,
-                                    "tool_call_id": tool_call.id,
-                                    "turn_id": current_turn_id,
-                                    "span_id": tool_span_id,
-                                    "batch_size": batch_size,
-                                    "execution_mode": "parallel" if parallel else "sequential",
                                 },
                             )
 
@@ -415,21 +422,36 @@ class TurnEngineMixin:
                         capability_result = await self.capabilities.invoke_tool(
                             tool_name,
                             tool_args,
-                            context=run_context.for_tools(),
+                            context=run_context.for_tools(
+                                turn_id=current_turn_id,
+                                turn_index=iteration,
+                                action_index=action_index,
+                            ),
                             tool_call_id=tool_call.id,
                             execution_stream_callback=_tool_progress,
                         )
+                    except ActionOutcomeUnknownError as exc:
+                        if execution_stream_callback:
+                            await execution_stream_callback(
+                                "tool_end",
+                                {
+                                    **tool_event,
+                                    "invocation_id": exc.invocation_id,
+                                    "action_id": exc.action_id,
+                                    "ok": False,
+                                    "error_code": "ACTION_OUTCOME_UNKNOWN",
+                                    "error": str(exc),
+                                    "result": "Action outcome requires reconciliation",
+                                    "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
+                                },
+                            )
+                        raise
                     except asyncio.CancelledError:
                         if execution_stream_callback:
                             await execution_stream_callback(
                                 "tool_end",
                                 {
-                                    "tool": tool_name,
-                                    "tool_call_id": tool_call.id,
-                                    "turn_id": current_turn_id,
-                                    "span_id": tool_span_id,
-                                    "batch_size": batch_size,
-                                    "execution_mode": "parallel" if parallel else "sequential",
+                                    **tool_event,
                                     "ok": False,
                                     "error_code": "interrupted",
                                     "error": "Tool execution interrupted",
@@ -443,12 +465,7 @@ class TurnEngineMixin:
                         await execution_stream_callback(
                             "tool_end",
                             {
-                                "tool": tool_name,
-                                "tool_call_id": tool_call.id,
-                                "turn_id": current_turn_id,
-                                "span_id": tool_span_id,
-                                "batch_size": batch_size,
-                                "execution_mode": "parallel" if parallel else "sequential",
+                                **tool_event,
                                 "invocation_id": capability_result.invocation_id,
                                 "ok": capability_result.ok,
                                 "result": result,
@@ -487,20 +504,22 @@ class TurnEngineMixin:
                             *(
                                 _execute_tool_call(
                                     tool_call,
+                                    action_index=action_index,
                                     batch_size=len(calls),
                                     parallel=True,
                                 )
-                                for tool_call in calls
+                                for action_index, tool_call in zip(batch.indices, calls)
                             )
                         )
                     else:
                         completed = [
                             await _execute_tool_call(
                                 tool_call,
+                                action_index=action_index,
                                 batch_size=1,
                                 parallel=False,
                             )
-                            for tool_call in calls
+                            for action_index, tool_call in zip(batch.indices, calls)
                         ]
                     # Provider protocols require Tool result messages in the
                     # exact order of the original calls, even when their work
@@ -517,9 +536,53 @@ class TurnEngineMixin:
                         messages_config_loop.after_tool_results_prompt or ""
                     ).strip() or follow_up
                 messages.append({"role": "user", "content": follow_up})
+                await journal.finish(
+                    current_turn_id,
+                    status="completed",
+                    stop_reason="actions_observed",
+                )
+                if execution_stream_callback:
+                    await execution_stream_callback(
+                        "turn_completed",
+                        {
+                            "turn_id": current_turn_id,
+                            "iteration": iteration,
+                            "stop_reason": "actions_observed",
+                        },
+                    )
             else:
-                final_content = response.content
-                break
+                accepted, repairs_used = await accept_or_repair_final_response(
+                    content=response.content,
+                    messages=messages,
+                    journal=journal,
+                    context=run_context,
+                    turn_id=current_turn_id,
+                    turn_index=iteration,
+                    max_turns=effective_max_iterations,
+                    repairs_used=repairs_used,
+                    event_callback=execution_stream_callback,
+                )
+                if accepted:
+                    final_content = response.content
+                    break
+
+        if final_content is None:
+            if current_turn_id is not None:
+                await journal.finish(
+                    current_turn_id,
+                    status="exhausted",
+                    stop_reason="max_turns",
+                )
+            if execution_stream_callback:
+                await execution_stream_callback(
+                    "loop_exhausted",
+                    {
+                        "turn_id": current_turn_id,
+                        "iteration": iteration,
+                        "max_turns": effective_max_iterations,
+                    },
+                )
+            raise AgentLoopExhaustedError(effective_max_iterations)
 
         if execution_stream_callback and final_content is not None:
             await execution_stream_callback("final", {"content": final_content})

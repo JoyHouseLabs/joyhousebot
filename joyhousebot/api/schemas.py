@@ -24,14 +24,41 @@ class CreateRunRequest(BaseModel):
     input: RunInput
     model: str | None = None
     system_prompt: str | None = None
+    output_schema: dict[str, Any] | None = None
+    verification_policy: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
     max_turns: int | None = Field(default=None, gt=0)
+    max_repairs: int | None = Field(default=None, ge=0, le=10)
+    max_replans: int | None = Field(default=None, ge=0, le=10)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResolveRunInputRequest(BaseModel):
     input_request_id: str = Field(min_length=1, pattern=_ID_PATTERN)
     answers: dict[str, Any] = Field(min_length=1)
+
+
+class ResolveApprovalRequest(BaseModel):
+    resolution: Literal["approve", "reject", "request_changes", "revoke"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ResolveOperationRequest(BaseModel):
+    resolution: Literal["confirm_succeeded", "confirm_failed", "retry"]
+    summary: str | None = Field(default=None, max_length=2000)
+    data: dict[str, Any] = Field(default_factory=dict)
+    error_code: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class ResolveMemoryCandidateRequest(BaseModel):
+    resolution: Literal["accept", "reject"]
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class ReceiveGraphEventRequest(BaseModel):
+    event_type: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+    payload: Any
 
 
 class CreateRunFeedbackRequest(BaseModel):
@@ -110,6 +137,15 @@ class BindAgentSkillRequest(BaseModel):
     configuration: dict[str, Any] = Field(default_factory=dict)
 
 
+class CapabilityRefRequest(BaseModel):
+    capability_id: str = Field(min_length=1, pattern=_ID_PATTERN)
+    version: str = Field(min_length=1, max_length=128)
+    kind: Literal["tool", "agent", "workflow", "skill", "connector"]
+    plugin_id: str = Field(min_length=1, pattern=_ID_PATTERN)
+    plugin_version: str = Field(min_length=1, max_length=128)
+    plugin_build_digest: str = Field(min_length=1, max_length=256)
+
+
 class PublishCapabilityRequest(BaseModel):
     kind: Literal["tool", "agent", "workflow", "skill", "connector"]
     name: str = Field(min_length=1)
@@ -127,6 +163,7 @@ class PublishCapabilityRequest(BaseModel):
     idempotent: bool = True
     retryable: bool = True
     side_effect: str = "none"
+    compensation: CapabilityRefRequest | None = None
     invocation_concurrency: Literal["sequential", "parallel_safe"] = "parallel_safe"
     max_concurrent_invocations: int = Field(default=4, ge=1, le=1024)
     supports_stream: bool = False
@@ -141,6 +178,120 @@ class PublishCapabilityRequest(BaseModel):
 class SaveCapabilityRuntimeSettingsRequest(BaseModel):
     enabled: bool = True
     configuration: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvalScorerRequest(BaseModel):
+    type: Literal[
+        "status",
+        "exact_match",
+        "contains",
+        "json_schema",
+        "json_path_equals",
+        "numeric_range",
+        "max_latency_ms",
+        "max_cost_usd",
+    ]
+    required: bool = True
+    weight: float = Field(default=1.0, gt=0, le=100)
+    path: str = Field(default="", max_length=512)
+    value: Any = None
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
+    min: float | None = None
+    max: float | None = None
+
+
+class EvalCaseRequest(BaseModel):
+    case_id: str = Field(pattern=_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=256)
+    input: dict[str, Any] = Field(default_factory=dict)
+    expected: Any = None
+    scorers: list[EvalScorerRequest] = Field(min_length=1, max_length=32)
+    tags: list[str] = Field(default_factory=list, max_length=64)
+    min_score: float = Field(default=1.0, ge=0, le=1)
+
+
+class SaveEvalSuiteRequest(BaseModel):
+    suite_id: str = Field(pattern=_ID_PATTERN)
+    version: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=4000)
+    status: Literal["draft", "active"] = "active"
+    target_types: list[Literal["agent", "scenario", "capability"]] = Field(
+        min_length=1, max_length=3
+    )
+    thresholds: dict[str, Any] = Field(default_factory=dict)
+    cases: list[EvalCaseRequest] = Field(min_length=1, max_length=1000)
+
+
+class CreateEvalRunRequest(BaseModel):
+    suite_id: str = Field(pattern=_ID_PATTERN)
+    suite_version: int = Field(ge=1)
+    target_type: Literal["agent", "scenario", "capability"]
+    target_id: str = Field(pattern=_ID_PATTERN)
+    target_revision_id: str = Field(pattern=_ID_PATTERN)
+    idempotency_key: str | None = Field(default=None, max_length=256)
+
+
+class RecordEvalObservationRequest(BaseModel):
+    case_id: str = Field(pattern=_ID_PATTERN)
+    output: Any = None
+    status: str = Field(default="completed", max_length=64)
+    latency_ms: float | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReleaseGateRequirementRequest(BaseModel):
+    suite_id: str = Field(pattern=_ID_PATTERN)
+    suite_version: int = Field(ge=1)
+    min_pass_rate: float = Field(default=1.0, ge=0, le=1)
+    max_age_hours: int = Field(default=168, ge=1, le=8760)
+
+
+class SaveReleaseGateRequest(BaseModel):
+    required: bool = True
+    requirements: list[ReleaseGateRequirementRequest] = Field(
+        min_length=1, max_length=32
+    )
+
+
+class CreateWorkRequest(BaseModel):
+    run_id: str = Field(pattern=_ID_PATTERN)
+    artifact_id: str = Field(pattern=_ID_PATTERN)
+    title: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=10000)
+    data_classification: Literal[
+        "public", "internal", "confidential", "restricted"
+    ] = "internal"
+    change_note: str = Field(default="Initial version", max_length=2000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateWorkVersionRequest(BaseModel):
+    run_id: str = Field(pattern=_ID_PATTERN)
+    artifact_id: str = Field(pattern=_ID_PATTERN)
+    change_note: str = Field(default="", max_length=2000)
+
+
+class UpdateWorkRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=256)
+    description: str | None = Field(default=None, max_length=10000)
+    status: Literal["draft", "published", "archived"] | None = None
+    visibility: Literal["private", "unlisted", "public"] | None = None
+    data_classification: Literal[
+        "public", "internal", "confidential", "restricted"
+    ] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class CreateWorkShareRequest(BaseModel):
+    version: int | None = Field(default=None, ge=1)
+    permission: Literal["view", "download"] = "view"
+    expires_in_seconds: int | None = Field(default=None, ge=60, le=31_536_000)
+
+
+class GrantWorkCollaboratorRequest(BaseModel):
+    role: Literal["viewer", "editor"] = "viewer"
 
 
 class CreateReplayRequest(BaseModel):
@@ -185,15 +336,6 @@ class ClarificationEdgeRequest(BaseModel):
     priority: int = 100
 
 
-class CapabilityRefRequest(BaseModel):
-    capability_id: str = Field(min_length=1, pattern=_ID_PATTERN)
-    version: str = Field(min_length=1, max_length=128)
-    kind: Literal["tool", "agent", "workflow", "skill", "connector"]
-    plugin_id: str = Field(min_length=1, pattern=_ID_PATTERN)
-    plugin_version: str = Field(min_length=1, max_length=128)
-    plugin_build_digest: str = Field(min_length=1, max_length=256)
-
-
 class SaveScenarioVersionRequest(BaseModel):
     version: int = Field(ge=1)
     name: str = Field(min_length=1)
@@ -215,7 +357,7 @@ class SimulateScenarioRequest(BaseModel):
 
 class GraphTaskRequest(BaseModel):
     id: str = Field(min_length=1, pattern=_ID_PATTERN)
-    prompt: str = Field(min_length=1)
+    prompt: str = ""
     agent_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     dependencies: list[str] = Field(default_factory=list)
     name: str | None = None
@@ -225,8 +367,33 @@ class GraphTaskRequest(BaseModel):
     capability: CapabilityRefRequest | None = None
     capability_input: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
+    verification_policy: dict[str, Any] = Field(default_factory=dict)
+    max_repairs: int | None = Field(default=None, ge=0, le=10)
     allowed_tools: list[str] = Field(default_factory=list)
     skill_names: list[str] = Field(default_factory=list)
+    node_type: (
+        Literal[
+            "agent",
+            "capability",
+            "branch",
+            "foreach",
+            "wait_event",
+            "approval",
+            "verify",
+            "compensation",
+            "bounded_loop",
+            "aggregate",
+        ]
+        | None
+    ) = None
+    branch: dict[str, Any] = Field(default_factory=dict)
+    foreach: dict[str, Any] = Field(default_factory=dict)
+    wait_event: dict[str, Any] = Field(default_factory=dict)
+    approval: dict[str, Any] = Field(default_factory=dict)
+    verify: dict[str, Any] = Field(default_factory=dict)
+    compensation: dict[str, Any] = Field(default_factory=dict)
+    bounded_loop: dict[str, Any] = Field(default_factory=dict)
+    aggregate: dict[str, Any] = Field(default_factory=dict)
 
 
 class CreateGraphRequest(BaseModel):
@@ -236,6 +403,26 @@ class CreateGraphRequest(BaseModel):
     tasks: list[GraphTaskRequest] = Field(min_length=1)
     max_concurrent: int = Field(default=4, ge=1, le=32)
     fail_fast: bool = True
+    failure_policy: dict[str, Any] = Field(default_factory=dict)
+    aggregate: bool = True
+    aggregation_policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphPatchOperationRequest(BaseModel):
+    op: Literal["append", "replace_pending"]
+    node: GraphTaskRequest
+
+
+class CreateGraphPatchRequest(BaseModel):
+    base_revision_id: str = Field(min_length=1, pattern=_ID_PATTERN)
+    reason: str = Field(min_length=1, max_length=2000)
+    operations: list[GraphPatchOperationRequest] = Field(min_length=1, max_length=32)
+    approve_high_risk: bool = False
+
+
+class ResolveGraphPatchProposalRequest(BaseModel):
+    resolution: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=4000)
 
 
 class ScheduleSpec(BaseModel):

@@ -73,9 +73,7 @@ async def agents(principal: AgentsReaderDep, container: ContainerDep):
 
 
 @router.get("/agents/{agent_id}/revisions")
-async def agent_revisions(
-    agent_id: str, principal: AgentsReaderDep, container: ContainerDep
-):
+async def agent_revisions(agent_id: str, principal: AgentsReaderDep, container: ContainerDep):
     return {"items": await container.platform.list_agent_revisions(agent_id)}
 
 
@@ -89,9 +87,7 @@ async def agent_skill_bindings(
     revision = await asyncio.to_thread(container.store.get_agent_revision, revision_id)
     if revision is None or revision.agent_id != agent_id:
         raise HTTPException(status_code=404, detail="Agent revision not found")
-    return {
-        "items": await container.platform.list_agent_skill_bindings(revision_id)
-    }
+    return {"items": await container.platform.list_agent_skill_bindings(revision_id)}
 
 
 @router.put("/agents/{agent_id}/revisions/{revision_id}")
@@ -193,14 +189,18 @@ async def capability_runtime_settings(
     definition = await asyncio.to_thread(container.store.get_capability_definition, capability_id)
     if definition is None:
         raise HTTPException(status_code=404, detail="capability not found")
-    settings = await asyncio.to_thread(container.store.get_capability_runtime_settings, capability_id)
+    settings = await asyncio.to_thread(
+        container.store.get_capability_runtime_settings, capability_id
+    )
     schema = dict(definition.get("configuration_schema") or {})
     return {
         **settings,
         # An administrator can edit the effective values, but plugin-private
         # immutable configuration remains private. Only fields declared in
         # the runtime settings schema are projected here.
-        "configuration": _effective_runtime_configuration(definition, settings["configuration"], schema),
+        "configuration": _effective_runtime_configuration(
+            definition, settings["configuration"], schema
+        ),
         "configuration_schema": schema,
     }
 
@@ -225,9 +225,7 @@ async def save_capability_runtime_settings(
         raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
-def _effective_runtime_configuration(
-    definition: dict, overrides: dict, schema: dict
-) -> dict:
+def _effective_runtime_configuration(definition: dict, overrides: dict, schema: dict) -> dict:
     base = dict(definition.get("configuration") or {})
     properties = schema.get("properties")
     if isinstance(properties, dict) and schema.get("additionalProperties") is False:
@@ -264,6 +262,11 @@ async def publish_capability(
         idempotent=body.idempotent,
         retryable=body.retryable,
         side_effect=body.side_effect,
+        compensation=(
+            CapabilityRef.from_dict(body.compensation.model_dump())
+            if body.compensation is not None
+            else None
+        ),
         invocation_concurrency=body.invocation_concurrency,
         max_concurrent_invocations=body.max_concurrent_invocations,
         supports_stream=body.supports_stream,
@@ -275,9 +278,7 @@ async def publish_capability(
         configuration=body.configuration,
     )
     try:
-        return await container.platform.publish_capability(
-            definition, actor_id=principal.subject
-        )
+        return await container.platform.publish_capability(definition, actor_id=principal.subject)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -326,9 +327,7 @@ async def config_summary(principal: SettingsReaderDep, container: ContainerDep):
             "database_access_tokens": len(
                 await asyncio.to_thread(container.store.list_api_access_tokens, limit=5000)
             ),
-            "emergency_control_token_configured": bool(
-                os.environ.get("JOYHOUSEBOT_CONTROL_TOKEN")
-            ),
+            "emergency_control_token_configured": bool(os.environ.get("JOYHOUSEBOT_CONTROL_TOKEN")),
         },
         "runtime": {
             "store_backend": "postgres",
@@ -375,7 +374,11 @@ async def mcp_servers(principal: SettingsReaderDep, container: ContainerDep):
     rows = await asyncio.to_thread(container.store.list_mcp_servers)
     stored_names = {str(row["name"]) for row in rows}
     configured = getattr(container.config.tools, "mcp_servers", {}) or {}
-    rows.extend({"name": name, **value.model_dump()} for name, value in configured.items() if name not in stored_names)
+    rows.extend(
+        {"name": name, **value.model_dump()}
+        for name, value in configured.items()
+        if name not in stored_names
+    )
     return {"items": [_mcp_public(str(row["name"]), row) for row in rows]}
 
 
@@ -387,9 +390,13 @@ async def save_mcp_server(
     container: ContainerDep,
 ):
     if not name or len(name) > 128 or not all(char.isalnum() or char in "_-" for char in name):
-        raise HTTPException(status_code=422, detail="MCP server name must contain only letters, numbers, '_' or '-'")
+        raise HTTPException(
+            status_code=422, detail="MCP server name must contain only letters, numbers, '_' or '-'"
+        )
     if bool(body.command.strip()) == bool(body.url.strip()):
-        raise HTTPException(status_code=422, detail="Configure exactly one of command (stdio) or url (HTTP)")
+        raise HTTPException(
+            status_code=422, detail="Configure exactly one of command (stdio) or url (HTTP)"
+        )
     if body.url:
         ok, error = await validate_url_with_dns(body.url)
         if not ok:
@@ -418,4 +425,9 @@ async def test_mcp_server(name: str, principal: SettingsWriterDep, container: Co
     if value["url"]:
         ok, error = await validate_url_with_dns(value["url"])
         return {"ok": ok, "message": "URL DNS/SSRF 校验通过" if ok else error}
-    return {"ok": bool(value["command"]), "message": "stdio command 已配置，连接将在 Worker 启动时建立" if value["command"] else "command 未配置"}
+    return {
+        "ok": bool(value["command"]),
+        "message": "stdio command 已配置，连接将在 Worker 启动时建立"
+        if value["command"]
+        else "command 未配置",
+    }

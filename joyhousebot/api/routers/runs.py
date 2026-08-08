@@ -10,18 +10,39 @@ from fastapi import APIRouter, Header, Query, Request, Response
 
 from joyhousebot.api.dependencies import ContainerDep, ContextDep
 from joyhousebot.api.schemas import (
+    CreateGraphPatchRequest,
     CreateGraphRequest,
     CreateRunFeedbackRequest,
     CreateRunRequest,
+    ResolveApprovalRequest,
+    ResolveGraphPatchProposalRequest,
+    ResolveOperationRequest,
     ResolveRunInputRequest,
 )
+from joyhousebot.application.context_manifests import context_manifest_public_dict
 from joyhousebot.application.feedback import CreateFeedbackCommand
+from joyhousebot.application.graph_events import graph_event_wait_public_dict
+from joyhousebot.application.graph_patch_commands import (
+    ApplyGraphPatchCommand,
+    GraphPatchOperationCommand,
+    ResolveGraphPatchProposalCommand,
+)
+from joyhousebot.application.loop_decisions import loop_decision_public_dict
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import CreateRunCommand, GraphTaskCommand
+from joyhousebot.application.verifications import verification_public_dict
 from joyhousebot.contracts import ProjectionContext, ScopedRunProjectionQueries
 from joyhousebot.runtime.narrative import public_event_dict
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+def _graph_patch_proposal_public(record):  # noqa: ANN001, ANN201
+    value = record_dict(record)
+    value.pop("candidate_revision", None)
+    value.pop("task_rows", None)
+    value.pop("lease_owner", None)
+    return value
 
 
 def _prefer_wait(value: str | None) -> float:
@@ -48,8 +69,12 @@ async def create_run(
             input=body.input.content,
             model=body.model,
             system_prompt=body.system_prompt,
+            output_schema=body.output_schema,
+            verification_policy=body.verification_policy,
             timeout_seconds=body.timeout_seconds,
             max_turns=body.max_turns,
+            max_repairs=body.max_repairs,
+            max_replans=body.max_replans,
             metadata=body.metadata,
         ),
     )
@@ -84,6 +109,9 @@ async def create_graph(body: CreateGraphRequest, context: ContextDep, container:
         session_id=body.session_id,
         max_concurrent=body.max_concurrent,
         fail_fast=body.fail_fast,
+        failure_policy=body.failure_policy,
+        aggregate=body.aggregate,
+        aggregation_policy=body.aggregation_policy,
         tasks=[GraphTaskCommand(**item.model_dump()) for item in body.tasks],
     )
     return record_dict(record)
@@ -157,6 +185,114 @@ async def list_tasks(run_id: str, context: ContextDep, container: ContainerDep):
     return {"items": [record_dict(row) for row in await container.runs.tasks(context, run_id)]}
 
 
+@router.get("/{run_id}/graph-revisions")
+async def list_graph_revisions(run_id: str, context: ContextDep, container: ContainerDep):
+    rows = await container.runs.graph_revisions(context, run_id)
+    return {"items": [record_dict(row) for row in rows]}
+
+
+@router.get("/{run_id}/graph-patches")
+async def list_graph_patches(run_id: str, context: ContextDep, container: ContainerDep):
+    rows = await container.graph_patches.list(context, run_id)
+    return {"items": [record_dict(row) for row in rows]}
+
+
+@router.get("/{run_id}/graph-patch-proposals")
+async def list_graph_patch_proposals(
+    run_id: str, context: ContextDep, container: ContainerDep
+):
+    rows = await container.graph_patches.list_proposals(context, run_id)
+    return {"items": [_graph_patch_proposal_public(row) for row in rows]}
+
+
+@router.post("/{run_id}/graph-patch-proposals", status_code=201)
+async def propose_graph_patch(
+    run_id: str,
+    body: CreateGraphPatchRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    proposal, run = await container.graph_patches.propose(
+        context,
+        run_id,
+        ApplyGraphPatchCommand(
+            base_revision_id=body.base_revision_id,
+            reason=body.reason,
+            operations=tuple(
+                GraphPatchOperationCommand(
+                    op=item.op,
+                    node=GraphTaskCommand(**item.node.model_dump()),
+                )
+                for item in body.operations
+            ),
+        ),
+    )
+    return {"proposal": _graph_patch_proposal_public(proposal), "run": record_dict(run)}
+
+
+@router.post("/{run_id}/graph-patch-proposals/{proposal_id}/resolve")
+async def resolve_graph_patch_proposal(
+    run_id: str,
+    proposal_id: str,
+    body: ResolveGraphPatchProposalRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    proposal, run = await container.graph_patches.resolve_proposal(
+        context,
+        run_id,
+        proposal_id,
+        ResolveGraphPatchProposalCommand(
+            resolution=body.resolution,
+            note=body.note,
+        ),
+    )
+    return {
+        "proposal": _graph_patch_proposal_public(proposal),
+        "run": record_dict(run) if run is not None else None,
+    }
+
+
+@router.post("/{run_id}/graph-patches", status_code=201)
+async def apply_graph_patch(
+    run_id: str,
+    body: CreateGraphPatchRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    patch, run = await container.graph_patches.apply(
+        context,
+        run_id,
+        ApplyGraphPatchCommand(
+            base_revision_id=body.base_revision_id,
+            reason=body.reason,
+            approve_high_risk=body.approve_high_risk,
+            operations=tuple(
+                GraphPatchOperationCommand(
+                    op=item.op,
+                    node=GraphTaskCommand(**item.node.model_dump()),
+                )
+                for item in body.operations
+            ),
+        ),
+    )
+    return {"patch": record_dict(patch), "run": record_dict(run)}
+
+
+@router.get("/{run_id}/event-waits")
+async def list_graph_event_waits(run_id: str, context: ContextDep, container: ContainerDep):
+    rows = await container.graph_events.list(context, run_id)
+    return {"items": [graph_event_wait_public_dict(row) for row in rows]}
+
+
+@router.post("/{run_id}/event-waits/{wait_id}/token", status_code=201)
+async def issue_graph_event_token(
+    run_id: str, wait_id: str, context: ContextDep, container: ContainerDep
+):
+    record, token = await container.graph_events.issue_token(context, run_id, wait_id)
+    return {"wait": graph_event_wait_public_dict(record), "token": token}
+
+
 @router.get("/{run_id}/artifacts")
 async def list_artifacts(run_id: str, context: ContextDep, container: ContainerDep):
     return {"items": await container.runs.artifacts(context, run_id)}
@@ -192,7 +328,9 @@ async def get_run_projection(
             limit=event_limit,
         ),
         container.runs.invocations(context, run_id),
-        asyncio.to_thread(container.store.get_run_scenario_state, run_id, expected_user_id=context.user_id),
+        asyncio.to_thread(
+            container.store.get_run_scenario_state, run_id, expected_user_id=context.user_id
+        ),
     )
     projection_context = ProjectionContext(
         run=run,
@@ -200,15 +338,9 @@ async def get_run_projection(
         events=tuple(events),
         invocations=tuple(invocations),
         scenario_state=scenario_state,
-        queries=ScopedRunProjectionQueries(
-            container.store, run_id=run_id, user_id=context.user_id
-        ),
+        queries=ScopedRunProjectionQueries(container.store, run_id=run_id, user_id=context.user_id),
         user_id=context.user_id,
-        parameters={
-            key: value
-            for key, value in request.query_params.items()
-            if key != "view"
-        },
+        parameters={key: value for key, value in request.query_params.items() if key != "view"},
     )
     if inspect.iscoroutinefunction(provider.build):
         return await provider.build(projection_context)
@@ -220,6 +352,40 @@ async def get_run_projection(
 async def list_invocations(run_id: str, context: ContextDep, container: ContainerDep):
     rows = await container.runs.invocations(context, run_id)
     return {"items": [record_dict(row) for row in rows]}
+
+
+@router.get("/{run_id}/verifications")
+async def list_verifications(run_id: str, context: ContextDep, container: ContainerDep):
+    await container.runs.get(context, run_id)
+    rows = await asyncio.to_thread(
+        container.store.list_verification_records,
+        run_id,
+        expected_user_id=context.user_id,
+    )
+    return {"items": [verification_public_dict(row) for row in rows]}
+
+
+@router.get("/{run_id}/decisions")
+async def list_loop_decisions(run_id: str, context: ContextDep, container: ContainerDep):
+    await container.runs.get(context, run_id)
+    rows = await asyncio.to_thread(
+        container.store.list_loop_decisions,
+        run_id,
+        expected_user_id=context.user_id,
+    )
+    return {"items": [loop_decision_public_dict(row) for row in rows]}
+
+
+@router.get("/{run_id}/context-manifest")
+async def list_context_manifests(run_id: str, context: ContextDep, container: ContainerDep):
+    """Return source hashes and budget evidence, never raw model context."""
+    await container.runs.get(context, run_id)
+    rows = await asyncio.to_thread(
+        container.store.list_context_manifests,
+        run_id,
+        expected_user_id=context.user_id,
+    )
+    return {"items": [context_manifest_public_dict(row) for row in rows]}
 
 
 @router.get("/{run_id}/inputs/pending")
@@ -245,6 +411,57 @@ async def resolve_input(
         "run": record_dict(run),
         "pending_inputs": [record_dict(row) for row in pending],
     }
+
+
+@router.get("/{run_id}/approvals")
+async def list_approvals(run_id: str, context: ContextDep, container: ContainerDep):
+    rows = await container.approvals.list(context, run_id)
+    return {"items": [record_dict(row) for row in rows]}
+
+
+@router.post("/{run_id}/approvals/{approval_id}/resolve")
+async def resolve_approval(
+    run_id: str,
+    approval_id: str,
+    body: ResolveApprovalRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    approval, run = await container.approvals.resolve(
+        context,
+        run_id,
+        approval_id,
+        resolution=body.resolution,
+        note=body.note,
+    )
+    return {"approval": record_dict(approval), "run": record_dict(run)}
+
+
+@router.get("/{run_id}/operations")
+async def list_operations(run_id: str, context: ContextDep, container: ContainerDep):
+    rows = await container.reconciliations.list(context, run_id)
+    return {"items": [record_dict(row) for row in rows]}
+
+
+@router.post("/{run_id}/operations/{reconciliation_id}/resolve")
+async def resolve_operation(
+    run_id: str,
+    reconciliation_id: str,
+    body: ResolveOperationRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    reconciliation, run = await container.reconciliations.resolve(
+        context,
+        run_id,
+        reconciliation_id,
+        resolution=body.resolution,
+        summary=body.summary,
+        data=body.data,
+        error_code=body.error_code,
+        note=body.note,
+    )
+    return {"reconciliation": record_dict(reconciliation), "run": record_dict(run)}
 
 
 @router.get("/{run_id}/logs")

@@ -35,6 +35,11 @@ def _sanitize_mcp_tool_name(server_name: str, raw_name: str) -> str:
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a joyhousebot Tool."""
 
+    # MCP metadata does not yet expose a trusted immutable side-effect
+    # contract, so unknown tools fail closed into the approval path.
+    side_effect = "unknown"
+    idempotent = False
+
     def __init__(self, session, server_name: str, tool_def, timeout: float = _MCP_TOOL_TIMEOUT):
         self._session = session
         self._server_name = server_name

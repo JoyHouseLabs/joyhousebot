@@ -49,10 +49,20 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
         """Cheap EXISTS probe so idle workers skip the full fair-queue scan."""
         with self._pool.connection() as conn:
             row = conn.execute(
-                """SELECT 1 FROM runtime_runs
-                   WHERE status IN ('queued','planning')
+                """SELECT 1 FROM runtime_runs AS run
+                   WHERE run.status IN ('queued','planning')
+                      OR (run.status='waiting_external' AND EXISTS (
+                          SELECT 1 FROM operation_reconciliations rec
+                          WHERE rec.run_id=run.run_id AND
+                            ((rec.status='pending' AND rec.next_attempt_at<=clock_timestamp())
+                             OR (rec.status='checking' AND rec.lease_expires_at<clock_timestamp()))))
+                      OR (run.status='waiting_external' AND EXISTS (
+                          SELECT 1 FROM graph_event_waits event_wait
+                          WHERE event_wait.run_id=run.run_id
+                            AND event_wait.status='pending'
+                            AND event_wait.deadline_at<=clock_timestamp()))
                       OR (cancel_requested_at IS NOT NULL
-                          AND status NOT IN ('completed','failed','cancelled','timed_out'))
+                          AND run.status NOT IN ('completed','failed','cancelled','timed_out'))
                    LIMIT 1"""
             ).fetchone()
         return row is not None
@@ -61,8 +71,18 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
         """Cheap EXISTS probe so idle dispatchers skip the claim CTE entirely."""
         with self._pool.connection() as conn:
             row = conn.execute(
-                """SELECT 1 FROM runtime_tasks
-                   WHERE status='queued' AND available_at<=clock_timestamp() LIMIT 1"""
+                """SELECT 1 FROM runtime_tasks AS task
+                   WHERE (task.status='queued' AND task.available_at<=clock_timestamp())
+                      OR (task.status='waiting_external' AND EXISTS (
+                          SELECT 1 FROM action_intents action
+                          JOIN operation_reconciliations rec
+                            ON rec.action_id=action.action_id
+                          WHERE action.task_id=task.task_id
+                            AND ((rec.status='pending'
+                                  AND rec.next_attempt_at<=clock_timestamp())
+                                 OR (rec.status='checking'
+                                     AND rec.lease_expires_at<clock_timestamp()))))
+                   LIMIT 1"""
             ).fetchone()
         return row is not None
 
@@ -545,15 +565,23 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 """SELECT count(*) AS count FROM runtime_workers
                    WHERE status='online' AND last_heartbeat < clock_timestamp() - INTERVAL '30 seconds'"""
             ).fetchone()
-            outbox = conn.execute(
-                """SELECT channel, status, count(*) AS count
+            outbox = (
+                conn.execute(
+                    """SELECT channel, status, count(*) AS count
                    FROM channel_outbox GROUP BY channel, status
                    ORDER BY channel, status LIMIT 500"""
-            ).fetchall() if conn.execute("SELECT to_regclass('public.channel_outbox') AS name").fetchone()["name"] else []
+                ).fetchall()
+                if conn.execute("SELECT to_regclass('public.channel_outbox') AS name").fetchone()[
+                    "name"
+                ]
+                else []
+            )
         metrics["providers"] = [
             {
-                "provider": str(row["provider"]), "model": str(row["model"]),
-                "status": str(row["status"]), "count": int(row["count"]),
+                "provider": str(row["provider"]),
+                "model": str(row["model"]),
+                "status": str(row["status"]),
+                "count": int(row["count"]),
                 "avg_duration_ms": float(row["avg_duration_ms"] or 0),
                 "avg_ttft_ms": float(row["avg_ttft_ms"] or 0),
                 "p95_duration_ms": float(row["p95_duration_ms"] or 0),
@@ -570,7 +598,11 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
         }
         metrics["workers_stale"] = int(stale_workers["count"] or 0)
         metrics["channels"] = [
-            {"channel": str(row["channel"]), "status": str(row["status"]), "count": int(row["count"])}
+            {
+                "channel": str(row["channel"]),
+                "status": str(row["status"]),
+                "count": int(row["count"]),
+            }
             for row in outbox
         ]
         return metrics

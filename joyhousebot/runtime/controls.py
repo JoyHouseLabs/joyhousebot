@@ -84,6 +84,14 @@ class RuntimeControlsMixin:
         )
 
     async def resume(self, run_id: str) -> Any:
+        current = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        if current is not None and current.kind == "graph":
+            get_saga = getattr(self.store, "get_runtime_saga", None)
+            saga = await asyncio.to_thread(get_saga, run_id) if get_saga else None
+            if saga is not None:
+                raise ValueError(
+                    "Saga Graph runs cannot be resumed; submit a new Run after compensation"
+                )
         reset = await asyncio.to_thread(self.store.reset_runtime_run, run_id)
         if not reset:
             raise ValueError("only failed, cancelled, or timed out runs can be resumed")

@@ -197,6 +197,101 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
 
 
 @pytest.mark.asyncio
+async def test_plugin_receives_durable_action_and_idempotency_identity():
+    observed = {}
+
+    class IdentityHandler:
+        async def execute(self, context, input):
+            observed.update(context.metadata)
+            return CapabilityResult(success=True, output={"ok": True})
+
+    class IdentityPlugin:
+        plugin_id = "identity"
+        version = "1.0.0"
+
+        def register(self, registry):
+            registry.register_capability(
+                CapabilityDefinition(
+                    name="identity.write",
+                    ref=CapabilityRef("identity.write", "1.0.0", CapabilityKind.TOOL),
+                    description="durable business write",
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    adapter="identity.write",
+                    side_effect="write",
+                ),
+                IdentityHandler(),
+            )
+
+    registry = CapabilityRegistry()
+    registry.register_plugin(IdentityPlugin())
+    result = await registry.invoke_tool(
+        "identity.write",
+        {},
+        context=ToolExecutionContext(
+            run_id="run",
+            session_key="session",
+            channel="api",
+            chat_id="chat",
+            turn_id="turn_durable",
+            turn_index=0,
+            action_index=0,
+        ),
+    )
+    assert result.ok is True
+    assert observed["action_id"].startswith("act_")
+    assert observed["idempotency_key"] == f"action:{observed['action_id']}"
+
+
+@pytest.mark.asyncio
+async def test_plugin_structured_error_survives_the_native_dispatcher():
+    class ErrorHandler:
+        async def execute(self, context, input):
+            return CapabilityResult(
+                success=False,
+                error={
+                    "code": "REMOTE_UNAVAILABLE",
+                    "message": "business API unavailable",
+                    "retryable": True,
+                },
+            )
+
+    class ErrorPlugin:
+        plugin_id = "error"
+        version = "1.0.0"
+
+        def register(self, registry):
+            registry.register_capability(
+                CapabilityDefinition(
+                    name="error.remote",
+                    ref=CapabilityRef("error.remote", "1.0.0", CapabilityKind.CONNECTOR),
+                    description="remote connector",
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    adapter="error.remote",
+                    side_effect="read",
+                ),
+                ErrorHandler(),
+            )
+
+    registry = CapabilityRegistry()
+    registry.register_plugin(ErrorPlugin())
+    result = await registry.invoke_tool(
+        "error.remote",
+        {},
+        context=ToolExecutionContext(
+            run_id="run",
+            session_key="session",
+            channel="api",
+            chat_id="chat",
+        ),
+    )
+    assert result.ok is False
+    assert result.error and result.error.code == "REMOTE_UNAVAILABLE"
+    assert result.error.retryable is True
+
+
+@pytest.mark.asyncio
 async def test_native_runtime_enforces_plugin_capability_permissions():
     class ProtectedPlugin:
         plugin_id = "protected"

@@ -100,7 +100,7 @@ class PostgresTaskStoreMixin:
                        status_summary=COALESCE(%s,status_summary),
                        status_reason=COALESCE(%s,status_reason),
                        next_action=COALESCE(%s,next_action),
-                       waiting_on=%s,
+                       waiting_on=COALESCE(%s,waiting_on),
                        active_turn_id=COALESCE(%s,active_turn_id),
                        active_span_count=GREATEST(0,active_span_count + %s),
                        completed_task_count=(SELECT count(*) FROM runtime_tasks
@@ -171,7 +171,7 @@ class PostgresTaskStoreMixin:
                           parent_task_id,user_id,session_id,agent_id,turn_id,span_id,
                           parent_span_id,tool_call_id,attempt,phase,status,visibility,
                           summary,worker_id,lease_version,schema_version,event_type,data,created_at
-                   FROM runtime_events WHERE {' AND '.join(clauses)}
+                   FROM runtime_events WHERE {" AND ".join(clauses)}
                    ORDER BY sequence LIMIT %s""",
                 params,
             ).fetchall()
@@ -306,9 +306,9 @@ class PostgresTaskStoreMixin:
             row = conn.execute(
                 """UPDATE runtime_tasks SET status=%s, result=COALESCE(%s,result), error=%s,
                        available_at=CASE WHEN %s='queued' THEN clock_timestamp()+(%s*interval '1 second') ELSE available_at END,
-                       lease_owner=CASE WHEN %s IN ('queued','completed','failed','cancelled','timed_out','skipped') THEN NULL ELSE lease_owner END,
-                       lease_expires_at=CASE WHEN %s IN ('queued','completed','failed','cancelled','timed_out','skipped') THEN NULL ELSE lease_expires_at END,
-                       finished_at=CASE WHEN %s THEN clock_timestamp() WHEN %s IN ('queued','blocked','running') THEN NULL ELSE finished_at END,
+                       lease_owner=CASE WHEN %s IN ('queued','waiting_approval','waiting_external','completed','failed','cancelled','timed_out','skipped') THEN NULL ELSE lease_owner END,
+                       lease_expires_at=CASE WHEN %s IN ('queued','waiting_approval','waiting_external','completed','failed','cancelled','timed_out','skipped') THEN NULL ELSE lease_expires_at END,
+                       finished_at=CASE WHEN %s THEN clock_timestamp() WHEN %s IN ('queued','blocked','running','waiting_approval','waiting_external') THEN NULL ELSE finished_at END,
                        updated_at=clock_timestamp()
                    WHERE task_id=%s AND (%s::text IS NULL OR lease_owner=%s)
                      AND (%s::bigint IS NULL OR lease_version=%s)
@@ -339,6 +339,9 @@ class PostgresTaskStoreMixin:
                            WHERE d.task_id=t.task_id AND dep.status!='completed')"""
                 )
             if row:
+                refresh = getattr(self, "_refresh_graph_run_waiting", None)
+                if refresh is not None and status not in {"waiting_approval", "waiting_external"}:
+                    refresh(conn, str(row["run_id"]))
                 self._audit(
                     conn,
                     run_id=str(row["run_id"]),
@@ -357,31 +360,97 @@ class PostgresTaskStoreMixin:
     ) -> RuntimeTaskRecord | None:
         with self._pool.connection() as conn, conn.transaction():
             sweep_now = time.monotonic()
-            if (
-                sweep_now - getattr(self, "_lease_sweep_at", 0.0)
-                >= _LEASE_SWEEP_INTERVAL_SECONDS
-            ):
+            if sweep_now - getattr(self, "_lease_sweep_at", 0.0) >= _LEASE_SWEEP_INTERVAL_SECONDS:
                 self._lease_sweep_at = sweep_now
                 conn.execute(
-                    """UPDATE runtime_tasks SET status='queued',lease_owner=NULL,lease_expires_at=NULL,
+                    """UPDATE runtime_tasks task SET status='queued',
+                           result=CASE WHEN EXISTS (
+                               SELECT 1 FROM runtime_turns turn
+                               WHERE turn.task_id=task.task_id
+                           ) OR EXISTS (
+                               SELECT 1 FROM action_intents action
+                               WHERE action.task_id=task.task_id
+                                 AND action.status IN
+                                     ('proposed','approval_pending','invoking','waiting_external','observed')
+                           ) OR task.payload->>'node_type' IN
+                                ('branch','foreach','wait_event','approval','verify','compensation',
+                                 'bounded_loop','aggregate')
+                           THEN CASE
+                               WHEN task.result->>'stop_reason' IN
+                                    ('foreach_expanded','bounded_loop_waiting')
+                               THEN task.result
+                               ELSE COALESCE(task.result,'{}'::jsonb)
+                                    || '{"stop_reason":"durable_recovery"}'::jsonb
+                               END
+                               ELSE task.result END,
+                           lease_owner=NULL,lease_expires_at=NULL,
                            updated_at=clock_timestamp()
                        WHERE status='running' AND lease_expires_at<clock_timestamp()
-                         AND attempt<max_attempts"""
+                         AND (attempt<max_attempts OR EXISTS (
+                               SELECT 1 FROM runtime_turns turn
+                               WHERE turn.task_id=task.task_id
+                             ) OR EXISTS (
+                               SELECT 1 FROM action_intents action
+                               WHERE action.task_id=task.task_id
+                                 AND action.status IN
+                                     ('proposed','approval_pending','invoking','waiting_external','observed')
+                             ) OR task.payload->>'node_type' IN
+                                  ('branch','foreach','wait_event','approval','verify','compensation',
+                                   'bounded_loop','aggregate'))"""
                 )
                 conn.execute(
-                    """UPDATE runtime_tasks SET status='failed',lease_owner=NULL,lease_expires_at=NULL,
+                    """UPDATE runtime_tasks task SET status='failed',lease_owner=NULL,lease_expires_at=NULL,
                            error='{"message":"task lease expired after maximum attempts"}'::jsonb,
                            finished_at=clock_timestamp(),updated_at=clock_timestamp()
                        WHERE status='running' AND lease_expires_at<clock_timestamp()
-                         AND attempt>=max_attempts"""
+                         AND attempt>=max_attempts
+                         AND NOT EXISTS (
+                           SELECT 1 FROM runtime_turns turn
+                           WHERE turn.task_id=task.task_id
+                         )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM action_intents action
+                           WHERE action.task_id=task.task_id
+                             AND action.status IN
+                                 ('proposed','approval_pending','invoking','waiting_external','observed')
+                         )
+                         AND COALESCE(task.payload->>'node_type','agent') NOT IN
+                             ('branch','foreach','wait_event','approval','verify','compensation',
+                              'bounded_loop','aggregate')"""
                 )
             row = conn.execute(
                 """WITH candidate AS (
                        SELECT t.task_id FROM runtime_tasks t
                        JOIN runtime_runs r ON r.run_id=t.run_id
-                       WHERE t.status='queued' AND t.available_at<=clock_timestamp()
-                         AND t.attempt<t.max_attempts AND (%s::text IS NULL OR t.run_id=%s)
-                         AND r.status IN ('queued','running')
+                       WHERE (
+                           (t.status='queued' AND t.available_at<=clock_timestamp())
+                           OR (
+                             t.status='waiting_external' AND EXISTS (
+                               SELECT 1 FROM action_intents action
+                               JOIN operation_reconciliations rec
+                                 ON rec.action_id=action.action_id
+                               WHERE action.task_id=t.task_id
+                                 AND ((rec.status='pending'
+                                       AND rec.next_attempt_at<=clock_timestamp())
+                                      OR (rec.status='checking'
+                                          AND rec.lease_expires_at<clock_timestamp()))
+                             )
+                           )
+                         )
+                         AND (
+                           t.attempt<t.max_attempts
+                           OR t.status='waiting_external'
+                           OR COALESCE(t.result->>'stop_reason','')='waiting_approval'
+                           OR COALESCE(t.result->>'stop_reason','')='durable_recovery'
+                           OR COALESCE(t.result->>'stop_reason','')='foreach_expanded'
+                           OR COALESCE(t.result->>'stop_reason','')='bounded_loop_waiting'
+                         )
+                         AND (%s::text IS NULL OR t.run_id=%s)
+                         AND (
+                           (t.status='queued' AND r.status IN ('queued','running'))
+                           OR (t.status='waiting_external'
+                               AND r.status IN ('running','waiting_external'))
+                         )
                          AND (
                            r.parent_run_id IS NOT NULL OR NOT EXISTS (
                              SELECT 1 FROM runtime_runs earlier
@@ -414,11 +483,24 @@ class PostgresTaskStoreMixin:
                          AND (SELECT count(*) FROM runtime_tasks active
                               WHERE active.run_id=t.run_id AND active.status='running')
                              < COALESCE((r.options->>'max_concurrent')::int, 4)
+                         AND (
+                           t.parent_task_id IS NULL OR
+                           (SELECT count(*) FROM runtime_tasks sibling
+                            WHERE sibling.parent_task_id=t.parent_task_id
+                              AND sibling.status='running')
+                           < COALESCE((t.payload->>'foreach_max_concurrent')::int, 1)
+                         )
                        ORDER BY t.priority,t.created_at FOR UPDATE OF r,t SKIP LOCKED LIMIT 1
                    )
                    UPDATE runtime_tasks t SET status='running',lease_owner=%s,
                        lease_expires_at=clock_timestamp()+(%s*interval '1 second'),
-                       lease_version=t.lease_version+1,attempt=t.attempt+1,
+                       lease_version=t.lease_version+1,
+                       attempt=t.attempt+CASE
+                           WHEN t.status='waiting_external'
+                             OR COALESCE(t.result->>'stop_reason','') IN
+                                ('waiting_approval','durable_recovery','foreach_expanded',
+                                 'bounded_loop_waiting')
+                           THEN 0 ELSE 1 END,
                        started_at=COALESCE(t.started_at,clock_timestamp()),updated_at=clock_timestamp()
                    FROM candidate c WHERE t.task_id=c.task_id RETURNING t.*""",
                 (run_id, run_id, worker_id, max(1, lease_seconds)),
@@ -462,7 +544,21 @@ class PostgresTaskStoreMixin:
             cur = conn.execute(
                 """UPDATE runtime_tasks SET status='cancelled',lease_owner=NULL,
                        lease_expires_at=NULL,finished_at=clock_timestamp(),updated_at=clock_timestamp()
-                   WHERE run_id=%s AND status IN ('queued','blocked','running')""",
+                   WHERE run_id=%s AND status IN
+                       ('queued','blocked','running','waiting_approval','waiting_external')""",
+                (run_id,),
+            )
+            conn.execute(
+                """UPDATE graph_event_waits SET status='cancelled',
+                       updated_at=clock_timestamp()
+                   WHERE run_id=%s AND status='pending'""",
+                (run_id,),
+            )
+            conn.execute(
+                """UPDATE approval_requests SET status='cancelled',resolution='cancelled',
+                       resolved_by='system:cancel',resolved_at=clock_timestamp(),
+                       updated_at=clock_timestamp()
+                   WHERE run_id=%s AND subject_type='graph_node' AND status='pending'""",
                 (run_id,),
             )
             self._notify(conn, run_id)
@@ -474,7 +570,12 @@ class PostgresTaskStoreMixin:
                 """UPDATE runtime_tasks t SET status=CASE WHEN EXISTS(
                            SELECT 1 FROM runtime_task_dependencies d WHERE d.task_id=t.task_id
                        ) THEN 'blocked' ELSE 'queued' END,
-                       result=NULL,error=NULL,attempt=0,available_at=clock_timestamp(),
+                       result=CASE
+                           WHEN t.payload->>'node_type' IN ('foreach','bounded_loop') AND EXISTS(
+                               SELECT 1 FROM runtime_tasks child
+                               WHERE child.parent_task_id=t.task_id
+                           ) THEN t.result ELSE NULL END,
+                       error=NULL,attempt=0,available_at=clock_timestamp(),
                        lease_owner=NULL,lease_expires_at=NULL,started_at=NULL,finished_at=NULL,
                        updated_at=clock_timestamp()
                    WHERE run_id=%s AND status!='completed'""",
@@ -486,6 +587,17 @@ class PostgresTaskStoreMixin:
     def reconcile_runtime_graph(self, run_id: str) -> dict[str, int]:
         """Advance a DAG in one transaction and return its current status counts."""
         with self._pool.connection() as conn, conn.transaction():
+            loop_parents = conn.execute(
+                """UPDATE runtime_tasks parent SET status='queued',
+                       updated_at=clock_timestamp()
+                   WHERE parent.run_id=%s AND parent.status='blocked'
+                     AND parent.payload->>'node_type'='bounded_loop' AND EXISTS (
+                       SELECT 1 FROM runtime_tasks child
+                       WHERE child.parent_task_id=parent.task_id
+                         AND child.status IN ('failed','cancelled','timed_out','skipped'))
+                   RETURNING parent.task_id""",
+                (run_id,),
+            ).rowcount
             skipped = conn.execute(
                 """UPDATE runtime_tasks t SET status='skipped',
                        error='{"message":"dependency failed"}'::jsonb,
@@ -509,7 +621,7 @@ class PostgresTaskStoreMixin:
                 "SELECT status,count(*) AS count FROM runtime_tasks WHERE run_id=%s GROUP BY status",
                 (run_id,),
             ).fetchall()
-            if skipped or queued:
+            if loop_parents or skipped or queued:
                 self._notify(conn, run_id)
         return {str(row["status"]): int(row["count"]) for row in rows}
 

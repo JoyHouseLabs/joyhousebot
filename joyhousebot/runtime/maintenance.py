@@ -9,6 +9,8 @@ import time
 
 from loguru import logger
 
+from joyhousebot.runtime.models import AgentEvent, EventType
+
 # How often the coordinator purges expired runtime data.
 _PURGE_INTERVAL_SECONDS = 600.0
 
@@ -25,6 +27,39 @@ def _env_int(name: str, default: int) -> int:
 class RuntimeMaintenanceMixin:
     async def _purge_old_runtime_data(self) -> None:
         """Periodically drop expired runtime rows; failures only get logged."""
+        expire_approvals = getattr(self.store, "expire_due_approval_requests", None)
+        if expire_approvals is not None:
+            try:
+                expired = await asyncio.to_thread(expire_approvals, limit=500)
+                for request in expired:
+                    await self.events.publish(
+                        AgentEvent(
+                            run_id=request.run_id,
+                            task_id=request.task_id,
+                            type=EventType.APPROVAL_RESOLVED.value,
+                            status="expired",
+                            data={
+                                "approval_id": request.approval_id,
+                                "action_id": request.action_id,
+                                "resolution": "expired",
+                            },
+                        )
+                    )
+                    await self.events.publish(
+                        AgentEvent(
+                            run_id=request.run_id,
+                            task_id=request.task_id,
+                            type=(
+                                EventType.TASK_FAILED.value
+                                if request.task_id
+                                else EventType.RUN_FAILED.value
+                            ),
+                            status="failed",
+                            data={"reason": "approval_expired"},
+                        )
+                    )
+            except Exception:
+                logger.exception("Approval expiry failed")
         purge = getattr(self.store, "purge_old_runtime_data", None)
         if purge is None:
             return
