@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +14,17 @@ from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.platform_records import PlatformAdminRecord
 
 _ROLES = {"admin", "operator", "viewer"}
+_TOKEN_TYPES = {"user", "service"}
+_SCOPE_PATTERN = re.compile(r"^(?:\*|[a-z][a-z0-9_-]*(?:\.[a-z0-9_*][a-z0-9_-]*)+)$")
+
+
+def _normalize_token_scopes(scopes: list[str] | tuple[str, ...]) -> list[str]:
+    normalized = sorted({str(scope).strip().lower() for scope in scopes if str(scope).strip()})
+    if not normalized:
+        raise ValueError("at least one API token scope is required")
+    if any(not _SCOPE_PATTERN.fullmatch(scope) for scope in normalized):
+        raise ValueError("API token scopes must use namespace.operation syntax")
+    return normalized
 
 
 class PostgresAdminStoreMixin:
@@ -71,6 +84,31 @@ class PostgresAdminStoreMixin:
                 version=1,
                 ddl=ddl,
                 description="platform admins, API access tokens, and audit events",
+            )
+            upgrade_ddl = """
+            ALTER TABLE api_access_tokens
+                ADD COLUMN IF NOT EXISTS scopes JSONB NOT NULL DEFAULT '["*"]'::jsonb;
+            ALTER TABLE api_access_tokens
+                ADD COLUMN IF NOT EXISTS token_type TEXT NOT NULL DEFAULT 'user';
+            ALTER TABLE api_access_tokens
+                ADD COLUMN IF NOT EXISTS rotation_due_at TIMESTAMPTZ;
+            ALTER TABLE api_access_tokens
+                ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+            ALTER TABLE api_access_tokens
+                ADD COLUMN IF NOT EXISTS revoked_by TEXT;
+            ALTER TABLE api_access_token_events
+                ADD COLUMN IF NOT EXISTS data JSONB NOT NULL DEFAULT '{}'::jsonb;
+            CREATE INDEX IF NOT EXISTS ix_api_access_tokens_rotation
+                ON api_access_tokens(rotation_due_at)
+                WHERE enabled AND rotation_due_at IS NOT NULL;
+            """
+            conn.execute(upgrade_ddl)
+            self._record_migration(
+                conn,
+                name="admins",
+                version=2,
+                ddl=upgrade_ddl,
+                description="scoped and auditable user/service API tokens",
             )
 
     def upsert_platform_admin(
@@ -169,8 +207,19 @@ class PostgresAdminStoreMixin:
         label: str = "",
         actor_id: str,
         expires_at: str | None = None,
+        rotation_due_at: str | None = None,
+        scopes: list[str] | tuple[str, ...] = ("*",),
+        token_type: str = "user",
         token: str | None = None,
     ) -> tuple[dict[str, Any], str]:
+        token_type = str(token_type).strip().lower()
+        if token_type not in _TOKEN_TYPES:
+            raise ValueError("API token_type must be user or service")
+        normalized_scopes = _normalize_token_scopes(scopes)
+        if token_type == "service" and "*" in normalized_scopes:
+            raise ValueError("service API tokens cannot use the global wildcard scope")
+        if token_type == "service" and expires_at is None:
+            raise ValueError("service API tokens require expires_at")
         plaintext = str(token or secrets.token_urlsafe(32))
         if len(plaintext) < 6:
             raise ValueError("API access tokens must contain at least 6 characters")
@@ -179,15 +228,38 @@ class PostgresAdminStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(
                 """INSERT INTO api_access_tokens
-                       (token_id,token_hash,user_id,label,expires_at,created_by)
-                   VALUES (%s,%s,%s,%s,%s::timestamptz,%s) RETURNING *""",
-                (token_id, digest, user_id, label, expires_at, actor_id),
+                       (token_id,token_hash,user_id,label,expires_at,rotation_due_at,
+                        scopes,token_type,created_by)
+                   VALUES (%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s,%s)
+                   RETURNING *""",
+                (
+                    token_id,
+                    digest,
+                    user_id,
+                    label,
+                    expires_at,
+                    rotation_due_at,
+                    Jsonb(normalized_scopes),
+                    token_type,
+                    actor_id,
+                ),
             ).fetchone()
             conn.execute(
                 """INSERT INTO api_access_token_events
-                       (token_id,user_id,actor_id,event_type)
-                   VALUES (%s,%s,%s,'token.issued')""",
-                (token_id, user_id, actor_id),
+                       (token_id,user_id,actor_id,event_type,data)
+                   VALUES (%s,%s,%s,'token.issued',%s)""",
+                (
+                    token_id,
+                    user_id,
+                    actor_id,
+                    Jsonb({
+                        "label": label,
+                        "scopes": normalized_scopes,
+                        "token_type": token_type,
+                        "expires_at": expires_at,
+                        "rotation_due_at": rotation_due_at,
+                    }),
+                ),
             )
         return self._api_access_token(row), plaintext
 
@@ -219,9 +291,11 @@ class PostgresAdminStoreMixin:
     def revoke_api_access_token(self, token_id: str, *, actor_id: str) -> bool:
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(
-                """UPDATE api_access_tokens SET enabled=FALSE WHERE token_id=%s AND enabled
+                """UPDATE api_access_tokens SET enabled=FALSE,
+                       revoked_at=clock_timestamp(),revoked_by=%s
+                   WHERE token_id=%s AND enabled
                    RETURNING user_id""",
-                (token_id,),
+                (actor_id, token_id),
             ).fetchone()
             if row:
                 conn.execute(
@@ -232,6 +306,28 @@ class PostgresAdminStoreMixin:
                 )
         return row is not None
 
+    def list_api_access_token_events(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        from joyhousebot.storage.postgres_store import _iso, _json
+
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT * FROM api_access_token_events
+                   ORDER BY sequence DESC LIMIT %s""",
+                (max(1, min(5000, limit)),),
+            ).fetchall()
+        return [
+            {
+                "sequence": int(row["sequence"]),
+                "token_id": str(row["token_id"]),
+                "user_id": str(row["user_id"]),
+                "actor_id": str(row["actor_id"]),
+                "event_type": str(row["event_type"]),
+                "data": dict(_json(row["data"], {})),
+                "created_at": _iso(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def _api_access_token(row: Any) -> dict[str, Any]:
         from joyhousebot.storage.postgres_store import _iso
@@ -240,8 +336,17 @@ class PostgresAdminStoreMixin:
             "token_id": str(row["token_id"]),
             "user_id": str(row["user_id"]),
             "label": str(row["label"]),
+            "scopes": [str(item) for item in (row["scopes"] or [])],
+            "token_type": str(row["token_type"]),
             "enabled": bool(row["enabled"]),
             "expires_at": _iso(row["expires_at"]),
+            "rotation_due_at": _iso(row["rotation_due_at"]),
+            "rotation_overdue": bool(
+                row["rotation_due_at"] is not None
+                and row["rotation_due_at"] <= datetime.now(row["rotation_due_at"].tzinfo)
+            ),
+            "revoked_at": _iso(row["revoked_at"]),
+            "revoked_by": row["revoked_by"],
             "created_by": str(row["created_by"]),
             "created_at": _iso(row["created_at"]),
             "last_used_at": _iso(row["last_used_at"]),

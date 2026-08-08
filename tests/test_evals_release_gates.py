@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
 from joyhousebot.application.errors import ConflictError
+from joyhousebot.application.eval_execution import EvalExecutionService
+from joyhousebot.application.evals import EvalService
+from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.config.schema import Config
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
@@ -18,6 +23,7 @@ from joyhousebot.domain.capabilities import (
     CapabilityRef,
 )
 from joyhousebot.domain.scenarios import ScenarioVersion
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -70,6 +76,144 @@ def _admin_client(store: PostgresTestStore) -> tuple[TestClient, dict[str, str]]
     }
 
 
+class _EvalAgent:
+    async def process_direct(self, content: str, **_kwargs: Any) -> str:
+        return f"verified evidence: {content}"
+
+
+@pytest.mark.asyncio
+async def test_automated_eval_executes_and_snapshots_exact_draft_agent_revision(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "eval-execution.db")
+    definition = AgentDefinition(
+        agent_id="research-agent",
+        name="Research Agent",
+        role="specialist",
+    )
+    revision = AgentRevision(
+        revision_id="research-agent:v2",
+        agent_id="research-agent",
+        version=2,
+        status="draft",
+        model_policy={"primary": "test/model"},
+    )
+    store.save_agent_revision(definition, revision)
+    evals = EvalService(store)
+    await evals.save_suite(
+        {
+            "suite_id": "research.evidence",
+            "version": 1,
+            "name": "Research evidence contract",
+            "target_types": ["agent"],
+            "thresholds": {"min_pass_rate": 1, "min_average_score": 1},
+            "cases": [
+                {
+                    "case_id": "evidence",
+                    "name": "Produces traceable evidence",
+                    "input": {"prompt": "find the source"},
+                    "scorers": [
+                        {"type": "status", "value": "completed"},
+                        {
+                            "type": "contains",
+                            "path": "result.content",
+                            "value": "verified evidence",
+                        },
+                        {"type": "json_path_exists", "path": "runtime_run_id"},
+                        {
+                            "type": "not_contains",
+                            "path": "result.content",
+                            "value": "SECRET_VALUE",
+                        },
+                    ],
+                }
+            ],
+        },
+        actor_id="quality-admin",
+    )
+    eval_run = await evals.create_run(
+        {
+            "suite_id": "research.evidence",
+            "suite_version": 1,
+            "target_type": "agent",
+            "target_id": "research-agent",
+            "target_revision_id": "research-agent:v2",
+            "idempotency_key": "research-agent-v2",
+        },
+        actor_id="quality-admin",
+    )
+    runtime = NativeAgentRuntime(agent=_EvalAgent(), store=store)
+    executor = EvalExecutionService(
+        store=store,
+        runtime=runtime,
+        evals=evals,
+        scenarios=ScenarioStudioService(store),
+    )
+    finalized = await executor.execute(
+        eval_run["eval_run_id"], actor_id="quality-admin", case_timeout_seconds=5
+    )
+
+    assert finalized["status"] == "passed"
+    source_run_id = finalized["results"][0]["metrics"]["source_run_id"]
+    snapshot = store.get_run_execution_snapshot(source_run_id)
+    assert snapshot is not None
+    assert snapshot.agent_revision_id == "research-agent:v2"
+    assert store.get_agent_revision("research-agent:v2").status == "draft"
+    await evals.save_release_gate(
+        {
+            "target_type": "agent",
+            "target_id": "research-agent",
+            "target_revision_id": "research-agent:v2",
+            "required": True,
+            "requirements": [
+                {
+                    "suite_id": "research.evidence",
+                    "suite_version": 1,
+                    "min_pass_rate": 1,
+                    "max_age_hours": 24,
+                    "require_automated": True,
+                }
+            ],
+        },
+        actor_id="quality-admin",
+    )
+    gate = store.evaluate_release_gate(
+        target_type="agent",
+        target_id="research-agent",
+        target_revision_id="research-agent:v2",
+        purpose="automated-evidence-test",
+        actor_id="quality-admin",
+        decision_id="gate-automated-evidence",
+    )
+    assert gate["passed"] is True
+    assert gate["requirements"][0]["automated"] is True
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_checked_in_business_eval_suites_are_valid(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "business-eval-suites.db")
+    evals = EvalService(store)
+    suite_paths = sorted(
+        (Path(__file__).resolve().parents[1] / "evals" / "suites").glob("*.json")
+    )
+    assert len(suite_paths) == 3
+    installed = []
+    for path in suite_paths:
+        installed.append(
+            await evals.save_suite(
+                json.loads(path.read_text(encoding="utf-8")),
+                actor_id="suite-validation",
+            )
+        )
+    assert {item["suite_id"] for item in installed} == {
+        "business.governed-execution",
+        "business.publishable-work",
+        "business.research-evidence",
+    }
+    assert sum(len(item["cases"]) for item in installed) == 9
+
+
 def test_eval_api_scores_observations_and_persists_release_evidence(
     tmp_path: Path,
 ) -> None:
@@ -115,6 +259,34 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
         assert finalized.status_code == 200, finalized.text
         assert finalized.json()["status"] == "passed"
         assert finalized.json()["metrics"]["pass_rate"] == 1.0
+        store.save_release_gate_policy(
+            value={
+                "target_type": "agent",
+                "target_id": "quality-agent",
+                "target_revision_id": "quality-agent:v1",
+                "required": True,
+                "requirements": [
+                    {
+                        "suite_id": "quality.basic",
+                        "suite_version": 1,
+                        "min_pass_rate": 1,
+                        "max_age_hours": 24,
+                        "require_automated": True,
+                    }
+                ],
+                "created_by": "quality-admin",
+            }
+        )
+        manual_gate = store.evaluate_release_gate(
+            target_type="agent",
+            target_id="quality-agent",
+            target_revision_id="quality-agent:v1",
+            purpose="reject-manual-evidence-test",
+            actor_id="quality-admin",
+            decision_id="gate-reject-manual-evidence",
+        )
+        assert manual_gate["passed"] is False
+        assert manual_gate["requirements"][0]["automated"] is False
         gate = client.put(
             "/v1/admin/release-gates/agent/quality-agent/quality-agent:v1",
             headers=headers,

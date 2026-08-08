@@ -16,14 +16,15 @@ WORKDIR /app
 
 # Install Python dependencies first (cached layer)
 COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p joyhousebot bridges/whatsapp && touch joyhousebot/__init__.py && \
-    uv pip install --system --no-cache . && \
+RUN mkdir -p joyhousebot bridges/whatsapp evals/suites && touch joyhousebot/__init__.py && \
+    uv pip install --system --no-cache '.[observability]' && \
     rm -rf joyhousebot bridges
 
 # Copy the full source and install
 COPY joyhousebot/ joyhousebot/
 COPY bridges/whatsapp/ bridges/whatsapp/
-RUN uv pip install --system --no-cache .
+COPY evals/suites/ evals/suites/
+RUN uv pip install --system --no-cache '.[observability]'
 
 # Build the WhatsApp bridge
 WORKDIR /app/bridges/whatsapp

@@ -27,6 +27,11 @@ services:
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
       # No default token: /metrics refuses all requests when it is not set.
       JOYHOUSEBOT_METRICS_TOKEN: ${JOYHOUSEBOT_METRICS_TOKEN:?required}
+      JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
+      JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_PROPAGATORS: tracecontext,baggage
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_API_BASE: ${LLM_API_BASE:-}
@@ -83,6 +88,10 @@ services:
       # must not inherit provider API keys from the runtime env anchor above.
       JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
+      JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
+      JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     volumes: *runtime_config
     depends_on:
       postgres:

@@ -118,6 +118,8 @@ PACKAGE_TIERS = {
     "orchestration": 1,
     "session": 1,
     "services": 1,
+    "observability": 1,
+    "operations": 5,
     # 2 — execution runtime.
     "runtime": 2,
     # 3 — capability + provider registries used by the runtime.

@@ -411,25 +411,35 @@ class PostgresAgentStoreMixin:
         return profiles
 
     def create_run_execution_snapshot(
-        self, run_id: str, agent_id: str
+        self, run_id: str, agent_id: str, *, revision_id: str | None = None
     ) -> AgentExecutionSnapshot:
         existing = self.get_run_execution_snapshot(run_id)
         if existing is not None:
             return existing
-        profile = self.get_agent_profile(agent_id)
-        if profile is None:
-            raise ValueError(f"active published Agent not found: {agent_id}")
-        bindings = tuple(self.list_agent_skill_bindings(profile.revision.revision_id))
+        if revision_id:
+            revision = self.get_agent_revision(revision_id)
+            if revision is None or revision.agent_id != agent_id:
+                raise ValueError("evaluation Agent revision does not match agent_id")
+            if revision.status not in {"draft", "published"}:
+                raise ValueError("evaluation Agent revision is not executable")
+            resolved_agent_id = revision.agent_id
+        else:
+            profile = self.get_agent_profile(agent_id)
+            if profile is None:
+                raise ValueError(f"active published Agent not found: {agent_id}")
+            revision = profile.revision
+            resolved_agent_id = profile.definition.agent_id
+        bindings = tuple(self.list_agent_skill_bindings(revision.revision_id))
         value = {
             "run_id": run_id,
-            "agent_id": profile.definition.agent_id,
-            "agent_revision_id": profile.revision.revision_id,
-            "model_policy": profile.revision.model_policy,
-            "planning_policy": profile.revision.planning_policy,
-            "capability_policy": profile.revision.capability_policy,
-            "memory_policy": profile.revision.memory_policy,
-            "output_policy": profile.revision.output_policy,
-            "plugin_requirements": [item.to_dict() for item in profile.revision.plugin_requirements],
+            "agent_id": resolved_agent_id,
+            "agent_revision_id": revision.revision_id,
+            "model_policy": revision.model_policy,
+            "planning_policy": revision.planning_policy,
+            "capability_policy": revision.capability_policy,
+            "memory_policy": revision.memory_policy,
+            "output_policy": revision.output_policy,
+            "plugin_requirements": [item.to_dict() for item in revision.plugin_requirements],
             "skill_bindings": list(bindings),
         }
         with self._pool.connection() as conn, conn.transaction():

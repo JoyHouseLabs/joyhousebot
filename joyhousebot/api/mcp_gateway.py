@@ -24,6 +24,7 @@ from joyhousebot.api.dependencies import _bearer_token
 from joyhousebot.application.context import Principal, RequestContext
 from joyhousebot.application.runs import GraphTaskCommand
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.utils.permissions import permission_granted
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
@@ -153,6 +154,9 @@ class MCPGateway:
                 container.store.authenticate_api_access_token, token
             )
             if access is not None:
+                scopes = tuple(str(item) for item in access.get("scopes") or ())
+                if not any(permission_granted(scope, "mcp.invoke") for scope in scopes):
+                    raise HTTPException(status_code=403, detail="API token scope required: mcp.invoke")
                 user_id = str(access["user_id"])
                 admin = await asyncio.to_thread(container.store.get_platform_admin, user_id)
                 if admin is not None and admin.enabled:
@@ -161,8 +165,15 @@ class MCPGateway:
                         user_id=user_id,
                         role=admin.role,
                         permissions=tuple(admin.permissions),
+                        token_scopes=scopes,
+                        token_type=str(access.get("token_type") or "user"),
                     )
-                return Principal(subject=f"mcp-token:{access['token_id']}", user_id=user_id)
+                return Principal(
+                    subject=f"mcp-token:{access['token_id']}",
+                    user_id=user_id,
+                    token_scopes=scopes,
+                    token_type=str(access.get("token_type") or "user"),
+                )
         if bool(getattr(container.config.gateway, "allow_insecure_auth", False)):
             user_id = str(
                 headers.get("x-user-id")

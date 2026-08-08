@@ -114,6 +114,9 @@ class RunService:
             allowed_tools=allowed_tools,
             idempotency_key=context.idempotency_key,
             request_id=context.request_id,
+            tracker_id=context.tracker_id,
+            traceparent=context.traceparent,
+            tracestate=context.tracestate,
         )
         # Scenario clarification is a durable submission concern, not an
         # optional side effect of the coordinator model.  In particular, a
@@ -197,6 +200,9 @@ class RunService:
                         agent_id=command.agent_id,
                         idempotency_key=context.idempotency_key,
                         request_id=context.request_id,
+                        tracker_id=context.tracker_id,
+                        traceparent=context.traceparent,
+                        tracestate=context.tracestate,
                     )
                 except ValueError as exc:
                     raise ValidationError(str(exc)) from exc
@@ -471,6 +477,10 @@ class RunService:
             aggregate=aggregate,
             aggregation_policy=dict(aggregation_policy or {}),
             idempotency_key=context.idempotency_key,
+            request_id=context.request_id,
+            tracker_id=context.tracker_id,
+            traceparent=context.traceparent,
+            tracestate=context.tracestate,
             tasks=[
                 GraphTaskSpec(
                     id=item.id,

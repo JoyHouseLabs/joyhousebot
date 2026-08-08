@@ -26,6 +26,9 @@ class ScenarioPlanner:
         agent_id: str,
         idempotency_key: str | None,
         request_id: str,
+        tracker_id: str | None = None,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
     ) -> TaskGraphSpec | None:
         templates = list(scenario.execution_policy.get("tasks") or [])
         if scenario.planning_mode != "fixed" or not templates:
@@ -138,6 +141,9 @@ class ScenarioPlanner:
             aggregation_policy=dict(scenario.execution_policy.get("aggregation_policy") or {}),
             idempotency_key=idempotency_key,
             request_id=request_id,
+            tracker_id=tracker_id,
+            traceparent=traceparent,
+            tracestate=tracestate,
             metadata={
                 "scenario_id": scenario.scenario_id,
                 "scenario_version": scenario.version,

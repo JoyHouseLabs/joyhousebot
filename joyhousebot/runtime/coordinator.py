@@ -9,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+from joyhousebot.observability.otel import telemetry_span
 from joyhousebot.orchestration.planner import ScenarioPlanner
 from joyhousebot.runtime.graph_finalization import GraphFinalizationMixin
 from joyhousebot.runtime.graph_saga_execution import reconcile_graph_saga
@@ -117,7 +118,23 @@ class RuntimeCoordinatorMixin(
             task = await self._graph_task_queue.get()
             self._graph_active_count += 1
             try:
-                await self._execute_claimed_graph_task(task)
+                run = await asyncio.to_thread(self.store.get_runtime_run, task.run_id)
+                options = dict(run.options or {}) if run is not None else {}
+                with telemetry_span(
+                    "joyhousebot.graph_task.execute",
+                    carrier={
+                        key: str(options[key])
+                        for key in ("traceparent", "tracestate")
+                        if options.get(key)
+                    },
+                    attributes={
+                        "joyhousebot.run_id": task.run_id,
+                        "joyhousebot.task_id": task.task_id,
+                        "joyhousebot.agent_id": task.agent_id,
+                        "joyhousebot.worker_id": self.worker_id,
+                    },
+                ):
+                    await self._execute_claimed_graph_task(task)
             except asyncio.CancelledError:
                 if self._closing:
                     raise

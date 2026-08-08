@@ -330,7 +330,10 @@ async def create_access_token(
         container.store.create_api_access_token,
         user_id=body.user_id,
         label=body.label,
-        expires_at=body.expires_at,
+        expires_at=body.expires_at.isoformat() if body.expires_at else None,
+        rotation_due_at=(body.rotation_due_at.isoformat() if body.rotation_due_at else None),
+        scopes=body.scopes,
+        token_type=body.token_type,
         actor_id=principal.subject,
     )
     return {**record, "token": token}
@@ -401,5 +404,17 @@ async def access_events(
 ):
     rows = await asyncio.to_thread(
         container.store.list_platform_admin_events, limit=limit
+    )
+    return {"items": rows}
+
+
+@router.get("/access-token-events")
+async def access_token_events(
+    principal: AuditReaderDep,
+    container: ContainerDep,
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    rows = await asyncio.to_thread(
+        container.store.list_api_access_token_events, limit=limit
     )
     return {"items": rows}

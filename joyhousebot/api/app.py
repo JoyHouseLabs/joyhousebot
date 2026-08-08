@@ -45,6 +45,45 @@ from joyhousebot.application.errors import (
 )
 from joyhousebot.bootstrap.container import ApplicationContainer, build_api_container
 from joyhousebot.config.access import get_config
+from joyhousebot.observability.otel import configure_telemetry, current_trace_carrier
+from joyhousebot.observability.prometheus import render_prometheus
+from joyhousebot.runtime.tracking import normalize_request_id
+
+_PRODUCTION_ENVIRONMENTS = {"prod", "production"}
+
+
+def _production_environment() -> bool:
+    return str(os.getenv("JOYHOUSEBOT_ENVIRONMENT") or "development").strip().lower() in (
+        _PRODUCTION_ENVIRONMENTS
+    )
+
+
+def validate_deployment_security(
+    *, surface: Literal["combined", "public", "control"], config: object | None = None
+) -> None:
+    """Reject production combinations that collapse a security boundary."""
+    if not _production_environment():
+        return
+    if surface == "combined" and str(
+        os.getenv("JOYHOUSEBOT_ALLOW_COMBINED_SURFACE") or ""
+    ).strip().lower() not in {"1", "true", "yes"}:
+        raise ValueError(
+            "production requires separate public and control API surfaces; "
+            "set JOYHOUSEBOT_API_SURFACE explicitly"
+        )
+    control_token = str(os.getenv("JOYHOUSEBOT_CONTROL_TOKEN") or "")
+    if control_token and len(control_token) < 32:
+        raise ValueError("JOYHOUSEBOT_CONTROL_TOKEN must contain at least 32 characters")
+    metrics_token = str(os.getenv("JOYHOUSEBOT_METRICS_TOKEN") or "")
+    if metrics_token and len(metrics_token) < 32:
+        raise ValueError("JOYHOUSEBOT_METRICS_TOKEN must contain at least 32 characters")
+    if config is None:
+        return
+    gateway = getattr(config, "gateway", None)
+    if bool(getattr(gateway, "allow_insecure_auth", False)):
+        raise ValueError("allow_insecure_auth cannot be enabled in production")
+    if "*" in set(getattr(gateway, "cors_origins", []) or []):
+        raise ValueError("wildcard CORS origins are forbidden in production")
 
 
 class SPAStaticFiles(StaticFiles):
@@ -60,55 +99,6 @@ class SPAStaticFiles(StaticFiles):
         if response.status_code == 404 and "." not in Path(path).name:
             return await super().get_response("index.html", scope)
         return response
-
-
-def _prometheus_name(value: str) -> str:
-    return "".join(char if char.isalnum() or char == "_" else "_" for char in value)
-
-
-def _prometheus_label(value: object) -> str:
-    """Escape a label value according to the Prometheus text exposition format."""
-    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _prometheus_metrics(data: dict) -> str:
-    lines = [
-        "# HELP joyhousebot_up API process readiness.",
-        "# TYPE joyhousebot_up gauge",
-        "joyhousebot_up 1",
-    ]
-    for family in ("runs", "tasks", "workers"):
-        name = f"joyhousebot_{family}_total"
-        lines.extend([f"# TYPE {name} gauge"])
-        for status, count in (data.get(family) or {}).items():
-            lines.append(f'{name}{{status="{_prometheus_name(str(status))}"}} {int(count)}')
-    for row in data.get("providers") or []:
-        labels = (
-            f'provider="{_prometheus_label(row["provider"])}",'
-            f'model="{_prometheus_label(row["model"])}",status="{_prometheus_label(row["status"])}"'
-        )
-        lines.append(f"joyhousebot_provider_requests_total{{{labels}}} {row['count']}")
-        lines.append(f"joyhousebot_provider_duration_ms_avg{{{labels}}} {row['avg_duration_ms']}")
-        lines.append(f"joyhousebot_provider_ttft_ms_avg{{{labels}}} {row['avg_ttft_ms']}")
-        lines.append(
-            f"joyhousebot_provider_duration_ms_p95{{{labels}}} {row.get('p95_duration_ms', 0)}"
-        )
-        lines.append(f"joyhousebot_provider_ttft_ms_p95{{{labels}}} {row.get('p95_ttft_ms', 0)}")
-        lines.append(f"joyhousebot_provider_cost_usd_total{{{labels}}} {row['cost_usd']}")
-    queue = data.get("queue") or {}
-    lines.extend(
-        [
-            f"joyhousebot_queue_queued_tasks {int(queue.get('queued', 0))}",
-            f"joyhousebot_queue_oldest_age_seconds {float(queue.get('oldest_age_seconds', 0))}",
-            f"joyhousebot_queue_expired_leases_total {int(queue.get('expired_leases', 0))}",
-            f"joyhousebot_queue_retried_tasks_total {int(queue.get('retried_tasks', 0))}",
-            f"joyhousebot_workers_stale_total {int(data.get('workers_stale', 0))}",
-        ]
-    )
-    for row in data.get("channels") or []:
-        labels = f'channel="{_prometheus_label(row["channel"])}",status="{_prometheus_label(row["status"])}"'
-        lines.append(f"joyhousebot_channel_outbox_total{{{labels}}} {row['count']}")
-    return "\n".join(lines) + "\n"
 
 
 def _cors_origins(injected: ApplicationContainer | None) -> list[str]:
@@ -137,10 +127,15 @@ def create_app(
     surface: Literal["combined", "public", "control"] = "combined",
 ) -> FastAPI:
     injected = container
+    validate_deployment_security(
+        surface=surface,
+        config=getattr(injected, "config", None),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         active = injected or build_api_container()
+        validate_deployment_security(surface=surface, config=active.config)
         app.state.container = active
         await mcp_gateway.configure(active)
         gateway = active.config.gateway
@@ -168,6 +163,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.metrics_cache = {"expires_at": 0.0, "data": None, "lock": asyncio.Lock()}
+    app.state.surface = surface
     mcp_gateway = MCPGateway()
     app.state.mcp_gateway = mcp_gateway
     app.add_middleware(RateLimitMiddleware)
@@ -182,12 +178,41 @@ def create_app(
             "Idempotency-Key",
             "Prefer",
             "X-Request-Id",
+            "X-Tracker-Id",
             "X-Impersonate-User-ID",
             "X-Joyhouse-Event-Token",
             "X-User-Id",
         ],
-        expose_headers=["Location", "Preference-Applied", "X-Request-Id"],
+        expose_headers=["Location", "Preference-Applied", "X-Request-Id", "X-Tracker-Id"],
     )
+
+    @app.middleware("http")
+    async def request_tracking(request: Request, call_next):
+        request_id = normalize_request_id(request.headers.get("x-request-id"), prefix="req")
+        tracker_id = normalize_request_id(
+            request.headers.get("x-tracker-id") or request_id, prefix="trace"
+        )
+        request.state.request_id = request_id
+        request.state.tracker_id = tracker_id
+        request.state.trace_carrier = current_trace_carrier()
+        started = time.monotonic()
+        with logger.contextualize(request_id=request_id, tracker_id=tracker_id):
+            try:
+                response = await call_next(request)
+            except BaseException:
+                logger.exception("API request failed: {} {}", request.method, request.url.path)
+                raise
+            duration_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "API request completed: {} {} status={} duration_ms={}",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
+        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Tracker-Id"] = tracker_id
+        return response
 
     @app.exception_handler(ApplicationError)
     async def application_error_handler(request: Request, exc: ApplicationError) -> JSONResponse:
@@ -265,7 +290,7 @@ def create_app(
                     )
                 cache["data"] = data
                 cache["expires_at"] = now + 5.0
-        return Response(content=_prometheus_metrics(data), media_type="text/plain; version=0.0.4")
+        return Response(content=render_prometheus(data), media_type="text/plain; version=0.0.4")
 
     prefix = "/v1"
     app.include_router(system.router, prefix=prefix)
@@ -287,6 +312,7 @@ def create_app(
     ui_dir = Path(__file__).resolve().parent.parent / "static" / "ui"
     if surface in {"combined", "control"} and ui_dir.exists():
         app.mount("/ui", SPAStaticFiles(directory=str(ui_dir), html=True), name="ui")
+    configure_telemetry(service_name=f"joyhousebot-api-{surface}", app=app)
     return app
 
 

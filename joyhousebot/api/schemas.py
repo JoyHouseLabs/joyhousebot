@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # Resource identifiers supplied by clients stay within a small, safe alphabet.
 _ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
@@ -93,7 +94,34 @@ class SavePlatformAdminRequest(BaseModel):
 class CreateAccessTokenRequest(BaseModel):
     user_id: str = Field(pattern=_ID_PATTERN)
     label: str = Field(default="", max_length=128)
-    expires_at: str | None = None
+    token_type: Literal["user", "service"] = "user"
+    scopes: list[str] = Field(default_factory=lambda: ["*"] , min_length=1, max_length=64)
+    expires_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc) + timedelta(days=90)
+    )
+    rotation_due_at: datetime | None = Field(
+        default_factory=lambda: datetime.now(timezone.utc) + timedelta(days=60)
+    )
+
+    @model_validator(mode="after")
+    def validate_token_lifetime(self) -> "CreateAccessTokenRequest":
+        now = datetime.now(timezone.utc)
+        if self.expires_at.tzinfo is None:
+            raise ValueError("expires_at must include a timezone")
+        expires_at = self.expires_at.astimezone(timezone.utc)
+        if expires_at <= now:
+            raise ValueError("expires_at must be in the future")
+        if expires_at > now + timedelta(days=366):
+            raise ValueError("API token lifetime cannot exceed 366 days")
+        if self.rotation_due_at is not None:
+            if self.rotation_due_at.tzinfo is None:
+                raise ValueError("rotation_due_at must include a timezone")
+            rotation_due_at = self.rotation_due_at.astimezone(timezone.utc)
+            if rotation_due_at <= now or rotation_due_at >= expires_at:
+                raise ValueError("rotation_due_at must be in the future and before expires_at")
+        if self.token_type == "service" and "*" in self.scopes:
+            raise ValueError("service API tokens cannot use the global wildcard scope")
+        return self
 
 
 class SaveAgentRevisionRequest(BaseModel):
@@ -185,8 +213,12 @@ class EvalScorerRequest(BaseModel):
         "status",
         "exact_match",
         "contains",
+        "not_contains",
+        "matches_regex",
         "json_schema",
         "json_path_equals",
+        "json_path_exists",
+        "list_min_items",
         "numeric_range",
         "max_latency_ms",
         "max_cost_usd",
@@ -232,6 +264,11 @@ class CreateEvalRunRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=256)
 
 
+class ExecuteEvalRunRequest(BaseModel):
+    max_concurrency: int = Field(default=4, ge=1, le=16)
+    case_timeout_seconds: float = Field(default=300.0, ge=1, le=3600)
+
+
 class RecordEvalObservationRequest(BaseModel):
     case_id: str = Field(pattern=_ID_PATTERN)
     output: Any = None
@@ -246,6 +283,7 @@ class ReleaseGateRequirementRequest(BaseModel):
     suite_version: int = Field(ge=1)
     min_pass_rate: float = Field(default=1.0, ge=0, le=1)
     max_age_hours: int = Field(default=168, ge=1, le=8760)
+    require_automated: bool = False
 
 
 class SaveReleaseGateRequest(BaseModel):

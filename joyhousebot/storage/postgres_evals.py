@@ -415,6 +415,7 @@ class PostgresEvalStoreMixin:
                 suite_version = int(requirement["suite_version"])
                 min_pass_rate = float(requirement.get("min_pass_rate", 1.0))
                 max_age_hours = max(1, int(requirement.get("max_age_hours", 168)))
+                require_automated = bool(requirement.get("require_automated", False))
                 run = conn.execute(
                     """SELECT * FROM eval_runs WHERE suite_id=%s AND suite_version=%s
                        AND target_type=%s AND target_id=%s AND target_revision_id=%s
@@ -433,8 +434,20 @@ class PostgresEvalStoreMixin:
                 actual_rate = (
                     float((run["metrics"] or {}).get("pass_rate", 0.0)) if run else 0.0
                 )
+                automated = False
+                if run is not None:
+                    modes = conn.execute(
+                        """SELECT count(*) AS count,
+                                  bool_and(metrics->>'execution_mode'='automated') AS automated
+                           FROM eval_case_results WHERE eval_run_id=%s""",
+                        (run["eval_run_id"],),
+                    ).fetchone()
+                    automated = bool(modes["count"] and modes["automated"])
                 requirement_passed = bool(
-                    run and str(run["status"]) == "passed" and actual_rate >= min_pass_rate
+                    run
+                    and str(run["status"]) == "passed"
+                    and actual_rate >= min_pass_rate
+                    and (automated or not require_automated)
                 )
                 passed = passed and requirement_passed
                 evidence.append(
@@ -446,6 +459,8 @@ class PostgresEvalStoreMixin:
                         "pass_rate": actual_rate,
                         "min_pass_rate": min_pass_rate,
                         "max_age_hours": max_age_hours,
+                        "require_automated": require_automated,
+                        "automated": automated,
                         "passed": requirement_passed,
                     }
                 )

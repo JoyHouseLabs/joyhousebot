@@ -42,6 +42,9 @@ from joyhousebot.storage.postgres_mcp import PostgresMCPStoreMixin
 from joyhousebot.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
 from joyhousebot.storage.postgres_migrations import PostgresMigrationMixin
 from joyhousebot.storage.postgres_observability import PostgresObservabilityStoreMixin
+from joyhousebot.storage.postgres_operational_metrics import (
+    PostgresOperationalMetricsStoreMixin,
+)
 from joyhousebot.storage.postgres_operations import PostgresOperationsStoreMixin
 from joyhousebot.storage.postgres_plugins import PostgresPluginStoreMixin
 from joyhousebot.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
@@ -113,6 +116,7 @@ class PostgresRuntimeStore(
     PostgresTaskStoreMixin,
     PostgresRateLimitStoreMixin,
     PostgresObservabilityStoreMixin,
+    PostgresOperationalMetricsStoreMixin,
     PostgresRolloutStoreMixin,
     PostgresOperationsStoreMixin,
     PostgresPluginStoreMixin,

@@ -52,7 +52,7 @@ class AgentRuntimeCatalog:
                 if profile is None:
                     return None
                 revision = profile.revision
-            if revision.status != "published":
+            if revision.status not in {"draft", "published"}:
                 return None
             profile = profile or self.store.get_agent_profile(revision.agent_id)
             definition = (

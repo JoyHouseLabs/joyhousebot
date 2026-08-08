@@ -48,6 +48,14 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
 ]
+observability = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-psycopg>=0.48b0",
+]
 [project.urls]
 Homepage = "https://joyhousebot.com"
 Repository = "https://github.com/JoyHouseLabs/joyhousebot"
@@ -77,12 +85,14 @@ include = [
 include = [
     "joyhousebot/",
     "bridges/",
+    "evals/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
 "bridges/whatsapp" = "joyhousebot/bridges/whatsapp"
+"evals/suites" = "joyhousebot/eval_suites"
 
 [tool.ruff]
 line-length = 100

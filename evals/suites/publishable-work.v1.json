@@ -1,0 +1,109 @@
+{
+  "suite_id": "business.publishable-work",
+  "version": 1,
+  "name": "可发布成果与作品",
+  "description": "验证执行结果不止是聊天答案，而是可命名、可校验、可迭代、可分享的作品。",
+  "status": "active",
+  "target_types": ["agent"],
+  "thresholds": {
+    "min_pass_rate": 1.0,
+    "min_average_score": 0.9
+  },
+  "cases": [
+    {
+      "case_id": "decision-memo",
+      "name": "形成可分享的决策备忘录",
+      "input": {
+        "prompt": "把一次关于是否建设企业知识库的讨论整理成可分享的决策备忘录。必须包含标题、摘要、背景、选项、建议、风险、下一步、来源和分享文案，输出结构化 JSON。",
+        "output_schema": {
+          "type": "object",
+          "required": ["title", "abstract", "body", "recommendation", "risks", "next_steps", "provenance", "share_copy"],
+          "properties": {
+            "title": {"type": "string", "minLength": 4},
+            "abstract": {"type": "string", "minLength": 20},
+            "body": {"type": "string", "minLength": 100},
+            "recommendation": {"type": "string"},
+            "risks": {"type": "array", "minItems": 1},
+            "next_steps": {"type": "array", "minItems": 1},
+            "provenance": {"type": "array"},
+            "share_copy": {"type": "string", "minLength": 10}
+          }
+        },
+        "verification_policy": {"required": true, "max_repairs": 2},
+        "max_cost_usd": 0.08,
+        "timeout_seconds": 120
+      },
+      "scorers": [
+        {"type": "status", "value": "completed", "required": true, "weight": 3},
+        {"type": "json_schema", "path": "result.structured_output", "schema": {"type": "object", "required": ["title", "abstract", "body", "recommendation", "risks", "next_steps", "provenance", "share_copy"]}, "required": true, "weight": 4},
+        {"type": "list_min_items", "path": "result.structured_output.next_steps", "value": 1, "required": true, "weight": 1},
+        {"type": "json_path_exists", "path": "runtime_run_id", "required": true, "weight": 1},
+        {"type": "max_cost_usd", "value": 0.08, "required": true, "weight": 1}
+      ],
+      "tags": ["work", "decision", "share", "cn"],
+      "min_score": 0.9
+    },
+    {
+      "case_id": "recruiting-shortlist",
+      "name": "人才研究形成可交付作品",
+      "input": {
+        "prompt": "为‘强化学习平台工程师’岗位设计一份候选人研究成果模板。包含搜索口径、候选人表格字段、证据要求、排序依据、风险提示和对外分享摘要。输出结构化 JSON，不得编造真实候选人。",
+        "output_schema": {
+          "type": "object",
+          "required": ["title", "search_brief", "candidate_fields", "evidence_rules", "ranking_rules", "risks", "share_summary"],
+          "properties": {
+            "title": {"type": "string"},
+            "search_brief": {"type": "object"},
+            "candidate_fields": {"type": "array", "minItems": 5},
+            "evidence_rules": {"type": "array", "minItems": 2},
+            "ranking_rules": {"type": "array", "minItems": 2},
+            "risks": {"type": "array", "minItems": 1},
+            "share_summary": {"type": "string"}
+          }
+        },
+        "max_cost_usd": 0.06,
+        "timeout_seconds": 90
+      },
+      "scorers": [
+        {"type": "status", "value": "completed", "required": true, "weight": 3},
+        {"type": "json_schema", "path": "result.structured_output", "schema": {"type": "object", "required": ["title", "search_brief", "candidate_fields", "evidence_rules", "ranking_rules", "risks", "share_summary"]}, "required": true, "weight": 4},
+        {"type": "list_min_items", "path": "result.structured_output.candidate_fields", "value": 5, "required": true, "weight": 1},
+        {"type": "not_contains", "path": "result.structured_output.share_summary", "value": "真实候选人姓名", "required": true, "weight": 1},
+        {"type": "max_cost_usd", "value": 0.06, "required": true, "weight": 1}
+      ],
+      "tags": ["work", "talent", "evidence", "share", "cn"],
+      "min_score": 0.9
+    },
+    {
+      "case_id": "version-ready-article",
+      "name": "文章成果具备版本说明",
+      "input": {
+        "prompt": "撰写一篇关于‘数据和智能如何成为个人能力外挂’的短文成果。输出标题、正文、核心观点、适用读者、来源说明、版本说明和社交分享文案，结构化 JSON。",
+        "output_schema": {
+          "type": "object",
+          "required": ["title", "body", "key_points", "audience", "provenance", "change_note", "share_copy"],
+          "properties": {
+            "title": {"type": "string"},
+            "body": {"type": "string", "minLength": 200},
+            "key_points": {"type": "array", "minItems": 3},
+            "audience": {"type": "array", "minItems": 1},
+            "provenance": {"type": "array"},
+            "change_note": {"type": "string"},
+            "share_copy": {"type": "string"}
+          }
+        },
+        "max_cost_usd": 0.06,
+        "timeout_seconds": 90
+      },
+      "scorers": [
+        {"type": "status", "value": "completed", "required": true, "weight": 3},
+        {"type": "json_schema", "path": "result.structured_output", "schema": {"type": "object", "required": ["title", "body", "key_points", "audience", "provenance", "change_note", "share_copy"]}, "required": true, "weight": 4},
+        {"type": "list_min_items", "path": "result.structured_output.key_points", "value": 3, "required": true, "weight": 1},
+        {"type": "json_path_exists", "path": "result.structured_output.change_note", "required": true, "weight": 1},
+        {"type": "max_cost_usd", "value": 0.06, "required": true, "weight": 1}
+      ],
+      "tags": ["work", "article", "version", "share", "cn"],
+      "min_score": 0.9
+    }
+  ]
+}

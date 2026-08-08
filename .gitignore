@@ -63,3 +63,4 @@ Thumbs.db
 # Documentation rendering intermediates
 tmp/pdfs/render/
 tmp/pdfs/rendered/
+artifacts/drills/

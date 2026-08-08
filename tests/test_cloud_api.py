@@ -1,5 +1,6 @@
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,56 @@ def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
     assert "/v1/runs" not in control_paths
 
 
+def test_production_rejects_combined_or_insecure_api_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JOYHOUSEBOT_ENVIRONMENT", "production")
+    monkeypatch.delenv("JOYHOUSEBOT_ALLOW_COMBINED_SURFACE", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_CONTROL_TOKEN", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_METRICS_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="separate public and control"):
+        create_app(surface="combined")
+
+    config = Config()
+    config.gateway.allow_insecure_auth = True
+    store = PostgresTestStore(tmp_path / "production-security.db")
+    container = build_api_container(config=config, store=store)
+    with pytest.raises(ValueError, match="allow_insecure_auth"):
+        create_app(container, surface="public")
+    store.close()
+
+
+def test_scoped_service_token_attenuates_user_api_access(tmp_path: Path) -> None:
+    client, store = _client(tmp_path)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    record, token = store.create_api_access_token(
+        user_id="service-a",
+        actor_id="test",
+        label="read-only-run-exporter",
+        token_type="service",
+        scopes=["runs.read"],
+        expires_at=expires_at,
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    with client:
+        assert client.get("/v1/runs", headers=headers).status_code == 200
+        denied = client.post(
+            "/v1/runs",
+            headers=headers,
+            json={"input": {"content": "must not execute"}},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == "API token scope required: runs.write"
+        identity = client.get("/v1/me", headers=headers)
+        assert identity.status_code == 403
+
+    assert record["token_type"] == "service"
+    assert record["scopes"] == ["runs.read"]
+    events = store.list_api_access_token_events(limit=10)
+    issued = next(item for item in events if item["token_id"] == record["token_id"])
+    assert issued["data"]["scopes"] == ["runs.read"]
+
+
 def test_prometheus_metrics_endpoint_exposes_runtime_families(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -47,6 +98,9 @@ def test_prometheus_metrics_endpoint_exposes_runtime_families(
     assert "joyhousebot_up 1" in response.text
     assert "joyhousebot_runs_total" in response.text
     assert "joyhousebot_tasks_total" in response.text
+    assert "joyhousebot_task_claim_delay_ms_p95" in response.text
+    assert "joyhousebot_approval_oldest_pending_seconds" in response.text
+    assert "joyhousebot_reconciliation_oldest_active_seconds" in response.text
 
 
 def test_prometheus_metrics_fails_closed_without_configured_token(
@@ -160,7 +214,12 @@ def test_api_is_submit_only_and_user_scoped(tmp_path: Path) -> None:
     with client:
         response = client.post(
             "/v1/runs",
-            headers={"Authorization": "Bearer token-a", "Idempotency-Key": "one"},
+            headers={
+                "Authorization": "Bearer token-a",
+                "Idempotency-Key": "one",
+                "X-Request-Id": "req-api-test",
+                "X-Tracker-Id": "trace-api-test",
+            },
             json={
                 "agent_id": "default",
                 "session_id": "main",
@@ -170,12 +229,29 @@ def test_api_is_submit_only_and_user_scoped(tmp_path: Path) -> None:
         assert response.status_code == 202
         run_id = response.json()["run_id"]
         assert response.json()["status"] == "queued"
-        assert store.get_runtime_run(run_id).lease_owner is None
+        stored = store.get_runtime_run(run_id)
+        assert stored.lease_owner is None
+        assert stored.options["request_id"] == "req-api-test"
+        assert stored.options["tracker_id"] == "trace-api-test"
+        assert response.headers["x-request-id"] == "req-api-test"
+        assert response.headers["x-tracker-id"] == "trace-api-test"
 
         own = client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer token-a"})
         other = client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer token-b"})
         assert own.status_code == 200
         assert other.status_code == 404
+
+
+def test_api_replaces_invalid_request_tracking_headers(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    with client:
+        response = client.get(
+            "/healthz",
+            headers={"X-Request-Id": "invalid request id value", "X-Tracker-Id": "*"},
+        )
+    assert response.status_code == 200
+    assert response.headers["x-request-id"].startswith("req_")
+    assert response.headers["x-tracker-id"].startswith("trace_")
 
 
 def test_run_projection_is_resolved_through_configured_plugin(tmp_path: Path, monkeypatch) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
@@ -19,8 +20,12 @@ _SCORER_TYPES = {
     "status",
     "exact_match",
     "contains",
+    "not_contains",
+    "matches_regex",
     "json_schema",
     "json_path_equals",
+    "json_path_exists",
+    "list_min_items",
     "numeric_range",
     "max_latency_ms",
     "max_cost_usd",
@@ -79,18 +84,35 @@ def _score_case(
                 actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
                 expected = str(expected or "")
                 passed = bool(expected) and expected in actual
+            elif scorer_type == "not_contains":
+                actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
+                expected = str(expected or "")
+                passed = bool(expected) and expected not in actual
+            elif scorer_type == "matches_regex":
+                actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
+                expected = str(expected or "")
+                passed = bool(expected) and re.search(expected, actual) is not None
             elif scorer_type == "json_schema":
                 schema = scorer.get("schema")
                 if not isinstance(schema, dict):
                     raise ValueError("json_schema scorer requires schema")
                 Draft202012Validator.check_schema(schema)
-                Draft202012Validator(schema).validate(output)
-                actual = type(output).__name__
+                candidate = _read_path(output, str(scorer.get("path") or ""))
+                Draft202012Validator(schema).validate(candidate)
+                actual = type(candidate).__name__
                 expected = "schema_valid"
                 passed = True
             elif scorer_type == "json_path_equals":
                 actual = _read_path(output, str(scorer.get("path") or ""))
                 passed = actual == expected
+            elif scorer_type == "json_path_exists":
+                actual = _read_path(output, str(scorer.get("path") or ""))
+                expected = "non_null"
+                passed = actual is not None
+            elif scorer_type == "list_min_items":
+                actual = _read_path(output, str(scorer.get("path") or ""))
+                expected = int(scorer.get("value") or 1)
+                passed = isinstance(actual, list) and len(actual) >= expected
             elif scorer_type == "numeric_range":
                 actual = _read_path(output, str(scorer.get("path") or ""))
                 number = float(actual)
@@ -346,6 +368,9 @@ class EvalService:
                     "suite_version": suite_version,
                     "min_pass_rate": min_rate,
                     "max_age_hours": max_age,
+                    "require_automated": bool(
+                        requirement.get("require_automated", False)
+                    ),
                 }
             )
         return await asyncio.to_thread(

@@ -183,6 +183,8 @@ def graph_options(
         "request_id": spec.request_id,
         "tracker_id": spec.tracker_id,
         "parent_request_id": spec.parent_request_id,
+        "traceparent": spec.traceparent,
+        "tracestate": spec.tracestate,
         "metadata": metadata,
         "graph_revision_id": revision["revision_id"],
         "tasks": [dict(node) for node in revision["nodes"]],

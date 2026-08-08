@@ -5,13 +5,42 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
-import uuid
 from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request
 from loguru import logger
 
 from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.runtime.tracking import normalize_request_id
+from joyhousebot.utils.permissions import permission_granted
+
+_READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def required_api_scope(request: Request) -> str:
+    """Map an HTTP operation to a stable, low-cardinality token scope."""
+    path = request.url.path.rstrip("/") or "/"
+    operation = "read" if request.method.upper() in _READ_METHODS else "write"
+    if path.startswith("/v1/admin"):
+        return f"admin.{operation}"
+    for namespace in ("runs", "memory", "sessions", "schedules", "works"):
+        if path == f"/v1/{namespace}" or path.startswith(f"/v1/{namespace}/"):
+            return f"{namespace}.{operation}"
+    if path.startswith("/v1/system/"):
+        return "system.read"
+    if path in {"/v1/me", "/v1/agents", "/v1/capabilities", "/v1/scenarios", "/v1/usage"}:
+        return "account.read"
+    return f"api.{operation}"
+
+
+def _enforce_token_scope(access: dict[str, Any], request: Request) -> None:
+    required = required_api_scope(request)
+    granted = [str(scope) for scope in access.get("scopes") or []]
+    if not any(permission_granted(scope, required) for scope in granted):
+        raise HTTPException(
+            status_code=403,
+            detail=f"API token scope required: {required}",
+        )
 
 
 def get_container(request: Request) -> Any:
@@ -57,6 +86,7 @@ async def get_principal(
         else None
     )
     if access is not None:
+        _enforce_token_scope(access, request)
         resolved_user_id = str(access["user_id"])
         admin = await asyncio.to_thread(
             get_container(request).store.get_platform_admin, resolved_user_id
@@ -67,9 +97,14 @@ async def get_principal(
                 user_id=resolved_user_id,
                 role=admin.role,
                 permissions=admin.permissions,
+                token_scopes=tuple(str(item) for item in access.get("scopes") or ()),
+                token_type=str(access.get("token_type") or "user"),
             )
         return Principal(
-            subject=f"token:{access['token_id']}", user_id=resolved_user_id
+            subject=f"token:{access['token_id']}",
+            user_id=resolved_user_id,
+            token_scopes=tuple(str(item) for item in access.get("scopes") or ()),
+            token_type=str(access.get("token_type") or "user"),
         )
 
     # Fail closed: an empty token configuration rejects requests instead of
@@ -92,6 +127,7 @@ async def get_principal(
 
 
 async def get_request_context(
+    request: Request,
     principal: Annotated[Principal, Depends(get_principal)],
     x_request_id: Annotated[str | None, Header()] = None,
     idempotency_key: Annotated[str | None, Header()] = None,
@@ -101,10 +137,22 @@ async def get_request_context(
             status_code=400,
             detail="operator requests require X-Impersonate-User-ID",
         )
+    request_id = normalize_request_id(
+        getattr(request.state, "request_id", None) or x_request_id,
+        prefix="req",
+    )
+    tracker_id = normalize_request_id(
+        getattr(request.state, "tracker_id", None) or request_id,
+        prefix="trace",
+    )
+    carrier = dict(getattr(request.state, "trace_carrier", {}) or {})
     return RequestContext(
         principal=principal,
-        request_id=str(x_request_id or f"req_{uuid.uuid4().hex}"),
+        request_id=request_id,
         idempotency_key=str(idempotency_key or "").strip() or None,
+        tracker_id=tracker_id,
+        traceparent=str(carrier.get("traceparent") or "") or None,
+        tracestate=str(carrier.get("tracestate") or "") or None,
     )
 
 

@@ -42,6 +42,10 @@ export JOYHOUSEBOT_CONFIG_FILE=./config.dev.json
 `JOYHOUSEBOT_CONFIG_FILE=/absolute/path/cloud.json`，所有角色会通过
 `JOYHOUSEBOT_CONFIG_PATH=/app/config.json` 读取同一份只读配置。
 
+生产角色还必须设置 `JOYHOUSEBOT_ENVIRONMENT=production`。此时默认拒绝 `combined` API、
+`allow_insecure_auth=true`、通配 CORS，以及少于 32 字符的 Metrics/紧急控制 Token。只有本地开发可以
+使用 Combined；生产必须分别启动 `--surface public` 和 `--surface control`。
+
 Compose 把 API 拆成两个角色：`api` 以 `--surface public` 只承载公网数据面
 （runs/sessions/schedules/MCP，18790）；`control` 以 `--surface control` 承载
 `/v1/admin/*` 与控制台 UI，默认只绑定 `127.0.0.1:18791`，不要暴露公网，通过
@@ -87,7 +91,13 @@ Grafana 可直接导入 `ops/grafana/joyhousebot-overview.json`；Prometheus 抓
 `ops/prometheus/prometheus.yml`，告警规则位于 `ops/prometheus/joyhousebot-alerts.yml`。规则覆盖 API、
 队列年龄、租约、重试、Worker、Provider 和 Channel outbox。
 
-开发模式（显式 `gateway.allowInsecureAuth=true`）下，UI 默认使用 `local-dev` 并通过 `X-User-ID` 发送。API 首次启动会把它写入 `platform_admins`，标记为测试管理员。其他开发 `user_id` 不会自动获得权限。生产令牌由 `/v1/admin/access-tokens` 签发，数据库只保存哈希；管理员身份和细粒度权限由 `/v1/admin/users/{user_id}` 管理。紧急 operator 凭据只能通过进程环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 注入，不能写进 JSON 配置。
+开发模式（显式 `gateway.allowInsecureAuth=true`）下，UI 默认使用 `local-dev` 并通过 `X-User-ID` 发送。
+API 首次启动会把它写入 `platform_admins`，标记为测试管理员。其他开发 `user_id` 不会自动获得权限。
+生产令牌由 `/v1/admin/access-tokens` 签发，数据库只保存哈希；管理员身份和细粒度权限由
+`/v1/admin/users/{user_id}` 管理。令牌本身还有独立 scope（如 `runs.read`、`runs.write`、
+`admin.read`、`admin.write`、`mcp.invoke`），用于收窄账号权限。服务令牌禁止 `*` scope 且必须过期；
+管理 API 默认签发 90 天有效、60 天轮换提醒的用户令牌。`/v1/admin/access-token-events` 提供签发/吊销
+审计。紧急 operator 凭据只能通过进程环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 注入，不能写进 JSON 配置。
 
 配置文件中的 `apiKey`、`token`、`password`、`databaseUrl` 等敏感字段不接受明文；应留空并由标准环境变量注入，或写成 `env://VARIABLE`。启动时引用的环境变量不存在会直接失败。
 
@@ -137,6 +147,39 @@ Tool 副作用和外部流量后，才使用 `branch`/`live`。供应商没有�
 
 HTTP 客户端需要短等待时可发送 `Prefer: wait=20`；最大值为 30 秒。后台任务应发送
 `execution_mode=background` 并通过 Run 查询或 SSE 获取进度。
+
+## Eval 与生产验收
+
+内置业务 Eval 安装和执行：
+
+```bash
+joyhousebot eval-bootstrap --config ./config.json
+joyhousebot eval-execute evalrun_<id> --config ./config.json
+```
+
+三套数据集覆盖证据研究、受治理执行和可发布作品。候选 Agent draft 只能在目标 ID、revision 与 active
+Eval run 完全匹配时执行；所用 revision 会冻结到 Run snapshot，旧发布版本的成绩不能冒充候选版本。
+
+数据库协调演练会写入带唯一 `drill:*` 用户的合成 Run/Task，默认完成后精确清理：
+
+```bash
+joyhousebot durability-drill \
+  --confirm WRITE_SYNTHETIC_RUNTIME_DATA \
+  --tasks 500 --claim-concurrency 16 \
+  --config ./config.json
+```
+
+API 规模演练必须使用仅有 `runs.read`、`runs.write` 的专用服务令牌，令牌从环境读取，永不进入参数或报告：
+
+```bash
+export JOYHOUSEBOT_LOAD_TOKEN='one-time-scoped-service-token'
+joyhousebot load-test --base-url https://api.example.com \
+  --count 200 --concurrency 16 --wait
+unset JOYHOUSEBOT_LOAD_TOKEN
+```
+
+两种命令都会把机器可读 JSON 写入 `artifacts/drills/` 并以退出码表示 PASS/FAIL。完整分阶段矩阵、SLO 和
+故障注入步骤见 [生产验收手册](PRODUCTION_ACCEPTANCE.md)。
 
 出现 `Too many open files` 时：
 

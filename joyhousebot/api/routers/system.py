@@ -19,6 +19,8 @@ async def me(principal: PrincipalDep):
         "user_id": principal.user_id,
         "role": principal.role,
         "permissions": list(principal.permissions),
+        "token_scopes": list(principal.token_scopes),
+        "token_type": principal.token_type,
         "is_admin": principal.can("platform.read"),
     }
 

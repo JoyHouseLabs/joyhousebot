@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from joyhousebot.api.dependencies import ContainerDep, EvalsReaderDep, EvalsWriterDep
 from joyhousebot.api.schemas import (
     CreateEvalRunRequest,
+    ExecuteEvalRunRequest,
     RecordEvalObservationRequest,
     SaveEvalSuiteRequest,
     SaveReleaseGateRequest,
@@ -86,6 +87,21 @@ async def finalize_eval_run(
     container: ContainerDep,
 ):
     return await container.evals.finalize_run(eval_run_id)
+
+
+@router.post("/eval-runs/{eval_run_id}/execute")
+async def execute_eval_run(
+    eval_run_id: str,
+    body: ExecuteEvalRunRequest,
+    principal: EvalsWriterDep,
+    container: ContainerDep,
+):
+    return await container.eval_execution.execute(
+        eval_run_id,
+        actor_id=principal.subject,
+        max_concurrency=body.max_concurrency,
+        case_timeout_seconds=body.case_timeout_seconds,
+    )
 
 
 @router.put("/release-gates/{target_type}/{target_id}/{target_revision_id}")

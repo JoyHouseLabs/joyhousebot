@@ -155,6 +155,9 @@ class AgentOptions:
     user_id: str = "system"
     session_id: str = "main"
     agent_id: str = "default"
+    # Control-plane Eval runs may pin an unpublished candidate revision.
+    # Public run schemas never expose this field.
+    agent_revision_id: str | None = None
     channel: str = "api"
     chat_id: str = "runtime"
     sender_id: str | None = None
@@ -182,6 +185,8 @@ class AgentOptions:
     request_id: str | None = None
     tracker_id: str | None = None
     parent_request_id: str | None = None
+    traceparent: str | None = None
+    tracestate: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -378,4 +383,6 @@ class TaskGraphSpec:
     request_id: str | None = None
     tracker_id: str | None = None
     parent_request_id: str | None = None
+    traceparent: str | None = None
+    tracestate: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

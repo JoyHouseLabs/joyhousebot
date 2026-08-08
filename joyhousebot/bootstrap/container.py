@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from joyhousebot.application.approvals import ApprovalService
+from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
 from joyhousebot.application.feedback import FeedbackService
 from joyhousebot.application.graph_events import GraphEventService
@@ -46,6 +47,7 @@ class ApplicationContainer:
     replays: ReplayService
     feedback: FeedbackService
     evals: EvalService
+    eval_execution: EvalExecutionService
     scenarios: ScenarioStudioService
     works: WorkService
     plugins: Any
@@ -86,6 +88,8 @@ def build_api_container(
     )
     schedules = CronService(store, worker_id="api-submit-only")
     runs = RunService(runtime, store)
+    evals = EvalService(store)
+    scenarios = ScenarioStudioService(store)
     return ApplicationContainer(
         config=config,
         store=store,
@@ -101,8 +105,14 @@ def build_api_container(
         platform=PlatformService(store),
         replays=ReplayService(runtime, store),
         feedback=FeedbackService(runs, store),
-        evals=EvalService(store),
-        scenarios=ScenarioStudioService(store),
+        evals=evals,
+        eval_execution=EvalExecutionService(
+            store=store,
+            runtime=runtime,
+            evals=evals,
+            scenarios=scenarios,
+        ),
+        scenarios=scenarios,
         works=WorkService(store),
         plugins=configured_plugin_registry(config),
         owns_store=owns_store,

@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
+from joyhousebot.observability.otel import telemetry_span
 from joyhousebot.orchestration.control_nodes import validate_compensation_declarations
 from joyhousebot.orchestration.failure_policy import validate_saga_declarations
 from joyhousebot.orchestration.task_graph import graph_task_id, validate_and_order_graph
@@ -88,11 +89,29 @@ class SubmissionMixin(GraphMaterializationMixin):
         ):
             if not value.strip():
                 raise ValueError(f"{name} is required")
-        profile = await asyncio.to_thread(self.store.get_agent_profile, options.agent_id)
-        if profile is None:
-            raise ValueError(f"active published Agent not found: {options.agent_id}")
-        if options.agent_id != profile.definition.agent_id:
-            options = replace(options, agent_id=profile.definition.agent_id)
+        if options.agent_revision_id:
+            eval_run_id = str(options.metadata.get("eval_run_id") or "")
+            eval_run = await asyncio.to_thread(self.store.get_eval_run, eval_run_id)
+            revision = await asyncio.to_thread(
+                self.store.get_agent_revision, options.agent_revision_id
+            )
+            if (
+                eval_run is None
+                or eval_run["status"] != "running"
+                or eval_run["target_type"] != "agent"
+                or eval_run["target_id"] != options.agent_id
+                or eval_run["target_revision_id"] != options.agent_revision_id
+                or revision is None
+                or revision.agent_id != options.agent_id
+                or revision.status not in {"draft", "published"}
+            ):
+                raise ValueError("candidate Agent revisions require a matching active Eval run")
+        else:
+            profile = await asyncio.to_thread(self.store.get_agent_profile, options.agent_id)
+            if profile is None:
+                raise ValueError(f"active published Agent not found: {options.agent_id}")
+            if options.agent_id != profile.definition.agent_id:
+                options = replace(options, agent_id=profile.definition.agent_id)
         if options.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
         # Child runs spawned by the runtime itself (subagents, graph tasks)
@@ -159,6 +178,7 @@ class SubmissionMixin(GraphMaterializationMixin):
                 self.store.create_run_execution_snapshot,
                 record.run_id,
                 options.agent_id,
+                revision_id=options.agent_revision_id,
             )
             await append_trace_event_async(
                 store=self.store,
@@ -474,20 +494,34 @@ class SubmissionMixin(GraphMaterializationMixin):
 
             heartbeat = asyncio.create_task(_heartbeat(), name=f"run-heartbeat:{run_id}")
             try:
-                try:
-                    return await self._execute_agent_record(record, cancellation)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    return await self._finish_error(
-                        record.run_id,
-                        RunStatus.FAILED,
-                        EventType.RUN_FAILED,
-                        str(exc),
-                        record.started_at or record.created_at,
-                        worker_id=self.worker_id,
-                        lease_version=record.lease_version,
-                    )
+                with telemetry_span(
+                    "joyhousebot.run.execute",
+                    carrier={
+                        key: str(record.options[key])
+                        for key in ("traceparent", "tracestate")
+                        if record.options.get(key)
+                    },
+                    attributes={
+                        "joyhousebot.run_id": record.run_id,
+                        "joyhousebot.agent_id": record.agent_id,
+                        "joyhousebot.run_kind": record.kind,
+                        "joyhousebot.worker_id": self.worker_id,
+                    },
+                ):
+                    try:
+                        return await self._execute_agent_record(record, cancellation)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        return await self._finish_error(
+                            record.run_id,
+                            RunStatus.FAILED,
+                            EventType.RUN_FAILED,
+                            str(exc),
+                            record.started_at or record.created_at,
+                            worker_id=self.worker_id,
+                            lease_version=record.lease_version,
+                        )
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)

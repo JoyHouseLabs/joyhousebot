@@ -65,8 +65,10 @@ PostgreSQL 事实源
 ### 回放与持续改进
 
 支持 offline、frozen、branch 和 live 回放，用于故障分析、结果比较和受控重试。版本化 Eval dataset、
-确定性 scorer 与精确 Agent/Scenario/Capability 发布门禁保证未通过回归的 revision 不会激活。模型缓存只
-复用等价请求，仍然保留 Invocation、Span 和审计记录。
+自动执行器、确定性 scorer 与精确 Agent/Scenario/Capability 发布门禁保证未通过回归的 revision 不会激活。
+Agent Eval 可以在发布前执行精确 draft revision，冻结快照并保存源 Run、事件、验证、产物、成本和延迟证据；
+仓库内置证据研究、受治理执行、可发布作品三套业务基准。模型缓存只复用等价请求，仍然保留 Invocation、
+Span 和审计记录。
 
 ### 从产物到成果作品
 
@@ -99,7 +101,10 @@ Run Artifact 可进入 Work 的不可变版本链。所有者可以显式选择 
 
 当前核心模型不引入 `tenant_id`：资源归属由认证主体 `user_id` 表达，会话边界是 `user_id + agent_id + session_id`；Agent、Skill、Tool 和子 Agent 是平台共享能力。平台管理员存放在独立的 `platform_admins` 表中，与普通用户身份分离。
 
-生产环境使用数据库签发的 Bearer Token，数据库只保存 SHA-256 指纹；`X-User-ID` 仅在显式开发模式生效。权限按操作拆分，例如 `runs.read`、`runs.cancel`、`agents.publish`、`reasoning.read_raw` 和 `replay.execute`，管理操作全部产生审计事件。
+生产环境使用数据库签发的 Bearer Token，数据库只保存 SHA-256 指纹；`X-User-ID` 仅在显式开发模式生效。
+账号 RBAC 与令牌 scope 分层校验，服务令牌必须使用最小 scope 和有效期；签发、使用时间、轮换期限、吊销人
+及事件均可审计。权限按操作拆分，例如 `runs.read`、`runs.cancel`、`agents.publish`、
+`reasoning.read_raw` 和 `replay.execute`，管理操作全部产生审计事件。
 
 ## 代码边界与业务集成
 
