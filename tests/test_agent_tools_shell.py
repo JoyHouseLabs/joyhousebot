@@ -124,3 +124,43 @@ async def test_scratch_cleanup_removes_stale_dirs(tmp_path) -> None:
     assert not stale.exists()
     remaining = [p for p in scratch.iterdir() if p.is_dir()]
     assert len(remaining) == 1  # only the fresh run scope remains
+
+
+def test_exec_tool_guard_allows_container_workspace_paths(tmp_path) -> None:
+    """Paths the container actually sees (/workspace mount, /tmp tmpfs) pass."""
+    tool = ExecTool(working_dir=str(tmp_path), timeout=5, restrict_to_workspace=True)
+    assert tool._guard_command("cat /workspace/result.txt", str(tmp_path)) is None
+    assert tool._guard_command("ls /workspace", str(tmp_path)) is None
+    assert tool._guard_command("ls /tmp", str(tmp_path)) is None
+
+
+def test_exec_tool_guard_blocks_host_absolute_paths(tmp_path) -> None:
+    """Host paths (including paths under the host working_dir, e.g. another
+    run's scratch dir) are meaningless inside the container and are rejected
+    with a UX hint instead of being silently passed or wrongly allowed."""
+    tool = ExecTool(working_dir=str(tmp_path), timeout=5, restrict_to_workspace=True)
+
+    err = tool._guard_command(f"cat {tmp_path}/.scratch/other-run/secret", str(tmp_path))
+    assert err and "not visible inside the execution container" in err
+
+    err = tool._guard_command("cat /etc/passwd", str(tmp_path))
+    assert err and "not visible inside the execution container" in err
+
+
+def test_exec_tool_guard_blocks_windows_paths(tmp_path) -> None:
+    tool = ExecTool(working_dir=str(tmp_path), timeout=5, restrict_to_workspace=True)
+    err = tool._guard_command("type C:\\Users\\x\\secret.txt", str(tmp_path))
+    assert err and "Windows paths" in err
+
+
+def test_exec_tool_guard_still_blocks_path_traversal(tmp_path) -> None:
+    tool = ExecTool(working_dir=str(tmp_path), timeout=5, restrict_to_workspace=True)
+    err = tool._guard_command("cat ../secret", str(tmp_path))
+    assert err and "path traversal" in err
+
+
+def test_exec_tool_guard_still_checks_cwd_mount_source(tmp_path) -> None:
+    """cwd becomes the container mount source; outside working_dir is denied."""
+    tool = ExecTool(working_dir=str(tmp_path), timeout=5, restrict_to_workspace=True)
+    err = tool._guard_command("echo hi", "/var/lib/other")
+    assert err and "working_dir outside allowed root" in err

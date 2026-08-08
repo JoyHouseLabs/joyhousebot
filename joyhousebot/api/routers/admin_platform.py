@@ -28,7 +28,9 @@ from joyhousebot.api.schemas import (
     CreateReplayRequest,
     SavePlatformAdminRequest,
 )
+from joyhousebot.application.errors import NotFoundError
 from joyhousebot.application.presenters import record_dict, runtime_run_list_item
+from joyhousebot.application.replays import CreateReplayCommand, replay_comparison
 from joyhousebot.runtime.narrative import public_event_dict
 
 router = APIRouter(prefix="/admin", tags=["platform-admin"])
@@ -224,18 +226,6 @@ async def trace_blob(
     return blob.to_dict(include_content=True)
 
 
-def _replay_comparison(source, target=None) -> dict:
-    source_content = str(((source.result or {}).get("content") or ""))
-    target_content = str(((target.result or {}).get("content") or "")) if target else source_content
-    return {
-        "source_status": source.status,
-        "target_status": target.status if target else source.status,
-        "content_equal": source_content == target_content,
-        "source_length": len(source_content),
-        "target_length": len(target_content),
-    }
-
-
 @router.post("/runs/{run_id}/replays", status_code=202)
 async def create_replay(
     run_id: str,
@@ -243,86 +233,14 @@ async def create_replay(
     principal: ReplayWriterDep,
     container: ContainerDep,
 ):
-    from joyhousebot.runtime.models import AgentOptions
-
-    source = await _admin_run(container, run_id)
-    overrides = {
-        key: value
-        for key, value in {
-            "prompt": body.prompt,
-            "model": body.model,
-            "agent_id": body.agent_id,
-            "system_prompt": body.system_prompt,
-        }.items()
-        if value is not None
-    }
-    replay = await asyncio.to_thread(
-        container.store.create_replay_run,
-        source_run_id=run_id,
-        source_turn_id=body.source_turn_id,
-        mode=body.mode,
-        overrides=overrides,
-        created_by=principal.subject,
-        status="completed" if body.mode in {"offline", "frozen"} else "queued",
-        comparison=(
-            _replay_comparison(source) if body.mode in {"offline", "frozen"} else None
-        ),
-        finished_at=(
-            source.updated_at if body.mode in {"offline", "frozen"} else None
-        ),
-    )
-    await asyncio.to_thread(
-        container.store.append_runtime_log,
-        run_id=run_id,
-        stage="replay.created",
-        message="Replay experiment created",
-        data={"actor": principal.subject, "replay_id": replay.replay_id, "mode": body.mode},
-    )
-    if body.mode in {"offline", "frozen"}:
-        return replay.to_dict()
-
-    values = dict(source.options or {})
-    metadata = {
-        **dict(values.get("metadata") or {}),
-        "replay": {
-            "replay_id": replay.replay_id,
-            "source_run_id": source.run_id,
-            "source_turn_id": body.source_turn_id,
-            "mode": body.mode,
-        },
-    }
-    options = AgentOptions.from_dict(
-        {
-            **values,
-            "prompt": body.prompt if body.prompt is not None else source.prompt,
-            "user_id": source.user_id,
-            "session_id": source.session_id,
-            "agent_id": body.agent_id or source.agent_id,
-            "model": body.model if body.model is not None else values.get("model"),
-            "system_prompt": (
-                body.system_prompt
-                if body.system_prompt is not None
-                else values.get("system_prompt")
-            ),
-            "metadata": metadata,
-            "idempotency_key": None,
-            "root_run_id": source.root_run_id or source.run_id,
-            "parent_run_id": source.run_id,
-            "parent_task_id": None,
-            "request_id": None,
-            "tracker_id": None,
-        }
-    )
-    new_run = await container.runtime.submit_run(options)
-    await asyncio.to_thread(
-        container.store.update_replay_run,
-        replay.replay_id,
-        new_run_id=new_run.run_id,
-        status="running",
-        finished_at=None,
-    )
-    replay = await asyncio.to_thread(container.store.get_replay_run, replay.replay_id)
-    return replay.to_dict()
+    try:
+        return await container.replays.create(
+            run_id,
+            CreateReplayCommand(**body.model_dump()),
+            actor_id=principal.subject,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/runs/{run_id}/replays")
@@ -341,7 +259,7 @@ async def list_replays(
             else None
         )
         if target and target.status in {"completed", "failed", "cancelled", "timed_out"}:
-            comparison = _replay_comparison(source, target)
+            comparison = replay_comparison(source, target)
             if item.status != "completed" or item.comparison != comparison:
                 await asyncio.to_thread(
                     container.store.update_replay_run,

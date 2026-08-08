@@ -1,5 +1,4 @@
 import asyncio
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,7 +12,7 @@ from joyhousebot.runtime.narrative import redact_runtime_value
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.runtime.tracking import safe_trace_data
 from joyhousebot.storage.factory import create_runtime_store
-from tests.support.postgres_store import PostgresTestStore
+from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
 def _create_run(store, run_id: str, *, kind: str = "agent"):
@@ -318,6 +317,145 @@ def test_postgres_atomically_commits_terminal_state_and_event(tmp_path: Path) ->
     assert [event.type for event in store.list_runtime_events(run.run_id)] == ["run.completed"]
 
 
+def test_heartbeat_fails_once_lease_has_expired(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "heartbeat-expiry.db")
+    run = _create_run(store, "heartbeat-expiry")
+    claimed = store.claim_runtime_run(run.run_id, worker_id="owner", lease_seconds=30)
+    assert claimed is not None
+
+    # A live lease renews normally.
+    assert store.heartbeat_runtime_run(
+        run.run_id,
+        worker_id="owner",
+        lease_seconds=30,
+        lease_version=claimed.lease_version,
+    )
+
+    # A zombie worker whose lease already expired must not resurrect it.
+    with store._pool.connection() as connection, connection.transaction():
+        connection.execute(
+            """UPDATE runtime_runs
+               SET lease_expires_at=clock_timestamp() - interval '1 second'
+               WHERE run_id=%s""",
+            (run.run_id,),
+        )
+    assert not store.heartbeat_runtime_run(
+        run.run_id,
+        worker_id="owner",
+        lease_seconds=30,
+        lease_version=claimed.lease_version,
+    )
+
+    # The expired lease stays expired, so a fresh worker can take over.
+    recovered = store.claim_runtime_run(run.run_id, worker_id="recovery", lease_seconds=30)
+    assert recovered is not None and recovered.lease_owner == "recovery"
+
+
+def test_cancel_request_fences_live_lease_and_blocks_execution_start(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "cancel-fencing.db")
+    run = _create_run(store, "cancel-fencing")
+    claimed = store.claim_runtime_run(run.run_id, worker_id="owner", lease_seconds=30)
+    assert claimed is not None
+
+    request = store.request_runtime_cancel(run.run_id, reason="stop")
+    assert request == {"status": "running", "lease_alive": True}
+    record = store.get_runtime_run(run.run_id)
+    assert record.cancel_requested_at is not None
+    assert record.cancel_reason == "stop"
+
+    # A cancel-requested run cannot be re-claimed, heartbeated, or started.
+    assert store.claim_runtime_run(run.run_id, worker_id="other", lease_seconds=30) is None
+    assert not store.heartbeat_runtime_run(
+        run.run_id,
+        worker_id="owner",
+        lease_seconds=30,
+        lease_version=claimed.lease_version,
+    )
+    assert not store.update_runtime_run(
+        run.run_id,
+        status="running",
+        worker_id="owner",
+        lease_version=claimed.lease_version,
+    )
+
+    # A non-owner cannot force a terminal state while the lease is alive.
+    forced = store.finish_runtime_run(
+        run.run_id,
+        status="cancelled",
+        event=AgentEvent(run_id=run.run_id, type="run.cancelled", data={"reason": "stop"}),
+        error={"message": "stop"},
+    )
+    assert forced is None
+
+    # The owning worker still commits the terminal state with fencing.
+    finished = store.finish_runtime_run(
+        run.run_id,
+        status="cancelled",
+        event=AgentEvent(run_id=run.run_id, type="run.cancelled", data={"reason": "stop"}),
+        error={"message": "stop"},
+        worker_id="owner",
+        lease_version=claimed.lease_version,
+    )
+    assert finished is not None
+    assert store.get_runtime_run(run.run_id).status == "cancelled"
+
+
+def test_cancel_request_on_dead_lease_can_be_finished_by_recovery(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "cancel-recovery.db")
+    run = _create_run(store, "cancel-recovery")
+    claimed = store.claim_runtime_run(run.run_id, worker_id="dead", lease_seconds=5)
+    assert claimed is not None
+    request = store.request_runtime_cancel(run.run_id, reason="stop")
+    assert request == {"status": "running", "lease_alive": True}
+
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE runtime_runs SET lease_expires_at=clock_timestamp()-interval '1 minute'"
+            " WHERE run_id='cancel-recovery'"
+        )
+
+    # The dead worker's run is never re-claimed for execution ...
+    assert store.claim_runtime_run(run.run_id, worker_id="recovery", lease_seconds=5) is None
+    # ... and a non-owner may finish it only after the lease expired.
+    finished = store.finish_runtime_run(
+        run.run_id,
+        status="cancelled",
+        event=AgentEvent(run_id=run.run_id, type="run.cancelled", data={"reason": "stop"}),
+        error={"message": "stop"},
+    )
+    assert finished is not None
+    assert store.get_runtime_run(run.run_id).status == "cancelled"
+
+
+def test_reset_runtime_run_clears_cancel_request(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "cancel-reset.db")
+    run = _create_run(store, "cancel-reset")
+    request = store.request_runtime_cancel(run.run_id, reason="stop")
+    assert request == {"status": "queued", "lease_alive": False}
+    finished = store.finish_runtime_run(
+        run.run_id,
+        status="cancelled",
+        event=AgentEvent(run_id=run.run_id, type="run.cancelled", data={"reason": "stop"}),
+        error={"message": "stop"},
+    )
+    assert finished is not None
+
+    assert store.reset_runtime_run(run.run_id)
+    record = store.get_runtime_run(run.run_id)
+    assert record.status == "queued"
+    assert record.cancel_requested_at is None
+    assert record.cancel_reason is None
+    reclaimed = store.claim_runtime_run(run.run_id, worker_id="worker", lease_seconds=5)
+    assert reclaimed is not None
+    # Leave no active run behind: this database is shared by the whole suite.
+    assert store.update_runtime_run(
+        run.run_id,
+        status="completed",
+        worker_id="worker",
+        lease_version=reclaimed.lease_version,
+    )
+
+
 def test_runtime_store_factory_requires_postgres_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -330,9 +468,7 @@ def test_runtime_store_factory_requires_postgres_url(
 
 @pytest.mark.postgres
 def test_postgres_serializes_concurrent_migrations_and_maintenance() -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     import psycopg
 
     from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
@@ -377,9 +513,7 @@ def test_postgres_serializes_concurrent_migrations_and_maintenance() -> None:
 
 @pytest.mark.postgres
 def test_postgres_runtime_store_conformance() -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)
@@ -577,9 +711,7 @@ def test_postgres_runtime_store_conformance() -> None:
 
 @pytest.mark.postgres
 def test_postgres_submission_quota_is_cluster_atomic() -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=4)
@@ -613,9 +745,7 @@ def test_postgres_submission_quota_is_cluster_atomic() -> None:
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_postgres_two_runtimes_execute_one_graph() -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     class SlowAgent:
@@ -671,13 +801,20 @@ async def test_postgres_purge_old_runtime_data(tmp_path: Path) -> None:
         "execution_spans": 0,
         "trace_blobs": 0,
         "replay_runs": 0,
+        "runtime_artifacts": 0,
         "runtime_events": 1,
         "runtime_logs": 2,
         "request_trace_events": 1,
+        "runtime_runs_tombstoned": 1,
+        "capability_invocations": 0,
+        "schedule_occurrences": 0,
     }
     assert store.list_runtime_events(run.run_id) == []
     assert store.list_runtime_logs(run.run_id) == []
     assert store.list_request_trace_events("tracker-1") == []
+    # Purging events/logs while the run survives leaves a tombstone marker.
+    record = store.get_runtime_run(run.run_id)
+    assert record.options["metadata"]["events_purged"] is True
 
     # Nothing is old enough for an ancient cutoff.
     store.append_runtime_log(run_id=run.run_id, stage="test", message="fresh log")
@@ -689,9 +826,13 @@ async def test_postgres_purge_old_runtime_data(tmp_path: Path) -> None:
         "execution_spans": 0,
         "trace_blobs": 0,
         "replay_runs": 0,
+        "runtime_artifacts": 0,
         "runtime_events": 0,
         "runtime_logs": 0,
         "request_trace_events": 0,
+        "runtime_runs_tombstoned": 0,
+        "capability_invocations": 0,
+        "schedule_occurrences": 0,
     }
     assert len(store.list_runtime_logs(run.run_id)) == 1
 

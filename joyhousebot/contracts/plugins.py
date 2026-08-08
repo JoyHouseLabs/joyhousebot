@@ -78,6 +78,7 @@ class PluginManifest:
     distribution_name: str = ""
     build_digest: str = ""
     runtime_contract_version: int = 1
+    default_agent_id: str = "default"
     dependencies: tuple[dict[str, Any], ...] = ()
     quickstarts: tuple[PluginQuickstart, ...] = ()
 
@@ -86,6 +87,8 @@ class PluginManifest:
             raise ValueError("plugin manifest id, version and name are required")
         if self.runtime_contract_version < 1:
             raise ValueError("plugin runtime_contract_version must be positive")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", self.default_agent_id):
+            raise ValueError("plugin default_agent_id is invalid")
         for dependency in self.dependencies:
             if not str(dependency.get("id") or "").strip():
                 raise ValueError("plugin dependency id is required")
@@ -142,6 +145,9 @@ class PluginHealthContext:
 class PluginRegistry(Protocol):
     def register_capability(self, definition: Any, handler: Any) -> None:
         """Register a versioned capability and its handler."""
+
+    def register_projection(self, provider: Any) -> None:
+        """Register a plugin-owned, business read-model provider."""
 
 
 @runtime_checkable

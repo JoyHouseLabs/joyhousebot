@@ -13,6 +13,7 @@ from typing import Any
 from joyhousebot.contracts.capabilities import CapabilityContext, CapabilityResult
 from joyhousebot.contracts.plugins import PluginManifest
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.utils.permissions import missing_permissions
 
 
 class CapabilityPluginRegistry:
@@ -21,6 +22,7 @@ class CapabilityPluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[str, Any] = {}
         self._capabilities: dict[str, tuple[Any, Any, str | None]] = {}
+        self._projections: dict[str, tuple[Any, str | None]] = {}
         self._active_plugin: str | None = None
 
     def register_plugin(self, plugin: Any) -> None:
@@ -129,6 +131,24 @@ class CapabilityPluginRegistry:
             raise ValueError(f"capability {key} is already registered")
         self._capabilities[key] = (definition, handler, self._active_plugin)
 
+    def register_projection(self, provider: Any) -> None:
+        """Register one named business read model owned by the active plugin."""
+        view_id = str(getattr(provider, "view_id", "")).strip()
+        schema_version = int(getattr(provider, "schema_version", 0) or 0)
+        if not view_id or schema_version < 1 or not callable(getattr(provider, "build", None)):
+            raise ValueError("projection provider requires view_id, schema_version, and build")
+        existing = self._projections.get(view_id)
+        if existing is not None and existing[0] is not provider:
+            raise ValueError(f"projection view {view_id} is already registered")
+        self._projections[view_id] = (provider, self._active_plugin)
+
+    def get_projection(self, view_id: str) -> Any | None:
+        value = self._projections.get(str(view_id).strip())
+        return value[0] if value else None
+
+    def list_projections(self) -> tuple[Any, ...]:
+        return tuple(value[0] for value in self._projections.values())
+
     def get(self, capability_id: str, version: str | None = None) -> tuple[Any, Any] | None:
         prefix = f"{capability_id}@"
         if version is not None:
@@ -189,16 +209,7 @@ class CapabilityPluginRegistry:
         definition, handler = resolved
         required = set(getattr(definition, "permissions", ()) or ())
         granted = set((context.metadata or {}).get("permissions", ()) or ())
-        missing = sorted(
-            permission
-            for permission in required
-            if "*" not in granted
-            and permission not in granted
-            and not any(
-                str(grant).endswith(".*") and permission.startswith(str(grant)[:-1])
-                for grant in granted
-            )
-        )
+        missing = missing_permissions(granted, required)
         if missing:
             return CapabilityResult(
                 success=False,

@@ -195,7 +195,10 @@ class MCPGateway:
         if definition is None:
             raise HTTPException(status_code=404, detail=f"capability not found: {capability_id}")
         permissions = [str(item) for item in definition.get("permissions") or []]
-        if permissions and not any(principal.can(item) for item in permissions):
+        # AND semantics, same as the capability dispatcher: every declared
+        # permission must be granted. The dispatcher re-checks at execution
+        # time, so this is the first of two enforcement layers.
+        if permissions and not all(principal.can(item) for item in permissions):
             raise HTTPException(status_code=403, detail="capability permission denied")
         request = self._request(ctx)
         headers = getattr(request, "headers", {}) or {}

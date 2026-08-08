@@ -39,6 +39,10 @@ async def search_async(
         )
     if scope != "memory":
         return []
+    if not memory_scope_key:
+        # No resolved run scope means memory is not configured for this run;
+        # never fall back to the cluster-wide "shared" scope implicitly.
+        return []
     store = MemoryStore(runtime_store, scope_key=memory_scope_key)
     documents = store.repository.list_documents(store.scope_key) if store.repository else {}
     lowered = query.casefold()

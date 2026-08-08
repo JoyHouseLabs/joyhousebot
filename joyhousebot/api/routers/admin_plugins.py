@@ -210,7 +210,8 @@ async def create_plugin_playground_run(
     if not bool(settings.get("enabled", True)):
         raise HTTPException(status_code=409, detail="capability is disabled")
 
-    agent_id = "main-coordinator" if plugin_id == "dinq.discover" else "default"
+    manifest = dict(release.get("manifest") or {})
+    agent_id = str(manifest.get("default_agent_id") or "default")
     session_id = body.session_id or f"playground_{int(time() * 1000):x}"
     try:
         record = await container.runs.create_graph(

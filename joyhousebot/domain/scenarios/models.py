@@ -13,7 +13,9 @@ class ScenarioField:
     name: str
     value_type: str
     required: bool = False
+    label: str = ""
     description: str = ""
+    placeholder: str = ""
     default: Any = None
     enum: tuple[Any, ...] = ()
     # Presentation is deliberately part of the immutable scenario version,
@@ -27,6 +29,16 @@ class ScenarioField:
     max_selections: int | None = None
     validation: dict[str, Any] = field(default_factory=dict)
     sensitive: bool = False
+    # Business-owned interaction policy. The core persists and exposes these
+    # values but never embeds provider- or industry-specific suggestion logic.
+    suggestion_provider: dict[str, Any] = field(default_factory=dict)
+    normalization: dict[str, Any] = field(default_factory=dict)
+    visibility: dict[str, Any] = field(default_factory=dict)
+    constraint_policy: dict[str, Any] = field(default_factory=dict)
+    confirmation_policy: str = "none"
+    examples: tuple[str, ...] = ()
+    group: str = ""
+    order: int = 0
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -63,11 +75,19 @@ class ScenarioField:
             and self.min_selections > self.max_selections
         ):
             raise ValueError("min_selections cannot exceed max_selections")
+        if self.confirmation_policy not in {"none", "inferred", "always", "sensitive"}:
+            raise ValueError("invalid scenario field confirmation_policy")
+        if any(not str(item).strip() for item in self.examples):
+            raise ValueError("scenario field examples must be non-empty")
+        strength = self.constraint_policy.get("default_strength")
+        if strength is not None and strength not in {"required", "preferred", "excluded"}:
+            raise ValueError("invalid default constraint strength")
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["enum"] = list(self.enum)
         value["options"] = [dict(item) for item in self.options]
+        value["examples"] = list(self.examples)
         return value
 
 
@@ -202,7 +222,9 @@ class ScenarioVersion:
                     name=str(item["name"]),
                     value_type=str(item["value_type"]),
                     required=bool(item.get("required")),
+                    label=str(item.get("label") or ""),
                     description=str(item.get("description") or ""),
+                    placeholder=str(item.get("placeholder") or ""),
                     default=item.get("default"),
                     enum=tuple(item.get("enum") or ()),
                     input_mode=str(item.get("input_mode") or "auto"),
@@ -220,6 +242,14 @@ class ScenarioVersion:
                     ),
                     validation=dict(item.get("validation") or {}),
                     sensitive=bool(item.get("sensitive")),
+                    suggestion_provider=dict(item.get("suggestion_provider") or {}),
+                    normalization=dict(item.get("normalization") or {}),
+                    visibility=dict(item.get("visibility") or {}),
+                    constraint_policy=dict(item.get("constraint_policy") or {}),
+                    confirmation_policy=str(item.get("confirmation_policy") or "none"),
+                    examples=tuple(str(example) for example in item.get("examples") or ()),
+                    group=str(item.get("group") or ""),
+                    order=int(item.get("order") or 0),
                 )
                 for item in value.get("fields") or ()
             ),

@@ -121,15 +121,25 @@ export interface RuntimeInvocation {
 export interface RunInputField {
   name: string
   value_type: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object'
+  label?: string
   description?: string
+  placeholder?: string
   enum?: unknown[]
   input_mode?: 'auto' | 'text' | 'textarea' | 'single_choice' | 'multi_choice' | 'boolean' | 'number'
-  options?: Array<{ value: string; label: string; description?: string }>
+  options?: Array<{ value: string; label: string; description?: string; exclusive?: boolean }>
   allow_other?: boolean
   min_selections?: number | null
   max_selections?: number | null
   required?: boolean
   sensitive?: boolean
+  suggestion_provider?: Record<string, unknown>
+  normalization?: Record<string, unknown>
+  visibility?: Record<string, unknown>
+  constraint_policy?: { default_strength?: 'required' | 'preferred' | 'excluded'; [key: string]: unknown }
+  confirmation_policy?: 'none' | 'inferred' | 'always' | 'sensitive'
+  examples?: string[]
+  group?: string
+  order?: number
 }
 
 export interface PendingRunInput {

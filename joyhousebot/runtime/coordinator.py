@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
-import os
 import time
 from datetime import datetime
 from typing import Any
@@ -18,6 +16,11 @@ from joyhousebot.orchestration.planner import ScenarioPlanner
 from joyhousebot.orchestration.task_graph import render_value
 from joyhousebot.runtime.context import CancellationToken, ToolExecutionContext
 from joyhousebot.runtime.graph_finalization import GraphFinalizationMixin
+from joyhousebot.runtime.maintenance import (
+    _PURGE_INTERVAL_SECONDS,
+    RuntimeMaintenanceMixin,
+    _env_int,
+)
 from joyhousebot.runtime.models import (
     AgentEvent,
     AgentUsage,
@@ -29,21 +32,13 @@ from joyhousebot.runtime.models import (
 # Exceptions in the background loops are logged at most once per minute per
 # loop so a persistent failure cannot flood the log.
 _LOOP_ERROR_LOG_INTERVAL_SECONDS = 60.0
-# How often the coordinator purges expired runtime data.
-_PURGE_INTERVAL_SECONDS = 600.0
 # A worker row is a leased presence record. Reconcile abandoned rows promptly
 # after deployments or abrupt process termination without polling the database
 # on every work notification.
 _WORKER_RECONCILE_INTERVAL_SECONDS = 30.0
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    try:
-        value = int(raw) if raw else default
-    except ValueError:
-        return default
-    return value if value > 0 else default
+# Idle poll wakes only run a cheap EXISTS probe; a full fair-queue scan still
+# runs at this cadence as the safety net for missed notifications.
+_IDLE_DEEP_SCAN_INTERVAL_SECONDS = 30.0
 
 
 def _parse_timestamp(value: str | None) -> float | None:
@@ -55,7 +50,7 @@ def _parse_timestamp(value: str | None) -> float | None:
         return None
 
 
-class RuntimeCoordinatorMixin(GraphFinalizationMixin):
+class RuntimeCoordinatorMixin(GraphFinalizationMixin, RuntimeMaintenanceMixin):
     def _log_loop_exception(self, loop_name: str) -> None:
         """Log a background-loop exception, rate limited to one per minute."""
         now = time.monotonic()
@@ -85,6 +80,13 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
 
     async def _dispatch_ready_graph_tasks(self, wake_source: str) -> None:
         """Fill currently idle slots; only this dispatcher performs task claims."""
+        if wake_source == "poll":
+            # Idle fallback wake: probe before paying for the claim CTE and
+            # the lease sweeps.  NOTIFY/local wakes go straight to claiming.
+            probe = getattr(self.store, "has_claimable_runtime_task", None)
+            if probe is not None and not await asyncio.to_thread(probe):
+                return
+            self.work_signal.note_activity()
         while not self._closing:
             available = self.task_worker_count - self._graph_active_count - self._graph_task_queue.qsize()
             if available <= 0:
@@ -128,12 +130,29 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
         """Continuously recover queued runs and maintain worker presence."""
         last_purge_at = 0.0
         last_worker_reconcile_at = 0.0
+        last_deep_scan_at = time.monotonic()
         generation = 0
         while not self._closing:
             try:
                 wake = await self.work_signal.wait(generation)
                 generation = wake.generation
-                await self._scan_incomplete_runs(wake_source=wake.source)
+                now = time.monotonic()
+                if wake.source == "poll":
+                    # Idle fallback wake: run the expensive fair-queue scan
+                    # only when the cheap probe sees pending work, or when the
+                    # deep-scan safety net comes due for missed notifications.
+                    probe = getattr(self.store, "has_incomplete_runtime_work", None)
+                    pending = await asyncio.to_thread(probe) if probe is not None else True
+                    if pending:
+                        self.work_signal.note_activity()
+                        await self._scan_incomplete_runs(wake_source=wake.source)
+                        last_deep_scan_at = now
+                    elif now - last_deep_scan_at >= _IDLE_DEEP_SCAN_INTERVAL_SECONDS:
+                        await self._scan_incomplete_runs(wake_source="recovery")
+                        last_deep_scan_at = now
+                else:
+                    await self._scan_incomplete_runs(wake_source=wake.source)
+                    last_deep_scan_at = now
                 heartbeat = getattr(self.store, "heartbeat_runtime_worker", None)
                 if heartbeat is not None:
                     await asyncio.to_thread(heartbeat, self.worker_id)
@@ -156,24 +175,6 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
             except Exception:
                 self._log_loop_exception("coordinator")
                 await asyncio.sleep(1.0)
-
-    async def _purge_old_runtime_data(self) -> None:
-        """Periodically drop expired runtime rows; failures only get logged."""
-        purge = getattr(self.store, "purge_old_runtime_data", None)
-        if purge is None:
-            return
-        retention_days = _env_int("JOYHOUSEBOT_RETENTION_DAYS", 30)
-        cutoff_ms = int((time.time() - retention_days * 86400) * 1000)
-        try:
-            # Store implementations perform blocking PostgreSQL deletes. Run
-            # both sync and async implementations off the coordinator loop so
-            # maintenance cannot pause lease heartbeats or task claiming.
-            if inspect.iscoroutinefunction(purge):
-                await asyncio.to_thread(asyncio.run, purge(cutoff_ms))
-            else:
-                await asyncio.to_thread(purge, cutoff_ms)
-        except Exception:
-            logger.exception("Runtime data purge failed")
 
     def _graph_deadline_exceeded(self, record: Any) -> bool:
         """A graph run may not exceed the graph-level total timeout."""
@@ -201,6 +202,9 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
             else 256
         )
         for record in records:
+            if record.cancel_requested_at is not None:
+                await self._finish_cancel_requested_run(record)
+                continue
             if record.status == RunStatus.PLANNING.value:
                 await self._recover_planning_run(record)
                 continue
@@ -405,6 +409,11 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
                 registry = getattr(agent, "capabilities", None)
                 if registry is None:
                     raise RuntimeError(f"agent has no capability registry: {task.agent_id}")
+                scenario_state = await asyncio.to_thread(
+                    self.store.get_run_scenario_state,
+                    run.run_id,
+                    expected_user_id=run.user_id,
+                )
                 await self.events.publish(
                     AgentEvent(
                         run_id=run.run_id,
@@ -442,6 +451,17 @@ class RuntimeCoordinatorMixin(GraphFinalizationMixin):
                         ),
                         cancellation=cancellation,
                         worker_id=self.worker_id,
+                        metadata={
+                            "scenario_id": str(
+                                getattr(scenario_state, "scenario_id", "") or ""
+                            ),
+                            "scenario_version": int(
+                                getattr(scenario_state, "scenario_version", 0) or 0
+                            ),
+                            "scenario_inputs": dict(
+                                getattr(scenario_state, "collected_inputs", {}) or {}
+                            ),
+                        },
                     ),
                     tool_call_id=task.task_id,
                 )

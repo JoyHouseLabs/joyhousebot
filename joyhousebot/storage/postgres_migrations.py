@@ -1,0 +1,496 @@
+"""Schema migration history and the shared cluster-wide migration lock.
+
+Every domain migration records ``(name, version, checksum, applied_at)`` in
+``schema_migration_history`` after applying its DDL.  A checksum mismatch on
+an already-recorded migration means the DDL was edited after it shipped; that
+is drift, and it is surfaced as a warning instead of being silently absorbed
+by ``IF NOT EXISTS`` idempotency.
+
+Plugins that own business tables must apply their DDL under the same
+cluster-wide advisory lock as the core: either through the public
+:meth:`PostgresMigrationMixin.schema_migration_lock` context manager on the
+runtime store, or by taking ``SCHEMA_MIGRATION_LOCK_ID`` directly on their
+own connection.  Plugin migrations then record themselves through
+:meth:`PostgresMigrationMixin.record_plugin_migration`.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from hashlib import sha256
+from typing import Any
+
+import psycopg
+
+from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
+from joyhousebot.storage.runtime_store import destructive_migrate_enabled
+
+_logger = logging.getLogger(__name__)
+
+_HISTORY_DDL = """CREATE TABLE IF NOT EXISTS schema_migration_history (
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (name, version)
+)"""
+
+# Development-only reset: legacy runtime tables dropped when the destructive
+# gate is explicitly enabled, in dependency-safe order.
+_DESTRUCTIVE_DROP_TABLES = (
+    "runtime_task_dependencies",
+    "runtime_events",
+    "runtime_logs",
+    "runtime_artifacts",
+    "runtime_tasks",
+    "runtime_runs",
+)
+
+
+def migration_checksum(ddl: str) -> str:
+    """Stable checksum of one migration's DDL script."""
+    return sha256(ddl.encode("utf-8")).hexdigest()
+
+
+class PostgresMigrationMixin:
+    """Migration sequencing, history recording, and the shared DDL lock."""
+
+    def _migrate_all(self) -> None:
+        """Serialize the complete migration sequence across all processes.
+
+        Per-domain migration locks are not enough: one process can otherwise
+        create an observability index while another process is still altering
+        a runtime table referenced by that index.  The cluster-wide lock runs
+        on a dedicated connection so this also works when the runtime pool
+        has a maximum size of one.
+        """
+        with self.schema_migration_lock():
+            self.migrate()
+            self.migrate_admins()
+            self.migrate_agents()
+            self.migrate_capabilities()
+            self.migrate_plugins()
+            self.migrate_scenarios()
+            self.migrate_clarifications()
+            self.migrate_rate_limits()
+            self.migrate_observability()
+            self.migrate_mcp_servers()
+
+    @contextmanager
+    def schema_migration_lock(self) -> Iterator[None]:
+        """Hold the cluster-wide schema migration advisory lock.
+
+        Core and plugin DDL must both run inside this lock so they never
+        interleave.  Session-level and transaction-level advisory locks with
+        the same lock ID mutually exclude, so a plugin may equivalently take
+        ``SCHEMA_MIGRATION_LOCK_ID`` with ``pg_advisory_xact_lock`` on its
+        own connection.
+        """
+        with psycopg.connect(
+            self.database_url,
+            autocommit=True,
+            application_name=f"{self.application_name}-migration-lock",
+        ) as lock_connection:
+            lock_connection.execute(
+                "SELECT pg_advisory_lock(%s)", (SCHEMA_MIGRATION_LOCK_ID,)
+            )
+            try:
+                yield
+            finally:
+                lock_connection.execute(
+                    "SELECT pg_advisory_unlock(%s)", (SCHEMA_MIGRATION_LOCK_ID,)
+                )
+
+    def _record_migration(
+        self,
+        conn: Any,
+        *,
+        name: str,
+        version: int,
+        ddl: str,
+        description: str = "",
+    ) -> None:
+        """Record one applied migration; warn when its checksum drifts."""
+        conn.execute(_HISTORY_DDL)
+        checksum = migration_checksum(ddl)
+        row = conn.execute(
+            "SELECT checksum FROM schema_migration_history"
+            " WHERE name=%s AND version=%s",
+            (name, version),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """INSERT INTO schema_migration_history(name,version,checksum,description)
+                   VALUES (%s,%s,%s,%s)""",
+                (name, version, checksum, description),
+            )
+            return
+        if str(row["checksum"]) == checksum:
+            return
+        _logger.warning(
+            "schema migration %s@%s checksum changed (%s -> %s): the DDL was "
+            "modified after being applied; verify the drift is intentional",
+            name,
+            version,
+            str(row["checksum"])[:12],
+            checksum[:12],
+        )
+        conn.execute(
+            """UPDATE schema_migration_history
+               SET checksum=%s, description=%s, applied_at=clock_timestamp()
+               WHERE name=%s AND version=%s""",
+            (checksum, description, name, version),
+        )
+
+    def record_plugin_migration(
+        self,
+        *,
+        name: str,
+        version: int,
+        ddl: str,
+        description: str = "",
+    ) -> None:
+        """Record a plugin-owned migration in the shared history table.
+
+        Call this after applying plugin DDL inside
+        :meth:`schema_migration_lock`; use a ``plugin:<plugin_id>`` name.
+        """
+        with self._pool.connection() as conn, conn.transaction():
+            self._record_migration(
+                conn, name=name, version=version, ddl=ddl, description=description
+            )
+
+    def migrate(self) -> None:
+        """Apply idempotent schema changes under a cluster-wide advisory lock."""
+        ddl = """
+        CREATE TABLE IF NOT EXISTS runtime_schema_migrations (
+            version INTEGER PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+
+        CREATE TABLE IF NOT EXISTS runtime_runs (
+            run_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'agent',
+            status TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            options JSONB NOT NULL DEFAULT '{}'::jsonb,
+            result JSONB,
+            error JSONB,
+            idempotency_key TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            started_at TIMESTAMPTZ,
+            finished_at TIMESTAMPTZ,
+            lease_owner TEXT,
+            lease_expires_at TIMESTAMPTZ,
+            lease_version BIGINT NOT NULL DEFAULT 0,
+            root_run_id TEXT,
+            parent_run_id TEXT,
+            parent_task_id TEXT,
+            current_phase TEXT,
+            status_summary TEXT,
+            status_reason TEXT,
+            next_action TEXT,
+            waiting_on TEXT,
+            active_turn_id TEXT,
+            active_span_count INTEGER NOT NULL DEFAULT 0,
+            completed_task_count INTEGER NOT NULL DEFAULT 0,
+            total_task_count INTEGER NOT NULL DEFAULT 0,
+            last_event_sequence BIGINT NOT NULL DEFAULT 0,
+            last_progress_at TIMESTAMPTZ,
+            cancel_requested_at TIMESTAMPTZ,
+            cancel_reason TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_runs_parent
+            ON runtime_runs(parent_run_id, created_at) WHERE parent_run_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_runtime_runs_root
+            ON runtime_runs(root_run_id, created_at) WHERE root_run_id IS NOT NULL;
+        DROP INDEX IF EXISTS uq_runtime_runs_idempotency;
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_runs_idempotency_v2
+            ON runtime_runs(user_id, agent_id, session_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_runtime_runs_active
+            ON runtime_runs(status, created_at)
+            WHERE status IN ('queued', 'running');
+        CREATE INDEX IF NOT EXISTS ix_runtime_runs_user_session_created
+            ON runtime_runs(user_id, session_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS ix_runtime_runs_agent_created
+            ON runtime_runs(agent_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS runtime_tasks (
+            task_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
+            agent_id TEXT NOT NULL,
+            parent_task_id TEXT,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            result JSONB,
+            error JSONB,
+            priority INTEGER NOT NULL DEFAULT 100,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 1,
+            available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            lease_owner TEXT,
+            lease_expires_at TIMESTAMPTZ,
+            lease_version BIGINT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            started_at TIMESTAMPTZ,
+            finished_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_tasks_claim
+            ON runtime_tasks(priority, available_at, created_at)
+            WHERE status = 'queued';
+        CREATE INDEX IF NOT EXISTS ix_runtime_tasks_expired
+            ON runtime_tasks(lease_expires_at)
+            WHERE status = 'running';
+        CREATE INDEX IF NOT EXISTS ix_runtime_tasks_run
+            ON runtime_tasks(run_id, priority, created_at);
+        CREATE INDEX IF NOT EXISTS ix_runtime_tasks_agent_claim
+            ON runtime_tasks(agent_id, priority, available_at, created_at)
+            WHERE status = 'queued';
+
+        CREATE TABLE IF NOT EXISTS runtime_task_dependencies (
+            task_id TEXT NOT NULL REFERENCES runtime_tasks(task_id) ON DELETE CASCADE,
+            depends_on_task_id TEXT NOT NULL REFERENCES runtime_tasks(task_id) ON DELETE CASCADE,
+            PRIMARY KEY(task_id, depends_on_task_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_dependencies_parent
+            ON runtime_task_dependencies(depends_on_task_id, task_id);
+
+        CREATE TABLE IF NOT EXISTS runtime_events (
+            sequence BIGSERIAL PRIMARY KEY,
+            event_id TEXT NOT NULL UNIQUE,
+            run_id TEXT NOT NULL REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
+            task_id TEXT,
+            root_run_id TEXT,
+            parent_run_id TEXT,
+            parent_task_id TEXT,
+            user_id TEXT,
+            session_id TEXT,
+            agent_id TEXT,
+            turn_id TEXT,
+            span_id TEXT,
+            parent_span_id TEXT,
+            tool_call_id TEXT,
+            attempt INTEGER,
+            phase TEXT,
+            status TEXT,
+            visibility TEXT NOT NULL DEFAULT 'public',
+            summary TEXT,
+            worker_id TEXT,
+            lease_version BIGINT,
+            schema_version INTEGER NOT NULL DEFAULT 2,
+            event_type TEXT NOT NULL,
+            data JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_events_run_sequence
+            ON runtime_events(run_id, sequence);
+        CREATE INDEX IF NOT EXISTS ix_runtime_events_trace
+            ON runtime_events(root_run_id, parent_run_id, task_id, turn_id, tool_call_id);
+        CREATE INDEX IF NOT EXISTS ix_runtime_events_public
+            ON runtime_events(run_id, sequence) WHERE visibility = 'public';
+
+        CREATE TABLE IF NOT EXISTS runtime_logs (
+            sequence BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
+            task_id TEXT,
+            worker_id TEXT,
+            level TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            message TEXT NOT NULL,
+            data JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_logs_run_sequence
+            ON runtime_logs(run_id, sequence);
+        CREATE INDEX IF NOT EXISTS ix_runtime_logs_task_sequence
+            ON runtime_logs(task_id, sequence) WHERE task_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_runtime_logs_data
+            ON runtime_logs USING GIN(data jsonb_path_ops);
+
+        CREATE TABLE IF NOT EXISTS runtime_artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
+            task_id TEXT,
+            name TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            content JSONB,
+            uri TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_artifacts_run
+            ON runtime_artifacts(run_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS runtime_workers (
+            worker_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'online',
+            capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_runtime_workers_heartbeat
+            ON runtime_workers(last_heartbeat DESC);
+
+        CREATE TABLE IF NOT EXISTS conversation_sessions (
+            storage_key TEXT PRIMARY KEY,
+            session_key TEXT NOT NULL,
+            namespace TEXT NOT NULL,
+            state JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_conversation_sessions_namespace_updated
+            ON conversation_sessions(namespace, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS request_trace_events (
+            sequence BIGSERIAL PRIMARY KEY,
+            event_id TEXT NOT NULL UNIQUE,
+            tracker_id TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            parent_request_id TEXT,
+            user_id TEXT,
+            run_id TEXT,
+            transport TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            status TEXT,
+            data JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS ix_request_trace_tracker_sequence
+            ON request_trace_events(tracker_id, sequence);
+        CREATE INDEX IF NOT EXISTS ix_request_trace_request_sequence
+            ON request_trace_events(request_id, sequence);
+        CREATE INDEX IF NOT EXISTS ix_request_trace_user_created
+            ON request_trace_events(user_id, created_at DESC);
+        """
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341907,))
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS runtime_schema_migrations (
+                           version INTEGER PRIMARY KEY,
+                           description TEXT NOT NULL,
+                           applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+                       )"""
+                )
+                current = conn.execute(
+                    "SELECT 1 AS ready FROM runtime_schema_migrations WHERE version=3"
+                ).fetchone()
+                if current is None and destructive_migrate_enabled():
+                    _logger.critical(
+                        "JOYHOUSEBOT_DESTRUCTIVE_MIGRATE=DROP_ALL_TABLES: dropping "
+                        "legacy runtime tables %s before re-creating them; this "
+                        "destroys all runtime data and is only allowed for "
+                        "development resets",
+                        ", ".join(_DESTRUCTIVE_DROP_TABLES),
+                    )
+                    for table in _DESTRUCTIVE_DROP_TABLES:
+                        conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                # Incremental migration only: backfill missing columns on legacy
+                # tables so the idempotent DDL above never requires data loss.
+                self._migrate_runtime_columns(conn)
+                conn.execute(ddl)
+                conn.execute(
+                    """INSERT INTO runtime_schema_migrations(version,description)
+                       VALUES (3,'observable multi-agent event envelope and projections')
+                       ON CONFLICT(version) DO NOTHING"""
+                )
+                self._record_migration(
+                    conn,
+                    name="runtime",
+                    version=3,
+                    ddl=ddl,
+                    description=(
+                        "observable multi-agent event envelope and projections"
+                    ),
+                )
+
+    def _migrate_runtime_columns(self, conn: Any) -> None:
+        """Backfill columns on pre-v3 tables in place; never drops data."""
+
+        def table_exists(name: str) -> bool:
+            row = conn.execute("SELECT to_regclass(%s) AS t", (name,)).fetchone()
+            return bool(row and row["t"])
+
+        if table_exists("runtime_runs"):
+            run_columns = {
+                "user_id": "TEXT NOT NULL DEFAULT ''",
+                "session_id": "TEXT NOT NULL DEFAULT ''",
+                "agent_id": "TEXT NOT NULL DEFAULT 'default'",
+                "kind": "TEXT NOT NULL DEFAULT 'agent'",
+                "status": "TEXT NOT NULL DEFAULT 'queued'",
+                "prompt": "TEXT NOT NULL DEFAULT ''",
+                "options": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "result": "JSONB",
+                "error": "JSONB",
+                "idempotency_key": "TEXT",
+                "created_at": "TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()",
+                "started_at": "TIMESTAMPTZ",
+                "finished_at": "TIMESTAMPTZ",
+                "updated_at": "TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()",
+                "lease_owner": "TEXT",
+                "lease_expires_at": "TIMESTAMPTZ",
+                "lease_version": "BIGINT NOT NULL DEFAULT 0",
+                "root_run_id": "TEXT",
+                "parent_run_id": "TEXT",
+                "parent_task_id": "TEXT",
+                "current_phase": "TEXT",
+                "status_summary": "TEXT",
+                "status_reason": "TEXT",
+                "next_action": "TEXT",
+                "waiting_on": "TEXT",
+                "active_turn_id": "TEXT",
+                "active_span_count": "INTEGER NOT NULL DEFAULT 0",
+                "completed_task_count": "INTEGER NOT NULL DEFAULT 0",
+                "total_task_count": "INTEGER NOT NULL DEFAULT 0",
+                "last_event_sequence": "BIGINT NOT NULL DEFAULT 0",
+                "last_progress_at": "TIMESTAMPTZ",
+                "cancel_requested_at": "TIMESTAMPTZ",
+                "cancel_reason": "TEXT",
+            }
+            for name, definition in run_columns.items():
+                conn.execute(
+                    f"ALTER TABLE runtime_runs ADD COLUMN IF NOT EXISTS {name} {definition}"
+                )
+        if table_exists("runtime_tasks"):
+            conn.execute(
+                "ALTER TABLE runtime_tasks ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT 'default'"
+            )
+        if table_exists("runtime_events"):
+            event_columns = {
+                "root_run_id": "TEXT",
+                "parent_run_id": "TEXT",
+                "parent_task_id": "TEXT",
+                "user_id": "TEXT",
+                "session_id": "TEXT",
+                "agent_id": "TEXT",
+                "turn_id": "TEXT",
+                "span_id": "TEXT",
+                "parent_span_id": "TEXT",
+                "tool_call_id": "TEXT",
+                "attempt": "INTEGER",
+                "phase": "TEXT",
+                "status": "TEXT",
+                "visibility": "TEXT NOT NULL DEFAULT 'public'",
+                "summary": "TEXT",
+                "worker_id": "TEXT",
+                "lease_version": "BIGINT",
+                "schema_version": "INTEGER NOT NULL DEFAULT 2",
+            }
+            for name, definition in event_columns.items():
+                conn.execute(
+                    f"ALTER TABLE runtime_events ADD COLUMN IF NOT EXISTS {name} {definition}"
+                )

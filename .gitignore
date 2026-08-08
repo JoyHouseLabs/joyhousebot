@@ -6,6 +6,7 @@
 
 # Deployment config may contain secrets; keep only the example template in git.
 config.json
+config.dev.json
 
 # Python
 *.pyc

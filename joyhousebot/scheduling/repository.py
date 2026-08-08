@@ -10,6 +10,11 @@ from typing import Any, Iterator
 from joyhousebot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
 from joyhousebot.storage.json_codec import Jsonb
 
+# Database time owns leases: every lease/due comparison uses the database
+# clock so scheduler replicas never compare leases against skewed client
+# wall clocks.  Time columns are bigint epoch milliseconds.
+_DB_NOW_MS = "(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint"
+
 
 class ScheduleRepository:
     """Own schedule rows; PostgreSQL uses row locks and SKIP LOCKED."""
@@ -216,25 +221,29 @@ class ScheduleRepository:
             cursor = connection.execute(query, params)
             return cursor.rowcount > 0
 
+    def db_now_ms(self) -> int:
+        """Return the database wall clock in epoch milliseconds."""
+        with self._connection() as connection:
+            row = connection.execute(f"SELECT {_DB_NOW_MS} AS now_ms").fetchone()
+        return int(row["now_ms"])
+
     def claim_due(
-        self, *, worker_id: str, now_ms: int, lease_ms: int, limit: int = 32
+        self, *, worker_id: str, lease_ms: int, limit: int = 32
     ) -> list[CronJob]:
-        query = """
+        query = f"""
             WITH due AS (
                 SELECT schedule_id FROM schedules
-                WHERE enabled AND next_run_at_ms IS NOT NULL AND next_run_at_ms<=%s
-                  AND (lease_until_ms IS NULL OR lease_until_ms<=%s)
+                WHERE enabled AND next_run_at_ms IS NOT NULL AND next_run_at_ms<={_DB_NOW_MS}
+                  AND (lease_until_ms IS NULL OR lease_until_ms<={_DB_NOW_MS})
                 ORDER BY next_run_at_ms,schedule_id FOR UPDATE SKIP LOCKED LIMIT %s
             )
-            UPDATE schedules s SET lease_owner=%s,lease_until_ms=%s,
-                lease_version=s.lease_version+1,updated_at_ms=%s
+            UPDATE schedules s SET lease_owner=%s,lease_until_ms={_DB_NOW_MS}+%s,
+                lease_version=s.lease_version+1,updated_at_ms={_DB_NOW_MS}
             FROM due WHERE s.schedule_id=due.schedule_id RETURNING s.*
             """
         with self._connection() as connection:
-            rows = connection.execute(
-                query, (now_ms, now_ms, limit, worker_id, now_ms + lease_ms, now_ms)
-            ).fetchall()
-            self._insert_occurrences(connection, rows, worker_id, now_ms)
+            rows = connection.execute(query, (limit, worker_id, lease_ms)).fetchall()
+            self._insert_occurrences(connection, rows, worker_id)
         return [self._job(row) for row in rows]
 
     def claim_one(
@@ -242,45 +251,45 @@ class ScheduleRepository:
         schedule_id: str,
         *,
         worker_id: str,
-        now_ms: int,
         lease_ms: int,
         manual: bool = False,
     ) -> CronJob | None:
-        """Claim exactly one requested schedule without consuming unrelated work."""
+        """Claim exactly one requested schedule without consuming unrelated work.
+
+        ``manual=True`` (operator "run now") skips the enabled/due filter and
+        stamps ``next_run_at_ms`` with the database time so the occurrence is
+        recorded against "now".  The schedule itself is not consumed:
+        ``finish`` recomputes ``next_run_at_ms`` from the schedule definition,
+        so a manually triggered one-shot ``at`` job whose time is still in
+        the future keeps its planned occurrence instead of being disabled.
+        """
         due_condition = (
             ""
             if manual
-            else "AND enabled AND next_run_at_ms IS NOT NULL AND next_run_at_ms<=%s"
+            else f"AND enabled AND next_run_at_ms IS NOT NULL AND next_run_at_ms<={_DB_NOW_MS}"
         )
         query = f"""
-            UPDATE schedules SET lease_owner=%s,lease_until_ms=%s,
-                lease_version=lease_version+1,updated_at_ms=%s,
-                next_run_at_ms=CASE WHEN %s THEN %s ELSE next_run_at_ms END
+            UPDATE schedules SET lease_owner=%s,lease_until_ms={_DB_NOW_MS}+%s,
+                lease_version=lease_version+1,updated_at_ms={_DB_NOW_MS},
+                next_run_at_ms=CASE WHEN %s THEN {_DB_NOW_MS} ELSE next_run_at_ms END
             WHERE schedule_id=%s {due_condition}
-              AND (lease_until_ms IS NULL OR lease_until_ms<=%s)
+              AND (lease_until_ms IS NULL OR lease_until_ms<={_DB_NOW_MS})
             RETURNING *
             """
-        params: list[Any] = [
-                worker_id,
-                now_ms + lease_ms,
-                now_ms,
-                manual,
-                now_ms,
-                schedule_id,
-            ]
-        if not manual:
-            params.append(now_ms)
-        params.append(now_ms)
+        params: list[Any] = [worker_id, lease_ms, manual, schedule_id]
         with self._connection() as connection:
             row = connection.execute(query, params).fetchone()
             rows = [row] if row else []
-            self._insert_occurrences(connection, rows, worker_id, now_ms)
+            self._insert_occurrences(connection, rows, worker_id)
         return self._job(row) if row else None
 
     def _insert_occurrences(
-        self, connection: Any, rows: list[Any], worker_id: str, now_ms: int
+        self, connection: Any, rows: list[Any], worker_id: str
     ) -> None:
         for row in rows:
+            # updated_at_ms was stamped by the claiming statement's database
+            # clock, so occurrence timestamps share the lease time source.
+            now_ms = int(row["updated_at_ms"])
             scheduled_for = int(row["next_run_at_ms"] or now_ms)
             values = (
                 uuid.uuid4().hex,
@@ -303,12 +312,12 @@ class ScheduleRepository:
                 values,
             )
 
-    def renew(self, job: CronJob, *, worker_id: str, now_ms: int, lease_ms: int) -> bool:
+    def renew(self, job: CronJob, *, worker_id: str, lease_ms: int) -> bool:
         p = "%s"
         with self._connection() as connection:
             cursor = connection.execute(
-                f"UPDATE schedules SET lease_until_ms={p} WHERE schedule_id={p} AND lease_owner={p} AND lease_version={p}",
-                (now_ms + lease_ms, job.id, worker_id, job.lease_version),
+                f"UPDATE schedules SET lease_until_ms={_DB_NOW_MS}+{p} WHERE schedule_id={p} AND lease_owner={p} AND lease_version={p}",
+                (lease_ms, job.id, worker_id, job.lease_version),
             )
             return cursor.rowcount > 0
 

@@ -75,6 +75,13 @@ class PostgresPluginStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341919,))
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="plugins",
+                version=1,
+                ddl=ddl,
+                description="plugin release catalog and operational projections",
+            )
 
     def upsert_plugin_release(self, manifest: dict[str, Any]) -> None:
         value = dict(manifest)

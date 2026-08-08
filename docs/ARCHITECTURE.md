@@ -42,7 +42,17 @@ Client ──HTTP/SSE──▶ API replicas ────────────
 ```
 
 - Agent Worker 使用数据库 lease、fencing version 和 `FOR UPDATE SKIP LOCKED` claim 工作。
+- 所有 lease 比较统一使用数据库时钟（database time owns leases）：runtime_runs/tasks、schedules、
+  channel lease/outbox 的 claim/续租/finish 都在 SQL 内以 `clock_timestamp()` 判定，不依赖各副本的
+  客户端墙钟。心跳续期要求 lease 未过期，过期即失败并走 lease-lost 路径，zombie Worker 不能复活租约。
 - 同一会话的顶层 Run 串行；不同用户、会话和子任务可以并发。
+- Run 的取消是两阶段的：跨进程 cancel 先在 `runtime_runs` 写入 `cancel_requested_at`/`cancel_reason`
+  标记（仅非终态可置）；持有活 lease 的 owning Worker 在下一次心跳（约 lease_seconds/3）或执行检查点
+  发现标记后自行中止，并带 fencing 提交终态 `cancelled`。只有 lease 缺失或已过期时，非 owner
+  （API 进程或恢复扫描）才允许直接把 Run 强转终态——`finish_runtime_run` 的 fencing 谓词在
+  数据库层强制这一点，`worker_id` 为空不再是无条件后门。已被请求取消的 Run 不可被 claim、
+  心跳或转入 `running`，且在真正终态前仍以 `running` 身份阻塞同会话下一个顶层 Run 的 claim；
+  owning Worker 死亡时由协调器的恢复扫描把标记 Run 推进到 `cancelled`，保证取消最终完成。
 - 不完整 Run 的恢复顺序按用户轮转，避免单个用户占满恢复队列。
 - Schedule occurrence、Channel lease/outbox、Provider profile health、Memory 和 Knowledge 都是集群共享的规范化状态。
 - Channel 投递成功或失败会写 delivery audit；外部连接所有权由带续租的 channel lease 决定。
@@ -116,6 +126,16 @@ CapabilityDefinition 还声明 data classification、connection IDs、permission
 manifest；部署者创建或发布业务 Agent revision，显式写入该插件的 `plugin_requirements` 及最小
 `capability_policy.permissions`。因此通用平台可以不安装 Dinq，安装后也能以最小权限运行 Dinq Agent。
 
+插件还可以注册版本化 `ProjectionProvider`。公共路由只识别 `view`，从 Registry 解析 Provider，向其提供
+当前用户已经授权的 Run、Artifact、Event、Invocation 和 Scenario state；核心既不知道候选人等业务字段，
+也不维护业务专用 Router。运行中 Provider 可从通用执行证据生成增量视图；Run 终态提交成功后，Runtime
+调用 Provider 的幂等 `materialize()`，由插件写入自己的 PostgreSQL schema。后续查询可读取插件读模型，
+但 Projection 写入失败不会回滚已经完成的 Run，而会产生 `projection.failed` 日志并允许重放修复。
+
+已确认的 Scenario inputs 会复制到不可变 Run execution context，并传入每次 CapabilityContext metadata。
+这使业务能力可以确定性执行用户确认的约束，即使模型生成 Tool 参数时漏掉字段；插件不需要读取核心表，
+也不能把模型输出当成约束事实源。
+
 ## PostgreSQL 数据模型
 
 当前实现的专用表：
@@ -136,10 +156,34 @@ manifest；部署者创建或发布业务 Agent revision，显式写入该插件
 - 平台权限：`platform_admins`、`platform_admin_events`、`api_access_tokens`、`api_access_token_events`。
 - 配置发布：`configuration_events`、`configuration_rollouts`、`configuration_rollout_targets`。
 
+插件业务表不属于核心 migration。例如 Dinq 在独立 `dinq` schema 保存搜索简报版本、Attempt、来源批次、
+候选人观察/命中和富化档案；这些表由插件迁移和维护，核心只保存完整执行证据及 Projection 生命周期日志。
+插件 DDL 必须与核心共用同一把 cluster-wide advisory lock：持有 RuntimeStore 的插件使用公开的
+`schema_migration_lock()` context manager，自建连接的插件（如 Dinq）直接对同一 lock ID
+（`storage/postgres_locks.py` 的 `SCHEMA_MIGRATION_LOCK_ID`）执行 `pg_advisory_xact_lock`；
+session 级与事务级 advisory lock 互相排斥，因此插件与核心 migration 绝不会交叉持锁。
+
+每个领域的 migration 执行后都会向 `schema_migration_history` 表记录
+`(name, version, checksum, applied_at)`（checksum 为该领域 DDL 脚本的 SHA-256）；重复启动时
+checksum 一致则跳过记录，checksum 变化说明 DDL 在应用后被改动，会产生 warning 级日志提示
+schema 漂移。插件 migration 可通过 store 的 `record_plugin_migration()` 写入同一张表
+（命名约定 `plugin:<plugin_id>`）。
+
 所有 PostgreSQL schema migration 使用同一个 cluster-wide advisory lock 串行执行，避免 API、
 Scheduler 与多个 Worker 并发启动时让不同领域的 DDL 交叉持锁。运行数据保留清理由 Scheduler
 承担，并在事务内依次抢占 migration lock 和 purge lock；迁移进行中或已有清理者时立即跳过，
 deadlock/lock-timeout 只做有界重试，不会导致执行 Worker 退出。
+
+purge 覆盖执行、事件、日志、产物、Invocation、Schedule occurrence、诊断与追踪等全部运行数据表。
+`runtime_events`/`runtime_logs` 被清理前，对应 Run 会在 metadata 写入 `events_purged` tombstone；
+SSE 回放命中 tombstone 时先产出 `run.history_purged` 事件向调用方明示，而不是静默缺失时间线。
+推理类表（`trace_blobs`、`model_reasoning_segments`、`model_invocations`、`execution_spans`）使用独立的
+`JOYHOUSEBOT_DIAGNOSTICS_RETENTION_DAYS` 保留周期（缺省回退到全局 `JOYHOUSEBOT_RETENTION_DAYS`）；
+`trace_blobs.expires_at` 是生效字段，purge 优先删除已过期 Blob，读取侧过期即视为不存在。
+
+`JOYHOUSEBOT_DESTRUCTIVE_MIGRATE` 是仅限开发重置的逃生口：只有取值精确等于 `DROP_ALL_TABLES`
+才生效（`=1` 等真值不再触发），执行前会以 critical 级日志列出将删除的 runtime 表；生产环境
+绝不应设置该变量。
 
 JSONB 只保存单实体 payload/result/options；集合、队列、lease 和状态机必须是可索引行。生产迁移使用 advisory lock；状态提交必须校验 lease owner/version。
 
@@ -160,7 +204,8 @@ Worker、耗时、首 Token 时间和错误；模型调用另存 provider/model/
 原始推理 delta 是 private event，普通用户 SSE 会去掉正文。完整 Prompt、响应、流事件和供应商错误体
 保存为带 SHA-256 与大小的 Trace Blob；认证 Header/API Key 从不进入 Blob。诊断台按权限按需读取，
 读取行为写审计日志。当前开发/测试配置默认开启
-供应商推理参数；生产管理员应将这些表、备份和数据库访问视为最高敏感级别，并配置独立保留周期。
+供应商推理参数；生产管理员应将这些表、备份和数据库访问视为最高敏感级别。诊断类数据的保留周期由
+`JOYHOUSEBOT_DIAGNOSTICS_RETENTION_DAYS` 独立配置（见"PostgreSQL 数据模型"一节）。
 
 回放分为四类：`offline` 对现有存档重新做解析/对比，`frozen` 固定使用已保存结果，`branch` 从源 Run
 创建有父子关联的新 Run，`live` 使用当前外部依赖重新执行。每次回放保存发起人、覆盖项、新 Run ID 和
@@ -195,11 +240,11 @@ api / bootstrap / channel adapter
 - `application/`：用户边界内的 Run、Session、Schedule 用例，以及控制面 Catalog/Rollout 用例。
 - `runtime/`：Run/Graph 提交、claim、lease/fencing、执行、事件叙事、取消与恢复。
 - `agent/`：共享 NativeAgentExecutor，拆分为模型调用、轮次引擎、Tool runtime、消息处理、记忆生命周期；每次执行状态来自不可变 `RunContext`。
-- `storage/`：PostgreSQL RuntimeStore；使用连接池、advisory migration lock、`SKIP LOCKED` 和 LISTEN/NOTIFY 唤醒。
+- `storage/`：PostgreSQL RuntimeStore；使用连接池、advisory migration lock、`SKIP LOCKED` 和 LISTEN/NOTIFY 唤醒。空闲 Worker 不做全量扫描：NOTIFY 命中立即扫描，poll 唤醒只做轻量 EXISTS 探测且间隔指数退避（0.2s 起步封顶 2s），另有 30s 深扫兜底防丢通知。
 - `scheduling/`、`channels/`、`services/retrieval/`：Schedule、Channel outbox/lease、Knowledge 的专用 Repository。
 - `bootstrap/`：分别组合 API、Agent Worker、Scheduler Worker 和 Channel Worker；AgentRuntimeCatalog 按不可变 revision 热加载，不共享进程内业务状态。
 
-一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。
+一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。`conversation_sessions.state` 只是 consolidation 缓存：持久化副本只保留最新 200 条消息（`last_consolidated` 随截断平移），事实源始终是 Run 历史。
 
 主协调路径是：确定性场景路由 → 结构化主协调器 → 字段校验/追问 DAG → Planner。
 单步骤交给主 Agent；固定场景或两步以上开放计划会在同一 Run 上原子生成 Task Graph。
@@ -224,6 +269,9 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
 - 场景工作台负责路由、追问 DAG 与执行策略配置，可编辑单选、多选、Other、选项说明和条件边；试用页将
   InputRequest 渲染为可提交的交互卡片，并显示题目进度。
 - Agent 试用仍以当前 `user_id` 提交普通用户 Run，用于验证真实业务链路，不绕过用户隔离。
+- 代用户操作是显式动作：控制台默认只携带 operator 自身身份，只有操作员在常驻代操作入口显式设置
+  目标用户后才发送 `X-Impersonate-User-ID`（选择存 sessionStorage，关标签页即失效，代操作中界面
+  有常驻醒目提示）。control token 只存 sessionStorage，不落 localStorage。
 
 ## 已删除且不得恢复
 

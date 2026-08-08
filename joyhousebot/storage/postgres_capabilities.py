@@ -79,6 +79,13 @@ class PostgresCapabilityStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341908,))
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="capabilities",
+                version=1,
+                ddl=ddl,
+                description="capability definitions, versions, and invocations",
+            )
         from joyhousebot.bootstrap.default_skills import seed_default_skills
 
         seed_default_skills(self)

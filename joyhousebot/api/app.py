@@ -228,7 +228,11 @@ def create_app(
     @app.get("/metrics", include_in_schema=False)
     async def metrics(request: Request):
         metrics_token = str(os.getenv("JOYHOUSEBOT_METRICS_TOKEN") or "").strip()
-        if metrics_token and not hmac.compare_digest(
+        if not metrics_token:
+            # Fail closed: without an explicit scrape token the endpoint is
+            # disabled rather than exposed on the data plane.
+            return Response(status_code=404, content="metrics endpoint disabled\n")
+        if not hmac.compare_digest(
             _bearer_token(request.headers.get("authorization")), metrics_token
         ):
             return Response(status_code=401, content="metrics authentication required\n")

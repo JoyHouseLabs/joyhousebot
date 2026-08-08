@@ -26,13 +26,26 @@ Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKERS`、`JOYHOUSEBOT_LOCAL_PORT`、
 ## PostgreSQL 启动
 
 ```bash
-export POSTGRES_PASSWORD='choose-a-strong-password'  # 必填，compose 不再提供默认值
+export POSTGRES_PASSWORD='choose-a-strong-password'  # 必填，compose 不提供默认值
+export JOYHOUSEBOT_METRICS_TOKEN='choose-a-scrape-token'  # 必填，/metrics 未配置 token 时 fail-closed
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
-Compose 默认挂载仅供本地开发的 `config.example.json`。生产部署须设置
+Compose 默认挂载生产安全基线 `config.example.json`（`allowInsecureAuth=false`）。
+本机开发改用 `config.dev.json`（开启 insecure auth，仅限本机，不要对外暴露）：
+
+```bash
+export JOYHOUSEBOT_CONFIG_FILE=./config.dev.json
+```
+
+生产部署须设置
 `JOYHOUSEBOT_CONFIG_FILE=/absolute/path/cloud.json`，所有角色会通过
 `JOYHOUSEBOT_CONFIG_PATH=/app/config.json` 读取同一份只读配置。
+
+Compose 把 API 拆成两个角色：`api` 以 `--surface public` 只承载公网数据面
+（runs/sessions/schedules/MCP，18790）；`control` 以 `--surface control` 承载
+`/v1/admin/*` 与控制台 UI，默认只绑定 `127.0.0.1:18791`，不要暴露公网，通过
+SSH 隧道或内网访问。
 
 启用外部 Channel 时，Channel Worker 还必须显式注入对应的 Channel 凭据环境变量；不要把
 Token、App Secret、SMTP 密码写入 JSON。当前 Channel 配置由进程启动时读取，修改凭据后需要重启
@@ -65,7 +78,9 @@ joyhousebot check --config ./config.json
 - `GET /v1/admin/overview`：验证数据库管理员权限和平台全局监控面。
 - `GET /metrics`：Prometheus 文本格式指标；包含 Run/Task/Worker、Provider 平均/P95 延迟、TTFT、费用、队列年龄、租约过期、重试和 Channel outbox 聚合。采集结果按进程缓存 5 秒，避免高频抓取放大 PostgreSQL 查询压力。
   数据库暂时不可用时仍返回 `joyhousebot_up 0` 和 HTTP 503，便于区分进程存活与数据面就绪。
-  生产环境建议设置 `JOYHOUSEBOT_METRICS_TOKEN`，Prometheus 使用 `Authorization: Bearer <token>` 抓取；即使不设置，也应通过网络策略仅允许监控网段访问。
+  该端点 fail-closed：未设置 `JOYHOUSEBOT_METRICS_TOKEN` 时一律返回 404；设置后必须携带
+  `Authorization: Bearer <token>`，否则返回 401。`ops/prometheus/prometheus.yml` 已按
+  `credentials_file` 方式配置 bearer 抓取。
 - `GET /v1/system/metrics`：管理员控制台使用的同源 JSON 指标。
 
 Grafana 可直接导入 `ops/grafana/joyhousebot-overview.json`；Prometheus 抓取示例位于

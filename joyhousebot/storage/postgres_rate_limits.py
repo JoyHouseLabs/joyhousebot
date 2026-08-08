@@ -5,15 +5,21 @@ from __future__ import annotations
 
 class PostgresRateLimitStoreMixin:
     def migrate_rate_limits(self) -> None:
+        ddl = """CREATE TABLE IF NOT EXISTS api_rate_limits (
+            rate_key TEXT PRIMARY KEY,
+            window_start BIGINT NOT NULL,
+            request_count INTEGER NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        )"""
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341911,))
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS api_rate_limits (
-                       rate_key TEXT PRIMARY KEY,
-                       window_start BIGINT NOT NULL,
-                       request_count INTEGER NOT NULL,
-                       updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-                   )"""
+            conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="rate_limits",
+                version=1,
+                ddl=ddl,
+                description="atomic API admission counters",
             )
 
     def check_api_rate_limit(

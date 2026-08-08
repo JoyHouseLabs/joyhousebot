@@ -1,11 +1,10 @@
-import os
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from tests.support.postgres_store import PostgresTestStore
+from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
 def _revision(version: int) -> AgentRevision:
@@ -128,9 +127,7 @@ def test_stale_worker_lease_is_reconciled_without_hiding_live_workers(tmp_path: 
 
 @pytest.mark.postgres
 def test_postgres_staged_rollout_round_trip() -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     suffix = uuid4().hex

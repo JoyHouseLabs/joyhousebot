@@ -42,6 +42,7 @@ class NativeAgentRuntime(
         worker_name: str = "runtime",
         capabilities: dict[str, Any] | None = None,
         plugin_releases: list[dict[str, Any]] | None = None,
+        projection_registry: Any | None = None,
         default_agent_id: str = "default",
         poll_interval_seconds: float = 0.2,
     ) -> None:
@@ -62,6 +63,7 @@ class NativeAgentRuntime(
         self.maintenance_enabled = maintenance_enabled
         self.capabilities = capabilities or {"agent": True, "graph_task": True}
         self.plugin_releases = [dict(item) for item in (plugin_releases or [])]
+        self.projection_registry = projection_registry
         self.default_agent_id = str(default_agent_id or "default").strip() or "default"
         self.task_worker_count = max(1, min(int(max_concurrent_runs or 4), 32))
         self.work_signal = RuntimeWorkSignal(

@@ -98,12 +98,14 @@ Business applications such as Dinq Discover should register Scenarios, Capabilit
 PostgreSQL is required:
 
 ```bash
-cp config.example.json config.json
+cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot"
 ./scripts/start-local.sh
 ```
+
+`config.dev.json` enables `allowInsecureAuth` (the `X-User-ID` header alone authenticates); it is for local development only — never expose it. `config.example.json` is the production-safe baseline template.
 
 Open `http://127.0.0.1:18790/ui/`; OpenAPI is at `/docs`, and health endpoints are `/healthz` and `/readyz`. `config.json` is ignored by Git; never commit real credentials.
 
@@ -113,9 +115,12 @@ Docker Compose is also available:
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export POSTGRES_PASSWORD="choose-a-strong-password"
+export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
+
+Compose starts two API roles: `api` (public data plane, 18790) and `control` (admin plane and console UI, bound to `127.0.0.1:18791` by default — do not expose it publicly).
 
 See [Architecture](docs/ARCHITECTURE.md) and [Operations](docs/OPERATIONS.md) for deployment, migrations, Worker roles, and incident handling.
 

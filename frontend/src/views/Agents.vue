@@ -147,6 +147,8 @@
               <label class="switch-label wide"><input v-model="draft.allow_subagents" type="checkbox" /><span><strong>允许派生子 Agent</strong><small>规划器可以将任务委派给其他 Agent</small></span></label>
               <label><span>最大规划步骤</span><input v-model.number="draft.max_steps" type="number" min="1" /></label>
               <label><span>最大并发分支</span><input v-model.number="draft.max_fan_out" type="number" min="1" /></label>
+              <label><span>同轮工具调用</span><select v-model="draft.tool_execution_mode"><option value="sequential">严格串行（默认）</option><option value="parallel_safe">并发只读工具</option></select><small class="field-hint">仅允许能力声明为无副作用、幂等且可并发的调用；写入与未知能力仍会串行。</small></label>
+              <label><span>同轮最大并发</span><input v-model.number="draft.max_parallel_calls" type="number" min="1" max="128" :disabled="draft.tool_execution_mode !== 'parallel_safe'" /><small class="field-hint">一个模型响应中独立 Tool Call 的上限。结果按原调用顺序回填。</small></label>
               <div class="memory-guide wide"><strong>使用建议</strong><span>简单检索或单一工具任务可设为 1–3 步、关闭子 Agent；需要调研、并行检索或交叉验证时再提高步骤与分支数。并发分支是单个 Run 的上限，实际执行仍受 Worker 槽位与租约控制。</span></div>
             </div>
           </section>
@@ -265,7 +267,7 @@ const blankDraft = () => ({
   max_tool_iterations: 20, reasoning_effort: 'none', thinking_budget_tokens: 0,
   capture_reasoning: false, cache_enabled: true, cache_ttl_seconds: 300, capability_mode: 'catalog',
   allowed_capabilities: [] as string[], allow_subagents: true, max_steps: 32,
-  max_fan_out: 10, memory_enabled: false, memory_mode: 'task_only', memory_scope: 'user_agent',
+  max_fan_out: 10, tool_execution_mode: 'sequential', max_parallel_calls: 4, memory_enabled: false, memory_mode: 'task_only', memory_scope: 'user_agent',
   memory_episodic: false, memory_profile: false, memory_long_term: false, memory_agent: false,
   memory_read_mode: 'none', memory_write: 'none', memory_top_k: 10, memory_max_tokens: 6000,
 })
@@ -342,6 +344,8 @@ function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | unde
     allowed_capabilities: Array.isArray(ability.allowed) ? ability.allowed.map(String) : [],
     allow_subagents: boolValue(planning.allow_subagents, true), max_steps: numberValue(planning.max_steps, 32),
     max_fan_out: numberValue(planning.max_fan_out, 10),
+    tool_execution_mode: String((model.tool_execution as any)?.mode || 'sequential'),
+    max_parallel_calls: numberValue((model.tool_execution as any)?.max_parallel_calls, 4),
     memory_enabled: memory.enabled !== false && memory.read !== false,
     memory_mode: String(memory.mode || (memory.enabled === false ? 'task_only' : 'personalized')),
     memory_scope: String(memory.scope || 'user_agent'),
@@ -401,6 +405,10 @@ function payload() {
       max_tokens: draft.max_tokens, max_tool_iterations: draft.max_tool_iterations,
       capture_reasoning: draft.capture_reasoning, thinking_budget_tokens: draft.thinking_budget_tokens,
       reasoning_effort: draft.reasoning_effort, cache_enabled: draft.cache_enabled, cache_ttl_seconds: draft.cache_ttl_seconds,
+      tool_execution: {
+        mode: draft.tool_execution_mode,
+        max_parallel_calls: Math.max(1, Math.min(128, Number(draft.max_parallel_calls) || 1)),
+      },
     },
     planning_policy: { ...policyBase.planning, allow_subagents: draft.allow_subagents, max_steps: draft.max_steps, max_fan_out: draft.max_fan_out },
     capability_policy: { ...policyBase.capability, mode: draft.capability_mode, allowed: draft.allowed_capabilities },

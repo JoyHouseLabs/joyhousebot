@@ -9,12 +9,20 @@ from joyhousebot.storage.json_codec import Jsonb
 
 class PostgresMCPStoreMixin:
     def migrate_mcp_servers(self) -> None:
+        ddl = """CREATE TABLE IF NOT EXISTS mcp_servers (
+            name TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            command TEXT NOT NULL DEFAULT '', args JSONB NOT NULL DEFAULT '[]'::jsonb,
+            env JSONB NOT NULL DEFAULT '{}'::jsonb, url TEXT NOT NULL DEFAULT ''
+        )"""
         with self._pool.connection() as conn, conn.transaction():
-            conn.execute("""CREATE TABLE IF NOT EXISTS mcp_servers (
-                name TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                command TEXT NOT NULL DEFAULT '', args JSONB NOT NULL DEFAULT '[]'::jsonb,
-                env JSONB NOT NULL DEFAULT '{}'::jsonb, url TEXT NOT NULL DEFAULT ''
-            )""")
+            conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="mcp_servers",
+                version=1,
+                ddl=ddl,
+                description="MCP server registry",
+            )
 
     def list_mcp_servers(self) -> list[dict[str, Any]]:
         with self._pool.connection() as conn:

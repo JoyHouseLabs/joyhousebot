@@ -33,13 +33,28 @@ class AgentExecutionMixin(AgentTerminalMixin):
     ) -> AgentResult:
         options = AgentOptions.from_dict(record.options)
         started_at = utc_now()
-        await asyncio.to_thread(
+        claimed = await asyncio.to_thread(
             self.store.update_runtime_run,
             record.run_id,
             status="running",
             worker_id=self.worker_id,
             lease_version=record.lease_version,
         )
+        if not claimed:
+            # The run was cancelled or reached a terminal state between the
+            # claim and execution start. Abort before any model/tool call;
+            # the fenced terminal commit is a no-op when another worker won.
+            await self._finish_error(
+                record.run_id,
+                RunStatus.CANCELLED,
+                EventType.RUN_CANCELLED,
+                record.cancel_reason or "run was cancelled before execution started",
+                started_at,
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+            )
+            cancellation.cancel("run was cancelled before execution started")
+            raise asyncio.CancelledError(cancellation.reason)
         await self._log(
             record.run_id,
             "run.started",
@@ -453,6 +468,28 @@ class AgentExecutionMixin(AgentTerminalMixin):
         )
         execution_span_id = f"span_exec_{uuid4().hex}"
         granted_permissions = await self._execution_permissions(run_id, agent_id)
+        scenario_state = await asyncio.to_thread(
+            self.store.get_run_scenario_state,
+            run_id,
+            expected_user_id=user_id,
+        )
+        scenario_execution_policy: dict[str, Any] = {}
+        if scenario_state is not None and getattr(scenario_state, "scenario_id", None):
+            scenario = await asyncio.to_thread(
+                self.store.get_scenario_version,
+                str(scenario_state.scenario_id),
+                int(getattr(scenario_state, "scenario_version", 0) or 0),
+            )
+            if scenario is not None:
+                scenario_execution_policy = dict(
+                    getattr(scenario, "execution_policy", {}) or {}
+                )
+        execution_metadata = {
+            "scenario_id": str(getattr(scenario_state, "scenario_id", "") or ""),
+            "scenario_version": int(getattr(scenario_state, "scenario_version", 0) or 0),
+            "scenario_inputs": dict(getattr(scenario_state, "collected_inputs", {}) or {}),
+            "scenario_execution_policy": scenario_execution_policy,
+        }
         context = RunContext(
             run_id=run_id,
             task_id=task_id,
@@ -488,6 +525,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 dict(item) for item in (metadata or {}).get("skill_refs", [])
                 if isinstance(item, dict)
             ),
+            metadata=execution_metadata,
         )
         conversation_key = context.session_key
         try:

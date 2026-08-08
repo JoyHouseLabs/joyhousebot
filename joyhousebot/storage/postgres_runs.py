@@ -278,7 +278,7 @@ class PostgresRunStoreMixin:
                 """
                 WITH candidate AS (
                     SELECT pending.run_id FROM runtime_runs pending
-                    WHERE pending.run_id=%s AND (
+                    WHERE pending.run_id=%s AND pending.cancel_requested_at IS NULL AND (
                         pending.status='queued' OR (pending.status='running' AND
                         (pending.lease_owner IS NULL OR pending.lease_expires_at IS NULL
                          OR pending.lease_expires_at < clock_timestamp()))
@@ -340,11 +340,16 @@ class PostgresRunStoreMixin:
         lease_version: int | None = None,
     ) -> bool:
         with self._pool.connection() as conn:
+            # Only a live lease may be renewed: once lease_expires_at has
+            # passed the heartbeat must fail so a zombie worker takes the
+            # lease-lost path instead of extending a double-execution window.
             cur = conn.execute(
                 """UPDATE runtime_runs SET
                        lease_expires_at=clock_timestamp() + (%s * interval '1 second'),
                        updated_at=clock_timestamp()
                    WHERE run_id=%s AND status='running' AND lease_owner=%s
+                     AND lease_expires_at >= clock_timestamp()
+                     AND cancel_requested_at IS NULL
                      AND (%s::bigint IS NULL OR lease_version=%s)""",
                 (max(5, lease_seconds), run_id, worker_id, lease_version, lease_version),
             )
@@ -491,6 +496,7 @@ class PostgresRunStoreMixin:
                     updated_at=clock_timestamp()
                 WHERE run_id=%s
                   AND (status NOT IN ('completed','failed','cancelled','timed_out') OR status=%s)
+                  AND (%s::text<>'running' OR cancel_requested_at IS NULL)
                   AND (%s::text IS NULL OR lease_owner=%s)
                   AND (%s::bigint IS NULL OR lease_version=%s)
                 """,
@@ -503,6 +509,7 @@ class PostgresRunStoreMixin:
                     release_lease,
                     release_lease,
                     run_id,
+                    status,
                     status,
                     worker_id,
                     worker_id,
@@ -547,7 +554,12 @@ class PostgresRunStoreMixin:
                     active_span_count=0, updated_at=clock_timestamp()
                 WHERE run_id=%s
                   AND status NOT IN ('completed','failed','cancelled','timed_out')
-                  AND (%s::text IS NULL OR lease_owner=%s)
+                  AND (
+                    (%s::text IS NOT NULL AND lease_owner=%s)
+                    OR (%s::text IS NULL AND (
+                      lease_owner IS NULL OR lease_expires_at IS NULL
+                      OR lease_expires_at < clock_timestamp()))
+                  )
                   AND (%s::bigint IS NULL OR lease_version=%s)
                 RETURNING run_id
                 """,
@@ -558,6 +570,7 @@ class PostgresRunStoreMixin:
                     event.summary,
                     event.data.get("error") or event.data.get("reason"),
                     run_id,
+                    worker_id,
                     worker_id,
                     worker_id,
                     lease_version,
@@ -625,16 +638,3 @@ class PostgresRunStoreMixin:
         return replace(
             event, sequence=sequence, created_at=_iso(row["created_at"]) or event.created_at
         )
-
-    def reset_runtime_run(self, run_id: str) -> bool:
-        with self._pool.connection() as conn, conn.transaction():
-            cur = conn.execute(
-                """UPDATE runtime_runs SET status='queued', result=NULL, error=NULL,
-                       started_at=NULL, finished_at=NULL, lease_owner=NULL, lease_expires_at=NULL,
-                       updated_at=clock_timestamp()
-                   WHERE run_id=%s AND status IN ('failed','cancelled','timed_out')""",
-                (run_id,),
-            )
-            if cur.rowcount:
-                self._notify(conn, run_id)
-            return cur.rowcount == 1

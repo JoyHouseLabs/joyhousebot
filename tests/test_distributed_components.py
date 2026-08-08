@@ -1,5 +1,4 @@
 import asyncio
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,7 +12,7 @@ from joyhousebot.config.schema import Config
 from joyhousebot.cron.service import CronService
 from joyhousebot.cron.types import CronSchedule
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
-from tests.support.postgres_store import PostgresTestStore
+from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
 def test_memory_append_is_atomic_across_store_instances(tmp_path: Path) -> None:
@@ -66,8 +65,8 @@ async def test_cron_is_user_scoped_and_one_gateway_claims_each_occurrence(
         now_ms=now_ms,
     )
     claimed_a, claimed_b = await asyncio.gather(
-        asyncio.to_thread(cron_a._claim_due_jobs, now_ms),
-        asyncio.to_thread(cron_b._claim_due_jobs, now_ms),
+        asyncio.to_thread(cron_a._claim_due_jobs),
+        asyncio.to_thread(cron_b._claim_due_jobs),
     )
     claimed = claimed_a + claimed_b
     assert len(claimed) == 1
@@ -101,6 +100,32 @@ async def test_manual_run_preserves_disabled_schedule_state(tmp_path: Path) -> N
     assert executed == [job.id]
     assert stored.enabled is False
     assert stored.state.next_run_at_ms is None
+
+
+@pytest.mark.asyncio
+async def test_manual_run_keeps_future_one_shot_schedule(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "manual-at-cron.db")
+    executed: list[str] = []
+
+    async def on_job(job):
+        executed.append(job.id)
+        return "run-manual-at"
+
+    cron = CronService(store, on_job=on_job, worker_id="manual-worker")
+    at_ms = cron.repository.db_now_ms() + 3_600_000
+    job = cron.add_job(
+        name="future-at",
+        schedule=CronSchedule(kind="at", at_ms=at_ms),
+        user_id="user-a",
+    )
+
+    # A manual "run now" executes immediately but must not consume the
+    # planned future occurrence of a one-shot schedule.
+    assert await cron.run_job(job.id, user_id="user-a") is True
+    stored = cron.list_jobs(include_disabled=True, user_id="user-a")[0]
+    assert executed == [job.id]
+    assert stored.enabled is True
+    assert stored.state.next_run_at_ms == at_ms
 
 
 def test_memory_is_shared_but_user_isolated(tmp_path: Path) -> None:
@@ -169,9 +194,7 @@ def test_channel_leases_and_outbox_have_single_owner(tmp_path: Path) -> None:
 
 @pytest.mark.postgres
 def test_postgres_memory_append_and_cron_fencing(tmp_path: Path) -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     store_a = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)
@@ -205,7 +228,7 @@ def test_postgres_memory_append_and_cron_fencing(tmp_path: Path) -> None:
             now_ms=now_ms,
         )
         with ThreadPoolExecutor(max_workers=2) as pool:
-            claims = list(pool.map(lambda cron: cron._claim_due_jobs(now_ms), [cron_a, cron_b]))
+            claims = list(pool.map(lambda cron: cron._claim_due_jobs(), [cron_a, cron_b]))
         # The shared integration database may contain unrelated due schedules;
         # this schedule itself must still be claimed exactly once.
         assert sum(item.id == job.id for items in claims for item in items) == 1

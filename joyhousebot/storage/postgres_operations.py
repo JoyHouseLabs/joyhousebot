@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from psycopg import sql
-from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.rows import dict_row
 
 from joyhousebot.storage.json_codec import Jsonb
-from joyhousebot.storage.postgres_locks import (
-    RUNTIME_PURGE_LOCK_ID,
-    SCHEMA_MIGRATION_LOCK_ID,
-)
+from joyhousebot.storage.postgres_maintenance import PostgresMaintenanceStoreMixin
 from joyhousebot.storage.runtime_store import (
     RequestTraceEventRecord,
     RuntimeLogRecord,
@@ -49,7 +44,28 @@ def _json(value: Any, default: Any = None) -> Any:
     return value
 
 
-class PostgresOperationsStoreMixin:
+class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
+    def has_incomplete_runtime_work(self) -> bool:
+        """Cheap EXISTS probe so idle workers skip the full fair-queue scan."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM runtime_runs
+                   WHERE status IN ('queued','planning')
+                      OR (cancel_requested_at IS NOT NULL
+                          AND status NOT IN ('completed','failed','cancelled','timed_out'))
+                   LIMIT 1"""
+            ).fetchone()
+        return row is not None
+
+    def has_claimable_runtime_task(self) -> bool:
+        """Cheap EXISTS probe so idle dispatchers skip the claim CTE entirely."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM runtime_tasks
+                   WHERE status='queued' AND available_at<=clock_timestamp() LIMIT 1"""
+            ).fetchone()
+        return row is not None
+
     def get_platform_overview(self) -> dict[str, Any]:
         with self._pool.connection() as conn:
             totals = conn.execute(
@@ -558,48 +574,6 @@ class PostgresOperationsStoreMixin:
             for row in outbox
         ]
         return metrics
-
-    async def purge_old_runtime_data(self, older_than_ms: int) -> dict[str, int]:
-        """Delete expired runtime telemetry under cluster-wide maintenance locks."""
-        cutoff = datetime.fromtimestamp(older_than_ms / 1000, tz=timezone.utc)
-        for attempt in range(3):
-            try:
-                counts: dict[str, int] = {}
-                with self._pool.connection() as conn, conn.transaction():
-                    migration_lock = conn.execute(
-                        "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
-                        (SCHEMA_MIGRATION_LOCK_ID,),
-                    ).fetchone()
-                    if not migration_lock or not migration_lock["acquired"]:
-                        return {}
-                    purge_lock = conn.execute(
-                        "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
-                        (RUNTIME_PURGE_LOCK_ID,),
-                    ).fetchone()
-                    if not purge_lock or not purge_lock["acquired"]:
-                        return {}
-                    conn.execute("SET LOCAL lock_timeout = '2s'")
-                    for table, timestamp_column in (
-                        ("model_response_cache", "created_at"),
-                        ("model_reasoning_segments", "created_at"),
-                        ("model_invocations", "started_at"),
-                        ("execution_spans", "started_at"),
-                        ("trace_blobs", "created_at"),
-                        ("replay_runs", "created_at"),
-                        ("runtime_events", "created_at"),
-                        ("runtime_logs", "created_at"),
-                        ("request_trace_events", "created_at"),
-                    ):
-                        cursor = conn.execute(
-                            f"DELETE FROM {table} WHERE {timestamp_column} < %s", (cutoff,)
-                        )
-                        counts[table] = max(0, cursor.rowcount)
-                return counts
-            except (DeadlockDetected, LockNotAvailable):
-                if attempt == 2:
-                    raise
-                await asyncio.sleep(0.05 * (2**attempt))
-        return {}
 
     def close(self) -> None:
         self._closed = True

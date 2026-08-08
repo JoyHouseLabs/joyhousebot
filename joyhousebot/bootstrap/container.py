@@ -7,8 +7,12 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from joyhousebot.application.feedback import FeedbackService
 from joyhousebot.application.platform import PlatformService
+from joyhousebot.application.plugins import configured_plugin_registry
+from joyhousebot.application.replays import ReplayService
 from joyhousebot.application.runs import RunService
+from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.application.schedules import ScheduleService
 from joyhousebot.application.sessions import SessionService
 from joyhousebot.bootstrap.agent_catalog import default_agent_id
@@ -27,6 +31,10 @@ class ApplicationContainer:
     sessions: SessionService
     schedules: ScheduleService
     platform: PlatformService
+    replays: ReplayService
+    feedback: FeedbackService
+    scenarios: ScenarioStudioService
+    plugins: Any
     owns_store: bool = True
 
     async def close(self) -> None:
@@ -63,13 +71,18 @@ def build_api_container(
         default_agent_id=default_agent_id(store),
     )
     schedules = CronService(store, worker_id="api-submit-only")
+    runs = RunService(runtime, store)
     return ApplicationContainer(
         config=config,
         store=store,
         runtime=runtime,
-        runs=RunService(runtime, store),
+        runs=runs,
         sessions=SessionService(store),
         schedules=ScheduleService(schedules, config=config),
         platform=PlatformService(store),
+        replays=ReplayService(runtime, store),
+        feedback=FeedbackService(runs, store),
+        scenarios=ScenarioStudioService(store),
+        plugins=configured_plugin_registry(config),
         owns_store=owns_store,
     )

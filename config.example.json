@@ -1,6 +1,6 @@
 {
   "gateway": {
-    "allowInsecureAuth": true,
+    "allowInsecureAuth": false,
     "maxConcurrentSessions": 8
   },
   "runtime": {

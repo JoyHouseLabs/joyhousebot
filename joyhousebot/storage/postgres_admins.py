@@ -65,6 +65,13 @@ class PostgresAdminStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341913,))
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="admins",
+                version=1,
+                ddl=ddl,
+                description="platform admins, API access tokens, and audit events",
+            )
 
     def upsert_platform_admin(
         self,

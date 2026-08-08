@@ -5,8 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+# Dedicated non-root service account; see joyhousebot-api.service for the
+# useradd/chown bootstrap steps required before enabling these units.
+User=joyhousebot
+Group=joyhousebot
 WorkingDirectory=/opt/joyhousebot
 Environment=JOYHOUSEBOT_CONFIG_PATH=/opt/joyhousebot/config.json
 EnvironmentFile=/etc/joyhousebot/joyhousebot.env
@@ -17,6 +19,9 @@ RestartSec=5
 LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/joyhousebot /var/lib/joyhousebot
 
 [Install]
 WantedBy=multi-user.target

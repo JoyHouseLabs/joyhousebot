@@ -178,7 +178,9 @@ class ClarificationEngine:
                 name=str(item["name"]),
                 value_type=str(item["value_type"]),
                 required=bool(item.get("required")),
+                label=str(item.get("label") or ""),
                 description=str(item.get("description") or ""),
+                placeholder=str(item.get("placeholder") or ""),
                 default=item.get("default"),
                 enum=tuple(item.get("enum") or ()),
                 input_mode=str(item.get("input_mode") or "auto"),
@@ -188,6 +190,14 @@ class ClarificationEngine:
                 max_selections=(int(item["max_selections"]) if item.get("max_selections") is not None else None),
                 validation=dict(item.get("validation") or {}),
                 sensitive=bool(item.get("sensitive")),
+                suggestion_provider=dict(item.get("suggestion_provider") or {}),
+                normalization=dict(item.get("normalization") or {}),
+                visibility=dict(item.get("visibility") or {}),
+                constraint_policy=dict(item.get("constraint_policy") or {}),
+                confirmation_policy=str(item.get("confirmation_policy") or "none"),
+                examples=tuple(str(example) for example in item.get("examples") or ()),
+                group=str(item.get("group") or ""),
+                order=int(item.get("order") or 0),
             )
             for item in fields
         }
@@ -231,6 +241,9 @@ class ClarificationEngine:
             for name in step.node.field_names
             if name in step.missing_inputs
         ]
+        presentation = {**step.node.configuration, "progress": step.progress}
+        if presentation.get("show_collected_inputs"):
+            presentation["collected_inputs"] = dict(step.collected_inputs)
         return self.store.create_input_request(
             input_request_id=f"input_{uuid4().hex}",
             run_id=run_id,
@@ -240,7 +253,7 @@ class ClarificationEngine:
             node_id=step.node.node_id,
             question=step.node.question,
             fields=field_payloads,
-            presentation={**step.node.configuration, "progress": step.progress},
+            presentation=presentation,
         )
 
     def create_dynamic_request(

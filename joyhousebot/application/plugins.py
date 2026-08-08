@@ -10,13 +10,18 @@ from joyhousebot.capabilities.plugin_registry import CapabilityPluginRegistry
 from joyhousebot.contracts.plugins import PluginHealthContext, PluginHealthResult
 
 
-def _configured_plugins(config: Any) -> tuple[Any, ...]:
+def configured_plugin_registry(config: Any) -> CapabilityPluginRegistry:
+    """Load the configured plugin release set once for an application role."""
     registry = CapabilityPluginRegistry()
     modules = list(getattr(getattr(config, "tools", None), "capability_plugins", []) or [])
     registry.load_modules(modules)
     if bool(getattr(getattr(config, "tools", None), "discover_capability_plugins", False)):
         registry.load_entry_points()
-    return registry.plugins
+    return registry
+
+
+def _configured_plugins(config: Any) -> tuple[Any, ...]:
+    return configured_plugin_registry(config).plugins
 
 
 async def run_plugin_diagnostics(*, config: Any, store: Any, plugin_id: str) -> list[dict[str, Any]]:

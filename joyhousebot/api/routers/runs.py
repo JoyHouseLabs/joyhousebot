@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 
 from fastapi import APIRouter, Header, Query, Request, Response
@@ -14,9 +15,10 @@ from joyhousebot.api.schemas import (
     CreateRunRequest,
     ResolveRunInputRequest,
 )
-from joyhousebot.application.dinq_projection import build_dinq_projection
+from joyhousebot.application.feedback import CreateFeedbackCommand
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import CreateRunCommand, GraphTaskCommand
+from joyhousebot.contracts import ProjectionContext, ScopedRunProjectionQueries
 from joyhousebot.runtime.narrative import public_event_dict
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -132,33 +134,10 @@ async def create_feedback(
     container: ContainerDep,
 ):
     """Persist human feedback with the Run's execution snapshot for audit/replay."""
-    run = await container.runs.get(context, run_id)
-    snapshot = await asyncio.to_thread(container.store.get_run_execution_snapshot, run_id)
-    row = await asyncio.to_thread(
-        container.store.create_run_feedback,
-        run_id=run_id,
-        user_id=context.user_id,
-        agent_id=run.agent_id,
-        session_id=run.session_id,
-        agent_revision_id=snapshot.agent_revision_id if snapshot else None,
-        turn_id=body.turn_id,
-        message_id=body.message_id,
-        feedback_type=body.feedback_type,
-        rating=body.rating,
-        comment=body.comment.strip(),
-        output_excerpt=body.output_excerpt,
-        metadata={**body.metadata, "source": "web-playground"},
-    )
-    await asyncio.to_thread(
-        container.store.append_runtime_log,
-        run_id=run_id,
-        stage="feedback.created",
-        message="Human feedback recorded for Run output",
-        data={
-            "feedback_id": row.feedback_id,
-            "feedback_type": row.feedback_type,
-            "actor": context.user_id,
-        },
+    row = await container.feedback.create(
+        context,
+        run_id,
+        CreateFeedbackCommand(**body.model_dump()),
     )
     return record_dict(row)
 
@@ -186,10 +165,10 @@ async def list_artifacts(run_id: str, context: ContextDep, container: ContainerD
 @router.get("/{run_id}/projection")
 async def get_run_projection(
     run_id: str,
+    request: Request,
     context: ContextDep,
     container: ContainerDep,
-    view: str = Query(default="dinq.search"),
-    candidate_id: str | None = None,
+    view: str = Query(..., min_length=1, max_length=128),
 ):
     """Return a plugin-owned read model assembled from generic runtime records.
 
@@ -197,25 +176,44 @@ async def get_run_projection(
     using the normal Run/Task/Event APIs, while a Dinq UI can render one stable
     workspace without coupling to storage tables.
     """
-    if view != "dinq.search":
+    provider = container.plugins.get_projection(view)
+    if provider is None:
         from fastapi import HTTPException
 
         raise HTTPException(status_code=400, detail=f"unsupported projection view: {view}")
     run = await container.runs.get(context, run_id)
+    event_limit = max(1, min(int(getattr(provider, "event_limit", 1000) or 1000), 5000))
     artifacts, events, invocations, scenario_state = await asyncio.gather(
         container.runs.artifacts(context, run_id),
-        asyncio.to_thread(container.store.list_runtime_events, run_id, user_id=context.user_id, limit=5000),
+        asyncio.to_thread(
+            container.store.list_runtime_events,
+            run_id,
+            user_id=context.user_id,
+            limit=event_limit,
+        ),
         container.runs.invocations(context, run_id),
         asyncio.to_thread(container.store.get_run_scenario_state, run_id, expected_user_id=context.user_id),
     )
-    return build_dinq_projection(
+    projection_context = ProjectionContext(
         run=run,
-        artifacts=artifacts,
-        events=events,
-        invocations=invocations,
-        candidate_id=candidate_id,
+        artifacts=tuple(artifacts),
+        events=tuple(events),
+        invocations=tuple(invocations),
         scenario_state=scenario_state,
+        queries=ScopedRunProjectionQueries(
+            container.store, run_id=run_id, user_id=context.user_id
+        ),
+        user_id=context.user_id,
+        parameters={
+            key: value
+            for key, value in request.query_params.items()
+            if key != "view"
+        },
     )
+    if inspect.iscoroutinefunction(provider.build):
+        return await provider.build(projection_context)
+    result = await asyncio.to_thread(provider.build, projection_context)
+    return await result if inspect.isawaitable(result) else result
 
 
 @router.get("/{run_id}/invocations")

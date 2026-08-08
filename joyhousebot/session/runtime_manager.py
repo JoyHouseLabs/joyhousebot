@@ -11,6 +11,15 @@ if TYPE_CHECKING:
     from joyhousebot.storage.runtime_store import RuntimeStore
 
 
+# conversation_sessions.state is a consolidation cache, not the system of
+# record: durable Run history is the source of truth for what happened.  The
+# cached message tail is therefore bounded — only the newest messages are kept
+# (the consolidation window is memory_window/2 ≈ 25 with a 50-message default
+# memory window, so 200 leaves ample headroom) — and last_consolidated is
+# shifted so it stays a valid index into the truncated list.
+SESSION_STATE_MAX_MESSAGES = 200
+
+
 class RuntimeSessionManager:
     """Stateless manager backed by the shared runtime store."""
 
@@ -43,16 +52,24 @@ class RuntimeSessionManager:
         )
 
     def save(self, session: Session) -> None:
+        # Persist only the bounded tail; the live Session object keeps its
+        # full in-memory list, the durable cache stays small.
+        messages = list(session.messages)
+        last_consolidated = session.last_consolidated
+        dropped = max(0, len(messages) - SESSION_STATE_MAX_MESSAGES)
+        if dropped:
+            messages = messages[dropped:]
+            last_consolidated = max(0, last_consolidated - dropped)
         self.store.save_session_state(
             self._storage_key(session.key),
             session_key=session.key,
             namespace=self.namespace,
             state={
-                "messages": session.messages,
+                "messages": messages,
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "metadata": session.metadata,
-                "last_consolidated": session.last_consolidated,
+                "last_consolidated": last_consolidated,
             },
         )
 

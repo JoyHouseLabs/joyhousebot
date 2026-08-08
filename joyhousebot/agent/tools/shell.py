@@ -3,8 +3,8 @@
 Safety guard (allowlist + structured blocking):
 - deny_patterns: dangerous commands/patterns (rm -rf, format, dd, redirect to raw device, fork bomb, etc.).
   NOTE: deny_patterns/allow_patterns are a best-effort UX backstop only. The real security
-  boundary is the container sandbox (resource limits, dropped caps, no network by default);
-  never rely on the regex guard alone for isolation.
+  boundary is the container sandbox (resource limits, dropped caps, no network by default,
+  workspace mounted at /workspace); never rely on the regex guard alone for isolation.
 - allow_patterns: when non-empty, only commands matching allow_patterns are allowed (allowlist mode).
 - restrict_to_workspace: path and working-dir checks; when True and shell_mode=False, shell metacharacters
   are forbidden so that the following are blocked in non-shell mode:
@@ -14,6 +14,8 @@ Safety guard (allowlist + structured blocking):
   - Chaining: |, &&, ||, ; (pattern includes |, &, ;).
   - Embedded newlines (\\n, \\r), which could smuggle extra commands past line-based checks.
   When shell_mode=True, piping and redirects are allowed; guard relies on deny_patterns and path checks.
+  Path checks use container path semantics: absolute paths must live under /workspace or /tmp
+  (the only paths visible inside the container); host paths are rejected as hallucinations.
 """
 
 import asyncio
@@ -164,7 +166,10 @@ class ExecTool(Tool):
         scratch_root = Path(self.working_dir).expanduser().resolve() / ".scratch"
         root = scratch_root / scope
         root.mkdir(parents=True, exist_ok=True)
-        # The container runs as nobody (65534) by default; keep the scratch mount writable.
+        # The container runs as nobody (65534) by default while host-side file
+        # tools write the same dir as the host user; both need write access, so
+        # owner-only perms (0o700) would break one side. Isolation comes from
+        # the per-run scope path, not from fs permissions.
         try:
             root.chmod(0o777)
         except OSError as e:
@@ -227,11 +232,24 @@ class ExecTool(Tool):
             raise ToolInvocationError("SANDBOX_EXECUTION_FAILED", sanitize_error_message(str(e))) from e
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
-        """Best-effort UX backstop only: deny_patterns, allowlist (allow_patterns), and when
-        restrict_to_workspace and not shell_mode, block shell metacharacters (| & ; < > ( ) ` $
-        and embedded newlines) so redirects, command substitution, subshells, and chaining are
-        rejected. Path traversal and paths outside working_dir are also blocked. The real
-        security boundary is the container sandbox, not this regex guard."""
+        """Best-effort UX backstop only — NOT a security boundary.
+
+        Checks: deny_patterns, allowlist (allow_patterns), and when
+        restrict_to_workspace and not shell_mode, shell metacharacters
+        (| & ; < > ( ) ` $ and embedded newlines) so redirects, command
+        substitution, subshells, and chaining are rejected.
+
+        Path checks use *container* path semantics: commands run inside a
+        one-off container that only sees the workspace mounted at
+        /workspace (plus a noexec /tmp tmpfs), so absolute paths in the
+        command must live under /workspace or /tmp; anything else is almost
+        certainly a hallucinated host path and is rejected with a hint. The
+        cwd check is host-side and stays: cwd becomes the container's mount
+        source, so it must stay under the configured working_dir.
+
+        The real isolation boundary is the container sandbox (dropped caps,
+        no network, resource limits, single /workspace mount), not this
+        regex guard."""
         cmd = command.strip()
         lower = cmd.lower()
 
@@ -253,6 +271,8 @@ class ExecTool(Tool):
             if "..\\" in cmd or "../" in cmd:
                 return "Command blocked by safety guard (path traversal detected)"
 
+            # Host-side check: cwd is the container mount source and must
+            # stay under the configured working_dir.
             cwd_path = Path(cwd).expanduser().resolve()
             if self.working_dir:
                 allowed_root = Path(self.working_dir).expanduser().resolve()
@@ -264,18 +284,29 @@ class ExecTool(Tool):
             except ValueError:
                 return "Command blocked by safety guard (working_dir outside allowed root)"
 
+            # Container-side UX hint: inside the container only /workspace
+            # (the mounted workspace) and /tmp exist; an absolute path
+            # anywhere else is typically a host path the model hallucinated.
             win_paths = re.findall(r"[A-Za-z]:\\[^\\\"']+", cmd)
             posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
 
-            for raw in win_paths + posix_paths:
-                try:
-                    p = Path(raw.strip()).expanduser().resolve()
-                except Exception:
+            if win_paths:
+                return (
+                    "Command blocked by safety guard (Windows paths are not "
+                    "visible inside the Linux execution container)"
+                )
+            for raw in posix_paths:
+                p = raw.strip().rstrip("/")
+                if not p:
                     continue
-                if p.is_absolute():
-                    try:
-                        p.relative_to(allowed_root)
-                    except ValueError:
-                        return "Command blocked by safety guard (path outside working dir)"
+                allowed = any(
+                    p == root or p.startswith(root + "/")
+                    for root in ("/workspace", "/tmp")
+                )
+                if not allowed:
+                    return (
+                        "Command blocked by safety guard (absolute path outside "
+                        "/workspace is not visible inside the execution container)"
+                    )
 
         return None

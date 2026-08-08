@@ -123,6 +123,7 @@ def build_execution_worker(config: Any | None = None) -> ExecutionWorker:
         worker_name=config.runtime.worker_name or "agent-worker",
         capabilities={"agent": True, "graph_task": True, "graph_finalizer": True},
         plugin_releases=_plugin_releases(default_agent),
+        projection_registry=getattr(default_agent.capabilities, "plugins", None),
         default_agent_id=default_id,
         poll_interval_seconds=config.runtime.store.poll_interval_seconds,
     )

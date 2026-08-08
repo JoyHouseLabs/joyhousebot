@@ -32,10 +32,20 @@ from joyhousebot.storage.platform_records import (
     RunScenarioStateRecord,
 )
 
+DESTRUCTIVE_MIGRATE_PHRASE = "DROP_ALL_TABLES"
+
 
 def destructive_migrate_enabled() -> bool:
-    """Whether legacy destructive schema migrations are explicitly allowed."""
-    return os.environ.get("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "").strip() == "1"
+    """Whether legacy destructive schema migrations are explicitly allowed.
+
+    Development-only escape hatch: the environment variable must equal the
+    exact phrase ``DROP_ALL_TABLES``; truthy values such as ``1`` no longer
+    qualify, so a casually exported flag cannot wipe production data.
+    """
+    return (
+        os.environ.get("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "").strip()
+        == DESTRUCTIVE_MIGRATE_PHRASE
+    )
 
 
 @dataclass(slots=True)
@@ -72,6 +82,8 @@ class RuntimeRunRecord:
     total_task_count: int = 0
     last_event_sequence: int = 0
     last_progress_at: str | None = None
+    cancel_requested_at: str | None = None
+    cancel_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -325,6 +337,10 @@ class RuntimeStore(Protocol):
         ...
 
     def update_runtime_run(self, run_id: str, **kwargs: Any) -> bool: ...
+
+    def request_runtime_cancel(self, run_id: str, **kwargs: Any) -> dict[str, Any] | None:
+        """Record a durable cancel request for a non-terminal run."""
+        ...
 
     def finish_runtime_run(self, run_id: str, **kwargs: Any) -> AgentEvent | None:
         """Atomically fence the owner, commit terminal state, and append its event."""

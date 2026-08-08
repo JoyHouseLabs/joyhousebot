@@ -452,16 +452,28 @@ class SubmissionMixin(GraphMaterializationMixin):
                         lease_version=record.lease_version,
                     )
                     if not owned:
-                        await self.events.publish(
-                            AgentEvent(
-                                run_id=run_id,
-                                type=EventType.LEASE_LOST.value,
-                                worker_id=self.worker_id,
-                                lease_version=record.lease_version,
-                                data={"reason": "run lease ownership lost"},
+                        current = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+                        if (
+                            current is not None
+                            and current.cancel_requested_at is not None
+                            and current.status == "running"
+                            and current.lease_owner == self.worker_id
+                        ):
+                            # A cross-process cancel was recorded. This worker
+                            # still owns the lease and commits the fenced
+                            # terminal cancelled state itself (phase two).
+                            cancellation.cancel(current.cancel_reason or "cancelled by user")
+                        else:
+                            await self.events.publish(
+                                AgentEvent(
+                                    run_id=run_id,
+                                    type=EventType.LEASE_LOST.value,
+                                    worker_id=self.worker_id,
+                                    lease_version=record.lease_version,
+                                    data={"reason": "run lease ownership lost"},
+                                )
                             )
-                        )
-                        cancellation.cancel("run ownership lost")
+                            cancellation.cancel("run ownership lost")
                         if owner_task is not None:
                             owner_task.cancel()
                         return

@@ -22,6 +22,12 @@ from joyhousebot.contracts.plugins import (
     PluginQuickstart,
     PluginRegistry,
 )
+from joyhousebot.contracts.projections import (
+    ProjectionContext,
+    ProjectionProvider,
+    RunProjectionQueries,
+    ScopedRunProjectionQueries,
+)
 
 __all__ = [
     "Artifact",
@@ -37,4 +43,8 @@ __all__ = [
     "PluginManifest",
     "PluginQuickstart",
     "PluginRegistry",
+    "ProjectionContext",
+    "ProjectionProvider",
+    "RunProjectionQueries",
+    "ScopedRunProjectionQueries",
 ]

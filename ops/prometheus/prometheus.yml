@@ -8,9 +8,11 @@ rule_files:
 scrape_configs:
   - job_name: joyhousebot
     metrics_path: /metrics
-    # Enable this block when JOYHOUSEBOT_METRICS_TOKEN is configured:
-    # authorization:
-    #   type: Bearer
-    #   credentials_file: /etc/prometheus/secrets/joyhousebot_metrics_token
+    # Required: /metrics is fail-closed and returns 404 unless the API has
+    # JOYHOUSEBOT_METRICS_TOKEN set, and 401 without this bearer credential.
+    # Put the same token into the file below (one line, no newline is fine).
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/joyhousebot_metrics_token
     static_configs:
       - targets: ["api:18790"]

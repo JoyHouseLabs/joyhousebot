@@ -14,6 +14,7 @@ from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
 from joyhousebot.orchestration.clarification import ClarificationEngine
 from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
@@ -110,6 +111,64 @@ async def test_agent_run_lifecycle_usage_events_and_idempotency(store: PostgresT
     assert [event.type for event in events][:2] == ["run.accepted", "run.queued"]
     assert "usage.updated" in [event.type for event in events]
     assert [event.type for event in events][-1] == "run.completed"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt,expected_status", [("hello", "completed"), ("FAIL", "failed")])
+async def test_terminal_run_materializes_matching_plugin_projection(
+    store: PostgresTestStore,
+    prompt: str,
+    expected_status: str,
+) -> None:
+    observed: list[dict[str, Any]] = []
+
+    class Provider:
+        view_id = "example.search"
+        schema_version = 2
+        event_limit = 100
+
+        def supports(self, context):
+            return context.run.user_id == "user-a"
+
+        def materialize(self, context):
+            observed.append(
+                {
+                    "status": context.run.status,
+                    "events": [item.type for item in context.events],
+                    "user_id": context.user_id,
+                }
+            )
+            return {"status": "ready"}
+
+    class Registry:
+        @staticmethod
+        def list_projections():
+            return (Provider(),)
+
+    runtime = NativeAgentRuntime(
+        agent=FakeAgent(),
+        store=store,
+        projection_registry=Registry(),
+    )
+    submitted = await runtime.submit_run(
+        AgentOptions(
+            prompt=prompt,
+            user_id="user-a",
+            session_id="projection-session",
+            agent_id="default",
+        )
+    )
+    completed = await runtime.wait(submitted.run_id, timeout=2)
+
+    assert completed.status == expected_status
+    assert len(observed) == 1
+    assert observed[0]["status"] == expected_status
+    assert observed[0]["user_id"] == "user-a"
+    terminal_event = "run.completed" if expected_status == "completed" else "run.failed"
+    assert terminal_event in observed[0]["events"]
+    logs = store.list_runtime_logs(submitted.run_id)
+    assert any(item.stage == "projection.materialized" for item in logs)
     await runtime.close()
 
 
@@ -741,6 +800,113 @@ async def test_remote_worker_cancel_cannot_be_overwritten_by_completion(
 
     assert final.status == "cancelled"
     assert final.result["status"] == "cancelled"
+    await asyncio.gather(owner.close(), remote.close())
+
+
+@pytest.mark.asyncio
+async def test_remote_cancel_aborts_running_execution(store: PostgresTestStore) -> None:
+    agent = FakeAgent()
+    owner = NativeAgentRuntime(agent=agent, store=store, lease_seconds=5)
+    remote = NativeAgentRuntime(agent=agent, store=store, worker_enabled=False, scheduler_enabled=False)
+    submitted = await owner.submit_run(AgentOptions(prompt="BLOCK"))
+    await asyncio.wait_for(agent.started.wait(), timeout=1)
+
+    assert await remote.cancel(submitted.run_id, "remote stop")
+    cancelled = await owner.wait(submitted.run_id, timeout=5)
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.error["message"] == "remote stop"
+    assert cancelled.result["status"] == "cancelled"
+    types = [event.type for event in store.list_runtime_events(submitted.run_id)]
+    assert "run.cancelling" in types
+    assert "run.completed" not in types
+    await asyncio.gather(owner.close(), remote.close())
+
+
+@pytest.mark.asyncio
+async def test_execution_aborts_when_cancel_lands_between_claim_and_start(
+    store: PostgresTestStore,
+) -> None:
+    agent = FakeAgent()
+    options = AgentOptions(prompt="never runs")
+    store.create_runtime_run(
+        run_id="cancel-at-start",
+        user_id="user-a",
+        session_id="main",
+        agent_id="default",
+        kind="agent",
+        prompt=options.prompt,
+        options=options.to_dict(),
+    )
+    runtime = NativeAgentRuntime(agent=agent, store=store, worker_enabled=False, scheduler_enabled=False)
+    claimed = store.claim_runtime_run(
+        "cancel-at-start", worker_id=runtime.worker_id, lease_seconds=30
+    )
+    assert claimed is not None
+    store.request_runtime_cancel("cancel-at-start", reason="cancelled before start")
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime._execute_agent_record(claimed, CancellationToken())
+
+    assert "never runs" not in agent.calls
+    record = store.get_runtime_run("cancel-at-start")
+    assert record.status == "cancelled"
+    assert record.error["message"] == "run was cancelled before execution started"
+
+
+@pytest.mark.asyncio
+async def test_dead_worker_cancel_completes_via_recovery(store: PostgresTestStore) -> None:
+    agent = FakeAgent()
+    options = AgentOptions(prompt="orphaned")
+    store.create_runtime_run(
+        run_id="dead-owner",
+        user_id="user-a",
+        session_id="main",
+        agent_id="default",
+        kind="agent",
+        prompt=options.prompt,
+        options=options.to_dict(),
+    )
+    claimed = store.claim_runtime_run("dead-owner", worker_id="dead-worker", lease_seconds=5)
+    assert claimed is not None
+    assert store.request_runtime_cancel("dead-owner", reason="owner died")["lease_alive"] is True
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE runtime_runs SET lease_expires_at=clock_timestamp()-interval '1 minute'"
+            " WHERE run_id='dead-owner'"
+        )
+
+    runtime = NativeAgentRuntime(agent=agent, store=store)
+    await runtime.start()
+    record = await runtime.wait("dead-owner", timeout=2)
+
+    assert record.status == "cancelled"
+    assert record.error["message"] == "owner died"
+    assert "orphaned" not in agent.calls
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_same_session_next_run_waits_for_cancel_completion(
+    store: PostgresTestStore,
+) -> None:
+    agent = FakeAgent()
+    owner = NativeAgentRuntime(agent=agent, store=store, lease_seconds=5)
+    remote = NativeAgentRuntime(agent=agent, store=store, worker_enabled=False, scheduler_enabled=False)
+    first = await owner.submit_run(AgentOptions(prompt="BLOCK", session_id="s-cancel"))
+    await asyncio.wait_for(agent.started.wait(), timeout=1)
+
+    assert await remote.cancel(first.run_id, "make way")
+    second = await owner.submit_run(AgentOptions(prompt="second", session_id="s-cancel"))
+    await asyncio.sleep(0.5)
+    # The cancel-requested run still owns the conversation until it is terminal.
+    assert "second" not in agent.calls
+    assert store.get_runtime_run(second.run_id).status == "queued"
+
+    cancelled = await owner.wait(first.run_id, timeout=5)
+    assert cancelled.status == "cancelled"
+    completed = await owner.wait(second.run_id, timeout=5)
+    assert completed.status == "completed"
     await asyncio.gather(owner.close(), remote.close())
 
 

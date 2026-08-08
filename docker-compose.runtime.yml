@@ -17,12 +17,16 @@ services:
     volumes:
       - joyhousebot_pg_data:/var/lib/postgresql/data
 
+  # Public data plane only: runs/sessions/schedules + MCP. Admin routes and
+  # the console UI are served by the separate `control` service below.
   api:
     build: .
-    command: ["api", "--host", "0.0.0.0", "--port", "18790"]
+    command: ["api", "--surface", "public", "--host", "0.0.0.0", "--port", "18790"]
     environment: &runtime_env
       JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
+      # No default token: /metrics refuses all requests when it is not set.
+      JOYHOUSEBOT_METRICS_TOKEN: ${JOYHOUSEBOT_METRICS_TOKEN:?required}
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_API_BASE: ${LLM_API_BASE:-}
@@ -36,6 +40,20 @@ services:
         condition: service_healthy
     ports:
       - "18790:18790"
+
+  # Private control plane: /v1/admin/* and the console UI (/ui).
+  # Loopback only by default — do NOT publish this port to the public
+  # internet; reach it via SSH tunnel or an internal network instead.
+  control:
+    build: .
+    command: ["api", "--surface", "control", "--host", "0.0.0.0", "--port", "18790"]
+    environment: *runtime_env
+    volumes: *runtime_config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${JOYHOUSEBOT_CONTROL_PORT:-18791}:18790"
 
   worker:
     build: .

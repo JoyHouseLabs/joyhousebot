@@ -16,6 +16,7 @@ from joyhousebot.contracts import CapabilityContext
 from joyhousebot.domain.capabilities import CapabilityResult
 from joyhousebot.runtime.context import ToolExecutionContext
 from joyhousebot.runtime.permissions import permission_engine
+from joyhousebot.utils.permissions import missing_permissions
 
 
 class _PluginTool(Tool):
@@ -165,6 +166,8 @@ class CapabilityRegistry:
                             "permissions": list(definition.permissions),
                             "connection_ids": list(definition.connection_ids),
                             "side_effect": str(definition.side_effect),
+                            "invocation_concurrency": str(definition.invocation_concurrency),
+                            "max_concurrent_invocations": int(definition.max_concurrent_invocations),
                         },
                     }
                 )
@@ -205,6 +208,30 @@ class CapabilityRegistry:
 
     def has(self, name: str, version: str | None = None) -> bool:
         return self.get_tool(name, version) is not None
+
+    def get_tool_invocation_policy(
+        self, name: str, version: str | None = None
+    ) -> dict[str, Any]:
+        """Return immutable safety metadata used by one model tool-call turn.
+
+        This never consults mutable operator settings: enabling a Tool must not
+        accidentally turn a write-capability into a concurrent operation.
+        Unknown tools deliberately resolve to a sequential policy.
+        """
+        adapter = (
+            self._versioned_adapters.get((name, version))
+            if version is not None
+            else self._adapters.get(name)
+        )
+        if adapter is None:
+            return {"mode": "sequential", "max_concurrent": 1, "idempotent": False, "side_effect": "unknown"}
+        definition = adapter.definition
+        return {
+            "mode": str(getattr(definition, "invocation_concurrency", "sequential")),
+            "max_concurrent": max(1, int(getattr(definition, "max_concurrent_invocations", 1) or 1)),
+            "idempotent": bool(getattr(definition, "idempotent", False)),
+            "side_effect": str(getattr(definition, "side_effect", "unknown")),
+        }
 
     @property
     def tool_names(self) -> list[str]:
@@ -277,19 +304,7 @@ class CapabilityRegistry:
             for item in (getattr(adapter.definition, "permissions", ()) or ())
             if str(item).strip()
         }
-        granted = set(context.granted_permissions)
-        wildcard = "*" in granted
-        missing = [
-            permission
-            for permission in sorted(required)
-            if not wildcard
-            and permission not in granted
-            and not any(
-                grant.endswith(".*") and permission.startswith(grant[:-1])
-                for grant in granted
-            )
-        ]
-        return missing
+        return missing_permissions(context.granted_permissions, required)
 
     def _is_authorized(self, adapter: ToolCapabilityAdapter, context: ToolExecutionContext) -> bool:
         return permission_engine.evaluate(adapter.tool.name, context).allowed and not self._missing_permissions(adapter, context)

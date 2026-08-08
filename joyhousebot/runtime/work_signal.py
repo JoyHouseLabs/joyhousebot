@@ -22,9 +22,19 @@ class WorkWake:
 class RuntimeWorkSignal:
     """One store listener plus in-process broadcast for one runtime process."""
 
-    def __init__(self, store: Any, *, fallback_poll_seconds: float) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        fallback_poll_seconds: float,
+        max_poll_seconds: float = 2.0,
+    ) -> None:
         self._store = store
         self._fallback_poll_seconds = max(0.1, min(float(fallback_poll_seconds), 5.0))
+        # Idle fallback waits back off exponentially up to this ceiling so N
+        # idle workers do not each probe PostgreSQL at a fixed high frequency.
+        self._max_poll_seconds = max(self._fallback_poll_seconds, float(max_poll_seconds))
+        self._current_poll_seconds = self._fallback_poll_seconds
         self._condition = asyncio.Condition()
         self._generation = 1
         self._source = "recovery"
@@ -57,16 +67,31 @@ class RuntimeWorkSignal:
                 await self._condition.wait()
             return WorkWake(self._generation, self._source)
 
+    def note_activity(self) -> None:
+        """Reset the idle backoff after durable work was observed."""
+        self._current_poll_seconds = self._fallback_poll_seconds
+
     async def _listen(self) -> None:
         waiter = getattr(self._store, "wait_for_work", None)
         while not self._closing:
             try:
+                timeout = self._current_poll_seconds
                 notified = (
-                    await asyncio.to_thread(waiter, self._fallback_poll_seconds)
+                    await asyncio.to_thread(waiter, timeout)
                     if callable(waiter)
-                    else await self._fallback_sleep()
+                    else await self._fallback_sleep(timeout)
                 )
-                await self.signal("pg_notify" if notified else "poll")
+                if notified:
+                    self.note_activity()
+                    await self.signal("pg_notify")
+                else:
+                    await self.signal("poll")
+                    # A note_activity() during the in-flight wait wins over the
+                    # backoff so fresh work immediately returns to the fast path.
+                    if self._current_poll_seconds == timeout:
+                        self._current_poll_seconds = min(
+                            self._max_poll_seconds, timeout * 2
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -75,6 +100,6 @@ class RuntimeWorkSignal:
                 await self.signal("poll")
                 await asyncio.sleep(self._fallback_poll_seconds)
 
-    async def _fallback_sleep(self) -> bool:
-        await asyncio.sleep(self._fallback_poll_seconds)
+    async def _fallback_sleep(self, seconds: float) -> bool:
+        await asyncio.sleep(seconds)
         return False

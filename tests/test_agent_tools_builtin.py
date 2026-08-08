@@ -153,6 +153,105 @@ async def test_memory_paths_are_virtual_durable_and_scope_isolated(tmp_path: Pat
     assert not (tmp_path / "memory" / "notes" / "private.md").exists()
 
 
+@pytest.mark.asyncio
+async def test_memory_paths_without_scope_fail_closed_and_touch_no_host_fs(
+    tmp_path: Path,
+) -> None:
+    """memory_scope=None means memory is not configured: fail with a clear
+    error and never create or read host directories."""
+    runtime_store = PostgresTestStore(tmp_path / "runtime.db")
+    writer = WriteFileTool(allowed_dir=tmp_path, workspace=tmp_path, runtime_store=runtime_store)
+    reader = ReadFileTool(allowed_dir=tmp_path, workspace=tmp_path, runtime_store=runtime_store)
+    editor = EditFileTool(allowed_dir=tmp_path, workspace=tmp_path, runtime_store=runtime_store)
+    lister = ListDirTool(allowed_dir=tmp_path, workspace=tmp_path, runtime_store=runtime_store)
+    context = ToolExecutionContext(
+        run_id="run-a",
+        session_key="a",
+        channel="api",
+        chat_id="chat-a",
+        user_id="user-a",
+    )
+
+    out = await writer.execute(
+        path="memory/notes/x.md", content="secret", tool_context=context
+    )
+    assert "memory write is unavailable" in out
+    out = await reader.execute(path="memory/notes/x.md", tool_context=context)
+    assert "memory read is unavailable" in out
+    out = await editor.execute(
+        path="memory/notes/x.md", old_text="a", new_text="b", tool_context=context
+    )
+    assert "memory write is unavailable" in out
+    out = await lister.execute(path="memory/notes", tool_context=context)
+    assert "memory read is unavailable" in out
+    assert not (tmp_path / "memory").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_paths_without_runtime_store_fail_closed(tmp_path: Path) -> None:
+    """Even with a scope key, a missing durable store must not downgrade to
+    the host filesystem."""
+    writer = WriteFileTool(allowed_dir=tmp_path, workspace=tmp_path)
+    context = ToolExecutionContext(
+        run_id="run-a",
+        session_key="a",
+        channel="api",
+        chat_id="chat-a",
+        user_id="user-a",
+        memory_scope="user:user-a:agent:default",
+    )
+    out = await writer.execute(
+        path="memory/notes/x.md", content="secret", tool_context=context
+    )
+    assert "memory write is unavailable" in out
+    assert not (tmp_path / "memory").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_paths_shared_scope_is_db_backed_and_cross_user(tmp_path: Path) -> None:
+    """memory_scope="shared" is an explicit project-wide opt-in backed by the
+    DB "shared" scope: visible across users, isolated from per-user scopes,
+    and never materialized on the host filesystem."""
+    runtime_store = PostgresTestStore(tmp_path / "runtime.db")
+    writer = WriteFileTool(allowed_dir=tmp_path, workspace=tmp_path, runtime_store=runtime_store)
+    reader = ReadFileTool(allowed_dir=tmp_path, workspace=tmp_path, runtime_store=runtime_store)
+    shared_a = ToolExecutionContext(
+        run_id="run-a",
+        session_key="a",
+        channel="api",
+        chat_id="chat-a",
+        user_id="user-a",
+        memory_scope="shared",
+    )
+    shared_b = ToolExecutionContext(
+        run_id="run-b",
+        session_key="b",
+        channel="api",
+        chat_id="chat-b",
+        user_id="user-b",
+        memory_scope="shared",
+    )
+    user_scoped = ToolExecutionContext(
+        run_id="run-c",
+        session_key="c",
+        channel="api",
+        chat_id="chat-c",
+        user_id="user-b",
+        memory_scope="user:user-b:agent:default",
+    )
+
+    await writer.execute(
+        path="memory/notes/common.md", content="shared-fact", tool_context=shared_a
+    )
+    assert (
+        await reader.execute(path="memory/notes/common.md", tool_context=shared_b)
+        == "shared-fact"
+    )
+    out = await reader.execute(path="memory/notes/common.md", tool_context=user_scoped)
+    assert "not found" in out.lower()
+    assert not (tmp_path / "memory").exists()
+
+
 # ---- edit_file ----
 @pytest.mark.asyncio
 async def test_edit_file_success(tmp_path: Path) -> None:

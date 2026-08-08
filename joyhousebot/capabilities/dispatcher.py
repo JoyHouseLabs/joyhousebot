@@ -17,6 +17,7 @@ from joyhousebot.domain.capabilities import (
 )
 from joyhousebot.runtime.context import ToolExecutionContext
 from joyhousebot.runtime.permissions import permission_engine
+from joyhousebot.utils.permissions import missing_permissions
 
 
 class CapabilityDispatcher:
@@ -108,17 +109,7 @@ class CapabilityDispatcher:
                 for item in (getattr(adapter.definition, "permissions", ()) or ())
                 if str(item).strip()
             }
-            granted = set(context.granted_permissions)
-            missing = [
-                permission
-                for permission in sorted(required)
-                if "*" not in granted
-                and permission not in granted
-                and not any(
-                    grant.endswith(".*") and permission.startswith(grant[:-1])
-                    for grant in granted
-                )
-            ]
+            missing = missing_permissions(context.granted_permissions, required)
             if missing:
                 raise ToolInvocationError(
                     "PERMISSION_DENIED",

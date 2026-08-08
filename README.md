@@ -112,12 +112,14 @@ Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
 本地需要 PostgreSQL：
 
 ```bash
-cp config.example.json config.json
+cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot"
 ./scripts/start-local.sh
 ```
+
+`config.dev.json` 开启了 `allowInsecureAuth`（仅凭 `X-User-ID` 头即可认证），仅限本机开发，不要用于任何可对外访问的部署；`config.example.json` 是生产安全基线模板。
 
 打开 `http://127.0.0.1:18790/ui/`；OpenAPI 在 `/docs`，健康检查为 `/healthz` 和 `/readyz`。`config.json` 已被 Git 忽略，真实配置和密钥不要提交。
 
@@ -127,9 +129,12 @@ Docker Compose：
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export POSTGRES_PASSWORD="choose-a-strong-password"
+export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
+
+Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`（管理面与控制台 UI，默认只绑 `127.0.0.1:18791`，不要暴露公网）。
 
 详细部署和故障排查见 [运行手册](docs/OPERATIONS.md)，完整边界和数据模型见 [架构文档](docs/ARCHITECTURE.md)。
 

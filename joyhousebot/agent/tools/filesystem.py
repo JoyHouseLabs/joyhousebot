@@ -137,23 +137,31 @@ def _scoped_memory_store(
     operation: str = "read",
     direct: bool = False,
 ) -> tuple[Any, str] | None:
-    if (
-        workspace is None
-        or runtime_store is None
-        or not isinstance(tool_context, ToolExecutionContext)
-        or not tool_context.memory_scope
-    ):
+    """Return the DB-backed memory store for paths under ``<workspace>/memory``.
+
+    Memory paths are durable cluster state and never fall back to the host
+    filesystem: when the run has no usable memory scope (memory not enabled or
+    not configured) a ToolError is raised instead. Returns None only for paths
+    outside the memory root, which follow normal scratch/workspace handling.
+    """
+    if workspace is None or not isinstance(tool_context, ToolExecutionContext):
         return None
     memory_root = (workspace / "memory").resolve()
     try:
         relative = file_path.resolve().relative_to(memory_root)
     except ValueError:
         return None
-    from joyhousebot.agent.memory import MemoryStore
-
     relative_path = relative.as_posix()
     if not relative_path:
         return None
+    if runtime_store is None or not tool_context.memory_scope:
+        raise ToolError(
+            "memory_unavailable",
+            f"memory {operation} is unavailable for {relative_path}: "
+            "memory is not enabled or configured for this run",
+        )
+    from joyhousebot.agent.memory import MemoryStore
+
     policy = EffectiveMemoryPolicy.from_dict(tool_context.memory_policy)
     if not policy.allows_path(relative_path, operation, direct=direct):
         raise ToolError(
@@ -406,18 +414,21 @@ class ListDirTool(Tool):
             workspace=self._workspace,
             tool_context=tool_context,
         )
-        if (
-            self._workspace is not None
-            and self._runtime_store is not None
-            and isinstance(tool_context, ToolExecutionContext)
-            and tool_context.memory_scope
-        ):
+        if self._workspace is not None and isinstance(tool_context, ToolExecutionContext):
             memory_root = (self._workspace / "memory").resolve()
             try:
                 relative = dir_path.resolve().relative_to(memory_root)
             except ValueError:
                 relative = None
             if relative is not None:
+                # Memory paths are DB-backed cluster state; never list the
+                # host filesystem as a fallback when memory is unavailable.
+                if self._runtime_store is None or not tool_context.memory_scope:
+                    raise ToolError(
+                        self.name,
+                        "memory read is unavailable: memory is not enabled or configured "
+                        "for this run",
+                    )
                 from joyhousebot.agent.memory import MemoryStore
 
                 policy = EffectiveMemoryPolicy.from_dict(tool_context.memory_policy)

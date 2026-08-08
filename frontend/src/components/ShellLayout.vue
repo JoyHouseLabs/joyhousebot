@@ -71,6 +71,7 @@ const route = useRoute()
 const router = useRouter()
 const navItems = [
   { to: '/overview', label: '监控概览', caption: '健康、用量与最近运行', icon: '◫' },
+  { to: '/dinq/search', label: '人才搜索', caption: '条件引导、候选人与富化', icon: '⌕' },
   { to: '/runs', label: '运行中心', caption: 'Run、Task、日志与产物', icon: '◎' },
   { to: '/chat', label: 'Agent 试用', caption: '真实会话与执行时间线', icon: '✦' },
   { to: '/scenarios', label: '场景工作台', caption: '路由、追问 DAG 与能力', icon: '◇' },

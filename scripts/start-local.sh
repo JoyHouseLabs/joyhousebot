@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_PATH="${JOYHOUSEBOT_CONFIG_PATH:-${ROOT_DIR}/config.json}"
+# Local development only: fall back to the insecure-auth dev template when no
+# real config.json exists. Production deployments must pass an explicit path.
+if [[ -z "${JOYHOUSEBOT_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
+  CONFIG_PATH="${ROOT_DIR}/config.dev.json"
+fi
 LEGACY_CONFIG_PATH="${JOYHOUSEBOT_LEGACY_CONFIG_PATH:-${HOME}/.joyhousebot/config.json}"
 API_HOST="${JOYHOUSEBOT_LOCAL_HOST:-127.0.0.1}"
 API_PORT="${JOYHOUSEBOT_LOCAL_PORT:-18790}"

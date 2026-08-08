@@ -127,6 +127,8 @@ class PublishCapabilityRequest(BaseModel):
     idempotent: bool = True
     retryable: bool = True
     side_effect: str = "none"
+    invocation_concurrency: Literal["sequential", "parallel_safe"] = "parallel_safe"
+    max_concurrent_invocations: int = Field(default=4, ge=1, le=1024)
     supports_stream: bool = False
     permissions: list[str] = Field(default_factory=list)
     data_classification: Literal["public", "internal", "confidential", "restricted"] = "internal"

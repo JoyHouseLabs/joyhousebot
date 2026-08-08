@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Protocol
 
-from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.runtime.models import AgentEvent, EventType
 from joyhousebot.runtime.narrative import prepare_event
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
@@ -118,6 +118,17 @@ class EventBroker:
         )
         return not remaining
 
+    async def _history_purged(self, run_id: str) -> bool:
+        """True when retention tombstoned this run's event/log history."""
+        getter = getattr(self.store, "get_runtime_run", None)
+        if getter is None:
+            return False
+        record = await asyncio.to_thread(getter, run_id)
+        if record is None:
+            return False
+        metadata = dict((getattr(record, "options", None) or {}).get("metadata") or {})
+        return bool(metadata.get("events_purged"))
+
     async def subscribe(
         self,
         run_id: str,
@@ -130,6 +141,16 @@ class EventBroker:
         cursor = max(0, after_sequence)
         started = time.monotonic()
         try:
+            if await self._history_purged(run_id):
+                # Retention deleted this run's events/logs while the run row
+                # survived.  Signal the gap explicitly instead of letting a
+                # sequence replay silently miss events.
+                yield AgentEvent(
+                    run_id=run_id,
+                    type=EventType.RUN_HISTORY_PURGED.value,
+                    summary="Earlier run history was purged by retention",
+                    data={"reason": "runtime events and logs purged by retention"},
+                )
             history = await asyncio.to_thread(
                 self.store.list_runtime_events,
                 run_id,

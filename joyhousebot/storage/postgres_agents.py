@@ -112,6 +112,13 @@ class PostgresAgentStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341914,))
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="agents",
+                version=1,
+                ddl=ddl,
+                description="agent definitions, revisions, and execution snapshots",
+            )
             # Pre-release data correction: built-in revisions are seeded
             # defaults, so migrate their previous Claude values in place.
             # User-created revisions remain immutable and untouched.

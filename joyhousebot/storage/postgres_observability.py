@@ -179,6 +179,13 @@ class PostgresObservabilityStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341920,))
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="observability",
+                version=1,
+                ddl=ddl,
+                description="trace blobs, spans, model invocations, and replays",
+            )
 
     def put_trace_blob(self, *, run_id: str, kind: str, content: Any, **kwargs: Any) -> TraceBlobRecord:
         blob_id = str(kwargs.get("blob_id") or f"blob_{uuid4().hex}")
@@ -199,12 +206,21 @@ class PostgresObservabilityStoreMixin:
 
     def get_trace_blob(self, blob_id: str) -> TraceBlobRecord | None:
         with self._pool.connection() as conn:
-            row = conn.execute("SELECT * FROM trace_blobs WHERE blob_id=%s", (blob_id,)).fetchone()
+            row = conn.execute(
+                """SELECT * FROM trace_blobs WHERE blob_id=%s
+                   AND (expires_at IS NULL OR expires_at > clock_timestamp())""",
+                (blob_id,),
+            ).fetchone()
         return self._obs_blob(row) if row else None
 
     def list_trace_blobs(self, run_id: str) -> list[TraceBlobRecord]:
         with self._pool.connection() as conn:
-            rows = conn.execute("SELECT * FROM trace_blobs WHERE run_id=%s ORDER BY created_at", (run_id,)).fetchall()
+            rows = conn.execute(
+                """SELECT * FROM trace_blobs WHERE run_id=%s
+                   AND (expires_at IS NULL OR expires_at > clock_timestamp())
+                   ORDER BY created_at""",
+                (run_id,),
+            ).fetchall()
         return [self._obs_blob(row) for row in rows]
 
     def start_execution_span(self, **kwargs: Any) -> ExecutionSpanRecord:

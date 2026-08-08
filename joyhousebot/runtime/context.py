@@ -78,6 +78,7 @@ class ToolExecutionContext:
     granted_permissions: frozenset[str] = field(default_factory=frozenset)
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     worker_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +120,10 @@ class RunContext:
     # Prompt Skills are immutable capabilities too.  Keep their approved
     # references with a Run so replay never silently reads a newer prompt.
     skill_refs: tuple[dict[str, str], ...] = ()
+    # Immutable-by-convention execution metadata. Scenario inputs are copied
+    # here so every capability can enforce the same confirmed constraints;
+    # plugins must never need direct access to framework storage.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def for_tools(self) -> ToolExecutionContext:
         return ToolExecutionContext(
@@ -145,6 +150,7 @@ class RunContext:
             granted_permissions=self.granted_permissions,
             cancellation=self.cancellation,
             worker_id=self.worker_id,
+            metadata=dict(self.metadata),
         )
 
 

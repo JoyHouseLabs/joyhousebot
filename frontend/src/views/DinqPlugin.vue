@@ -19,7 +19,7 @@
           <code>{{ item.prompt }}</code>
           <div><span v-for="capability in item.capability_ids" :key="capability">{{ capability }}</span></div>
           <small>{{ item.expected_outcome || '将进入与真实用户完全一致的场景识别、追问、Tool 调用和 Run 观测链路。' }}</small>
-          <button class="primary-button" @click="openQuickStart(item)">带入在线试用 →</button>
+          <button class="primary-button" @click="openQuickStart(item)">开始人才搜索 →</button>
         </article>
       </section>
       <section v-else-if="tab === 'playground'" class="playground-grid">
@@ -153,7 +153,7 @@ async function refreshPlayground() { if (!playgroundRun.value) return; playgroun
 async function simulatePlaygroundScenario() { const item = playgroundComponent.value; if (!item) return; let inputs: Record<string, unknown>; try { const value = JSON.parse(scenarioInputsText.value); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('模拟字段必须是 JSON 对象'); inputs = value as Record<string, unknown> } catch (cause) { error.value = cause instanceof Error ? cause.message : '模拟字段 JSON 无效'; return } scenarioSimulating.value = true; error.value = ''; scenarioResult.value = null; try { scenarioResult.value = await simulateScenario(item.reference_id, Number(item.reference_version), scenarioPrompt.value, inputs) } catch (cause) { error.value = cause instanceof Error ? cause.message : '场景模拟失败' } finally { scenarioSimulating.value = false } }
 async function checkPlaygroundSkill() { const item = playgroundComponent.value; if (!item) return; skillChecking.value = true; error.value = ''; skillResult.value = null; try { skillResult.value = await getCapabilityRuntimeSettings(item.reference_id) } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Skill 策略校验失败' } finally { skillChecking.value = false } }
 function openScenario(item: PluginComponent) { void router.push({ path: '/scenarios', query: { scenario: item.reference_id, version: item.reference_version } }) }
-function openQuickStart(item: PluginQuickstart) { void router.push({ path: '/chat', query: { agent: item.agent_id, session: `ui:dinq-${Date.now()}`, prompt: item.prompt, ...(item.scenario_id ? { scenario: item.scenario_id } : {}), ...(item.scenario_inputs && Object.keys(item.scenario_inputs).length ? { scenarioInputs: JSON.stringify(item.scenario_inputs) } : {}) } }) }
+function openQuickStart(item: PluginQuickstart) { void router.push({ path: '/dinq/search', query: { prompt: item.prompt } }) }
 watch(playgroundComponentId, () => resetPlayground()); watch(tab, (value) => { if (value !== 'overview' && !topology.value) void load() }); onMounted(async () => { await load(); if (overview.value?.components.length) selectPlaygroundComponent(overview.value.components[0]) })
 </script>
 

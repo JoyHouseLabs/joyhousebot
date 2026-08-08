@@ -56,6 +56,7 @@ class EventType(str, Enum):
     RUN_FAILED = "run.failed"
     RUN_CANCELLED = "run.cancelled"
     RUN_TIMED_OUT = "run.timed_out"
+    RUN_HISTORY_PURGED = "run.history_purged"
     MESSAGE_DELTA = "message.delta"
     MESSAGE_COMPLETED = "message.completed"
     PHASE_STARTED = "phase.started"

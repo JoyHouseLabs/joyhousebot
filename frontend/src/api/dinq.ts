@@ -39,12 +39,22 @@ export interface DinqRunProjection {
     next_action?: string | null
     summary?: string | null
     conditions?: Record<string, unknown>
+    condition_display?: Array<{ key: string; label: string; value: unknown; display_value: string; strength?: string | null; confirmed?: boolean }>
     missing_conditions?: string[]
     total_candidates: number
     verified_candidates: number
     tool_calls: number
   }
+  read_model?: {
+    status: 'ready' | 'degraded' | 'unavailable' | string
+    search_case_id?: string
+    brief_revision_id?: string
+    attempt_id?: string
+    error_type?: string
+    source?: 'runtime' | 'postgres' | 'runtime_fallback' | string
+  }
   candidates: DinqCandidate[]
+  page?: { limit: number; cursor: number; next_cursor?: number | null; total: number }
   selected_candidate_id?: string | null
   selected_candidate?: DinqCandidate | null
   activity: DinqActivity[]

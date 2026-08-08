@@ -264,6 +264,8 @@ async def publish_capability(
         idempotent=body.idempotent,
         retryable=body.retryable,
         side_effect=body.side_effect,
+        invocation_concurrency=body.invocation_concurrency,
+        max_concurrent_invocations=body.max_concurrent_invocations,
         supports_stream=body.supports_stream,
         permissions=tuple(body.permissions),
         data_classification=body.data_classification,

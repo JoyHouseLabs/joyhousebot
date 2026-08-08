@@ -131,6 +131,12 @@ class CapabilityDefinition:
     idempotent: bool = True
     retryable: bool = True
     side_effect: str = "none"
+    # Invocation concurrency is deliberately separate from the durable Task
+    # graph's ``execution_mode``.  It describes whether *independent calls
+    # returned in a single model response* may overlap.  The Agent/Scenario
+    # policy must still opt in before this can take effect.
+    invocation_concurrency: str = "parallel_safe"
+    max_concurrent_invocations: int = 4
     supports_stream: bool = False
     permissions: tuple[str, ...] = ()
     data_classification: str = "internal"
@@ -151,6 +157,10 @@ class CapabilityDefinition:
             raise ValueError("capability input schema must describe an object")
         if self.timeout_seconds <= 0 or self.expected_duration_seconds < 0:
             raise ValueError("capability durations must be positive")
+        if self.invocation_concurrency not in {"sequential", "parallel_safe"}:
+            raise ValueError("invalid capability invocation concurrency")
+        if self.max_concurrent_invocations < 1:
+            raise ValueError("capability max concurrent invocations must be positive")
         if self.data_classification not in {"public", "internal", "confidential", "restricted"}:
             raise ValueError("invalid capability data classification")
         if any(not item.strip() for item in self.connection_ids):
@@ -169,6 +179,13 @@ class CapabilityDefinition:
             value.pop("origin")
         if not value["configuration_schema"]:
             value.pop("configuration_schema")
+        # Adding the default contract must not make legacy, immutable
+        # definitions appear changed when a newer Worker starts up. Only an
+        # explicit non-default declaration is persisted.
+        if self.invocation_concurrency == "parallel_safe":
+            value.pop("invocation_concurrency", None)
+        if self.max_concurrent_invocations == 4:
+            value.pop("max_concurrent_invocations", None)
         return value
 
 

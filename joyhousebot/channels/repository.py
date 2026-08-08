@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator, Sequence
 
 from joyhousebot.storage.json_codec import Jsonb
+
+# Database time owns leases: every lease/availability comparison uses the
+# database clock so channel workers never compare leases against skewed
+# client wall clocks.  Time columns are bigint epoch milliseconds.
+_DB_NOW_MS = "(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint"
 
 
 class ChannelRepository:
@@ -81,21 +85,27 @@ class ChannelRepository:
                 connection.execute("SELECT pg_advisory_xact_lock(%s)", (872341912,))
                 connection.execute(ddl)
 
-    def acquire_lease(self, channel: str, *, worker_id: str, now_ms: int, lease_ms: int) -> bool:
+    def db_now_ms(self) -> int:
+        """Return the database wall clock in epoch milliseconds."""
+        with self._connection() as connection:
+            row = connection.execute(f"SELECT {_DB_NOW_MS} AS now_ms").fetchone()
+        return int(row["now_ms"])
+
+    def acquire_lease(self, channel: str, *, worker_id: str, lease_ms: int) -> bool:
         with self._connection() as connection:
             row = connection.execute(
-                    """INSERT INTO channel_leases
+                    f"""INSERT INTO channel_leases
                        (channel_id,owner_worker_id,lease_until_ms,lease_version,updated_at_ms)
-                       VALUES (%s,%s,%s,1,%s)
+                       VALUES (%s,%s,{_DB_NOW_MS}+%s,1,{_DB_NOW_MS})
                        ON CONFLICT(channel_id) DO UPDATE SET
                          owner_worker_id=EXCLUDED.owner_worker_id,
                          lease_until_ms=EXCLUDED.lease_until_ms,
                          lease_version=channel_leases.lease_version+1,
                          updated_at_ms=EXCLUDED.updated_at_ms
                        WHERE channel_leases.owner_worker_id=EXCLUDED.owner_worker_id
-                          OR channel_leases.lease_until_ms<=%s
+                          OR channel_leases.lease_until_ms<={_DB_NOW_MS}
                        RETURNING owner_worker_id""",
-                    (channel, worker_id, now_ms + lease_ms, now_ms, now_ms),
+                    (channel, worker_id, lease_ms),
                 ).fetchone()
         return bool(row and row["owner_worker_id"] == worker_id)
 
@@ -121,27 +131,29 @@ class ChannelRepository:
 
     def enqueue(self, entry: dict[str, Any]) -> str:
         outbound_id = str(entry.get("id") or uuid.uuid4().hex)
-        now_ms = int(entry["available_at_ms"])
-        values = (
+        available_at_ms = entry.get("available_at_ms")
+        # Without an explicit availability time, stamp the row with the
+        # database clock so it is claimable under the lease time source.
+        now_expr = "%s" if available_at_ms is not None else _DB_NOW_MS
+        values: list[Any] = [
             outbound_id,
             entry.get("user_id"),
             entry["channel"],
             entry["chat_id"],
             entry.get("content") or "",
             entry.get("reply_to"),
-            entry.get("media") or [],
-            entry.get("metadata") or {},
+            Jsonb(entry.get("media") or []),
+            Jsonb(entry.get("metadata") or {}),
             entry.get("request_id"),
             entry.get("tracker_id"),
-            now_ms,
-            now_ms,
-            now_ms,
-        )
-        values = (*values[:6], Jsonb(values[6]), Jsonb(values[7]), *values[8:])
-        query = """INSERT INTO channel_outbox
+        ]
+        if available_at_ms is not None:
+            now_ms = int(available_at_ms)
+            values.extend([now_ms, now_ms, now_ms])
+        query = f"""INSERT INTO channel_outbox
                 (outbound_id,user_id,channel,chat_id,content,reply_to,media,metadata,
                  request_id,tracker_id,available_at_ms,created_at_ms,updated_at_ms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,{now_expr},{now_expr},{now_expr})"""
         with self._connection() as connection:
             connection.execute(query, values)
         return outbound_id
@@ -160,7 +172,6 @@ class ChannelRepository:
                 "metadata": metadata,
                 "request_id": getattr(message, "request_id", None),
                 "tracker_id": getattr(message, "tracker_id", None),
-                "available_at_ms": int(time.time() * 1000),
             }
         )
 
@@ -169,28 +180,27 @@ class ChannelRepository:
         channels: Sequence[str],
         *,
         worker_id: str,
-        now_ms: int,
         lease_ms: int,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         if not channels:
             return []
-        query = """
+        query = f"""
             WITH available AS (
                 SELECT outbound_id FROM channel_outbox
-                WHERE channel=ANY(%s) AND available_at_ms<=%s
-                  AND (status='pending' OR (status='sending' AND lease_until_ms<=%s))
+                WHERE channel=ANY(%s) AND available_at_ms<={_DB_NOW_MS}
+                  AND (status='pending' OR (status='sending' AND lease_until_ms<={_DB_NOW_MS}))
                 ORDER BY available_at_ms,outbound_id
                 FOR UPDATE SKIP LOCKED LIMIT %s
             )
             UPDATE channel_outbox o SET status='sending',lease_owner=%s,
-                lease_until_ms=%s,lease_version=o.lease_version+1,updated_at_ms=%s
+                lease_until_ms={_DB_NOW_MS}+%s,lease_version=o.lease_version+1,updated_at_ms={_DB_NOW_MS}
             FROM available WHERE o.outbound_id=available.outbound_id RETURNING o.*
             """
         with self._connection() as connection:
             rows = connection.execute(
                     query,
-                    (list(channels), now_ms, now_ms, limit, worker_id, now_ms + lease_ms, now_ms),
+                    (list(channels), limit, worker_id, lease_ms),
                 ).fetchall()
         return [self._entry(row) for row in rows]
 
@@ -203,7 +213,6 @@ class ChannelRepository:
         success: bool,
         error: str | None,
         max_attempts: int,
-        now_ms: int,
     ) -> tuple[str, int] | None:
         p = "%s"
         with self._connection() as connection:
@@ -218,6 +227,8 @@ class ChannelRepository:
                 or int(row["lease_version"]) != lease_version
             ):
                 return None
+            now_row = connection.execute(f"SELECT {_DB_NOW_MS} AS now_ms").fetchone()
+            now_ms = int(now_row["now_ms"])
             attempt = int(row["attempt"]) + (0 if success else 1)
             status = "sent" if success else ("dead" if attempt >= max_attempts else "pending")
             delivery_values = (

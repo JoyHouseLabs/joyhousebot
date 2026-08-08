@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from joyhousebot.agent.tool_execution import build_tool_execution_batches
 from joyhousebot.capabilities.dispatcher import capability_result_prompt
 from joyhousebot.providers.base import LLMResponse
 from joyhousebot.runtime.context import (
@@ -40,7 +41,13 @@ class TurnEngineMixin:
         metadata: dict | None = None,
         run_context: RunContext | None = None,
     ) -> str | None:
-        """Resolve memory scope key from config. Returns None for shared, else scope_key (session or user)."""
+        """Resolve the DB memory scope key from config.
+
+        Returns the shared cluster scope for "shared", the session key for
+        "session", and a per-user key for "user". Returns None only when memory
+        is not configured at all; callers must treat None as "memory disabled",
+        never as a fallback to host-local storage.
+        """
         if not self.config:
             return None
         retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
@@ -48,7 +55,9 @@ class TurnEngineMixin:
             return None
         scope = getattr(retrieval, "memory_scope", "user") or "user"
         if scope == "shared":
-            return None
+            # Explicit project-wide opt-in: one DB-backed scope shared by all
+            # users and runs, matching MemoryStore's default "shared" scope.
+            return "shared"
         if scope == "session":
             return session_key
         if scope == "user":
@@ -290,7 +299,27 @@ class TurnEngineMixin:
                     messages_config_loop
                     and getattr(messages_config_loop, "suppress_tool_errors", False)
                 )
-                for tool_call in response.tool_calls:
+                agent_model_policy = (
+                    dict(self.agent_revision.model_policy)
+                    if getattr(self, "agent_revision", None) is not None
+                    else {}
+                )
+                scenario_execution_policy = dict(
+                    (run_context.metadata or {}).get("scenario_execution_policy") or {}
+                )
+                capability_policy_for = getattr(
+                    self.capabilities,
+                    "get_tool_invocation_policy",
+                    lambda _name: {"mode": "sequential", "max_concurrent": 1, "idempotent": False, "side_effect": "unknown"},
+                )
+                batches = build_tool_execution_batches(
+                    response.tool_calls,
+                    agent_policy=agent_model_policy,
+                    scenario_execution_policy=scenario_execution_policy,
+                    capability_policy_for=capability_policy_for,
+                )
+
+                async def _execute_tool_call(tool_call, *, batch_size: int, parallel: bool):
                     tool_name = (
                         (tool_call.name or "").strip() if isinstance(tool_call.name, str) else ""
                     )
@@ -308,6 +337,8 @@ class TurnEngineMixin:
                                 "tool_call_id": tool_call.id,
                                 "turn_id": current_turn_id,
                                 "span_id": tool_span_id,
+                                "batch_size": batch_size,
+                                "execution_mode": "parallel" if parallel else "sequential",
                             }
                             await execution_stream_callback(
                                 "tool_requested", {**invalid_payload, "args": tool_args}
@@ -322,6 +353,8 @@ class TurnEngineMixin:
                                     "tool_call_id": tool_call.id,
                                     "turn_id": current_turn_id,
                                     "span_id": tool_span_id,
+                                    "batch_size": batch_size,
+                                    "execution_mode": "parallel" if parallel else "sequential",
                                     "ok": False,
                                     "error_code": "invalid_tool_call",
                                     "error": result,
@@ -329,12 +362,8 @@ class TurnEngineMixin:
                                     "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                                 },
                             )
-                        messages = self.context.add_tool_result(
-                            messages, tool_call.id, tool_call.name or "", result
-                        )
-                        continue
+                        return tool_call, tool_call.name or "", result
 
-                    tools_used.append(tool_name)
                     args_str = json.dumps(tool_args, ensure_ascii=False)
                     # Tool arguments are model/user-influenced and noisy: keep
                     # them at debug level and escape newlines to prevent log
@@ -350,6 +379,8 @@ class TurnEngineMixin:
                                 "tool_call_id": tool_call.id,
                                 "turn_id": current_turn_id,
                                 "span_id": tool_span_id,
+                                "batch_size": batch_size,
+                                "execution_mode": "parallel" if parallel else "sequential",
                             },
                         )
                         await execution_stream_callback(
@@ -360,6 +391,8 @@ class TurnEngineMixin:
                                 "tool_call_id": tool_call.id,
                                 "turn_id": current_turn_id,
                                 "span_id": tool_span_id,
+                                "batch_size": batch_size,
+                                "execution_mode": "parallel" if parallel else "sequential",
                             },
                         )
 
@@ -373,6 +406,8 @@ class TurnEngineMixin:
                                     "tool_call_id": tool_call.id,
                                     "turn_id": current_turn_id,
                                     "span_id": tool_span_id,
+                                    "batch_size": batch_size,
+                                    "execution_mode": "parallel" if parallel else "sequential",
                                 },
                             )
 
@@ -393,6 +428,8 @@ class TurnEngineMixin:
                                     "tool_call_id": tool_call.id,
                                     "turn_id": current_turn_id,
                                     "span_id": tool_span_id,
+                                    "batch_size": batch_size,
+                                    "execution_mode": "parallel" if parallel else "sequential",
                                     "ok": False,
                                     "error_code": "interrupted",
                                     "error": "Tool execution interrupted",
@@ -410,6 +447,8 @@ class TurnEngineMixin:
                                 "tool_call_id": tool_call.id,
                                 "turn_id": current_turn_id,
                                 "span_id": tool_span_id,
+                                "batch_size": batch_size,
+                                "execution_mode": "parallel" if parallel else "sequential",
                                 "invocation_id": capability_result.invocation_id,
                                 "ok": capability_result.ok,
                                 "result": result,
@@ -435,9 +474,41 @@ class TurnEngineMixin:
 
                     preview = (result[:500] + "...") if len(result) > 500 else result
                     logger.debug(f"Tool {tool_name} result (preview): {preview}")
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_name, result
-                    )
+                    return tool_call, tool_name, result
+
+                for batch in batches:
+                    calls = [response.tool_calls[index] for index in batch.indices]
+                    for tool_call in calls:
+                        tool_name = str(getattr(tool_call, "name", "") or "").strip()
+                        if tool_name:
+                            tools_used.append(tool_name)
+                    if batch.parallel:
+                        completed = await asyncio.gather(
+                            *(
+                                _execute_tool_call(
+                                    tool_call,
+                                    batch_size=len(calls),
+                                    parallel=True,
+                                )
+                                for tool_call in calls
+                            )
+                        )
+                    else:
+                        completed = [
+                            await _execute_tool_call(
+                                tool_call,
+                                batch_size=1,
+                                parallel=False,
+                            )
+                            for tool_call in calls
+                        ]
+                    # Provider protocols require Tool result messages in the
+                    # exact order of the original calls, even when their work
+                    # completed out of order.
+                    for tool_call, tool_name, result in completed:
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_name, result
+                        )
                 follow_up = _default_after_tool_results_prompt
                 if messages_config_loop and getattr(
                     messages_config_loop, "after_tool_results_prompt", None

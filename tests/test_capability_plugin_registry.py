@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from joyhousebot.capabilities import CapabilityPluginRegistry, CapabilityRegistry
-from joyhousebot.contracts import CapabilityContext, CapabilityResult
+from joyhousebot.contracts import CapabilityContext, CapabilityResult, ProjectionContext
 from joyhousebot.contracts.plugins import PluginManifest
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.runtime.context import ToolExecutionContext
@@ -62,6 +62,29 @@ def test_plugin_registry_rejects_conflicting_capability():
         registry.register_capability(
             Definition("demo.echo", Ref("demo.echo", "1.0.0")), Handler()
         )
+
+
+def test_plugin_registry_owns_named_projection_providers():
+    class Provider:
+        view_id = "demo.search"
+        schema_version = 1
+
+        def build(self, context):
+            return {"view": self.view_id, "run": context.run}
+
+    class ProjectionPlugin:
+        plugin_id = "projection-demo"
+        version = "1.0.0"
+
+        def register(self, registry):
+            registry.register_projection(Provider())
+
+    registry = CapabilityPluginRegistry()
+    registry.register_plugin(ProjectionPlugin())
+    provider = registry.get_projection("demo.search")
+    assert provider is not None
+    assert provider.build(ProjectionContext(run={"run_id": "run-1"}))["run"]["run_id"] == "run-1"
+    assert registry.get_projection("dinq.search") is None
 
 
 @pytest.mark.asyncio
@@ -140,6 +163,7 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
     class SettingsHandler:
         async def execute(self, context, input):
             observed.update(context.metadata.get("capability_configuration") or {})
+            observed["scenario_inputs"] = context.metadata.get("scenario_inputs")
             return CapabilityResult(success=True, output={"ok": True, **input})
 
     class SettingsPlugin:
@@ -159,9 +183,15 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
     registry = CapabilityRegistry(store=store)
     registry.register_plugin(SettingsPlugin())
     store.save_capability_runtime_settings("settings.echo", enabled=True, configuration={"prefix": "configured"}, actor_id="admin")
-    context = ToolExecutionContext(run_id="run", session_key="session", channel="api", chat_id="chat")
+    context = ToolExecutionContext(
+        run_id="run", session_key="session", channel="api", chat_id="chat",
+        metadata={"scenario_inputs": {"must_have": ["verified"]}},
+    )
     result = await registry.invoke_tool("settings.echo", {}, context=context)
-    assert result.ok and observed == {"prefix": "configured"}
+    assert result.ok and observed == {
+        "prefix": "configured",
+        "scenario_inputs": {"must_have": ["verified"]},
+    }
     store.save_capability_runtime_settings("settings.echo", enabled=False, configuration={}, actor_id="admin")
     assert registry.get_tool("settings.echo") is None
 

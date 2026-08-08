@@ -82,6 +82,13 @@ class PostgresScenarioStoreMixin:
             if legacy:
                 conn.execute("DROP TABLE scenario_capabilities")
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="scenarios",
+                version=1,
+                ddl=ddl,
+                description="scenario definitions, versions, and capability bindings",
+            )
 
     def save_scenario_version(
         self, scenario: ScenarioVersion, *, status: str = "draft", actor_id: str = "system"

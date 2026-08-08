@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from joyhousebot.utils.permissions import permission_granted
+
 
 @dataclass(frozen=True, slots=True)
 class Principal:
@@ -13,7 +15,11 @@ class Principal:
     permissions: tuple[str, ...] = ()
 
     def can(self, permission: str) -> bool:
-        return self.role == "operator" or "*" in self.permissions or permission in self.permissions
+        # Shared grant semantics (exact + "namespace.*" + "*") live in
+        # joyhousebot.utils.permissions; "operator" short-circuits as before.
+        if self.role == "operator":
+            return True
+        return any(permission_granted(grant, permission) for grant in self.permissions)
 
 
 @dataclass(frozen=True, slots=True)

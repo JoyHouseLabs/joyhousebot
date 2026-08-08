@@ -1,7 +1,6 @@
 """Regression tests for runtime concurrency, quota, and availability fixes."""
 
 import asyncio
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,7 +137,6 @@ async def test_cron_shutdown_finishes_claimed_occurrence(tmp_path: Path) -> None
     claimed = service.repository.claim_one(
         job.id,
         worker_id=service.worker_id,
-        now_ms=int(time.time() * 1000),
         lease_ms=service.lease_ms,
         manual=True,
     )
@@ -313,3 +311,23 @@ def test_memory_scope_metadata_mismatched_principal_is_not_trusted() -> None:
         run_context=principal,
     )
     assert scope == "telegram:attacker"
+
+
+def test_memory_scope_shared_maps_to_cluster_shared_db_scope() -> None:
+    engine = object.__new__(TurnEngineMixin)
+    engine.config = SimpleNamespace(
+        tools=SimpleNamespace(retrieval=SimpleNamespace(memory_scope="shared"))
+    )
+    scope = engine._resolve_memory_scope_key(
+        "telegram:chat-1",
+        sender_id="user-a",
+        metadata=None,
+        run_context=None,
+    )
+    assert scope == "shared"
+
+
+def test_memory_scope_unconfigured_returns_none() -> None:
+    engine = object.__new__(TurnEngineMixin)
+    engine.config = SimpleNamespace(tools=SimpleNamespace(retrieval=None))
+    assert engine._resolve_memory_scope_key("telegram:chat-1") is None

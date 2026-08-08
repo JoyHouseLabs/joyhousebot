@@ -45,3 +45,19 @@ Worker。
 页面中通用渲染；点击后只是把业务提示、目标 Agent 和 Scenario 线索带入在线试用，仍经由正常的
 Coordinator 路由、追问、权限校验和 Run 审计执行。这样通用 Joyhousebot 安装不会因某个业务插件而被
 耦合，Dinq 环境也能明确审计“谁启用了哪些业务权限”。
+
+## 插件 Schema Migration
+
+插件拥有独立业务表时，DDL 必须与核心 migration 共用同一把 cluster-wide advisory lock，
+防止插件 DDL 与核心 DDL 在并发启动时交叉持锁：
+
+- 持有 RuntimeStore 的插件：在 `store.schema_migration_lock()` context manager 内执行 DDL，
+  然后调用 `store.record_plugin_migration(name="plugin:<plugin_id>", version=N, ddl=...)`
+  把 `(name, version, checksum, applied_at)` 写入统一的 `schema_migration_history` 表；
+- 自建数据库连接的插件（如 Dinq）：直接对 `joyhousebot.storage.postgres_locks` 的
+  `SCHEMA_MIGRATION_LOCK_ID` 执行 `pg_advisory_xact_lock`。事务级 advisory lock 与核心
+  `schema_migration_lock()` 的 session 级锁使用同一 lock ID，二者互相排斥。
+
+Dinq 的 `dinq` schema 由 `dinq_plugin.discover.postgres_store.DinqPostgresStore.migrate()` 按
+第二种方式接入。DDL 变更后 `schema_migration_history` 中 checksum 不一致会产生 warning 日志，
+用于发现 schema 漂移。

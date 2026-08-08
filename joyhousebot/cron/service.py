@@ -15,6 +15,11 @@ from joyhousebot.scheduling.repository import ScheduleRepository
 
 
 def _now_ms() -> int:
+    """Client wall clock; only for local cron-expression validation.
+
+    Lease and schedule state transitions must use the database clock via
+    ``ScheduleRepository.db_now_ms()`` instead (database time owns leases).
+    """
     return int(time.time() * 1000)
 
 
@@ -112,16 +117,15 @@ class CronService:
 
     async def _run_loop(self) -> None:
         while self._running:
-            claimed = await asyncio.to_thread(self._claim_due_jobs, _now_ms())
+            claimed = await asyncio.to_thread(self._claim_due_jobs)
             if claimed:
                 await asyncio.gather(*(self._execute_claimed_job(job) for job in claimed))
                 continue
             await asyncio.sleep(self.poll_seconds)
 
-    def _claim_due_jobs(self, now: int) -> list[CronJob]:
+    def _claim_due_jobs(self) -> list[CronJob]:
         return self.repository.claim_due(
             worker_id=self.worker_id,
-            now_ms=now,
             lease_ms=self.lease_ms,
         )
 
@@ -129,7 +133,6 @@ class CronService:
         return self.repository.renew(
             job,
             worker_id=self.worker_id,
-            now_ms=_now_ms(),
             lease_ms=self.lease_ms,
         )
 
@@ -167,13 +170,13 @@ class CronService:
             renewal.cancel()
             await asyncio.gather(renewal, return_exceptions=True)
 
-        finished = _now_ms()
+        finished = await asyncio.to_thread(self.repository.db_now_ms)
         remains_enabled = job.enabled if enabled_after_run is None else enabled_after_run
-        next_run = (
-            _compute_next_run(job.schedule, finished)
-            if remains_enabled and job.schedule.kind != "at"
-            else None
-        )
+        # Recompute the next occurrence from the schedule definition.  A
+        # one-shot ``at`` job whose time is still in the future (manual "run
+        # now" ahead of schedule) keeps that planned occurrence; a due ``at``
+        # job yields None and is disabled as consumed.
+        next_run = _compute_next_run(job.schedule, finished) if remains_enabled else None
         await asyncio.to_thread(
             self.repository.finish,
             job,
@@ -217,7 +220,7 @@ class CronService:
         existing = self.repository.list(user_id=user_id, include_disabled=True)
         if len(existing) >= MAX_JOBS_PER_USER:
             raise ValueError(f"user has reached the scheduled job limit ({MAX_JOBS_PER_USER})")
-        now = _now_ms()
+        now = self.repository.db_now_ms()
         kind = payload_kind if payload_kind in {"agent_turn", "system_event"} else "agent_turn"
         job = CronJob(
             id=uuid.uuid4().hex,
@@ -251,13 +254,14 @@ class CronService:
         current = next((job for job in rows if job.id == job_id), None)
         if current is None:
             return None
-        next_run = _compute_next_run(current.schedule, _now_ms()) if enabled else None
+        now_ms = self.repository.db_now_ms()
+        next_run = _compute_next_run(current.schedule, now_ms) if enabled else None
         return self.repository.set_enabled(
             job_id,
             enabled,
             user_id=user_id,
             next_run_at_ms=next_run,
-            now_ms=_now_ms(),
+            now_ms=now_ms,
         )
 
     async def run_job(
@@ -273,12 +277,10 @@ class CronService:
         )
         if current is None or (not force and not current.enabled):
             return False
-        now = _now_ms()
         selected = await asyncio.to_thread(
             self.repository.claim_one,
             job_id,
             worker_id=self.worker_id,
-            now_ms=now,
             lease_ms=self.lease_ms,
             manual=True,
         )

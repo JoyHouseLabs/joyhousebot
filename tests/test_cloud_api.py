@@ -1,5 +1,8 @@
+import sys
+import types
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
@@ -32,15 +35,46 @@ def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
     assert "/v1/runs" not in control_paths
 
 
-def test_prometheus_metrics_endpoint_exposes_runtime_families(tmp_path: Path) -> None:
+def test_prometheus_metrics_endpoint_exposes_runtime_families(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JOYHOUSEBOT_METRICS_TOKEN", "scrape-token")
     client, store = _client(tmp_path)
     with client:
-        response = client.get("/metrics")
+        response = client.get("/metrics", headers={"Authorization": "Bearer scrape-token"})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
     assert "joyhousebot_up 1" in response.text
     assert "joyhousebot_runs_total" in response.text
     assert "joyhousebot_tasks_total" in response.text
+
+
+def test_prometheus_metrics_fails_closed_without_configured_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("JOYHOUSEBOT_METRICS_TOKEN", raising=False)
+    client, _ = _client(tmp_path)
+    with client:
+        response = client.get("/metrics")
+    assert response.status_code == 404
+    assert "joyhousebot_up" not in response.text
+
+
+def test_prometheus_metrics_requires_bearer_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JOYHOUSEBOT_METRICS_TOKEN", "scrape-token")
+    client, _ = _client(tmp_path)
+    with client:
+        assert client.get("/metrics").status_code == 401
+        assert (
+            client.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code
+            == 401
+        )
+        assert (
+            client.get("/metrics", headers={"Authorization": "Bearer scrape-token"}).status_code
+            == 200
+        )
 
 
 def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Path) -> None:
@@ -142,6 +176,44 @@ def test_api_is_submit_only_and_user_scoped(tmp_path: Path) -> None:
         other = client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer token-b"})
         assert own.status_code == 200
         assert other.status_code == 404
+
+
+def test_run_projection_is_resolved_through_configured_plugin(tmp_path: Path, monkeypatch) -> None:
+    module = types.ModuleType("test_projection_plugin")
+
+    class Provider:
+        view_id = "demo.search"
+        schema_version = 1
+
+        def build(self, context):
+            return {"view": self.view_id, "run_id": context.run.run_id, "user_id": context.user_id}
+
+    class Plugin:
+        plugin_id = "demo.projection"
+        version = "1.0.0"
+
+        def register(self, registry):
+            registry.register_projection(Provider())
+
+    module.create_plugin = lambda: Plugin()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    config = Config(tools={"capability_plugins": [module.__name__]})
+    store = PostgresTestStore(tmp_path / "projection.db")
+    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
+    container = build_api_container(config=config, store=store)
+    client = TestClient(create_app(container))
+    headers = {"Authorization": "Bearer token-a"}
+    with client:
+        created = client.post("/v1/runs", headers=headers, json={
+            "agent_id": "default", "session_id": "projection-session",
+            "input": {"type": "message", "content": "hello"},
+        })
+        run_id = created.json()["run_id"]
+        projected = client.get(f"/v1/runs/{run_id}/projection?view=demo.search", headers=headers)
+        assert projected.status_code == 200
+        assert projected.json() == {"view": "demo.search", "run_id": run_id, "user_id": "user-a"}
+        unsupported = client.get(f"/v1/runs/{run_id}/projection?view=dinq.search", headers=headers)
+        assert unsupported.status_code == 400
 
 
 def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Path) -> None:

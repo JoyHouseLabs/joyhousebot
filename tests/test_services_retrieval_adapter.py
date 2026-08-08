@@ -55,3 +55,19 @@ async def test_memory_retrieval_reads_scoped_repository(tmp_path: Path) -> None:
         user_id="user-a",
     )
     assert any("concise" in hit["content"] for hit in hits)
+
+
+@pytest.mark.asyncio
+async def test_memory_retrieval_without_scope_key_returns_nothing(tmp_path: Path) -> None:
+    """A run without a resolved memory scope must not fall back to the
+    cluster-wide "shared" scope."""
+    store = PostgresTestStore(tmp_path / "memory.db")
+    MemoryStore(store, "shared").write_long_term("cluster shared fact")
+    hits = await search_async(
+        query="shared",
+        scope="memory",
+        memory_scope_key=None,
+        runtime_store=store,
+        user_id="user-a",
+    )
+    assert hits == []

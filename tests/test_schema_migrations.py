@@ -1,0 +1,207 @@
+"""Schema migration history, destructive gate, and shared plugin lock tests."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Iterator
+from uuid import uuid4
+
+import psycopg
+import pytest
+
+from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
+from joyhousebot.storage.postgres_migrations import migration_checksum
+from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+from joyhousebot.storage.runtime_store import destructive_migrate_enabled
+from tests.support.postgres_store import TEST_DATABASE_URL
+
+_CORE_DOMAINS = {
+    "runtime",
+    "admins",
+    "agents",
+    "capabilities",
+    "plugins",
+    "scenarios",
+    "clarifications",
+    "rate_limits",
+    "observability",
+    "mcp_servers",
+}
+
+
+@pytest.fixture()
+def store() -> Iterator[PostgresRuntimeStore]:
+    runtime_store = PostgresRuntimeStore(
+        TEST_DATABASE_URL, application_name="joyhousebot-test-migrations"
+    )
+    yield runtime_store
+    runtime_store.close()
+
+
+def _history_row(store: PostgresRuntimeStore, name: str, version: int) -> dict | None:
+    with store._pool.connection() as conn:
+        return conn.execute(
+            "SELECT name, version, checksum, description, applied_at"
+            " FROM schema_migration_history WHERE name=%s AND version=%s",
+            (name, version),
+        ).fetchone()
+
+
+def test_core_migrations_are_recorded(store: PostgresRuntimeStore) -> None:
+    with store._pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT name, version, checksum FROM schema_migration_history"
+            " WHERE name = ANY(%s)",
+            (sorted(_CORE_DOMAINS),),
+        ).fetchall()
+    recorded = {row["name"]: row for row in rows}
+    assert set(recorded) == _CORE_DOMAINS
+    assert recorded["runtime"]["version"] == 3
+    for row in recorded.values():
+        assert len(row["checksum"]) == 64
+
+
+def test_record_migration_is_idempotent(store: PostgresRuntimeStore) -> None:
+    name = f"test:{uuid4().hex}"
+    ddl = "CREATE TABLE IF NOT EXISTS t_idempotent (id TEXT PRIMARY KEY);"
+    with store._pool.connection() as conn, conn.transaction():
+        store._record_migration(conn, name=name, version=1, ddl=ddl)
+        store._record_migration(conn, name=name, version=1, ddl=ddl)
+    row = _history_row(store, name, 1)
+    assert row is not None
+    assert row["checksum"] == migration_checksum(ddl)
+
+
+def test_checksum_drift_logs_warning(
+    store: PostgresRuntimeStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    name = f"test:{uuid4().hex}"
+    ddl_v1 = "CREATE TABLE IF NOT EXISTS t_drift (id TEXT PRIMARY KEY);"
+    ddl_v2 = "CREATE TABLE IF NOT EXISTS t_drift (id TEXT PRIMARY KEY, extra TEXT);"
+    with store._pool.connection() as conn, conn.transaction():
+        store._record_migration(conn, name=name, version=1, ddl=ddl_v1)
+        with caplog.at_level("WARNING", logger="joyhousebot.storage.postgres_migrations"):
+            store._record_migration(conn, name=name, version=1, ddl=ddl_v2)
+    assert any("checksum changed" in record.message for record in caplog.records)
+    row = _history_row(store, name, 1)
+    assert row is not None
+    assert row["checksum"] == migration_checksum(ddl_v2)
+
+
+def test_destructive_gate_requires_exact_phrase(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", raising=False)
+    assert not destructive_migrate_enabled()
+    for legacy_value in ("1", "true", "yes", "on"):
+        monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", legacy_value)
+        assert not destructive_migrate_enabled()
+    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
+    assert destructive_migrate_enabled()
+
+
+def _insert_sentinel_run(store: PostgresRuntimeStore, run_id: str) -> None:
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute(
+            """INSERT INTO runtime_runs(run_id,user_id,session_id,agent_id,status,prompt)
+               VALUES (%s,'migration-test','migration-test','default','queued','sentinel')
+               ON CONFLICT(run_id) DO NOTHING""",
+            (run_id,),
+        )
+        conn.execute("DELETE FROM runtime_schema_migrations WHERE version=3")
+
+
+def _sentinel_exists(store: PostgresRuntimeStore, run_id: str) -> bool:
+    with store._pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 AS found FROM runtime_runs WHERE run_id=%s", (run_id,)
+        ).fetchone()
+    return row is not None
+
+
+def test_destructive_value_one_keeps_tables(
+    store: PostgresRuntimeStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"mig-sentinel-{uuid4().hex}"
+    _insert_sentinel_run(store, run_id)
+    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "1")
+    store.migrate()
+    assert _sentinel_exists(store, run_id)
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute("DELETE FROM runtime_runs WHERE run_id=%s", (run_id,))
+
+
+def test_destructive_phrase_drops_legacy_tables(
+    store: PostgresRuntimeStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run_id = f"mig-sentinel-{uuid4().hex}"
+    _insert_sentinel_run(store, run_id)
+    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
+    with caplog.at_level("CRITICAL", logger="joyhousebot.storage.postgres_migrations"):
+        store.migrate()
+    assert not _sentinel_exists(store, run_id)
+    critical = [r for r in caplog.records if r.levelname == "CRITICAL"]
+    assert critical and "runtime_runs" in critical[0].message
+    # migrate() always re-records version 3, so later startups stay incremental.
+    with store._pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 AS ready FROM runtime_schema_migrations WHERE version=3"
+        ).fetchone()
+    assert row is not None
+
+
+def test_schema_migration_lock_blocks_other_sessions(
+    store: PostgresRuntimeStore,
+) -> None:
+    with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as probe:
+        with store.schema_migration_lock():
+            row = probe.execute(
+                "SELECT pg_try_advisory_lock(%s) AS got", (SCHEMA_MIGRATION_LOCK_ID,)
+            ).fetchone()
+            assert row[0] is False
+        row = probe.execute(
+            "SELECT pg_try_advisory_lock(%s) AS got", (SCHEMA_MIGRATION_LOCK_ID,)
+        ).fetchone()
+        assert row[0] is True
+        probe.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_MIGRATION_LOCK_ID,))
+
+
+def test_plugin_migration_serializes_with_core_lock(
+    store: PostgresRuntimeStore,
+) -> None:
+    applied: list[str] = []
+
+    def plugin_migration() -> None:
+        with store.schema_migration_lock():
+            applied.append("plugin")
+
+    worker = threading.Thread(target=plugin_migration)
+    with store.schema_migration_lock():
+        worker.start()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not applied:
+            time.sleep(0.01)
+        assert applied == []
+    worker.join(timeout=10)
+    assert applied == ["plugin"]
+
+
+def test_record_plugin_migration(store: PostgresRuntimeStore) -> None:
+    name = f"plugin:test-{uuid4().hex}"
+    ddl = "CREATE SCHEMA IF NOT EXISTS plugintest;"
+    store.record_plugin_migration(
+        name=name, version=1, ddl=ddl, description="test plugin schema"
+    )
+    store.record_plugin_migration(
+        name=name, version=1, ddl=ddl, description="test plugin schema"
+    )
+    row = _history_row(store, name, 1)
+    assert row is not None
+    assert row["checksum"] == migration_checksum(ddl)
+    assert row["description"] == "test plugin schema"
+
+
+def test_dinq_plugin_uses_cluster_lock_id() -> None:
+    dinq_store = pytest.importorskip("dinq_plugin.discover.postgres_store")
+    assert dinq_store._MIGRATION_LOCK == SCHEMA_MIGRATION_LOCK_ID

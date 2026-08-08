@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from typing import Any
 
@@ -15,6 +16,10 @@ from joyhousebot.storage.runtime_store import (
 _CHANNEL = "joyhousebot_runtime_work"
 _TERMINAL = ("completed", "failed", "cancelled", "timed_out")
 _TASK_TERMINAL = (*_TERMINAL, "skipped")
+# Lease-expiry sweeps are cluster-wide UPDATEs.  They only matter once a lease
+# actually dies, so each worker runs them at most this often instead of on
+# every claim attempt.
+_LEASE_SWEEP_INTERVAL_SECONDS = 1.0
 
 
 def _iso(value: Any) -> str | None:
@@ -351,19 +356,25 @@ class PostgresTaskStoreMixin:
         self, *, worker_id: str, lease_seconds: int = 60, run_id: str | None = None
     ) -> RuntimeTaskRecord | None:
         with self._pool.connection() as conn, conn.transaction():
-            conn.execute(
-                """UPDATE runtime_tasks SET status='queued',lease_owner=NULL,lease_expires_at=NULL,
-                       updated_at=clock_timestamp()
-                   WHERE status='running' AND lease_expires_at<clock_timestamp()
-                     AND attempt<max_attempts"""
-            )
-            conn.execute(
-                """UPDATE runtime_tasks SET status='failed',lease_owner=NULL,lease_expires_at=NULL,
-                       error='{"message":"task lease expired after maximum attempts"}'::jsonb,
-                       finished_at=clock_timestamp(),updated_at=clock_timestamp()
-                   WHERE status='running' AND lease_expires_at<clock_timestamp()
-                     AND attempt>=max_attempts"""
-            )
+            sweep_now = time.monotonic()
+            if (
+                sweep_now - getattr(self, "_lease_sweep_at", 0.0)
+                >= _LEASE_SWEEP_INTERVAL_SECONDS
+            ):
+                self._lease_sweep_at = sweep_now
+                conn.execute(
+                    """UPDATE runtime_tasks SET status='queued',lease_owner=NULL,lease_expires_at=NULL,
+                           updated_at=clock_timestamp()
+                       WHERE status='running' AND lease_expires_at<clock_timestamp()
+                         AND attempt<max_attempts"""
+                )
+                conn.execute(
+                    """UPDATE runtime_tasks SET status='failed',lease_owner=NULL,lease_expires_at=NULL,
+                           error='{"message":"task lease expired after maximum attempts"}'::jsonb,
+                           finished_at=clock_timestamp(),updated_at=clock_timestamp()
+                       WHERE status='running' AND lease_expires_at<clock_timestamp()
+                         AND attempt>=max_attempts"""
+                )
             row = conn.execute(
                 """WITH candidate AS (
                        SELECT t.task_id FROM runtime_tasks t

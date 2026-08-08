@@ -228,7 +228,6 @@ class ChannelManager:
         return self.repository.acquire_lease(
             channel,
             worker_id=self.worker_id,
-            now_ms=int(time.time() * 1000),
             lease_ms=self.LEASE_MS,
         )
 
@@ -251,7 +250,6 @@ class ChannelManager:
                 "metadata": metadata,
                 "request_id": message.request_id,
                 "tracker_id": message.tracker_id,
-                "available_at_ms": int(time.time() * 1000),
             }
         )
 
@@ -261,7 +259,6 @@ class ChannelManager:
         entries = self.repository.claim(
             sorted(self._active_channels),
             worker_id=self.worker_id,
-            now_ms=int(time.time() * 1000),
             lease_ms=self.OUTBOX_LEASE_MS,
         )
         messages: list[OutboundMessage] = []
@@ -305,14 +302,18 @@ class ChannelManager:
             success=success,
             error=error,
             max_attempts=self.config.gateway.channel_send_max_attempts,
-            now_ms=int(time.time() * 1000),
         )
 
     def get_status(self) -> dict[str, dict[str, Any]]:
         leases = self.repository.list_leases() if self.repository is not None else {}
         counts = self.repository.status_counts() if self.repository is not None else {}
         names = set(self.registry.list_builtins()) | set(self.plugins) | set(leases)
-        now_ms = int(time.time() * 1000)
+        # Lease expiry is compared against the database clock that wrote it.
+        now_ms = (
+            self.repository.db_now_ms()
+            if self.repository is not None
+            else int(time.time() * 1000)
+        )
         result: dict[str, dict[str, Any]] = {}
         for name in sorted(names):
             lease = leases.get(name, {})

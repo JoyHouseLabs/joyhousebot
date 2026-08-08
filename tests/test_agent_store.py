@@ -1,4 +1,3 @@
-import os
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -13,7 +12,7 @@ from joyhousebot.domain.capabilities import (
     CapabilityKind,
     CapabilityRef,
 )
-from tests.support.postgres_store import PostgresTestStore
+from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
 def test_builtin_agent_model_uses_openrouter_slug_and_repairs_legacy_value(tmp_path) -> None:
@@ -238,9 +237,7 @@ def test_run_snapshot_freezes_agent_revision_and_skill_bindings(tmp_path: Path) 
 
 @pytest.mark.postgres
 def test_postgres_run_snapshot_round_trip() -> None:
-    database_url = os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL", "").strip()
-    if not database_url:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+    database_url = require_postgres()
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, application_name="test-agent-snapshot")

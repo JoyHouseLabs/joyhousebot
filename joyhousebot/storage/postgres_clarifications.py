@@ -47,6 +47,13 @@ class PostgresClarificationStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341910,))
             conn.execute(ddl)
+            self._record_migration(
+                conn,
+                name="clarifications",
+                version=1,
+                ddl=ddl,
+                description="scenario clarification state and input requests",
+            )
             conn.execute(
                 "ALTER TABLE run_input_requests ADD COLUMN IF NOT EXISTS "
                 "presentation JSONB NOT NULL DEFAULT '{}'::jsonb"
