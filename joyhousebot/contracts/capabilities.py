@@ -20,7 +20,31 @@ class CapabilityContext:
     task_id: str | None = None
     agent_id: str | None = None
     request_id: str | None = None
+    # Frozen by the Runtime for every side-effecting invocation. Business
+    # adapters must pass the exact idempotency key to their write API.
+    action_id: str | None = None
+    idempotency_key: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WriteReceipt:
+    """Business acknowledgement that the frozen Action identity was used."""
+
+    action_id: str
+    idempotency_key: str
+    provider_operation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.action_id.strip() or not self.idempotency_key.strip():
+            raise ValueError("write receipt Action identity is required")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "idempotency_key": self.idempotency_key,
+            "provider_operation_id": self.provider_operation_id,
+        }
 
 
 @dataclass(slots=True)
@@ -33,6 +57,7 @@ class CapabilityResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     status: Literal["succeeded", "accepted"] = "succeeded"
     operation: dict[str, Any] | None = None
+    write_receipt: WriteReceipt | None = None
 
     def __post_init__(self) -> None:
         if self.status == "accepted" and not self.operation:

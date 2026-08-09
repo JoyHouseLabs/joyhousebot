@@ -12,7 +12,11 @@ from joyhousebot.api.dependencies import (
     ScenarioReaderDep,
     ScenarioWriterDep,
 )
-from joyhousebot.api.schemas import SaveScenarioVersionRequest, SimulateScenarioRequest
+from joyhousebot.api.schemas import (
+    RolloutPolicyRequest,
+    SaveScenarioVersionRequest,
+    SimulateScenarioRequest,
+)
 from joyhousebot.application.errors import ConflictError, NotFoundError
 from joyhousebot.application.presenters import public_capability_definition
 from joyhousebot.domain.capabilities.models import CapabilityRef
@@ -82,10 +86,14 @@ async def publish_version(
     version: int,
     principal: ScenarioPublisherDep,
     container: ContainerDep,
+    body: RolloutPolicyRequest | None = None,
 ):
     try:
         return await container.scenarios.publish(
-            scenario_id, version, actor_id=principal.subject
+            scenario_id,
+            version,
+            actor_id=principal.subject,
+            rollout_policy=body.model_dump() if body is not None else None,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

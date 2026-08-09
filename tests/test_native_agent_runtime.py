@@ -68,6 +68,61 @@ class FakeAgent:
             self.active -= 1
 
 
+@pytest.mark.asyncio
+async def test_runtime_preserves_monitor_metadata_and_reconciles_top_level_agent(
+    store: PostgresTestStore,
+) -> None:
+    captured_contexts: list[Any] = []
+    reconciled: list[dict[str, Any]] = []
+
+    class CapturingAgent(FakeAgent):
+        async def process_direct(self, content: str, *, run_context, **kwargs: Any) -> str:
+            captured_contexts.append(run_context)
+            return await super().process_direct(
+                content, run_context=run_context, **kwargs
+            )
+
+    def reconcile(**kwargs: Any) -> None:
+        reconciled.append(kwargs)
+
+    runtime = NativeAgentRuntime(
+        agent=CapturingAgent(),
+        store=store,
+        monitor_reconciler=reconcile,
+    )
+    submitted = await runtime.submit_run(
+        AgentOptions(
+            prompt="monitor",
+            user_id="user-monitor",
+            session_id="monitor-session",
+            metadata={
+                "schedule_id": "schedule-1",
+                "schedule_payload_kind": "agent_monitor",
+                "monitor_context_mode": "light",
+                "_runtime_schedule_submission_ready": True,
+            },
+        )
+    )
+    completed = await runtime.wait(submitted.run_id, timeout=2)
+
+    assert completed.status == "completed"
+    assert captured_contexts[0].metadata["schedule_id"] == "schedule-1"
+    assert captured_contexts[0].metadata["monitor_context_mode"] == "light"
+    assert "_runtime_schedule_submission_ready" not in captured_contexts[0].metadata
+    assert reconciled == []
+    ordinary = await runtime.submit_run(
+        AgentOptions(
+            prompt="ordinary",
+            user_id="user-monitor",
+            session_id="main",
+        )
+    )
+    assert (await runtime.wait(ordinary.run_id, timeout=2)).status == "completed"
+    assert reconciled[0]["user_id"] == "user-monitor"
+    assert reconciled[0]["profile"].definition.agent_id == ordinary.agent_id
+    await runtime.close()
+
+
 class EchoCapability(Tool):
     name = "echo"
     description = "Echo structured text"
@@ -369,7 +424,7 @@ async def test_main_coordinator_can_pause_for_dynamic_structured_input(
     )
     store.notify_work(waiting.run_id)
     completed = await runtime.wait(waiting.run_id, timeout=3)
-    assert completed.status == "completed"
+    assert completed.status == "completed", completed.error
     assert completed.result["content"] == "dynamic input accepted"
     await runtime.close()
 
@@ -852,6 +907,38 @@ async def test_execution_aborts_when_cancel_lands_between_claim_and_start(
     record = store.get_runtime_run("cancel-at-start")
     assert record.status == "cancelled"
     assert record.error["message"] == "run was cancelled before execution started"
+
+
+@pytest.mark.asyncio
+async def test_non_executing_role_can_register_cluster_presence(
+    store: PostgresTestStore,
+) -> None:
+    runtime = NativeAgentRuntime(
+        agent=None,
+        store=store,
+        worker_enabled=False,
+        scheduler_enabled=False,
+        presence_enabled=True,
+        worker_name="channel-worker",
+        capabilities={"channels": True},
+    )
+
+    await runtime.start()
+    worker = next(
+        item
+        for item in store.list_runtime_workers()
+        if item["worker_id"] == runtime.worker_id
+    )
+    assert worker["healthy"] is True
+    assert worker["capabilities"] == {"channels": True}
+
+    await runtime.close()
+    worker = next(
+        item
+        for item in store.list_runtime_workers()
+        if item["worker_id"] == runtime.worker_id
+    )
+    assert worker["status"] == "offline"
 
 
 @pytest.mark.asyncio

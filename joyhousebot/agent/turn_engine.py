@@ -20,6 +20,7 @@ from joyhousebot.agent.verification_loop import accept_or_repair_final_response
 from joyhousebot.capabilities.dispatcher import capability_result_prompt
 from joyhousebot.providers.base import LLMResponse
 from joyhousebot.runtime.action_identity import durable_turn_id
+from joyhousebot.runtime.artifact_materialization import materialize_capability_artifacts
 from joyhousebot.runtime.context import (
     ActionOutcomeUnknownError,
     AgentLoopExhaustedError,
@@ -461,6 +462,16 @@ class TurnEngineMixin(ContextScopeMixin):
                             )
                         raise
                     result = capability_result_prompt(capability_result)
+                    if capability_result.ok and capability_result.artifacts:
+                        await asyncio.to_thread(
+                            materialize_capability_artifacts,
+                            self.runtime_store,
+                            run_id=run_context.run_id,
+                            task_id=run_context.task_id,
+                            agent_id=run_context.agent_id,
+                            capability_result=capability_result,
+                            capability_id=tool_name,
+                        )
                     if execution_stream_callback:
                         await execution_stream_callback(
                             "tool_end",

@@ -13,6 +13,7 @@ from joyhousebot.agent.tools.filesystem import (
 )
 from joyhousebot.agent.tools.memory_get import MemoryGetTool
 from joyhousebot.agent.tools.message import MessageTool
+from joyhousebot.agent.tools.monitor_scratch import MonitorScratchTool
 from joyhousebot.agent.tools.retrieve import RetrieveTool
 from joyhousebot.agent.tools.shell import ExecTool
 from joyhousebot.agent.tools.spawn import SpawnTool
@@ -101,7 +102,13 @@ class ToolRuntimeMixin:
 
         # Cron tool (for scheduling)
         if self.cron_service:
-            self.capabilities.register_tool(CronTool(self.cron_service), optional=True)
+            self.capabilities.register_tool(
+                CronTool(self.cron_service), optional=True, version="1.2.0"
+            )
+            # Private internal state is exposed on every Agent runtime, but the
+            # Tool itself fails closed unless the immutable Run metadata proves
+            # this is a scheduled Agent Monitor.
+            self.capabilities.register_tool(MonitorScratchTool(self.cron_service))
 
     async def _connect_mcp(self) -> None:
         """Connect configured platform MCP servers once per Agent worker."""

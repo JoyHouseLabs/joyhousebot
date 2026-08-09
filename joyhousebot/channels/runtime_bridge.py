@@ -110,6 +110,21 @@ class ChannelRuntimeBridge(RunAdapter):
         metadata["request_id"] = request_id
         metadata["tracker_id"] = tracker_id
         user_id = self._runtime_user_id(msg)
+        reply_to = metadata.get("message_id")
+        # The terminal Run transaction consumes this frozen delivery intent and
+        # inserts a deterministic outbox row. It is private Runtime metadata,
+        # never a second execution path inside a connector process.
+        metadata["_runtime_channel_delivery"] = {
+            "channel": msg.channel,
+            "chat_id": msg.chat_id,
+            "reply_to": str(reply_to) if reply_to is not None else None,
+            "request_id": request_id,
+            "tracker_id": tracker_id,
+            "metadata": {
+                "message_id": str(reply_to) if reply_to is not None else None,
+                "sender_id": msg.sender_id,
+            },
+        }
         await append_trace_event_async(
             store=self.runtime.store,
             tracker_id=tracker_id,
@@ -147,6 +162,12 @@ class ChannelRuntimeBridge(RunAdapter):
         if completed.status == "cancelled":
             return completed
 
+        # PostgreSQL workers project the reply in finish_runtime_run(). Waiting
+        # here preserves the historical adapter return value, but enqueueing a
+        # second message would violate exactly-once intent creation.
+        if getattr(self.runtime.store, "backend_name", None) == "postgres":
+            return completed
+
         if completed.status == "completed":
             content = str((completed.result or {}).get("content") or "")
         else:
@@ -163,7 +184,6 @@ class ChannelRuntimeBridge(RunAdapter):
                 )
             content = "Sorry, I couldn't complete that request. Please try again."
 
-        reply_to = metadata.get("message_id")
         await self._outbound_sink(
             OutboundMessage(
                 channel=msg.channel,

@@ -336,3 +336,82 @@ def test_memory_candidate_api_is_owner_scoped_and_resolution_is_idempotent(
     assert accepted.status_code == 200 and accepted.json()["status"] == "merged"
     assert accepted_again.status_code == 200
     assert MemoryStore(store, context.memory_scope).read_profile() == "Owner profile"
+
+
+def test_memory_document_api_lists_layers_and_keeps_full_content_owner_scoped(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "memory-document-api.db")
+    store.create_api_access_token(user_id="memory-owner", actor_id="test", token="owner-token")
+    store.create_api_access_token(user_id="other-owner", actor_id="test", token="other-token")
+    owner_scope = "user:memory-owner:agent:default"
+    owner_memory = MemoryStore(store, owner_scope)
+    owner_memory.write_profile("Owner prefers concise answers.")
+    owner_memory.write_long_term("Project Atlas is active.")
+    owner_memory.append_history("Completed the onboarding run.")
+    owner_memory.write_relative("agent/lessons.md", "Always verify external writes.")
+    MemoryStore(store, "user:other-owner:agent:default").write_profile("Foreign profile")
+
+    context = _tool_context()
+    MemoryWriteController(
+        store,
+        scope_key=owner_scope,
+        policy=EffectiveMemoryPolicy.from_dict(context.memory_policy),
+        context=context,
+    ).replace("PROFILE.md", "Candidate profile", source_kind="test.viewer")
+
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    owner = {"Authorization": "Bearer owner-token"}
+    other = {"Authorization": "Bearer other-token"}
+    query = {"agent_id": "default"}
+    with client:
+        listed = client.get("/v1/memory/documents", headers=owner, params=query)
+        episodic = client.get(
+            "/v1/memory/documents",
+            headers=owner,
+            params={**query, "layer": "episodic"},
+        )
+        searched = client.get(
+            "/v1/memory/documents",
+            headers=owner,
+            params={**query, "search": "Atlas"},
+        )
+        detail = client.get(
+            "/v1/memory/documents/PROFILE.md",
+            headers=owner,
+            params={**query, "scope_key": owner_scope},
+        )
+        foreign_detail = client.get(
+            "/v1/memory/documents/PROFILE.md",
+            headers=other,
+            params={**query, "scope_key": owner_scope},
+        )
+        candidates = client.get(
+            "/v1/memory/candidates",
+            headers=owner,
+            params={"agent_id": "default", "status": "all"},
+        )
+        other_agent_candidates = client.get(
+            "/v1/memory/candidates",
+            headers=owner,
+            params={"agent_id": "other-agent", "status": "all"},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json()["summary"] == {
+        "total": 4,
+        "by_layer": {"profile": 1, "long_term": 1, "episodic": 1, "agent": 1},
+    }
+    assert {item["layer"] for item in listed.json()["items"]} == {
+        "profile",
+        "long_term",
+        "episodic",
+        "agent",
+    }
+    assert [item["document_path"] for item in episodic.json()["items"]] == ["HISTORY.md"]
+    assert [item["document_path"] for item in searched.json()["items"]] == ["MEMORY.md"]
+    assert detail.status_code == 200
+    assert detail.json()["content"] == "Owner prefers concise answers."
+    assert foreign_detail.status_code == 404
+    assert len(candidates.json()["items"]) == 1
+    assert other_agent_candidates.json()["items"] == []

@@ -89,6 +89,25 @@ class PostgresScenarioStoreMixin:
                 ddl=ddl,
                 description="scenario definitions, versions, and capability bindings",
             )
+            governance_ddl = """
+            ALTER TABLE scenario_definitions
+                ADD COLUMN IF NOT EXISTS current_version INTEGER;
+            UPDATE scenario_definitions d SET current_version = selected.version
+            FROM (
+                SELECT DISTINCT ON (scenario_id) scenario_id,version
+                FROM scenario_versions WHERE status='published'
+                ORDER BY scenario_id,published_at DESC NULLS LAST,version DESC
+            ) selected
+            WHERE selected.scenario_id=d.scenario_id AND d.current_version IS NULL;
+            """
+            conn.execute(governance_ddl)
+            self._record_migration(
+                conn,
+                name="scenarios",
+                version=2,
+                ddl=governance_ddl,
+                description="explicit active scenario version for staged rollout and rollback",
+            )
 
     def save_scenario_version(
         self, scenario: ScenarioVersion, *, status: str = "draft", actor_id: str = "system"
@@ -173,6 +192,12 @@ class PostgresScenarioStoreMixin:
                    VALUES ('scenario',%s,%s,'draft.saved',%s)""",
                 (scenario.scenario_id, str(scenario.version), actor_id),
             )
+            if status == "published":
+                conn.execute(
+                    """UPDATE scenario_definitions SET current_version=%s,
+                           updated_at=clock_timestamp() WHERE scenario_id=%s""",
+                    (scenario.version, scenario.scenario_id),
+                )
 
     def publish_scenario(
         self, scenario_id: str, version: int, *, actor_id: str = "system"
@@ -197,6 +222,49 @@ class PostgresScenarioStoreMixin:
                    VALUES ('scenario',%s,%s,'published',%s)""",
                 (scenario_id, str(version), actor_id),
             )
+            conn.execute(
+                """UPDATE scenario_definitions SET current_version=%s,
+                       updated_at=clock_timestamp() WHERE scenario_id=%s""",
+                (version, scenario_id),
+            )
+            self._notify(conn, f"config:scenario:{scenario_id}")
+
+    def stage_scenario_release(
+        self,
+        scenario_id: str,
+        version: int,
+        *,
+        actor_id: str = "system",
+        activation_mode: str = "automatic",
+        timeout_seconds: int = 300,
+        auto_rollback: bool = True,
+        require_healthy_workers: bool = True,
+    ) -> None:
+        with self._pool.connection() as conn, conn.transaction():
+            row = conn.execute(
+                """SELECT status FROM scenario_versions
+                   WHERE scenario_id=%s AND version=%s FOR UPDATE""",
+                (scenario_id, version),
+            ).fetchone()
+            if row is None or row["status"] not in {"draft", "published"}:
+                raise ValueError("scenario version not found or not publishable")
+            conn.execute(
+                """INSERT INTO configuration_events
+                       (aggregate_type,aggregate_id,revision_id,event_type,actor_id)
+                   VALUES ('scenario',%s,%s,'publish.requested',%s)""",
+                (scenario_id, str(version), actor_id),
+            )
+            self._create_configuration_rollout(
+                conn,
+                aggregate_type="scenario",
+                aggregate_id=scenario_id,
+                revision_id=str(version),
+                actor_id=actor_id,
+                activation_mode=activation_mode,
+                timeout_seconds=timeout_seconds,
+                auto_rollback=auto_rollback,
+                require_healthy_workers=require_healthy_workers,
+            )
             self._notify(conn, f"config:scenario:{scenario_id}")
 
     def get_scenario_version(
@@ -205,8 +273,8 @@ class PostgresScenarioStoreMixin:
         with self._pool.connection() as conn:
             if version is None:
                 row = conn.execute(
-                    """SELECT version FROM scenario_versions WHERE scenario_id=%s
-                       AND status='published' ORDER BY published_at DESC,version DESC LIMIT 1""",
+                    """SELECT current_version AS version FROM scenario_definitions
+                       WHERE scenario_id=%s AND current_version IS NOT NULL""",
                     (scenario_id,),
                 ).fetchone()
                 if row is None:
@@ -219,12 +287,18 @@ class PostgresScenarioStoreMixin:
             return self._load_scenario(conn, scenario_id, version) if exists else None
 
     def list_scenario_versions(self, *, published_only: bool = True) -> list[ScenarioVersion]:
-        where = "WHERE status='published'" if published_only else ""
         with self._pool.connection() as conn:
-            rows = conn.execute(
-                f"SELECT scenario_id,version FROM scenario_versions {where} "
-                "ORDER BY scenario_id,version DESC"
-            ).fetchall()
+            if published_only:
+                rows = conn.execute(
+                    """SELECT scenario_id,current_version AS version
+                       FROM scenario_definitions WHERE current_version IS NOT NULL
+                       ORDER BY scenario_id"""
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT scenario_id,version FROM scenario_versions
+                       ORDER BY scenario_id,version DESC"""
+                ).fetchall()
             return [self._load_scenario(conn, str(row["scenario_id"]), int(row["version"]))
                     for row in rows]
 

@@ -11,6 +11,10 @@ joyhousebot scheduler --config ./config.json
 joyhousebot channel-worker --config ./config.json
 ```
 
+生产启动前先由唯一迁移任务执行一次 `JOYHOUSEBOT_AUTO_MIGRATE=true joyhousebot check`；随后所有
+长运行角色设置 `JOYHOUSEBOT_AUTO_MIGRATE=false`。Compose 已用一次性 `migrate` 服务和
+`service_completed_successfully` 依赖固化这条顺序，避免多角色冷启动时 DDL 与目录初始化写入交叉。
+
 - `api` 只接受 HTTP/SSE 请求，不运行模型。`--surface public|control|combined`
   可把公网数据面与私有管理面拆成独立进程；本地控制台试用使用 `combined`。
 - `worker` 从 PostgreSQL claim Run/Task，可水平扩容。
@@ -19,7 +23,7 @@ joyhousebot channel-worker --config ./config.json
 
 本地已有 PostgreSQL 时可直接运行 `./scripts/start-local.sh`。它会安全解析统一环境变量或旧
 OpenRouter 配置中的 Key，初始化数据库，启动一个 Combined API、一个 Scheduler 和默认两个
-Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKERS`、`JOYHOUSEBOT_LOCAL_PORT`、
+Agent Worker，以及一个 Channel Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKERS`、`JOYHOUSEBOT_LOCAL_PORT`、
 `JOYHOUSEBOT_DATABASE_URL` 覆盖本地默认值；所有组件日志写入
 `~/.joyhousebot/logs/local/<timestamp>/`。
 
@@ -91,8 +95,180 @@ Grafana 可直接导入 `ops/grafana/joyhousebot-overview.json`；Prometheus 抓
 `ops/prometheus/prometheus.yml`，告警规则位于 `ops/prometheus/joyhousebot-alerts.yml`。规则覆盖 API、
 队列年龄、租约、重试、Worker、Provider 和 Channel outbox。
 
-开发模式（显式 `gateway.allowInsecureAuth=true`）下，UI 默认使用 `local-dev` 并通过 `X-User-ID` 发送。
-API 首次启动会把它写入 `platform_admins`，标记为测试管理员。其他开发 `user_id` 不会自动获得权限。
+## 配置发布治理
+
+Agent、Capability 与 Scenario 共用配置发布状态机。发布时冻结当前健康 Agent Worker 集合；每个
+Worker 预热精确 revision 或插件依赖并提交 ACK。自动模式在全部 ACK 后切换 current pointer；人工模式
+进入 `awaiting_approval`，由有 `rollouts.write` 权限的管理员批准。默认要求至少一个健康目标 Worker；
+只有明确设置 `require_healthy_workers=false` 的受控引导/测试流程才允许空目标发布，生产不要使用该例外。
+
+控制台“平台 → 集群发布”提供批准、取消、失败目标重试和回滚。对应 API 为：
+
+- `POST /v1/admin/rollouts/{rollout_id}/approve`
+- `POST /v1/admin/rollouts/{rollout_id}/cancel`
+- `POST /v1/admin/rollouts/{rollout_id}/retry`
+- `POST /v1/admin/rollouts/{rollout_id}/rollback`
+
+`timed_out` 表示 deadline 前未收齐 ACK；重试只重置失败/超时目标，不重复加载成功节点。发布失败或
+超时时旧 current pointer 始终保留。显式回滚只允许已完成且目标 revision 仍为 current 的 rollout；操作
+会创建一个指向 frozen previous revision 的子 rollout，重新等待 Worker ACK，成功后才切换。回滚失败时
+当前版本不变。不要直接更新 definition 的 current pointer 或 rollout 表。
+
+## 定时任务与投递排障
+
+`GET /v1/schedules/runs?schedule_id=<id>` 是定时任务闭环的首选诊断入口。状态应按三段理解：
+
+- `claimed / submitting / submitted`：Scheduler 正在 claim、提交，或已等待 Agent Worker 执行 Run；
+- `retry_wait / error / completed / failed / cancelled / timed_out`：等待退避重试、提交最终失败，
+  或已经收到 Run 终态；
+- `skipped_misfire / skipped_overlap / skipped_busy / skipped_unchanged`：按触发、会话占用或
+  Monitor 预检策略主动跳过，不是 Worker 故障。
+
+同一响应中的 `attempt` 是完整 Run 的执行次数，`submitAttempt` 是当前 Run attempt 的提交次数；
+`runIds` 保留该 Occurrence 的所有执行。启用 `payload.deliver` 时，还应检查
+`deliveryStatus`：`pending` 会继续重投，`sent` 已确认，`dead` 表示达到
+`gateway.channelSendMaxAttempts`，`deliveryError` 保存最近一次失败原因。
+
+排障时不要直接修改 `schedules`、`schedule_occurrences` 或 `channel_outbox`。先确认 Scheduler、
+Agent Worker、Channel Worker 都在注册和续租，再依据 Occurrence 的 `runId` 查询 Run events/logs；
+只有提交阶段失败才没有 Run ID。Run 重试默认关闭，若任务可能产生外部副作用，启用
+`max_run_retries` 前必须确认下游使用 Runtime 冻结的幂等键。
+
+控制台自动化中心提供任务创建、启停、补跑和历史查询。手动补跑失败时，先检查 Schedule 是否正在被
+其他 Scheduler claim，再检查返回的 Occurrence 是否已经获得 `runId`；禁止为“补跑”直接修改
+`next_run_at_ms`。
+
+## Webhook 入口排障
+
+- 管理端使用 `GET /v1/event-triggers` 和 `GET /v1/event-trigger-deliveries`；两者按当前 `user_id`
+  隔离，API Token 需要 `automation.read/write` scope。
+- 外部投递必须发送 `X-Joyhouse-Webhook-Secret` 与稳定的 `Idempotency-Key`。创建和轮换响应中的
+  明文密钥只显示一次；遗失后只能轮换，不能从数据库或控制台回显。
+- 404 通常表示规则不存在或密钥错误，409 表示规则停用或相同幂等键对应不同 Payload，422 表示
+  Event Type、Payload 大小或请求契约不符合规则。
+- `processing` 表示请求已冻结但尚未完成 Run 提交；`submitted` 可以沿 `run_id` 进入运行中心；
+  `failed` 会保留错误摘要，相同键和相同 Payload 可安全重试。
+- 投递表不保存原始业务 Payload。需要留存原始事件时，应由业务系统保留并使用稳定事件 ID 对账。
+
+### Agent Monitor
+
+Agent Monitor 通过普通 Schedule API 创建，只需把 `payload.kind` 设为 `agent_monitor`：
+
+```json
+{
+  "name": "attention-monitor",
+  "agent_id": "joy",
+  "schedule": {"kind": "every", "every_ms": 300000},
+  "payload": {
+    "kind": "agent_monitor",
+    "message": "检查失败任务和需要我关注的新事项。",
+    "session_mode": "isolated",
+    "quiet_token": "NO_ACTION",
+    "defer_when_busy": true,
+    "busy_backoff_ms": 60000,
+    "preflight_mode": "runtime_attention",
+    "context_mode": "light",
+    "active_hours": {"start": "08:00", "end": "22:00", "timezone": "Asia/Shanghai"},
+    "deliver": true,
+    "channel": "telegram",
+    "to": "12345"
+  }
+}
+```
+
+使用 `GET /v1/schedules?kind=agent_monitor` 只列出 Monitor。正常无事时 Occurrence 为
+`completed` 且 `deliveryStatus=suppressed`；这不是投递丢失。`retry_wait` 且错误为
+`target monitor session is busy` 表示会话忙碌延后，超过宽限期后变为 `skipped_busy`。
+
+`context_mode=light` 不加载会话历史、持久记忆和 Skill Prompt，适合高频健康检查；需要近期对话或自动
+记忆时才使用 `full`。自动 tick 落在 `active_hours` 外会记为 `skipped_inactive_hours`，不是 Scheduler
+故障；手动 Run Now 仍会运行。跨午夜窗口（例如 `22:00` 到 `07:00`）受支持，时区必须是 IANA 名称。
+
+`preflight_mode=always`（默认）每次有效 tick 都提交 Run；`runtime_attention` 只在当前用户的待处理审批、
+最近七天非 Monitor Run 失败或 dead Channel 投递快照发生变化时提交。首次没有信号或后续未变化时，
+Occurrence 为 `skipped_unchanged`，`monitorObservationHash` 和 `monitorObservation` 给出当次确定性证据。
+该预检不调用模型、不执行 Tool，也不支持任意脚本；业务系统变化应通过正式 Connector/Capability 接入。
+
+Monitor scratch 是私有的完整替换文档，最大 16 KiB，并使用 revision 防止覆盖并发更新：
+
+```text
+GET  /v1/schedules/{schedule_id}/monitor-scratch
+PUT  /v1/schedules/{schedule_id}/monitor-scratch
+     {"content":"last cursor: 17","expected_revision":0}
+GET  /v1/schedules/{schedule_id}/monitor-scratch/revisions
+```
+
+建议 PUT 同时发送 `Idempotency-Key`；相同键和正文可安全重放，过期的 `expected_revision` 返回 409。
+每个实际执行的 Occurrence 会冻结 `monitorScratchRevision`。Agent 内部更新使用同一
+`monitor_scratch` Capability，普通 Run 或其他用户无法读取该状态。
+
+`session_mode=main` 会读取并延续指定用户会话，可能增加上下文、Token 和记忆污染风险；除非 Monitor
+确实需要近期对话，生产默认使用 `isolated`。Monitor 仍受 Agent Capability allowlist 和工具审批约束，
+不能用它绕过 Dispatcher 直接执行宿主机脚本。
+
+### Agent revision 托管 Monitor
+
+管理员可在 Agent Draft 的 Monitor 页配置并发布 `monitor_policy`。常用配置如下：
+
+```json
+{
+  "enabled": true,
+  "schedule": {"kind": "every", "every_ms": 1800000},
+  "message": "检查 Runtime 异常和需要用户关注的变化。",
+  "context_mode": "light",
+  "preflight_mode": "runtime_attention",
+  "session_mode": "isolated",
+  "delivery": "none",
+  "active_hours": {"start": "08:00", "end": "22:00", "timezone": "Asia/Shanghai"}
+}
+```
+
+策略不会创建平台共享的全局 Run。每位用户首次使用该 Agent 时，Runtime 才对账其私有托管 Schedule；
+发布新 revision 会更新已经存在的用户 Schedule。Schedule API 对托管项的 PATCH/DELETE 返回 409，需发布
+新 revision 修改，或将 `enabled` 设为 `false`。`delivery=origin` 可投递到最近一次真实外部渠道来源；
+`none` 只把结果保存在 Run/Occurrence 中。
+
+开发模式（显式 `gateway.allowInsecureAuth=true`）下，API 首次启动会把 `joyhousebot` 写入
+`platform_admins` 并创建控制台初始密码：
+
+- 用户名：`joyhousebot`
+- 初始密码：`joyhousebot`
+
+这个 11 字符密码只作为回环地址 insecure 开发模式的窄范围例外；首次登录后必须改为至少 12 字符的新
+密码。本地仍保留 `X-User-ID` 无密码路径用于 API 联调，因此这个默认值绝不能
+用于对外可访问的部署；可通过 `JOYHOUSEBOT_DEV_USER_ID` 和 `JOYHOUSEBOT_DEV_ADMIN_PASSWORD` 覆盖。
+其他开发 `user_id` 不会自动获得权限。
+
+生产控制面首次启动使用环境秘密引导管理员，不存在内置生产密码：
+
+```bash
+export JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER='platform-admin'
+export JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD='use-a-unique-secret-with-12-plus-chars'
+export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+```
+
+`BOOTSTRAP_ADMIN_PASSWORD` 只在数据库尚无该管理员密码时生效，并把账号标记为必须改密；改密后应从部署
+环境移除该变量。`AUTH_ENCRYPTION_KEY` 必须长期保留在秘密管理系统并进入备份/灾备流程，轮换前必须设计
+TOTP 密钥重加密，否则已启用的验证器无法登录。控制台会话默认 12 小时，可用
+`JOYHOUSEBOT_ADMIN_SESSION_HOURS` 设置 1–168 小时。
+
+控制台密码登录页把“管理员账号”和“操作 user_id”分开：前者只用于验证后台权限，后者决定本次个人
+Run、Session、Memory、Schedule、Knowledge、Workflow 与 Work 的归属。两者不同时，浏览器会话只在
+用户数据 API 上发送 `X-Impersonate-User-ID`；`/v1/auth`、`/v1/admin`、`/v1/system` 始终绑定真实
+管理员，避免代操作目标影响改密、MFA 或平台治理。非 `operator` 管理员必须具有
+`users.impersonate`（`*` 包含该权限）；普通数据库 API Token 不能代操作其他用户。
+
+控制面认证接口（仅 `combined/control` surface）包括：
+
+- `POST /v1/auth/login`：账号密码登录；启用 TOTP 后返回五分钟 MFA challenge。
+- `POST /v1/auth/mfa/verify`：提交 6 位动态码或一次性恢复码，换取短期浏览器会话。
+- `GET /v1/auth/status`、`POST /v1/auth/password`、`POST /v1/auth/logout`：安全状态、改密和退出。
+- `POST /v1/auth/totp/setup`、`/confirm`、`/disable`：创建扫码密钥、确认激活和双重校验后停用。
+- `GET /v1/me`：返回当前资源 `user_id`、真实 `actor_user_id` 和 `impersonating` 状态，供控制台常驻提示。
+
+密码用 Scrypt 加盐哈希；TOTP 密钥用独立环境密钥加密；会话、challenge、API Token 与恢复码均只保存
+SHA-256 指纹。连续五次失败会锁定 15 分钟，限流与锁定都由 PostgreSQL 跨 API 副本共享。
+
 生产令牌由 `/v1/admin/access-tokens` 签发，数据库只保存哈希；管理员身份和细粒度权限由
 `/v1/admin/users/{user_id}` 管理。令牌本身还有独立 scope（如 `runs.read`、`runs.write`、
 `admin.read`、`admin.write`、`mcp.invoke`），用于收窄账号权限。服务令牌禁止 `*` scope 且必须过期；
@@ -101,7 +277,7 @@ API 首次启动会把它写入 `platform_admins`，标记为测试管理员。�
 
 配置文件中的 `apiKey`、`token`、`password`、`databaseUrl` 等敏感字段不接受明文；应留空并由标准环境变量注入，或写成 `env://VARIABLE`。启动时引用的环境变量不存在会直接失败。
 
-首次生产引导使用一次性紧急 operator token：
+已有部署也可以继续使用一次性紧急 operator token引导 API Token：
 
 ```bash
 export JOYHOUSEBOT_CONTROL_TOKEN="$(openssl rand -base64 36)"
@@ -136,7 +312,7 @@ Run/Task、提交配额和 API 限流均由 PostgreSQL 原子协调，不要求 
 - `reasoning.read_raw`：读取完整 Prompt、模型响应和错误 Trace Blob；
 - `replay.execute`：创建 offline、frozen、branch 或 live 回放。
 
-原始读取和回放都会写 runtime audit log。开发模式引导的 `local-dev` 管理员拥有 `*`，便于联调；
+原始读取和回放都会写 runtime audit log。开发模式引导的 `joyhousebot` 管理员拥有 `*`，便于联调；
 生产不得照搬该授权。Trace 表包含用户输入、上下文、Tool 数据和供应商推理，应使用数据库 TLS、磁盘/
 备份加密、最小权限与独立保留策略。`purge_old_runtime_data` 会一起清理模型缓存、推理、Span、Blob、
 回放、Event、Log 和 Request Trace；执行前应先按合规要求归档。
@@ -159,6 +335,20 @@ joyhousebot eval-execute evalrun_<id> --config ./config.json
 
 三套数据集覆盖证据研究、受治理执行和可发布作品。候选 Agent draft 只能在目标 ID、revision 与 active
 Eval run 完全匹配时执行；所用 revision 会冻结到 Run snapshot，旧发布版本的成绩不能冒充候选版本。
+
+控制台“评测与发布门禁”可把 Eval Run 排入 `eval_execution_jobs`，并管理 `eval_schedule_policies`。
+Scheduler Worker 会物化到期策略，Agent Worker 以 lease/fencing 执行；`queued/running` 作业的过期 lease
+可由其他 Worker 接管。不要直接修改 Eval 表。先查看 Eval Run 返回的 `execution_job`、attempt、owner 和
+error，再检查 Worker 心跳。Suite/发布门禁可配置：
+
+- `max_total_cost_usd`：整套 Case 的可观测总成本上限；
+- `max_p95_latency_ms`：有时延观测 Case 的 P95 上限；
+- `min_cost_coverage`：返回成本数据的 Case 占比，生产成本门禁建议设为 `1.0`。
+
+Graph API 同时支持全图和 Task 级 `max_input_tokens / max_output_tokens / max_cost_usd`。Task 超限会立即
+失败；Graph finalizer 会把 Task、协调和聚合用量相加后再次验收。并行任务可能在最后一个调用返回前已
+产生费用，因此预算是 fail-closed 的完成门禁，不是供应商侧预付费额度；需要硬支付上限时仍应在模型
+供应商账户配置配额。
 
 数据库协调演练会写入带唯一 `drill:*` 用户的合成 Run/Task，默认完成后精确清理：
 

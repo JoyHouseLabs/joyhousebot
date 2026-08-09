@@ -7,8 +7,13 @@ from time import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from joyhousebot.api.dependencies import ContainerDep, ContextDep, PlatformAdminDep
-from joyhousebot.api.schemas import PluginPlaygroundInvocationRequest
+from joyhousebot.api.dependencies import (
+    CapabilitiesPublisherDep,
+    ContainerDep,
+    ContextDep,
+    PlatformAdminDep,
+)
+from joyhousebot.api.schemas import PluginPlaygroundInvocationRequest, RolloutPolicyRequest
 from joyhousebot.application.plugins import run_plugin_diagnostics
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import GraphTaskCommand
@@ -38,10 +43,11 @@ async def list_plugins(principal: PlatformAdminDep, container: ContainerDep):
 @router.get("/{plugin_id}")
 async def plugin_overview(plugin_id: str, principal: PlatformAdminDep, container: ContainerDep):
     release = await _release(container, plugin_id)
-    components, workers, metrics = await asyncio.gather(
+    components, workers, metrics, releases = await asyncio.gather(
         asyncio.to_thread(container.store.list_plugin_components, plugin_id),
         asyncio.to_thread(container.store.list_plugin_workers, plugin_id),
         asyncio.to_thread(container.store.get_plugin_metrics, plugin_id),
+        asyncio.to_thread(container.store.list_plugin_release_versions, plugin_id),
     )
     active_loaded = [
         worker for worker in workers
@@ -50,6 +56,7 @@ async def plugin_overview(plugin_id: str, principal: PlatformAdminDep, container
     loaded = sum(1 for worker in active_loaded if worker.get("execution_eligible"))
     return {
         "release": release,
+        "releases": releases,
         "components": components,
         "metrics": metrics,
         "worker_summary": {
@@ -172,6 +179,26 @@ async def plugin_diagnostics(plugin_id: str, principal: PlatformAdminDep, contai
     except LookupError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"items": checks}
+
+
+@router.post("/{plugin_id}/versions/{version}/publish", status_code=202)
+async def publish_plugin_release(
+    plugin_id: str,
+    version: str,
+    principal: CapabilitiesPublisherDep,
+    container: ContainerDep,
+    body: RolloutPolicyRequest | None = None,
+):
+    """Stage an installed plugin build and require every Agent Worker to load it."""
+    try:
+        return await container.platform.publish_plugin_release(
+            plugin_id,
+            version,
+            actor_id=principal.subject,
+            rollout_policy=body.model_dump() if body is not None else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{plugin_id}/playground/runs", status_code=202)

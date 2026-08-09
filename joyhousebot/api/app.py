@@ -28,12 +28,16 @@ from joyhousebot.api.routers import (
     admin_platform,
     admin_plugins,
     admin_scenarios,
+    auth,
+    event_triggers,
     graph_events,
+    knowledge,
     memory,
     runs,
     schedules,
     sessions,
     system,
+    workflows,
     works,
 )
 from joyhousebot.application.errors import (
@@ -181,6 +185,7 @@ def create_app(
             "X-Tracker-Id",
             "X-Impersonate-User-ID",
             "X-Joyhouse-Event-Token",
+            "X-Joyhouse-Webhook-Secret",
             "X-User-Id",
         ],
         expose_headers=["Location", "Preference-Applied", "X-Request-Id", "X-Tracker-Id"],
@@ -295,6 +300,7 @@ def create_app(
     prefix = "/v1"
     app.include_router(system.router, prefix=prefix)
     if surface in {"combined", "control"}:
+        app.include_router(auth.router, prefix=prefix)
         app.include_router(admin_platform.router, prefix=prefix)
         app.include_router(admin_catalog.router, prefix=prefix)
         app.include_router(admin_evals.router, prefix=prefix)
@@ -302,11 +308,14 @@ def create_app(
         app.include_router(admin_scenarios.router, prefix=prefix)
     if surface in {"combined", "public"}:
         app.include_router(graph_events.router, prefix=prefix)
+        app.include_router(event_triggers.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)
+        app.include_router(knowledge.router, prefix=prefix)
         app.include_router(memory.router, prefix=prefix)
         app.include_router(sessions.router, prefix=prefix)
         app.include_router(schedules.router, prefix=prefix)
         app.include_router(works.router, prefix=prefix)
+        app.include_router(workflows.router, prefix=prefix)
         app.mount("/mcp", mcp_gateway.asgi_app, name="mcp")
 
     ui_dir = Path(__file__).resolve().parent.parent / "static" / "ui"

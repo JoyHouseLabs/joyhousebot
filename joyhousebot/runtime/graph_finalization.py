@@ -138,7 +138,48 @@ class GraphFinalizationMixin:
                 )
             )
             completed_outputs = [item for item in top_level_inputs if item["status"] == "completed"]
+            coordination = dict(
+                (record.options.get("metadata") or {}).get("coordination_usage") or {}
+            )
+            prior_input_tokens = sum(
+                int((value.get("usage") or {}).get("input_tokens") or 0)
+                for value in usage_results
+            ) + int(coordination.get("input_tokens") or 0)
+            prior_output_tokens = sum(
+                int((value.get("usage") or {}).get("output_tokens") or 0)
+                for value in usage_results
+            ) + int(coordination.get("output_tokens") or 0)
+            prior_cost_usd = sum(
+                float((value.get("usage") or {}).get("cost_usd") or 0.0)
+                for value in usage_results
+            ) + float(coordination.get("cost_usd") or 0.0)
+
+            def remaining_budget(name: str, consumed: float) -> float | None:
+                configured = record.options.get(name)
+                if configured is None:
+                    return None
+                remaining = float(configured) - consumed
+                if remaining < 0:
+                    raise RuntimeError(f"graph {name} budget exceeded before aggregation")
+                return remaining
+
+            aggregate_input_budget = remaining_budget(
+                "max_input_tokens", float(prior_input_tokens)
+            )
+            aggregate_output_budget = remaining_budget(
+                "max_output_tokens", float(prior_output_tokens)
+            )
+            aggregate_cost_budget = remaining_budget("max_cost_usd", prior_cost_usd)
             if policy.mode == "llm_synthesis" and completed_outputs:
+                if any(
+                    value is not None and value <= 0
+                    for value in (
+                        aggregate_input_budget,
+                        aggregate_output_budget,
+                        aggregate_cost_budget,
+                    )
+                ):
+                    raise RuntimeError("graph budget exhausted before LLM aggregation")
                 content, tools, aggregate_usage = await self._call_agent(
                     run_id=run_id,
                     task_id=None,
@@ -155,9 +196,17 @@ class GraphFinalizationMixin:
                     output_schema=None,
                     timeout_seconds=300,
                     max_turns=None,
-                    max_input_tokens=None,
-                    max_output_tokens=None,
-                    max_cost_usd=None,
+                    max_input_tokens=(
+                        int(aggregate_input_budget)
+                        if aggregate_input_budget is not None
+                        else None
+                    ),
+                    max_output_tokens=(
+                        int(aggregate_output_budget)
+                        if aggregate_output_budget is not None
+                        else None
+                    ),
+                    max_cost_usd=aggregate_cost_budget,
                     permission_mode="default",
                     allowed_tools=[],
                     disallowed_tools=[],
@@ -178,9 +227,6 @@ class GraphFinalizationMixin:
                 tools = []
                 aggregate_usage = AgentUsage()
                 aggregation = deterministic.audit
-            coordination = dict(
-                (record.options.get("metadata") or {}).get("coordination_usage") or {}
-            )
             usage = AgentUsage(
                 input_tokens=sum(
                     int((value.get("usage") or {}).get("input_tokens") or 0)
@@ -203,6 +249,14 @@ class GraphFinalizationMixin:
                 model=aggregate_usage.model,
             )
             usage.total_tokens = usage.input_tokens + usage.output_tokens
+            for name, actual in (
+                ("max_input_tokens", usage.input_tokens),
+                ("max_output_tokens", usage.output_tokens),
+                ("max_cost_usd", float(usage.cost_usd or 0.0)),
+            ):
+                configured = record.options.get(name)
+                if configured is not None and actual > float(configured):
+                    raise RuntimeError(f"graph {name} budget exceeded")
             result = AgentResult(
                 run_id=run_id,
                 status=RunStatus.COMPLETED,
@@ -222,22 +276,6 @@ class GraphFinalizationMixin:
                 started_at=started_at,
                 finished_at=utc_now(),
             )
-            await asyncio.to_thread(
-                self.store.add_runtime_artifact,
-                artifact_id=f"{run_id}:final",
-                run_id=run_id,
-                name="final-output",
-                media_type="text/plain",
-                content=content,
-            )
-            await asyncio.to_thread(
-                self.store.add_runtime_artifact,
-                artifact_id=f"{run_id}:aggregation-audit",
-                run_id=run_id,
-                name="aggregation-audit",
-                media_type="application/json",
-                content=json.dumps(aggregation, ensure_ascii=False, sort_keys=True, default=str),
-            )
             await self.events.publish(
                 AgentEvent(
                     run_id=run_id,
@@ -256,6 +294,35 @@ class GraphFinalizationMixin:
                 status=RunStatus.COMPLETED,
                 event_type=EventType.RUN_COMPLETED,
                 result=result.to_dict(),
+                artifacts=[
+                    {
+                        "artifact_id": f"{run_id}:final",
+                        "name": "final-output",
+                        "media_type": "text/plain",
+                        "content": content,
+                        "provenance": {
+                            "worker_id": self.worker_id,
+                            "lease_version": record.lease_version,
+                            "terminal": True,
+                        },
+                    },
+                    {
+                        "artifact_id": f"{run_id}:aggregation-audit",
+                        "name": "aggregation-audit",
+                        "media_type": "application/json",
+                        "content": json.dumps(
+                            aggregation,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        "provenance": {
+                            "worker_id": self.worker_id,
+                            "lease_version": record.lease_version,
+                            "terminal": True,
+                        },
+                    },
+                ],
                 worker_id=self.worker_id,
                 lease_version=record.lease_version,
             )

@@ -4,7 +4,8 @@ const IMPERSONATE_STORAGE_KEY = 'joyhousebot_impersonate_user_id'
 let volatileUserId: string | null = null
 let volatileImpersonateUserId: string | null = null
 
-const DEFAULT_TEST_USER_ID = String(import.meta.env.VITE_DEFAULT_USER_ID || 'local-dev')
+const DEFAULT_TEST_USER_ID = String(import.meta.env.VITE_DEFAULT_USER_ID || 'joyhousebot')
+const LEGACY_LOCAL_USER_IDS = new Set(['local-dev', 'browser-qa-admin'])
 
 /**
  * Development identity and operator identity for this browser.
@@ -14,9 +15,9 @@ const DEFAULT_TEST_USER_ID = String(import.meta.env.VITE_DEFAULT_USER_ID || 'loc
 export function getRuntimeUserId(): string {
   try {
     const existing = localStorage.getItem(USER_STORAGE_KEY)?.trim()
-    if (existing && !existing.startsWith('web-')) return existing
-    // Migrate browser-random identities created by the previous user console.
-    // The platform console has one explicit development test identity instead.
+    if (existing && !existing.startsWith('web-') && !LEGACY_LOCAL_USER_IDS.has(existing)) return existing
+    // Migrate identities from the previous console and browser QA sessions.
+    // The platform console now has one explicit development identity instead.
     localStorage.setItem(USER_STORAGE_KEY, DEFAULT_TEST_USER_ID)
     return DEFAULT_TEST_USER_ID
   } catch {

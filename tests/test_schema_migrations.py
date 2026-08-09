@@ -38,6 +38,7 @@ _CORE_DOMAINS = {
     "rate_limits",
     "observability",
     "mcp_servers",
+    "user_workflows",
 }
 
 
@@ -69,11 +70,47 @@ def test_core_migrations_are_recorded(store: PostgresRuntimeStore) -> None:
         ).fetchall()
     recorded = {row["name"]: row for row in rows}
     assert set(recorded) == _CORE_DOMAINS
-    assert recorded["runtime"]["version"] == 3
+    assert recorded["runtime"]["version"] == 5
     assert recorded["execution_loop"]["version"] == 2
     assert recorded["approvals"]["version"] == 2
     for row in recorded.values():
         assert len(row["checksum"]) == 64
+
+
+def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(
+    store: PostgresRuntimeStore,
+) -> None:
+    run_id = f"migration-scoped-turns-{uuid4().hex}"
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute(
+            """INSERT INTO runtime_runs(run_id,user_id,session_id,agent_id,status,prompt)
+               VALUES (%s,'migration-test','migration-test','default','queued','sentinel')""",
+            (run_id,),
+        )
+    try:
+        for suffix in ("first", "second"):
+            store.create_runtime_turn(
+                turn_id=f"turn-{suffix}-{run_id}",
+                run_id=run_id,
+                task_id=None,
+                scope=f"coordinator_plan:{suffix}",
+                turn_index=1,
+                model=None,
+                request_hash=f"hash-{suffix}",
+                worker_id=None,
+            )
+
+        reopened = PostgresRuntimeStore(
+            TEST_DATABASE_URL,
+            application_name="joyhousebot-test-migration-reopen",
+        )
+        try:
+            assert len(reopened.list_runtime_turns(run_id)) == 2
+        finally:
+            reopened.close()
+    finally:
+        with store._pool.connection() as conn, conn.transaction():
+            conn.execute("DELETE FROM runtime_runs WHERE run_id=%s", (run_id,))
 
 
 def test_record_migration_is_idempotent(store: PostgresRuntimeStore) -> None:

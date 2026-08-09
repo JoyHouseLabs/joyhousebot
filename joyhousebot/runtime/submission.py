@@ -9,6 +9,8 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
+from loguru import logger
+
 from joyhousebot.observability.otel import telemetry_span
 from joyhousebot.orchestration.control_nodes import validate_compensation_declarations
 from joyhousebot.orchestration.failure_policy import validate_saga_declarations
@@ -89,6 +91,7 @@ class SubmissionMixin(GraphMaterializationMixin):
         ):
             if not value.strip():
                 raise ValueError(f"{name} is required")
+        profile = None
         if options.agent_revision_id:
             eval_run_id = str(options.metadata.get("eval_run_id") or "")
             eval_run = await asyncio.to_thread(self.store.get_eval_run, eval_run_id)
@@ -180,6 +183,29 @@ class SubmissionMixin(GraphMaterializationMixin):
                 options.agent_id,
                 revision_id=options.agent_revision_id,
             )
+            if (
+                profile is not None
+                and top_level
+                and self.monitor_reconciler is not None
+                and not options.metadata.get("schedule_payload_kind")
+            ):
+                try:
+                    await asyncio.to_thread(
+                        self.monitor_reconciler,
+                        user_id=record.user_id,
+                        profile=profile,
+                        channel=options.channel,
+                        target=options.chat_id,
+                    )
+                except Exception as exc:
+                    logger.exception("Managed Agent Monitor reconciliation failed")
+                    await self._log(
+                        record.run_id,
+                        "monitor.reconcile_failed",
+                        "Managed Agent Monitor reconciliation failed",
+                        level="warning",
+                        data={"error": str(exc), "agent_id": record.agent_id},
+                    )
             await append_trace_event_async(
                 store=self.store,
                 tracker_id=tracker_id,
@@ -322,6 +348,22 @@ class SubmissionMixin(GraphMaterializationMixin):
                 record.run_id,
                 spec.agent_id,
             )
+            if self.monitor_reconciler is not None:
+                try:
+                    await asyncio.to_thread(
+                        self.monitor_reconciler,
+                        user_id=record.user_id,
+                        profile=profile,
+                    )
+                except Exception as exc:
+                    logger.exception("Managed Agent Monitor reconciliation failed")
+                    await self._log(
+                        record.run_id,
+                        "monitor.reconcile_failed",
+                        "Managed Agent Monitor reconciliation failed",
+                        level="warning",
+                        data={"error": str(exc), "agent_id": record.agent_id},
+                    )
             await append_trace_event_async(
                 store=self.store,
                 tracker_id=tracker_id,

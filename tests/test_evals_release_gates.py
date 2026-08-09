@@ -33,7 +33,13 @@ def _suite_body() -> dict:
         "version": 1,
         "name": "Basic quality and budget gate",
         "target_types": ["agent", "scenario", "capability"],
-        "thresholds": {"min_pass_rate": 1.0, "min_average_score": 1.0},
+        "thresholds": {
+            "min_pass_rate": 1.0,
+            "min_average_score": 1.0,
+            "max_total_cost_usd": 0.01,
+            "max_p95_latency_ms": 500,
+            "min_cost_coverage": 1.0,
+        },
         "cases": [
             {
                 "case_id": "answer",
@@ -214,6 +220,86 @@ async def test_checked_in_business_eval_suites_are_valid(tmp_path: Path) -> None
     assert sum(len(item["cases"]) for item in installed) == 9
 
 
+@pytest.mark.asyncio
+async def test_eval_execution_jobs_are_leased_fenced_and_resumable(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "eval-jobs.db")
+    evals = EvalService(store)
+    await evals.save_suite(_suite_body(), actor_id="quality-admin")
+    run = await evals.create_run(
+        {
+            "suite_id": "quality.basic",
+            "suite_version": 1,
+            "target_type": "agent",
+            "target_id": "quality-agent",
+            "target_revision_id": "quality-agent:v1",
+            "idempotency_key": "leased-job",
+        },
+        actor_id="quality-admin",
+    )
+    queued = store.enqueue_eval_execution(
+        run["eval_run_id"],
+        configuration={"max_concurrency": 2, "case_timeout_seconds": 30},
+        requested_by="quality-admin",
+    )
+    assert queued["status"] == "queued"
+    first = store.claim_eval_execution_job(worker_id="eval-worker-a", lease_seconds=30)
+    assert first and first["attempt"] == 1
+    with store._pool.connection() as conn:
+        conn.execute(
+            """UPDATE eval_execution_jobs
+               SET lease_expires_at=clock_timestamp()-interval '1 second'
+               WHERE eval_run_id=%s""",
+            (run["eval_run_id"],),
+        )
+    second = store.claim_eval_execution_job(worker_id="eval-worker-b", lease_seconds=30)
+    assert second and second["lease_version"] == first["lease_version"] + 1
+    assert not store.complete_eval_execution_job(
+        run["eval_run_id"],
+        worker_id="eval-worker-a",
+        lease_version=first["lease_version"],
+    )
+    assert store.fail_eval_execution_job(
+        run["eval_run_id"],
+        worker_id="eval-worker-b",
+        lease_version=second["lease_version"],
+        error={"type": "TransientError"},
+    )
+    assert store.get_eval_execution_job(run["eval_run_id"])["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_due_eval_schedule_materializes_one_idempotent_run_and_job(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "eval-schedules.db")
+    evals = EvalService(store)
+    await evals.save_suite(_suite_body(), actor_id="quality-admin")
+    policy = await evals.save_schedule(
+        {
+            "policy_id": "quality-agent-nightly",
+            "suite_id": "quality.basic",
+            "suite_version": 1,
+            "target_type": "agent",
+            "target_id": "quality-agent",
+            "target_revision_id": "quality-agent:v1",
+            "cadence_seconds": 3600,
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "execution_configuration": {
+                "max_concurrency": 2,
+                "case_timeout_seconds": 30,
+            },
+        },
+        actor_id="quality-admin",
+    )
+    assert policy["enabled"] is True
+    assert store.reconcile_due_eval_schedules() == 1
+    refreshed = store.list_eval_schedule_policies()[0]
+    eval_run_id = refreshed["last_eval_run_id"]
+    assert eval_run_id
+    assert store.get_eval_run(eval_run_id)["execution_job"]["status"] == "queued"
+    assert store.reconcile_due_eval_schedules() == 0
+
+
 def test_eval_api_scores_observations_and_persists_release_evidence(
     tmp_path: Path,
 ) -> None:
@@ -259,6 +345,9 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
         assert finalized.status_code == 200, finalized.text
         assert finalized.json()["status"] == "passed"
         assert finalized.json()["metrics"]["pass_rate"] == 1.0
+        assert finalized.json()["metrics"]["total_cost_usd"] == 0.001
+        assert finalized.json()["metrics"]["cost_coverage"] == 1.0
+        assert finalized.json()["metrics"]["p95_latency_ms"] == 120
         store.save_release_gate_policy(
             value={
                 "target_type": "agent",
@@ -298,6 +387,9 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
                         "suite_version": 1,
                         "min_pass_rate": 1.0,
                         "max_age_hours": 24,
+                        "max_total_cost_usd": 0.002,
+                        "max_p95_latency_ms": 250,
+                        "min_cost_coverage": 1.0,
                     }
                 ],
             },
@@ -376,7 +468,10 @@ async def test_agent_publication_is_blocked_until_exact_revision_passes_gate(
     finalized = await container.evals.finalize_run(eval_run["eval_run_id"])
     assert finalized["status"] == "passed"
     published = await container.platform.publish_agent_revision(
-        "quality-agent", "quality-agent:v1", actor_id="quality-admin"
+        "quality-agent",
+        "quality-agent:v1",
+        actor_id="quality-admin",
+        rollout_policy={"require_healthy_workers": False},
     )
     assert published["revision"]["status"] == "published"
     with store._pool.connection() as connection:  # noqa: SLF001 - audit assertion
@@ -494,10 +589,15 @@ async def test_capability_and_scenario_publish_paths_use_the_same_gate(
         revision_id="1",
     )
     published_capability = await container.platform.publish_capability(
-        capability, actor_id="quality-admin"
+        capability,
+        actor_id="quality-admin",
+        rollout_policy={"require_healthy_workers": False},
     )
     published_scenario = await container.scenarios.publish(
-        "quality.scenario", 1, actor_id="quality-admin"
+        "quality.scenario",
+        1,
+        actor_id="quality-admin",
+        rollout_policy={"require_healthy_workers": False},
     )
     assert published_capability["ref"]["version"] == "1.0.0"
     assert published_scenario["status"] == "published"

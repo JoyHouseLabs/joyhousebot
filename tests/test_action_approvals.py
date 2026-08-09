@@ -238,6 +238,35 @@ async def test_dispatcher_freezes_write_action_until_approved(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_fails_closed_when_write_action_identity_is_missing(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "approval-missing-action.db")
+    run = _claimed_run(store, "run-missing-action")
+    tool = _WriteTool()
+    dispatcher = CapabilityDispatcher(store)
+    result = await dispatcher.invoke_tool(
+        ToolCapabilityAdapter(tool, definition=_definition()),
+        {"value": "one"},
+        context=ToolExecutionContext(
+            run_id=run.run_id,
+            user_id="user-a",
+            agent_id="default",
+            session_key="api:user-a:default:test",
+            session_id=f"session-{run.run_id}",
+            channel="api",
+            chat_id="test",
+            worker_id="worker-one",
+        ),
+    )
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "DURABLE_ACTION_REQUIRED"
+    assert tool.calls == 0
+    assert store.list_capability_invocations(run.run_id) == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_resumes_same_action_after_approval(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "approval-runtime.db")
     provider = _ApproveThenFinishProvider()
@@ -250,6 +279,7 @@ async def test_runtime_resumes_same_action_after_approval(tmp_path: Path) -> Non
         session_manager=RuntimeSessionManager(store),
     )
     executor.capabilities.register_tool(tool, definition=_definition())
+    store.publish_capability(_definition(), actor_id="test:trusted-fixture")
     runtime = NativeAgentRuntime(agent=executor, store=store)
 
     submitted = await runtime.submit_run(
@@ -352,6 +382,8 @@ def test_revoke_before_action_claim_wins_and_releases_run_lease(tmp_path: Path) 
     run = store.get_runtime_run(request.run_id)
     assert run.status == "failed"
     assert run.lease_owner is None
+    event_types = [event.type for event in store.list_runtime_events(request.run_id)]
+    assert event_types[-2:] == ["approval.resolved", "run.failed"]
 
 
 def test_expired_approval_fails_waiting_run(tmp_path: Path) -> None:
@@ -371,6 +403,8 @@ def test_expired_approval_fails_waiting_run(tmp_path: Path) -> None:
     run = store.get_runtime_run(request.run_id)
     assert run.status == "failed"
     assert run.waiting_on is None
+    event_types = [event.type for event in store.list_runtime_events(request.run_id)]
+    assert event_types[-2:] == ["approval.resolved", "run.failed"]
 
 
 def test_approval_api_is_owner_scoped_and_operator_policy_is_enforced(

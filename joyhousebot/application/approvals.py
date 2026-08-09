@@ -64,6 +64,7 @@ class ApprovalService:
         graph_task_id = request.task_id or (action.task_id if action is not None else None)
         await self.runtime.events.publish(
             AgentEvent(
+                event_id=f"approval:{approval_id}:resolved:{resolved.status}",
                 run_id=run_id,
                 task_id=graph_task_id,
                 type=EventType.APPROVAL_RESOLVED.value,
@@ -80,6 +81,13 @@ class ApprovalService:
             await asyncio.to_thread(self.store.notify_work, run_id)
             await self.runtime.events.publish(
                 AgentEvent(
+                    event_id=(
+                        f"approval:{approval_id}:task.completed"
+                        if request.subject_type == "graph_node"
+                        else f"approval:{approval_id}:task.queued"
+                        if graph_task_id
+                        else f"approval:{approval_id}:run.queued"
+                    ),
                     run_id=run_id,
                     task_id=graph_task_id,
                     type=(
@@ -96,6 +104,11 @@ class ApprovalService:
         else:
             await self.runtime.events.publish(
                 AgentEvent(
+                    event_id=(
+                        f"approval:{approval_id}:task.failed"
+                        if graph_task_id
+                        else f"approval:{approval_id}:run.failed"
+                    ),
                     run_id=run_id,
                     task_id=graph_task_id,
                     type=(

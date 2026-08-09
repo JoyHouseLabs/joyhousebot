@@ -313,6 +313,14 @@ class _CapabilityAgent:
         self.capabilities = CapabilityRegistry(store=store)
         self.capabilities.register_tool(undo, definition=undo_definition)
         self.capabilities.register_tool(apply, definition=apply_definition)
+        # Non-core registration is discovery-only. Tests that exercise an
+        # executable release must make the trusted activation explicit.
+        store.publish_capability(
+            undo_definition, actor_id="test:trusted-graph-fixture"
+        )
+        store.publish_capability(
+            apply_definition, actor_id="test:trusted-graph-fixture"
+        )
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("explicit Capability Graph must not call a model")

@@ -92,12 +92,14 @@ class RuntimeControlsMixin:
                 raise ValueError(
                     "Saga Graph runs cannot be resumed; submit a new Run after compensation"
                 )
-        reset = await asyncio.to_thread(self.store.reset_runtime_run, run_id)
+        reset = await asyncio.to_thread(
+            self.store.reset_runtime_graph
+            if current is not None and current.kind == "graph"
+            else self.store.reset_runtime_run,
+            run_id,
+        )
         if not reset:
             raise ValueError("only failed, cancelled, or timed out runs can be resumed")
-        record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
-        if record and record.kind == "graph":
-            await asyncio.to_thread(self.store.reset_runtime_tasks, run_id)
         await self.events.publish(
             AgentEvent(run_id=run_id, type=EventType.RUN_QUEUED.value, data={"resumed": True})
         )

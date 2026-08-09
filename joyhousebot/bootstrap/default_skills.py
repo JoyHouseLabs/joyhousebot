@@ -29,11 +29,14 @@ _CRON = """# Scheduling
 Use the `cron` capability for reminders, recurring Agent tasks, and one-time tasks.
 Resolve the user's timezone and preserve the originating `user_id` and `agent_id`.
 Use ISO timestamps for one-time schedules and standard cron expressions for recurring work.
+For a recurring check that should stay quiet when nothing needs attention, create an Agent Monitor.
+Use `runtime_attention` preflight only for Runtime approvals, failures, and dead deliveries; it is not
+a substitute for a business Connector. Monitor scratch is private, versioned state for that Monitor.
 """
 
 # Prompt content is immutable once published. Increment this only when the
 # built-in instruction catalog changes; older revisions remain replayable.
-_DEFAULT_SKILL_VERSION = "1.0.4"
+_DEFAULT_SKILL_VERSION = "1.0.5"
 
 
 def default_skill_definitions() -> tuple[CapabilityDefinition, ...]:

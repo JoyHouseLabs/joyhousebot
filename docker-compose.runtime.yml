@@ -25,6 +25,9 @@ services:
     environment: &runtime_env
       JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
+      # Schema is owned by the one-shot migrate service below. Runtime roles
+      # must never race DDL with another role's catalog bootstrap writes.
+      JOYHOUSEBOT_AUTO_MIGRATE: "false"
       # No default token: /metrics refuses all requests when it is not set.
       JOYHOUSEBOT_METRICS_TOKEN: ${JOYHOUSEBOT_METRICS_TOKEN:?required}
       JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
@@ -43,6 +46,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "18790:18790"
 
@@ -52,11 +57,20 @@ services:
   control:
     build: .
     command: ["api", "--surface", "control", "--host", "0.0.0.0", "--port", "18790"]
-    environment: *runtime_env
+    environment:
+      <<: *runtime_env
+      # One-time values may be removed after the first password change.
+      JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER: ${JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER:-}
+      JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD: ${JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Persistent 32-byte URL-safe base64 key used to encrypt TOTP secrets.
+      JOYHOUSEBOT_AUTH_ENCRYPTION_KEY: ${JOYHOUSEBOT_AUTH_ENCRYPTION_KEY:?required}
+      JOYHOUSEBOT_ADMIN_SESSION_HOURS: ${JOYHOUSEBOT_ADMIN_SESSION_HOURS:-12}
     volumes: *runtime_config
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:${JOYHOUSEBOT_CONTROL_PORT:-18791}:18790"
 
@@ -68,6 +82,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     deploy:
       replicas: 2
 
@@ -79,6 +95,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   channel-worker:
     build: .
@@ -88,6 +106,7 @@ services:
       # must not inherit provider API keys from the runtime env anchor above.
       JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
+      JOYHOUSEBOT_AUTO_MIGRATE: "false"
       JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
       JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
@@ -96,6 +115,24 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # The only service allowed to apply core schema changes. It completes before
+  # any long-running role starts and carries no provider or Channel secrets.
+  migrate:
+    build: .
+    command: ["check"]
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+      JOYHOUSEBOT_CONFIG_PATH: /app/config.json
+      JOYHOUSEBOT_AUTO_MIGRATE: "true"
+      JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+    volumes: *runtime_config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   joyhousebot_pg_data:

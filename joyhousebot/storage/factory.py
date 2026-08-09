@@ -8,6 +8,18 @@ from typing import Any
 from joyhousebot.storage.runtime_store import RuntimeStore
 
 
+def _auto_migrate(default: bool) -> bool:
+    raw = os.environ.get("JOYHOUSEBOT_AUTO_MIGRATE")
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("JOYHOUSEBOT_AUTO_MIGRATE must be true or false")
+
+
 def create_runtime_store(config: Any | None = None) -> RuntimeStore:
     runtime = getattr(config, "runtime", None)
     settings = getattr(runtime, "store", None)
@@ -25,5 +37,5 @@ def create_runtime_store(config: Any | None = None) -> RuntimeStore:
         database_url,
         min_pool_size=int(getattr(settings, "pool_min_size", 1)),
         max_pool_size=int(getattr(settings, "pool_max_size", 10)),
-        auto_migrate=bool(getattr(settings, "auto_migrate", True)),
+        auto_migrate=_auto_migrate(bool(getattr(settings, "auto_migrate", True))),
     )

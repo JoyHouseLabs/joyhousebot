@@ -11,7 +11,11 @@ from importlib import metadata as importlib_metadata
 from typing import Any
 
 from joyhousebot.contracts.capabilities import CapabilityContext, CapabilityResult
-from joyhousebot.contracts.plugins import PluginManifest
+from joyhousebot.contracts.plugins import (
+    PluginComponent,
+    PluginHealthCheck,
+    PluginManifest,
+)
 from joyhousebot.domain.capabilities.models import CapabilityRef
 from joyhousebot.utils.permissions import missing_permissions
 
@@ -23,6 +27,8 @@ class CapabilityPluginRegistry:
         self._plugins: dict[str, Any] = {}
         self._capabilities: dict[str, tuple[Any, Any, str | None]] = {}
         self._projections: dict[str, tuple[Any, str | None]] = {}
+        self._components: dict[str, tuple[PluginComponent, Any | None, str]] = {}
+        self._health_checks: dict[str, tuple[PluginHealthCheck, str]] = {}
         self._active_plugin: str | None = None
 
     def register_plugin(self, plugin: Any) -> None:
@@ -95,6 +101,15 @@ class CapabilityPluginRegistry:
             if plugin is None:
                 raise ValueError("capability registration has no active plugin")
             manifest = self._manifest_for(plugin)
+            side_effect = str(getattr(definition, "side_effect", "unknown") or "unknown")
+            if (
+                side_effect.strip().lower() not in {"none", "read"}
+                and manifest.runtime_contract_version < 2
+            ):
+                raise ValueError(
+                    f"side-effecting capability {capability_id}@{version} requires "
+                    "plugin runtime_contract_version >= 2"
+                )
             if isinstance(ref, CapabilityRef) and not ref.is_bound:
                 definition = replace(
                     definition,
@@ -141,6 +156,63 @@ class CapabilityPluginRegistry:
         if existing is not None and existing[0] is not provider:
             raise ValueError(f"projection view {view_id} is already registered")
         self._projections[view_id] = (provider, self._active_plugin)
+        if self._active_plugin:
+            self.register_component(
+                PluginComponent(
+                    component_id=f"projection:{view_id}",
+                    component_type="projection",
+                    name=view_id,
+                    reference_id=view_id,
+                    reference_version=str(schema_version),
+                    metadata={"schema_version": schema_version},
+                ),
+                provider,
+            )
+
+    def register_component(
+        self, component: PluginComponent, provider: Any | None = None
+    ) -> None:
+        """Register a business-owned component without teaching core its internals."""
+        if not self._active_plugin or self._active_plugin not in self._plugins:
+            raise ValueError("component registration requires an active plugin")
+        key = f"{self._active_plugin}:{component.component_id}"
+        existing = self._components.get(key)
+        value = (component, provider, self._active_plugin)
+        if existing is not None and existing[:2] != value[:2]:
+            raise ValueError(f"plugin component {component.component_id} is already registered")
+        self._components[key] = value
+
+    def list_components(self, plugin_id: str | None = None) -> tuple[PluginComponent, ...]:
+        return tuple(
+            value[0]
+            for value in self._components.values()
+            if plugin_id is None or value[2] == plugin_id
+        )
+
+    def get_component_provider(self, plugin_id: str, component_id: str) -> Any | None:
+        value = self._components.get(f"{plugin_id}:{component_id}")
+        return value[1] if value else None
+
+    def register_health_check(self, check: PluginHealthCheck) -> None:
+        if not self._active_plugin or self._active_plugin not in self._plugins:
+            raise ValueError("health check registration requires an active plugin")
+        name = str(check.name).strip()
+        if not name or not callable(check.run):
+            raise ValueError("plugin health check name and run callable are required")
+        key = f"{self._active_plugin}:{name}"
+        existing = self._health_checks.get(key)
+        if existing is not None and existing[0] != check:
+            raise ValueError(f"plugin health check {name} is already registered")
+        self._health_checks[key] = (check, self._active_plugin)
+
+    def list_health_checks(self, plugin_id: str) -> tuple[PluginHealthCheck, ...]:
+        registered = [
+            value[0] for value in self._health_checks.values() if value[1] == plugin_id
+        ]
+        plugin = self._plugins.get(plugin_id)
+        declared = list(getattr(plugin, "health_checks", lambda: ())()) if plugin else []
+        by_name = {str(item.name): item for item in (*declared, *registered)}
+        return tuple(by_name.values())
 
     def get_projection(self, view_id: str) -> Any | None:
         value = self._projections.get(str(view_id).strip())
@@ -207,6 +279,20 @@ class CapabilityPluginRegistry:
         if resolved is None:
             return CapabilityResult(success=False, error={"code": "CAPABILITY_NOT_FOUND", "message": capability_id})
         definition, handler = resolved
+        requires_action = (
+            str(getattr(definition, "side_effect", "unknown") or "unknown")
+            .strip()
+            .lower()
+            not in {"none", "read"}
+        )
+        if requires_action and (not context.action_id or not context.idempotency_key):
+            return CapabilityResult(
+                success=False,
+                error={
+                    "code": "DURABLE_ACTION_REQUIRED",
+                    "message": "side-effecting capability requires a frozen Action identity",
+                },
+            )
         required = set(getattr(definition, "permissions", ()) or ())
         granted = set((context.metadata or {}).get("permissions", ()) or ())
         missing = missing_permissions(granted, required)
@@ -220,6 +306,20 @@ class CapabilityPluginRegistry:
             result = await result
         if not isinstance(result, CapabilityResult):
             raise TypeError(f"capability handler {capability_id} returned an invalid result")
+        if requires_action and result.success:
+            receipt = result.write_receipt
+            if (
+                receipt is None
+                or receipt.action_id != context.action_id
+                or receipt.idempotency_key != context.idempotency_key
+            ):
+                return CapabilityResult(
+                    success=False,
+                    error={
+                        "code": "WRITE_IDENTITY_MISMATCH",
+                        "message": "business write did not acknowledge the frozen Action identity",
+                    },
+                )
         return result
 
 

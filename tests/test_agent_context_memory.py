@@ -39,6 +39,25 @@ def test_system_prompt_includes_scoped_memory(durable_context) -> None:
     assert "Session 1 only fact" in prompt
 
 
+def test_light_context_excludes_memory_and_conversation_history(durable_context) -> None:
+    scratch_root, store = durable_context
+    messages, sources = ContextBuilder(
+        scratch_root, runtime_store=store
+    ).build_messages_with_sources(
+        history=[{"role": "user", "content": "historical secret"}],
+        current_message="current monitor request",
+        scope_key="session_1",
+        context_mode="light",
+    )
+
+    rendered = str(messages)
+    assert "current monitor request" in rendered
+    assert "historical secret" not in rendered
+    assert "Session 1 only fact" not in rendered
+    assert not any(item["source_kind"] == "conversation_history" for item in sources)
+    assert not any(item["source_kind"] == "memory_document" for item in sources)
+
+
 def test_agent_task_only_policy_does_not_inject_persistent_memory(durable_context) -> None:
     scratch_root, store = durable_context
     revision = AgentRevision(

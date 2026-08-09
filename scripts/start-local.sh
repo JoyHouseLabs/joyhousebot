@@ -167,7 +167,7 @@ monitor_children() {
 install_local_plugins() {
   local plugin_path
   local plugin_paths=()
-  [[ -n "${LOCAL_PLUGIN_PACKAGES}" ]] || return
+  [[ -n "${LOCAL_PLUGIN_PACKAGES}" ]] || return 0
 
   IFS=':' read -r -a plugin_paths <<< "${LOCAL_PLUGIN_PACKAGES}"
   for plugin_path in "${plugin_paths[@]}"; do
@@ -214,7 +214,11 @@ main() {
   # resolve to an unrelated system executable.
   uv sync --frozen --extra dev --quiet
   install_local_plugins
-  uv run joyhousebot check --config "${CONFIG_PATH}"
+  # Apply schema changes once before any runtime role starts. Starting every
+  # role with auto-migration enabled can interleave DDL from a later process
+  # with catalog bootstrap writes from an earlier one.
+  JOYHOUSEBOT_AUTO_MIGRATE=true uv run joyhousebot check --config "${CONFIG_PATH}"
+  export JOYHOUSEBOT_AUTO_MIGRATE=false
 
   start_role api uv run joyhousebot api \
     --surface combined --config "${CONFIG_PATH}" --host "${API_HOST}" --port "${API_PORT}"
@@ -222,10 +226,11 @@ main() {
   for worker_index in $(seq 1 "${WORKER_COUNT}"); do
     start_role "worker-${worker_index}" uv run joyhousebot worker --config "${CONFIG_PATH}"
   done
+  start_role channel-worker uv run joyhousebot channel-worker --config "${CONFIG_PATH}"
 
   wait_for_api
   info "ready: http://${API_HOST}:${API_PORT}/ui/"
-  info "press Ctrl+C to stop API, Scheduler and ${WORKER_COUNT} Workers"
+  info "press Ctrl+C to stop API, Scheduler, Channel Worker and ${WORKER_COUNT} Agent Workers"
   tail -n 20 -F "${LOG_DIR}"/*.log &
   TAIL_PID="$!"
   monitor_children

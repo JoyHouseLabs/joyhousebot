@@ -50,8 +50,8 @@
         <div><span class="eyebrow">WORKERS</span><h2>当前执行节点</h2></div>
         <router-link to="/platform">查看执行集群 →</router-link>
       </div>
-      <div v-if="workerList.length" class="worker-summary-list">
-        <article v-for="worker in workerList.slice(0, 8)" :key="worker.worker_id" class="worker-summary-row">
+      <div v-if="healthyWorkers.length" class="worker-summary-list">
+        <article v-for="worker in healthyWorkers.slice(0, 8)" :key="worker.worker_id" class="worker-summary-row">
           <span class="state-dot" :class="{ on: worker.healthy }" />
           <div class="worker-summary-main"><strong>{{ workerRole(worker) }}</strong><small>{{ worker.worker_id }} · {{ worker.healthy ? '健康' : '陈旧 / 离线' }}</small></div>
           <span class="worker-summary-capacity">{{ workerSlots(worker) }} 槽位</span>
@@ -59,7 +59,7 @@
           <time>{{ relativeTime(worker.last_heartbeat) }}</time>
         </article>
       </div>
-      <div v-else class="empty-state compact"><strong>暂无 Worker 心跳</strong></div>
+      <div v-else class="empty-state compact"><strong>暂无健康 Worker 心跳</strong></div>
       <p class="worker-summary-note">健康 {{ platform.healthy_workers }} · 历史 / 陈旧记录 {{ Math.max(0, platform.workers - platform.healthy_workers) }} · 角色和插件信息来自 Worker 心跳。</p>
     </section>
 
@@ -135,12 +135,21 @@ const runs = ref<RuntimeRun[]>([])
 const schedules = ref<ScheduleItem[]>([])
 const workerList = ref<RuntimeWorker[]>([])
 const platform = reactive<AdminOverview>({ runs: 0, users: 0, sessions: 0, active_runs: 0, workers: 0, healthy_workers: 0, statuses: {}, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, cost_usd: 0 } })
-const identity = reactive<RuntimeIdentity>({ subject: '', user_id: runtimeUserId, role: '', permissions: [], is_admin: false })
+const identity = reactive<RuntimeIdentity>({
+  subject: '',
+  user_id: runtimeUserId,
+  actor_user_id: runtimeUserId,
+  impersonating: false,
+  role: '',
+  permissions: [],
+  is_admin: false,
+})
 const health = reactive<ServiceHealth>({ api: false, database: false, databaseDetail: null })
 const metrics = reactive<OperationalMetrics>({ runs: {}, tasks: {}, workers: {}, providers: [], channels: [], queue: { queued: 0, oldest_age_seconds: 0, expired_leases: 0, retried_tasks: 0 }, workers_stale: 0 })
 let timer: number | null = null
 
 const databaseLabel = computed(() => String(health.databaseDetail?.backend ?? health.databaseDetail?.database ?? 'PostgreSQL / Store ready'))
+const healthyWorkers = computed(() => workerList.value.filter((worker) => worker.healthy))
 
 async function refresh() {
   if (loading.value) return
@@ -170,7 +179,7 @@ function relativeTime(value?: string) { if (!value) return '—'; const delta = 
 function workerRole(worker: RuntimeWorker) { if (worker.capabilities?.scheduler) return 'Scheduler 调度节点'; if (worker.capabilities?.agent) return 'Agent 执行节点'; return 'Runtime Worker' }
 function workerSlots(worker: RuntimeWorker) { return Number(worker.metadata?.task_worker_count || 0) || '—' }
 function workerPlugin(worker: RuntimeWorker) { const plugins = Array.isArray(worker.metadata?.plugins) ? worker.metadata.plugins as Array<Record<string, unknown>> : []; return String(plugins[0]?.name || '核心运行时') }
-function scheduleText(item: ScheduleItem) { if (item.schedule.kind === 'cron') return item.schedule.expr || 'cron'; if (item.schedule.kind === 'every') return `每 ${Math.round(Number(item.schedule.every_ms || 0) / 1000)} 秒`; return '单次执行' }
+function scheduleText(item: ScheduleItem) { const monitor = item.payload.kind === 'agent_monitor'; const managed = item.payload.managed_by === 'agent_revision' ? '托管 · ' : ''; const light = monitor && item.payload.context_mode === 'light' ? 'Light · ' : ''; const guard = monitor && item.payload.preflight_mode === 'runtime_attention' ? '变化触发 · ' : ''; const hours = item.payload.active_hours ? `${item.payload.active_hours.start}–${item.payload.active_hours.end} ${item.payload.active_hours.timezone} · ` : ''; const prefix = monitor ? `Agent Monitor · ${managed}${light}${guard}${hours}` : ''; if (item.schedule.kind === 'cron') return `${prefix}${item.schedule.expr || 'cron'}`; if (item.schedule.kind === 'every') return `${prefix}每 ${Math.round(Number(item.schedule.every_ms || 0) / 1000)} 秒`; return `${prefix}单次执行` }
 function nextRunText(item: ScheduleItem) { const value = item.state?.next_run_at_ms; return item.enabled && value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '未计划' }
 
 onMounted(() => { void refresh(); timer = window.setInterval(refresh, 10_000) })

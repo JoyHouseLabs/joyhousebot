@@ -75,10 +75,18 @@ export async function saveScenario(scenario: ScenarioVersion): Promise<ScenarioV
   return payload<ScenarioVersion>(response, '保存场景失败')
 }
 
-export async function publishScenario(id: string, version: number): Promise<ScenarioVersion> {
+export async function publishScenario(
+  id: string,
+  version: number,
+  policy?: { activation_mode: 'automatic' | 'manual'; timeout_seconds: number; auto_rollback: boolean; require_healthy_workers: boolean },
+): Promise<ScenarioVersion> {
   const response = await apiFetch(
     `/v1/admin/scenarios/${encodeURIComponent(id)}/versions/${version}/publish`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      headers: policy ? { 'Content-Type': 'application/json' } : undefined,
+      body: policy ? JSON.stringify(policy) : undefined,
+    },
   )
   return payload<ScenarioVersion>(response, '发布场景失败')
 }

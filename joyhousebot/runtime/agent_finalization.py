@@ -39,25 +39,6 @@ async def finalize_agent_result(
         finished_at=utc_now(),
     )
     media_type = "application/json" if structured_output is not None else "text/plain"
-    await asyncio.to_thread(
-        runtime.store.add_runtime_artifact,
-        artifact_id=f"{record.run_id}:final",
-        run_id=record.run_id,
-        name="final-output",
-        media_type=media_type,
-        content=structured_output if structured_output is not None else content,
-    )
-    await runtime.events.publish(
-        AgentEvent(
-            run_id=record.run_id,
-            type=EventType.ARTIFACT_CREATED.value,
-            data={
-                "artifact_id": f"{record.run_id}:final",
-                "name": "final-output",
-                "media_type": media_type,
-            },
-        )
-    )
     await runtime.events.publish(
         AgentEvent(
             run_id=record.run_id,
@@ -71,6 +52,19 @@ async def finalize_agent_result(
         status=RunStatus.COMPLETED,
         event_type=EventType.RUN_COMPLETED,
         result=result.to_dict(),
+        artifacts=[
+            {
+                "artifact_id": f"{record.run_id}:final",
+                "name": "final-output",
+                "media_type": media_type,
+                "content": structured_output if structured_output is not None else content,
+                "provenance": {
+                    "worker_id": runtime.worker_id,
+                    "lease_version": record.lease_version,
+                    "terminal": True,
+                },
+            }
+        ],
         worker_id=runtime.worker_id,
         lease_version=record.lease_version,
     )

@@ -36,6 +36,12 @@ class _CapabilityAgent:
     ) -> None:
         self.capabilities = CapabilityRegistry(store=store)
         self.capabilities.register_tool(tool, definition=definition)
+        if definition is not None:
+            # Non-core registration is discovery-only. This fixture opts into
+            # the trusted compatibility activation path deliberately.
+            store.publish_capability(
+                definition, actor_id="test:trusted-graph-fixture"
+            )
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("direct Graph Capability Task must not call a model")

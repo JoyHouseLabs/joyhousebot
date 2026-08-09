@@ -7,9 +7,11 @@ import threading
 from typing import Any
 
 import httpx
+from jsonschema import Draft202012Validator
 from loguru import logger
 
 from joyhousebot.bootstrap.agents import build_agent_executor
+from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
 
 
 class AgentRuntimeCatalog:
@@ -107,13 +109,33 @@ class AgentRuntimeCatalog:
         status: str,
         error: dict[str, Any] | None = None,
     ) -> None:
-        acknowledge = getattr(self.store, "acknowledge_agent_revision", None)
+        acknowledge = getattr(self.store, "acknowledge_configuration_revision", None)
         if acknowledge is None or self._runtime is None:
             return
         acknowledge(
             worker_id=self._runtime.worker_id,
-            agent_id=agent_id,
+            aggregate_type="agent",
+            aggregate_id=agent_id,
             revision_id=revision_id,
+            status=status,
+            error=error,
+        )
+
+    def _acknowledge_configuration(
+        self,
+        item: dict[str, str],
+        *,
+        status: str,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        acknowledge = getattr(self.store, "acknowledge_configuration_revision", None)
+        if acknowledge is None or self._runtime is None:
+            return
+        acknowledge(
+            worker_id=self._runtime.worker_id,
+            aggregate_type=item["aggregate_type"],
+            aggregate_id=item["aggregate_id"],
+            revision_id=item["revision_id"],
             status=status,
             error=error,
         )
@@ -123,30 +145,132 @@ class AgentRuntimeCatalog:
         if self._runtime is None:
             return 0
         pending = await asyncio.to_thread(
-            self.store.list_pending_agent_revisions, self._runtime.worker_id
+            self.store.list_pending_configuration_revisions, self._runtime.worker_id
         )
         loaded = 0
         for item in pending:
             revision_id = item["revision_id"]
             try:
-                loop = await asyncio.to_thread(self.resolve, revision_id)
-                if loop is None:
-                    raise RuntimeError("published Agent revision is unavailable")
+                await asyncio.to_thread(self._preheat_configuration, item)
                 loaded += 1
+                await asyncio.to_thread(
+                    self._acknowledge_configuration, item, status="loaded"
+                )
             except Exception as exc:
                 logger.exception(
-                    "failed to load Agent rollout revision={} worker={}",
+                    "failed to preheat configuration rollout revision={} worker={}",
                     revision_id,
                     self._runtime.worker_id,
                 )
                 await asyncio.to_thread(
-                    self._acknowledge,
-                    item["agent_id"],
-                    revision_id,
+                    self._acknowledge_configuration,
+                    item,
                     status="failed",
                     error={"type": type(exc).__name__, "message": str(exc)},
                 )
         return loaded
+
+    def _preheat_configuration(self, item: dict[str, str]) -> None:
+        aggregate_type = item["aggregate_type"]
+        if aggregate_type == "agent":
+            loop = self.resolve(item["revision_id"])
+            if loop is None:
+                raise RuntimeError("published Agent revision is unavailable")
+            # resolve() acknowledges Agent revisions for backward-compatible
+            # callers; the generic acknowledgement below is idempotent.
+            return
+        if aggregate_type == "plugin":
+            release = self.store.get_plugin_release(
+                item["aggregate_id"], item["revision_id"]
+            )
+            if release is None:
+                raise RuntimeError("staged plugin release is unavailable")
+            expected = (
+                str(release["plugin_id"]),
+                str(release["version"]),
+                str(release["build_digest"]),
+            )
+            loaded = {
+                (
+                    str(value.get("plugin_id") or ""),
+                    str(value.get("version") or ""),
+                    str(value.get("build_digest") or ""),
+                )
+                for value in getattr(self._runtime, "plugin_releases", ())
+            }
+            if expected not in loaded:
+                raise RuntimeError(
+                    "plugin is not installed with the exact staged version and build digest: "
+                    f"{expected[0]}@{expected[1]}"
+                )
+            return
+        loop = self.resolve(self._runtime.default_agent_id)
+        if loop is None:
+            raise RuntimeError("default Agent runtime is unavailable for preflight")
+        registry = loop.capabilities
+        if aggregate_type == "capability":
+            expected = self.store.get_capability_release_definition(
+                item["aggregate_id"], item["revision_id"]
+            )
+            if expected is None:
+                raise RuntimeError("staged capability definition is unavailable")
+            self._assert_capability_loaded(registry, expected)
+            return
+        if aggregate_type == "scenario":
+            scenario = self.store.get_scenario_version(
+                item["aggregate_id"], int(item["revision_id"])
+            )
+            if scenario is None:
+                raise RuntimeError("staged scenario definition is unavailable")
+            for reference in scenario.allowed_capabilities:
+                if reference.kind is CapabilityKind.SKILL:
+                    definition = self.store.get_capability_definition(
+                        reference.capability_id, reference.version
+                    )
+                    if (
+                        definition is None
+                        or CapabilityRef.from_dict(dict(definition["ref"])).identity
+                        != reference.identity
+                    ):
+                        raise RuntimeError(
+                            "scenario Skill is not active with the exact version: "
+                            f"{reference.capability_id}@{reference.version}"
+                        )
+                    continue
+                definition = registry.get_definition(
+                    reference.capability_id, reference.version
+                )
+                if definition is None or definition.ref.identity != reference.identity:
+                    raise RuntimeError(
+                        "scenario capability is not loaded with the exact plugin build: "
+                        f"{reference.capability_id}@{reference.version}"
+                    )
+            return
+        raise RuntimeError(f"unsupported configuration rollout type: {aggregate_type}")
+
+    @staticmethod
+    def _assert_capability_loaded(registry: Any, expected: dict[str, Any]) -> None:
+        reference = CapabilityRef.from_dict(dict(expected["ref"]))
+        for schema_name in ("input_schema", "output_schema", "configuration_schema"):
+            schema = dict(expected.get(schema_name) or {})
+            if schema:
+                Draft202012Validator.check_schema(schema)
+        if reference.kind is CapabilityKind.SKILL and str(
+            expected.get("adapter") or ""
+        ).startswith("prompt-skill:"):
+            return
+        definition = registry.get_definition(reference.capability_id, reference.version)
+        if definition is None or definition.ref.identity != reference.identity:
+            raise RuntimeError(
+                "capability is not loaded with the exact plugin build: "
+                f"{reference.capability_id}@{reference.version}"
+            )
+        actual = definition.to_dict()
+        for field in ("adapter", "input_schema", "output_schema", "permissions"):
+            if actual.get(field) != expected.get(field):
+                raise RuntimeError(
+                    f"loaded capability metadata mismatch for {reference.capability_id}: {field}"
+                )
 
     async def watch(self, *, poll_interval: float = 1.0) -> None:
         """Continuously reconcile database rollouts into this worker."""

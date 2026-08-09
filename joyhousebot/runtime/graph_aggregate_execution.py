@@ -79,9 +79,21 @@ async def execute_graph_aggregate(
             ),
             timeout_seconds=float(task.payload.get("timeout_seconds") or 300),
             max_turns=None,
-            max_input_tokens=None,
-            max_output_tokens=None,
-            max_cost_usd=None,
+            max_input_tokens=(
+                int(task.payload["max_input_tokens"])
+                if task.payload.get("max_input_tokens") is not None
+                else None
+            ),
+            max_output_tokens=(
+                int(task.payload["max_output_tokens"])
+                if task.payload.get("max_output_tokens") is not None
+                else None
+            ),
+            max_cost_usd=(
+                float(task.payload["max_cost_usd"])
+                if task.payload.get("max_cost_usd") is not None
+                else None
+            ),
             permission_mode="default",
             allowed_tools=[],
             disallowed_tools=[],

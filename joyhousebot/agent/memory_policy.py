@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from joyhousebot.domain.memory import memory_layer_for_path
+
 _LAYER_DEFAULTS: dict[str, dict[str, Any]] = {
     "working": {"read": True, "write": False, "persist": False},
     "session": {"read": True, "write": False, "persist": True},
@@ -106,19 +108,7 @@ class EffectiveMemoryPolicy:
 
     @staticmethod
     def layer_for_path(path: str) -> str:
-        clean = str(path or "").replace("\\", "/").lstrip("/")
-        name = clean.rsplit("/", 1)[-1]
-        if name == "PROFILE.md":
-            return "profile"
-        if name == "MEMORY.md":
-            return "long_term"
-        if name == "HISTORY.md" or name.endswith(".md") and len(name) == 13:
-            return "episodic"
-        if name == ".abstract":
-            return "episodic"
-        if clean.startswith("agent/"):
-            return "agent"
-        return "long_term"
+        return memory_layer_for_path(path)
 
     def allows_path(self, path: str, operation: str, *, direct: bool = False) -> bool:
         layer = self.layer_for_path(path)

@@ -146,11 +146,16 @@ class RequestCoordinationMixin:
         )
         await asyncio.to_thread(
             self.store.add_runtime_artifact,
-            artifact_id=f"{record.run_id}:plan",
+            artifact_id=f"{record.run_id}:plan:{record.lease_version}",
             run_id=record.run_id,
             name="coordinator-plan",
             media_type="application/json",
             content=plan,
+            provenance={
+                "worker_id": self.worker_id,
+                "lease_version": record.lease_version,
+                "phase": "planning",
+            },
         )
         selected_scenario = next(
             (item for item in scenarios if item.scenario_id == plan.get("scenario_id")),

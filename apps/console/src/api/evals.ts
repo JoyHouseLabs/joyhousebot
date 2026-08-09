@@ -21,10 +21,32 @@ export interface EvalRun {
   target_id: string
   target_revision_id: string
   status: string
-  metrics: Record<string, number>
+  metrics: Record<string, number | null | Record<string, unknown>>
   results: Array<Record<string, unknown>>
+  execution_job?: {
+    status: string
+    attempt: number
+    max_attempts: number
+    lease_owner?: string | null
+    error?: Record<string, unknown> | null
+    available_at?: string
+  } | null
   created_at: string
   completed_at?: string | null
+}
+
+export interface EvalSchedule {
+  policy_id: string
+  suite_id: string
+  suite_version: number
+  target_type: string
+  target_id: string
+  target_revision_id: string
+  cadence_seconds: number
+  enabled: boolean
+  execution_configuration: Record<string, unknown>
+  next_run_at: string
+  last_eval_run_id?: string | null
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -60,6 +82,22 @@ export async function recordEvalObservation(evalRunId: string, value: Record<str
 
 export async function finalizeEvalRun(evalRunId: string): Promise<EvalRun> {
   return request(`/eval-runs/${encodeURIComponent(evalRunId)}/finalize`, { method: 'POST' })
+}
+
+export async function executeEvalRun(evalRunId: string, value: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return request(`/eval-runs/${encodeURIComponent(evalRunId)}/execute`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+  })
+}
+
+export async function listEvalSchedules(): Promise<EvalSchedule[]> {
+  return (await request<{ items: EvalSchedule[] }>('/eval-schedules')).items
+}
+
+export async function saveEvalSchedule(value: Record<string, unknown>): Promise<EvalSchedule> {
+  return request(`/eval-schedules/${encodeURIComponent(String(value.policy_id))}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+  })
 }
 
 export async function saveReleaseGate(targetType: string, targetId: string, revisionId: string, value: Record<string, unknown>): Promise<Record<string, unknown>> {

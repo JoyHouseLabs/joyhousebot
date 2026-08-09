@@ -15,6 +15,11 @@ class Principal:
     permissions: tuple[str, ...] = ()
     token_scopes: tuple[str, ...] = ("*",)
     token_type: str = "session"
+    # The authenticated administrator behind a user-scoped request.  This is
+    # intentionally separate from ``user_id``: application services scope
+    # personal data by ``user_id``, while audit records keep using ``subject``
+    # and can expose the human operator through this field.
+    actor_user_id: str | None = None
 
     def can(self, permission: str) -> bool:
         # Shared grant semantics (exact + "namespace.*" + "*") live in

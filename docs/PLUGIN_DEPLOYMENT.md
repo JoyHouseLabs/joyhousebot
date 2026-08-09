@@ -18,6 +18,21 @@ Connector，通过固定、受白名单保护的 HTTP origin 调用 Smart Study 
 - 连接依赖、数据分级、最小权限和成本策略；
 - 健康检查，只检查配置与可执行节点，不能在常规 health read 中发起搜索或泄露凭据。
 
+Manifest 必须声明 `runtime_api_version=v1` 和执行隔离策略；生产发布还应提供制品 URI、签名/签名键引用
+与 SBOM。Runtime 会冻结 Manifest SHA-256 以及 Agent、Channel、Connector、Event Trigger、Knowledge
+Provider、MCP Server、Projection、Scenario、Skill、Tool、Workflow 的完整组件目录。组件版本不可原地
+改写。
+
+发现/安装不是生效。标准状态为：
+
+```text
+discovered → staged → Worker exact version/build preheat ACK → active
+                                      └─ failure: previous active remains
+```
+
+控制台插件详情可提交 discovered 版本；平台治理页面负责查看 rollout、人工批准、重试与安全回滚。同一
+插件只有一个 active 版本。回滚也必须经过新的 Worker ACK rollout，不能直接修改数据库状态。
+
 `DINQ_PLUGIN_BUILD_DIGEST` 是 Dinq 部署时传入的实际制品摘要。未设置时仅使用醒目的开发默认值，不能
 作为生产发布证明。上线流程应先构建 wheel/image、计算其 SHA-256、再以同一 digest 发布插件和启动
 Worker。
@@ -30,8 +45,9 @@ Worker。
    本地检索能力使用 `DINQ_LOCAL_SEARCH_URL`（默认 `http://127.0.0.1:8200/search`）和
    `DINQ_LOCAL_SEARCH_ALLOWED_HOSTS`。后者是逗号分隔的服务 DNS/IP 白名单；默认只允许 loopback，
    Tool 输入永远不能改变目标地址。
-3. 执行 `python -m dinq_plugin.discover.seed`。它只发布 Dinq Capability、Skill 和新版 Scenario；所有
-   Scenario 任务持久化完整 CapabilityRef，绝不按名称选择最新 Tool。
+3. 执行 `python -m dinq_plugin.discover.seed`。它只发现并登记 Dinq Capability、Skill 和新版 Scenario；
+   再从插件控制面提交发布并等待 Worker ACK。所有 Scenario 任务持久化完整 CapabilityRef，绝不按名称
+   选择最新 Tool。
 4. 对 Dinq 服务部署，再显式执行 `python -m dinq_plugin.discover.bootstrap`。它在上述已发布 Catalog
    基础上创建当前版本的 `main-coordinator` Revision，固定 `dinq.discover@<version> + build_digest` 并只授予 `dinq.*`。
    该命令是部署决策，普通 Joyhousebot 安装或仅安装插件时绝不会自动提升业务权限。
@@ -50,6 +66,10 @@ Worker。
 页面中通用渲染；点击后只是把业务提示、目标 Agent 和 Scenario 线索带入在线试用，仍经由正常的
 Coordinator 路由、追问、权限校验和 Run 审计执行。这样通用 Joyhousebot 安装不会因某个业务插件而被
 耦合，Dinq 环境也能明确审计“谁启用了哪些业务权限”。
+
+Dinq 人才搜索、业务 Run 工作台和投影 API 客户端由 `dinq-plugin/apps/console-extension/` 保存和维护。
+Joyhousebot 核心 Console 不注册 Dinq 导航或路由。插件专属 UI 只有在通用扩展契约定义清楚后才能由
+插件声明并挂载；在此之前，标准入口是插件中心的 Quickstart、Agent 试用和运行中心。
 
 ## 插件 Schema Migration
 

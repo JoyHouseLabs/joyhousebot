@@ -153,7 +153,8 @@ class ChannelRepository:
         query = f"""INSERT INTO channel_outbox
                 (outbound_id,user_id,channel,chat_id,content,reply_to,media,metadata,
                  request_id,tracker_id,available_at_ms,created_at_ms,updated_at_ms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,{now_expr},{now_expr},{now_expr})"""
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,{now_expr},{now_expr},{now_expr})
+                ON CONFLICT(outbound_id) DO NOTHING"""
         with self._connection() as connection:
             connection.execute(query, values)
         return outbound_id
@@ -163,6 +164,7 @@ class ChannelRepository:
         metadata = dict(getattr(message, "metadata", {}) or {})
         return self.enqueue(
             {
+                "id": metadata.get("id"),
                 "user_id": metadata.get("user_id"),
                 "channel": message.channel,
                 "chat_id": message.chat_id,
@@ -231,6 +233,10 @@ class ChannelRepository:
             now_ms = int(now_row["now_ms"])
             attempt = int(row["attempt"]) + (0 if success else 1)
             status = "sent" if success else ("dead" if attempt >= max_attempts else "pending")
+            metadata = row["metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            occurrence_id = str((metadata or {}).get("schedule_occurrence_id") or "")
             delivery_values = (
                 uuid.uuid4().hex,
                 outbound_id,
@@ -265,6 +271,15 @@ class ChannelRepository:
                         available_at_ms={p},lease_owner=NULL,lease_until_ms=NULL,updated_at_ms={p}
                         WHERE outbound_id={p}""",
                     (attempt, error, available_at_ms, now_ms, outbound_id),
+                )
+            if occurrence_id and connection.execute(
+                "SELECT to_regclass('schedule_occurrences') AS table_name"
+            ).fetchone()["table_name"]:
+                connection.execute(
+                    """UPDATE schedule_occurrences SET delivery_status=%s,
+                       delivery_error=%s,delivered_at_ms=CASE WHEN %s THEN %s ELSE NULL END
+                       WHERE occurrence_id=%s""",
+                    (status, error, success, now_ms, occurrence_id),
                 )
         return status, attempt
 

@@ -53,3 +53,43 @@ class PostgresRunCancelMixin:
             if cur.rowcount:
                 self._notify(conn, run_id)
             return cur.rowcount == 1
+
+    def reset_runtime_graph(self, run_id: str) -> bool:
+        """Resume a Graph without exposing a queued Run with stale terminal Tasks."""
+        with self._pool.connection() as conn, conn.transaction():
+            resumed = conn.execute(
+                """UPDATE runtime_runs SET status='queued', result=NULL, error=NULL,
+                       started_at=NULL, finished_at=NULL, lease_owner=NULL,
+                       lease_expires_at=NULL, cancel_requested_at=NULL,
+                       cancel_reason=NULL, updated_at=clock_timestamp()
+                   WHERE run_id=%s AND kind='graph'
+                     AND status IN ('failed','cancelled','timed_out')
+                   RETURNING run_id""",
+                (run_id,),
+            ).fetchone()
+            if resumed is None:
+                return False
+            conn.execute(
+                """UPDATE runtime_tasks t SET status=CASE WHEN EXISTS(
+                           SELECT 1 FROM runtime_task_dependencies d
+                           WHERE d.task_id=t.task_id
+                       ) THEN 'blocked' ELSE 'queued' END,
+                       result=CASE
+                           WHEN t.payload->>'node_type' IN ('foreach','bounded_loop')
+                                AND EXISTS(SELECT 1 FROM runtime_tasks child
+                                    WHERE child.parent_task_id=t.task_id)
+                           THEN t.result ELSE NULL END,
+                       error=NULL,attempt=0,available_at=clock_timestamp(),
+                       lease_owner=NULL,lease_expires_at=NULL,started_at=NULL,
+                       finished_at=NULL,updated_at=clock_timestamp()
+                   WHERE run_id=%s AND status!='completed'""",
+                (run_id,),
+            )
+            self._audit(
+                conn,
+                run_id=run_id,
+                stage="store.graph.resumed",
+                message="Graph Run and incomplete Tasks reset atomically",
+            )
+            self._notify(conn, run_id)
+            return True

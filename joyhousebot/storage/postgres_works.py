@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from joyhousebot.storage.json_codec import Jsonb
-from joyhousebot.storage.postgres_work_rows import content_hash, share_row
+from joyhousebot.storage.postgres_work_records import PostgresWorkRecordStoreMixin
+from joyhousebot.storage.postgres_work_rows import share_row
 
 
-class PostgresWorkStoreMixin:
+class PostgresWorkStoreMixin(PostgresWorkRecordStoreMixin):
     def migrate_works(self) -> None:
         ddl = """
         CREATE TABLE IF NOT EXISTS works (
@@ -100,6 +101,23 @@ class PostgresWorkStoreMixin:
                 ddl=ddl,
                 description="versioned works, collaborators, shares, and access audit",
             )
+            evidence_ddl = """
+            ALTER TABLE work_versions
+                ADD COLUMN IF NOT EXISTS source_artifact_sha256 TEXT NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS source_object_version TEXT NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS evidence_manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+                ADD COLUMN IF NOT EXISTS evidence_manifest_sha256 TEXT NOT NULL DEFAULT '';
+            UPDATE work_versions SET source_artifact_sha256=content_sha256
+                WHERE source_artifact_sha256='';
+            """
+            conn.execute(evidence_ddl)
+            self._record_migration(
+                conn,
+                name="works",
+                version=2,
+                ddl=evidence_ddl,
+                description="freeze Artifact provenance and execution evidence per Work version",
+            )
 
     def create_work_from_artifact(self, *, value: dict[str, Any]) -> dict[str, Any]:
         with self._pool.connection() as conn, conn.transaction():
@@ -123,6 +141,9 @@ class PostgresWorkStoreMixin:
             ).fetchone()
             if artifact is None:
                 raise ValueError("source artifact not found for owner")
+            digest, object_version, evidence, evidence_sha256 = self._artifact_snapshot(
+                conn, artifact
+            )
             work = conn.execute(
                 """INSERT INTO works
                        (work_id,owner_user_id,public_slug,title,description,
@@ -141,8 +162,10 @@ class PostgresWorkStoreMixin:
             conn.execute(
                 """INSERT INTO work_versions
                        (work_id,version,source_run_id,source_artifact_id,media_type,
-                        content,uri,content_sha256,change_note,created_by)
-                   VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        content,uri,content_sha256,source_artifact_sha256,
+                        source_object_version,evidence_manifest,evidence_manifest_sha256,
+                        change_note,created_by)
+                   VALUES (%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
                     value["work_id"],
                     artifact["run_id"],
@@ -150,7 +173,11 @@ class PostgresWorkStoreMixin:
                     artifact["media_type"],
                     Jsonb(artifact["content"]) if artifact["content"] is not None else None,
                     artifact["uri"],
-                    content_hash(artifact["content"], artifact["uri"]),
+                    digest,
+                    digest,
+                    object_version,
+                    Jsonb(evidence),
+                    evidence_sha256,
                     value.get("change_note", "Initial version"),
                     value["created_by"],
                 ),
@@ -193,12 +220,17 @@ class PostgresWorkStoreMixin:
             ).fetchone()
             if artifact is None:
                 raise ValueError("source artifact not found for owner")
+            digest, object_version, evidence, evidence_sha256 = self._artifact_snapshot(
+                conn, artifact
+            )
             version = int(work["current_version"]) + 1
             conn.execute(
                 """INSERT INTO work_versions
                        (work_id,version,source_run_id,source_artifact_id,media_type,
-                        content,uri,content_sha256,change_note,created_by)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        content,uri,content_sha256,source_artifact_sha256,
+                        source_object_version,evidence_manifest,evidence_manifest_sha256,
+                        change_note,created_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
                     work_id,
                     version,
@@ -207,7 +239,11 @@ class PostgresWorkStoreMixin:
                     artifact["media_type"],
                     Jsonb(artifact["content"]) if artifact["content"] is not None else None,
                     artifact["uri"],
-                    content_hash(artifact["content"], artifact["uri"]),
+                    digest,
+                    digest,
+                    object_version,
+                    Jsonb(evidence),
+                    evidence_sha256,
                     value.get("change_note", ""),
                     value["created_by"],
                 ),
@@ -247,6 +283,20 @@ class PostgresWorkStoreMixin:
             )
             if status == "published" and int(work["current_version"]) < 1:
                 raise ValueError("work has no publishable version")
+            if status == "published":
+                publishable = conn.execute(
+                    """SELECT content,uri,content_sha256,source_object_version
+                       FROM work_versions WHERE work_id=%s AND version=%s""",
+                    (work_id, int(work["current_version"])),
+                ).fetchone()
+                if publishable is None or not str(publishable["content_sha256"] or ""):
+                    raise ValueError("work version lacks an immutable content digest")
+                if (
+                    publishable["content"] is None
+                    and publishable["uri"]
+                    and not str(publishable["source_object_version"] or "")
+                ):
+                    raise ValueError("URI work version lacks a frozen object version")
             if visibility == "public" and classification != "public":
                 raise ValueError("public works require public data classification")
             if visibility == "unlisted" and classification in {"confidential", "restricted"}:
@@ -489,7 +539,6 @@ class PostgresWorkStoreMixin:
             }
             for row in rows
         ]
-
     def resolve_public_work(
         self,
         *,
@@ -566,79 +615,3 @@ class PostgresWorkStoreMixin:
             }
             for row in rows
         ]
-
-    @staticmethod
-    def _work_audit(
-        conn: Any,
-        *,
-        audit_id: str,
-        work_id: str,
-        event_type: str,
-        actor_id: str,
-        data: dict[str, Any],
-        version: int | None = None,
-        share_id: str | None = None,
-    ) -> None:
-        conn.execute(
-            """INSERT INTO work_access_audit
-                   (audit_id,work_id,version,share_id,event_type,actor_id,data)
-               VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-            (audit_id, work_id, version, share_id, event_type, actor_id, Jsonb(data)),
-        )
-
-    def _work(
-        self,
-        conn: Any,
-        row: Any,
-        *,
-        include_content: bool,
-        version: int | None = None,
-    ) -> dict[str, Any]:
-        from joyhousebot.storage.postgres_store import _iso
-
-        selected_version = int(version or row["current_version"])
-        version_row = conn.execute(
-            "SELECT * FROM work_versions WHERE work_id=%s AND version=%s",
-            (row["work_id"], selected_version),
-        ).fetchone()
-        value = {
-            "work_id": str(row["work_id"]),
-            "owner_user_id": str(row["owner_user_id"]),
-            "public_slug": str(row["public_slug"]),
-            "title": str(row["title"]),
-            "description": str(row["description"]),
-            "status": str(row["status"]),
-            "visibility": str(row["visibility"]),
-            "data_classification": str(row["data_classification"]),
-            "current_version": int(row["current_version"]),
-            "published_version": (
-                int(row["published_version"]) if row["published_version"] else None
-            ),
-            "metadata": dict(row["metadata"] or {}),
-            "created_at": _iso(row["created_at"]),
-            "updated_at": _iso(row["updated_at"]),
-            "published_at": _iso(row["published_at"]),
-            "archived_at": _iso(row["archived_at"]),
-            "version": self._version(version_row, include_content=include_content),
-        }
-        return value
-
-    @staticmethod
-    def _version(row: Any, *, include_content: bool) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        from joyhousebot.storage.postgres_store import _iso
-
-        return {
-            "work_id": str(row["work_id"]),
-            "version": int(row["version"]),
-            "source_run_id": str(row["source_run_id"]),
-            "source_artifact_id": str(row["source_artifact_id"]),
-            "media_type": str(row["media_type"]),
-            "content": row["content"] if include_content else None,
-            "uri": row["uri"] if include_content else None,
-            "content_sha256": str(row["content_sha256"]),
-            "change_note": str(row["change_note"]),
-            "created_by": str(row["created_by"]),
-            "created_at": _iso(row["created_at"]),
-        }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 import uuid
 import zlib
@@ -239,8 +240,24 @@ class ChannelManager:
         if self.repository is None:
             return None
         metadata = dict(message.metadata or {})
+        outbound_id = str(
+            metadata.get("_runtime_outbound_id") or metadata.get("id") or ""
+        ).strip()
+        if not outbound_id and (message.request_id or metadata.get("run_id")):
+            identity = "\x1f".join(
+                (
+                    message.channel,
+                    message.chat_id,
+                    str(message.request_id or ""),
+                    str(metadata.get("run_id") or ""),
+                    str(message.reply_to or ""),
+                    message.content,
+                )
+            )
+            outbound_id = f"message:{hashlib.sha256(identity.encode()).hexdigest()}"
         return self.repository.enqueue(
             {
+                "id": outbound_id or None,
                 "user_id": metadata.get("user_id"),
                 "channel": message.channel,
                 "chat_id": message.chat_id,

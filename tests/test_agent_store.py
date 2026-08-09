@@ -124,6 +124,12 @@ def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> 
             build_digest="sha256:dinq-040",
         ).to_dict()
     )
+    store.stage_plugin_release(
+        "dinq.discover",
+        "0.4.0",
+        actor_id="test:trusted-fixture",
+        require_healthy_workers=False,
+    )
     store.save_agent_revision(definition, pinned)
     restored = store.get_agent_revision("researcher:v1")
     assert restored and restored.plugin_requirements == pinned.plugin_requirements
@@ -138,7 +144,10 @@ def test_draft_can_be_published_and_published_revision_is_immutable(
     assert store.get_agent_profile("researcher") is None
 
     published = store.publish_agent_revision(
-        "researcher", "researcher:v1", actor_id="admin-a"
+        "researcher",
+        "researcher:v1",
+        actor_id="admin-a",
+        require_healthy_workers=False,
     )
     assert published.revision.status == "published"
     assert published.definition.current_revision_id == "researcher:v1"
@@ -180,7 +189,9 @@ def test_agent_skill_binding_requires_published_skill(tmp_path: Path) -> None:
         priority=10,
         configuration={"depth": "high"},
     )
-    store.publish_agent_revision("researcher", revision.revision_id)
+    store.publish_agent_revision(
+        "researcher", revision.revision_id, require_healthy_workers=False
+    )
 
     with pytest.raises(ValueError, match="draft Agent revisions"):
         store.bind_agent_skill(
@@ -227,7 +238,9 @@ def test_run_snapshot_freezes_agent_revision_and_skill_bindings(tmp_path: Path) 
         model_policy={"primary": "test/model-v2"},
     )
     store.save_agent_revision(definition, second)
-    store.publish_agent_revision("researcher", "researcher:v2")
+    store.publish_agent_revision(
+        "researcher", "researcher:v2", require_healthy_workers=False
+    )
 
     frozen = store.get_run_execution_snapshot("run-snapshot")
     assert frozen is not None

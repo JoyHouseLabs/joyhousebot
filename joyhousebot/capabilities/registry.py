@@ -16,6 +16,7 @@ from joyhousebot.capabilities.tool_adapter import (
 from joyhousebot.contracts import CapabilityContext, OperationReconciliationResult
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
+    CapabilityRef,
     CapabilityResult,
     InvocationStatus,
 )
@@ -64,12 +65,30 @@ class _PluginTool(Tool):
                 str(error.get("message") or "plugin capability failed"),
                 retryable=bool(error.get("retryable", False)),
             )
+        side_effect = str(getattr(self._definition, "side_effect", "unknown") or "unknown")
+        write_operation = dict(result.operation or {})
+        if side_effect.strip().lower() not in {"none", "read"}:
+            receipt = result.write_receipt
+            if receipt is None:
+                raise ToolInvocationError(
+                    "WRITE_RECEIPT_REQUIRED",
+                    "side-effecting plugin capability must return a WriteReceipt",
+                )
+            if (
+                receipt.action_id != context.action_id
+                or receipt.idempotency_key != context.idempotency_key
+            ):
+                raise ToolInvocationError(
+                    "WRITE_IDENTITY_MISMATCH",
+                    "business write receipt does not match the frozen Runtime Action",
+                )
+            write_operation.update(receipt.to_dict())
         status = InvocationStatus(result.status)
         if isinstance(result.output, ToolOutput):
             return replace(
                 result.output,
                 status=status,
-                operation=result.operation or result.output.operation,
+                operation=write_operation or result.output.operation,
             )
         data = (
             {"content": result.output}
@@ -80,7 +99,7 @@ class _PluginTool(Tool):
             content=str(result.output or result.metadata.get("summary") or "accepted"),
             data=data,
             artifacts=tuple(item.to_dict() for item in result.artifacts),
-            operation=result.operation,
+            operation=write_operation or None,
             status=status,
         )
 
@@ -124,6 +143,8 @@ class _PluginTool(Tool):
             task_id=tool_context.task_id,
             agent_id=tool_context.agent_id,
             request_id=getattr(tool_context, "request_id", None),
+            action_id=getattr(tool_context, "action_id", None),
+            idempotency_key=getattr(tool_context, "idempotency_key", None),
             metadata=metadata,
         )
 
@@ -180,7 +201,7 @@ class CapabilityRegistry:
             if resolved is not None:
                 self.register_capability(definition, resolved[1])
             if self._store is not None and hasattr(definition, "to_dict"):
-                self._store.publish_capability(definition)
+                self._store.discover_capability_release(definition)
         self._sync_plugin_catalog()
 
     def _sync_plugin_catalog(self) -> None:
@@ -190,14 +211,20 @@ class CapabilityRegistry:
         definitions = self.plugins.list_capabilities()
         for manifest in self.plugins.manifests():
             self._store.upsert_plugin_release(manifest.to_dict())
-            components = []
+            components = [
+                item.to_dict() for item in self.plugins.list_components(manifest.plugin_id)
+            ]
+            component_ids = {item["component_id"] for item in components}
             for definition in definitions:
                 origin = getattr(definition, "origin", {}) or {}
                 if origin.get("plugin_id") != manifest.plugin_id:
                     continue
+                component_id = f"{definition.ref.kind.value}:{definition.ref.capability_id}"
+                if component_id in component_ids:
+                    raise ValueError(f"duplicate plugin component: {component_id}")
                 components.append(
                     {
-                        "component_id": f"{definition.ref.kind.value}:{definition.ref.capability_id}",
+                        "component_id": component_id,
                         "component_type": str(definition.ref.kind.value),
                         "name": str(definition.name),
                         "description": str(definition.description),
@@ -215,7 +242,9 @@ class CapabilityRegistry:
                         },
                     }
                 )
-            self._store.sync_plugin_components(manifest.plugin_id, manifest.version, components)
+            self._store.sync_plugin_components(
+                manifest.plugin_id, manifest.version, components, replace=True
+            )
 
     def register_capability(self, definition: Any, handler: Any) -> None:
         self.plugins.register_capability(definition, handler)
@@ -236,9 +265,10 @@ class CapabilityRegistry:
         tool: Tool,
         *,
         optional: bool = False,
+        version: str | None = None,
         definition: CapabilityDefinition | None = None,
     ) -> None:
-        adapter = ToolCapabilityAdapter(tool, definition=definition)
+        adapter = ToolCapabilityAdapter(tool, version=version, definition=definition)
         self._adapters[tool.name] = adapter
         self._versioned_adapters[(tool.name, str(adapter.definition.ref.version))] = adapter
         if optional:
@@ -246,18 +276,24 @@ class CapabilityRegistry:
         else:
             self._optional.discard(tool.name)
         if self._store is not None:
-            self._store.publish_capability(adapter.definition)
+            if adapter.definition.ref.plugin_id == "joyhousebot.core":
+                self._store.bootstrap_core_capability(adapter.definition)
+            else:
+                self._store.discover_capability_release(adapter.definition)
 
     def get_tool(self, name: str, version: str | None = None) -> Tool | None:
-        adapter = (
-            self._versioned_adapters.get((name, version))
-            if version is not None
-            else self._adapters.get(name)
-        )
-        return adapter.tool if adapter and self._enabled(name) else None
+        adapter = self._resolve_adapter(name, version)
+        return adapter.tool if adapter and self._enabled(name, version) else None
 
     def has(self, name: str, version: str | None = None) -> bool:
         return self.get_tool(name, version) is not None
+
+    def get_definition(
+        self, name: str, version: str | None = None
+    ) -> CapabilityDefinition | None:
+        """Return the exact locally loaded definition for rollout preflight."""
+        adapter = self._resolve_adapter(name, version)
+        return adapter.definition if adapter is not None else None
 
     def get_tool_invocation_policy(
         self, name: str, version: str | None = None
@@ -268,11 +304,7 @@ class CapabilityRegistry:
         accidentally turn a write-capability into a concurrent operation.
         Unknown tools deliberately resolve to a sequential policy.
         """
-        adapter = (
-            self._versioned_adapters.get((name, version))
-            if version is not None
-            else self._adapters.get(name)
-        )
+        adapter = self._resolve_adapter(name, version)
         if adapter is None:
             return {"mode": "sequential", "max_concurrent": 1, "idempotent": False, "side_effect": "unknown"}
         definition = adapter.definition
@@ -285,17 +317,20 @@ class CapabilityRegistry:
 
     @property
     def tool_names(self) -> list[str]:
-        return [name for name in self._adapters if self._enabled(name)]
+        names = {name for name, _version in self._versioned_adapters}
+        return sorted(name for name in names if self._resolve_adapter(name) and self._enabled(name))
 
     def get_tool_definitions(
         self, context: ToolExecutionContext | None = None
     ) -> list[dict[str, Any]]:
-        return [
-            adapter.tool.to_schema()
-            for name, adapter in self._adapters.items()
-            if self._enabled(name)
-            and (context is None or self._is_authorized(adapter, context))
-        ]
+        definitions = []
+        for name in self.tool_names:
+            adapter = self._resolve_adapter(name)
+            if adapter is not None and (
+                context is None or self._is_authorized(adapter, context)
+            ):
+                definitions.append(adapter.tool.to_schema())
+        return definitions
 
     async def invoke_tool(
         self,
@@ -307,11 +342,7 @@ class CapabilityRegistry:
         version: str | None = None,
         **kwargs: Any,
     ) -> CapabilityResult:
-        adapter = (
-            self._versioned_adapters.get((name, version))
-            if version is not None
-            else self._adapters.get(name)
-        )
+        adapter = self._resolve_adapter(name, version)
         if adapter is None:
             return CapabilityResult.failed(
                 f"inv_{tool_call_id or 'unknown'}",
@@ -322,7 +353,7 @@ class CapabilityRegistry:
                     else f"Capability '{name}' was not found"
                 ),
             )
-        if not self._enabled(name):
+        if not self._enabled(name, version):
             return CapabilityResult.failed(
                 f"inv_{tool_call_id or 'unknown'}",
                 code="CAPABILITY_DISABLED",
@@ -342,9 +373,34 @@ class CapabilityRegistry:
             **kwargs,
         )
 
-    def _enabled(self, name: str) -> bool:
+    def _resolve_adapter(
+        self, name: str, version: str | None = None
+    ) -> ToolCapabilityAdapter | None:
+        if version is not None:
+            return self._versioned_adapters.get((name, version))
+        if self._store is not None and hasattr(self._store, "get_capability_definition"):
+            active = self._store.get_capability_definition(name)
+            if active is None:
+                return None
+            ref = dict(active.get("ref") or {})
+            return self._versioned_adapters.get((name, str(ref.get("version") or "")))
+        return self._adapters.get(name)
+
+    def _enabled(self, name: str, version: str | None = None) -> bool:
         if name in self._optional and name not in self._allowlist:
             return False
+        if self._store is not None and hasattr(self._store, "get_capability_definition"):
+            published = self._store.get_capability_definition(name, version)
+            adapter = self._resolve_adapter(name, version)
+            if published is None or adapter is None:
+                return False
+            try:
+                if adapter.definition.ref.identity != CapabilityRef.from_dict(
+                    dict(published["ref"])
+                ).identity:
+                    return False
+            except (KeyError, TypeError, ValueError):
+                return False
         return bool(self._runtime_settings(name).get("enabled", True))
 
     @staticmethod

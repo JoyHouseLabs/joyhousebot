@@ -1,11 +1,11 @@
 <template>
-  <div v-if="target" class="impersonation-chip active" role="status">
+  <div v-if="!isLoginPage && target" class="impersonation-chip active" role="status">
     <span class="dot" aria-hidden="true"></span>
-    <span>代操作中：<strong>{{ target }}</strong>（所有请求以该用户身份执行，后端逐条审计）</span>
+    <span>当前个人空间：<strong>{{ target }}</strong>（个人数据请求按此 user_id 隔离）</span>
     <button type="button" @click="exit">退出代操作</button>
   </div>
-  <button v-else type="button" class="impersonation-chip entry" title="以指定用户身份代操作（需 operator 凭据，后端逐条审计）" @click="enter">
-    代操作…
+  <button v-else-if="!isLoginPage" type="button" class="impersonation-chip entry" title="切换当前操作的个人 user_id" @click="enter">
+    切换 user_id…
   </button>
 </template>
 
@@ -16,9 +16,10 @@ import { clearImpersonationTarget, getImpersonationTarget, setImpersonationTarge
 // 显式代操作入口：默认关闭，操作员主动输入目标用户后才发送
 // X-Impersonate-User-ID。切换后整页刷新，保证所有视图按新身份重新拉取。
 const target = ref<string | null>(getImpersonationTarget())
+const isLoginPage = window.location.pathname.endsWith('/login')
 
 function enter() {
-  const input = window.prompt('输入要代操作的 user_id（留空取消）：', '')
+  const input = window.prompt('输入要操作的个人 user_id（留空取消）：', target.value || '')
   const normalized = (input ?? '').trim()
   if (!normalized) return
   setImpersonationTarget(normalized)
@@ -80,5 +81,17 @@ function exit() {
 }
 .impersonation-chip.active button:hover {
   background: #fde68a;
+}
+@media (max-width: 920px) {
+  .impersonation-chip {
+    right: 14px;
+    bottom: 78px;
+  }
+  .impersonation-chip.active {
+    left: 14px;
+    max-width: calc(100vw - 28px);
+    flex-wrap: wrap;
+    border-radius: 14px;
+  }
 }
 </style>

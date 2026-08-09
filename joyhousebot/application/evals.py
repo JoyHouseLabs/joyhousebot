@@ -200,8 +200,17 @@ class EvalService:
         thresholds = dict(value.get("thresholds") or {})
         min_pass_rate = float(thresholds.get("min_pass_rate", 1.0))
         min_average = float(thresholds.get("min_average_score", 0.0))
+        max_total_cost = thresholds.get("max_total_cost_usd")
+        max_p95_latency = thresholds.get("max_p95_latency_ms")
+        min_cost_coverage = float(thresholds.get("min_cost_coverage", 0.0))
         if not 0 <= min_pass_rate <= 1 or not 0 <= min_average <= 1:
             raise ValidationError("evaluation suite thresholds must be between 0 and 1")
+        if (
+            (max_total_cost is not None and float(max_total_cost) < 0)
+            or (max_p95_latency is not None and float(max_p95_latency) < 0)
+            or not 0 <= min_cost_coverage <= 1
+        ):
+            raise ValidationError("evaluation suite cost or latency thresholds are invalid")
         seen: set[str] = set()
         normalized_cases: list[dict[str, Any]] = []
         for case in cases:
@@ -243,6 +252,13 @@ class EvalService:
             "thresholds": {
                 "min_pass_rate": min_pass_rate,
                 "min_average_score": min_average,
+                "max_total_cost_usd": (
+                    float(max_total_cost) if max_total_cost is not None else None
+                ),
+                "max_p95_latency_ms": (
+                    float(max_p95_latency) if max_p95_latency is not None else None
+                ),
+                "min_cost_coverage": min_cost_coverage,
             },
             "created_by": actor_id,
         }
@@ -340,6 +356,53 @@ class EvalService:
             limit=limit,
         )
 
+    async def save_schedule(
+        self, value: dict[str, Any], *, actor_id: str
+    ) -> dict[str, Any]:
+        policy_id = str(value.get("policy_id") or "").strip()
+        target_type = str(value.get("target_type") or "")
+        suite_id = str(value.get("suite_id") or "")
+        suite_version = int(value.get("suite_version") or 0)
+        cadence_seconds = int(value.get("cadence_seconds") or 0)
+        if (
+            not policy_id
+            or target_type not in _TARGET_TYPES
+            or not suite_id
+            or suite_version < 1
+            or not 60 <= cadence_seconds <= 31_536_000
+        ):
+            raise ValidationError("evaluation schedule identity or cadence is invalid")
+        configuration = dict(value.get("execution_configuration") or {})
+        max_concurrency = int(configuration.get("max_concurrency", 4))
+        timeout = float(configuration.get("case_timeout_seconds", 300))
+        if not 1 <= max_concurrency <= 16 or not 1 <= timeout <= 3600:
+            raise ValidationError("evaluation schedule execution limits are invalid")
+        try:
+            return await asyncio.to_thread(
+                self.store.upsert_eval_schedule_policy,
+                value={
+                    "policy_id": policy_id,
+                    "suite_id": suite_id,
+                    "suite_version": suite_version,
+                    "target_type": target_type,
+                    "target_id": str(value.get("target_id") or ""),
+                    "target_revision_id": str(value.get("target_revision_id") or ""),
+                    "cadence_seconds": cadence_seconds,
+                    "enabled": bool(value.get("enabled", True)),
+                    "execution_configuration": {
+                        "max_concurrency": max_concurrency,
+                        "case_timeout_seconds": timeout,
+                    },
+                    "next_run_at": value.get("next_run_at"),
+                    "created_by": actor_id,
+                },
+            )
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+
+    async def list_schedules(self) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self.store.list_eval_schedule_policies)
+
     async def save_release_gate(
         self, value: dict[str, Any], *, actor_id: str
     ) -> dict[str, Any]:
@@ -360,7 +423,16 @@ class EvalService:
                 raise ValidationError("release gate suite does not support target type")
             min_rate = float(requirement.get("min_pass_rate", 1.0))
             max_age = int(requirement.get("max_age_hours", 168))
-            if not 0 <= min_rate <= 1 or not 1 <= max_age <= 8760:
+            max_total_cost = requirement.get("max_total_cost_usd")
+            max_p95_latency = requirement.get("max_p95_latency_ms")
+            min_cost_coverage = float(requirement.get("min_cost_coverage", 0.0))
+            if (
+                not 0 <= min_rate <= 1
+                or not 1 <= max_age <= 8760
+                or (max_total_cost is not None and float(max_total_cost) < 0)
+                or (max_p95_latency is not None and float(max_p95_latency) < 0)
+                or not 0 <= min_cost_coverage <= 1
+            ):
                 raise ValidationError("release gate requirement limits are invalid")
             normalized.append(
                 {
@@ -368,6 +440,13 @@ class EvalService:
                     "suite_version": suite_version,
                     "min_pass_rate": min_rate,
                     "max_age_hours": max_age,
+                    "max_total_cost_usd": (
+                        float(max_total_cost) if max_total_cost is not None else None
+                    ),
+                    "max_p95_latency_ms": (
+                        float(max_p95_latency) if max_p95_latency is not None else None
+                    ),
+                    "min_cost_coverage": min_cost_coverage,
                     "require_automated": bool(
                         requirement.get("require_automated", False)
                     ),

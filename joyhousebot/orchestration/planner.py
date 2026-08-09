@@ -104,6 +104,21 @@ class ScenarioPlanner:
                     dependencies=[str(item) for item in raw.get("dependencies") or []],
                     timeout_seconds=float(raw.get("timeout_seconds") or 300),
                     max_attempts=int(raw.get("max_attempts") or 1),
+                    max_input_tokens=(
+                        int(raw["max_input_tokens"])
+                        if raw.get("max_input_tokens") is not None
+                        else None
+                    ),
+                    max_output_tokens=(
+                        int(raw["max_output_tokens"])
+                        if raw.get("max_output_tokens") is not None
+                        else None
+                    ),
+                    max_cost_usd=(
+                        float(raw["max_cost_usd"])
+                        if raw.get("max_cost_usd") is not None
+                        else None
+                    ),
                     capability=capability,
                     capability_input=_omit_none_object_values(dict(rendered_input)),
                     output_schema=(
@@ -139,6 +154,21 @@ class ScenarioPlanner:
             failure_policy=dict(scenario.execution_policy.get("failure_policy") or {}),
             aggregate=bool(scenario.execution_policy.get("aggregate", True)),
             aggregation_policy=dict(scenario.execution_policy.get("aggregation_policy") or {}),
+            max_input_tokens=(
+                int(scenario.execution_policy["max_input_tokens"])
+                if scenario.execution_policy.get("max_input_tokens") is not None
+                else None
+            ),
+            max_output_tokens=(
+                int(scenario.execution_policy["max_output_tokens"])
+                if scenario.execution_policy.get("max_output_tokens") is not None
+                else None
+            ),
+            max_cost_usd=(
+                float(scenario.execution_policy["max_cost_usd"])
+                if scenario.execution_policy.get("max_cost_usd") is not None
+                else None
+            ),
             idempotency_key=idempotency_key,
             request_id=request_id,
             tracker_id=tracker_id,

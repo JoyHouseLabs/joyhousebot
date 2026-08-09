@@ -24,6 +24,7 @@ from joyhousebot.api.dependencies import _bearer_token
 from joyhousebot.application.context import Principal, RequestContext
 from joyhousebot.application.runs import GraphTaskCommand
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.security.admin_auth import DEFAULT_DEVELOPMENT_ADMIN_USER
 from joyhousebot.utils.permissions import permission_granted
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -178,7 +179,7 @@ class MCPGateway:
             user_id = str(
                 headers.get("x-user-id")
                 or os.getenv("JOYHOUSEBOT_DEV_USER_ID")
-                or "local-dev"
+                or DEFAULT_DEVELOPMENT_ADMIN_USER
             ).strip()
             admin = await asyncio.to_thread(container.store.get_platform_admin, user_id)
             if admin is not None and admin.enabled:

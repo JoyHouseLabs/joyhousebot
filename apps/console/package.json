@@ -16,10 +16,12 @@
     "marked": "^15.0.12",
     "naive-ui": "^2.38.0",
     "pinia": "^2.1.0",
+    "qrcode": "^1.5.4",
     "vue": "^3.4.0",
     "vue-router": "^4.2.0"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^5.0.0",
     "concurrently": "^9.0.0",
     "typescript": "^5.3.0",

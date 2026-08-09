@@ -12,6 +12,7 @@ from uuid import uuid4
 from joyhousebot.application.permissions import normalize_permissions
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.platform_records import PlatformAdminRecord
+from joyhousebot.storage.postgres_admin_auth import PostgresAdminAuthStoreMixin
 
 _ROLES = {"admin", "operator", "viewer"}
 _TOKEN_TYPES = {"user", "service"}
@@ -27,7 +28,7 @@ def _normalize_token_scopes(scopes: list[str] | tuple[str, ...]) -> list[str]:
     return normalized
 
 
-class PostgresAdminStoreMixin:
+class PostgresAdminStoreMixin(PostgresAdminAuthStoreMixin):
     def migrate_admins(self) -> None:
         ddl = """
         CREATE TABLE IF NOT EXISTS platform_admins (
@@ -110,6 +111,66 @@ class PostgresAdminStoreMixin:
                 ddl=upgrade_ddl,
                 description="scoped and auditable user/service API tokens",
             )
+            auth_ddl = """
+            CREATE TABLE IF NOT EXISTS admin_login_credentials (
+                user_id TEXT PRIMARY KEY REFERENCES platform_admins(user_id) ON DELETE CASCADE,
+                password_hash TEXT NOT NULL,
+                must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until TIMESTAMPTZ,
+                last_login_at TIMESTAMPTZ,
+                password_changed_at TIMESTAMPTZ,
+                totp_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                totp_secret_ciphertext TEXT,
+                totp_pending_secret_ciphertext TEXT,
+                totp_pending_expires_at TIMESTAMPTZ,
+                totp_last_counter BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+            );
+            CREATE TABLE IF NOT EXISTS admin_auth_challenges (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES platform_admins(user_id) ON DELETE CASCADE,
+                kind TEXT NOT NULL DEFAULT 'totp_login',
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                CHECK (kind IN ('totp_login'))
+            );
+            CREATE INDEX IF NOT EXISTS ix_admin_auth_challenges_expiry
+                ON admin_auth_challenges(expires_at);
+            CREATE TABLE IF NOT EXISTS admin_auth_sessions (
+                session_id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL REFERENCES platform_admins(user_id) ON DELETE CASCADE,
+                expires_at TIMESTAMPTZ NOT NULL,
+                mfa_verified_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                last_used_at TIMESTAMPTZ,
+                revoked_at TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS ix_admin_auth_sessions_user
+                ON admin_auth_sessions(user_id,created_at DESC);
+            CREATE INDEX IF NOT EXISTS ix_admin_auth_sessions_active
+                ON admin_auth_sessions(token_hash,expires_at) WHERE revoked_at IS NULL;
+            CREATE TABLE IF NOT EXISTS admin_recovery_codes (
+                code_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES platform_admins(user_id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                used_at TIMESTAMPTZ
+            );
+            CREATE INDEX IF NOT EXISTS ix_admin_recovery_codes_user
+                ON admin_recovery_codes(user_id,used_at);
+            """
+            conn.execute(auth_ddl)
+            self._record_migration(
+                conn,
+                name="admins",
+                version=3,
+                ddl=auth_ddl,
+                description="administrator password, browser session, and TOTP authentication",
+            )
+
 
     def upsert_platform_admin(
         self,

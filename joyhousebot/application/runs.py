@@ -459,6 +459,9 @@ class RunService:
         failure_policy: dict[str, Any] | None = None,
         aggregate: bool = True,
         aggregation_policy: dict[str, Any] | None = None,
+        max_input_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+        max_cost_usd: float | None = None,
     ) -> Any:
         if not goal.strip() or not tasks:
             raise ValidationError("goal and tasks are required")
@@ -476,6 +479,9 @@ class RunService:
             failure_policy=dict(failure_policy or {}),
             aggregate=aggregate,
             aggregation_policy=dict(aggregation_policy or {}),
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            max_cost_usd=max_cost_usd,
             idempotency_key=context.idempotency_key,
             request_id=context.request_id,
             tracker_id=context.tracker_id,
@@ -490,6 +496,9 @@ class RunService:
                     name=item.name,
                     timeout_seconds=item.timeout_seconds,
                     max_attempts=item.max_attempts,
+                    max_input_tokens=item.max_input_tokens,
+                    max_output_tokens=item.max_output_tokens,
+                    max_cost_usd=item.max_cost_usd,
                     metadata=item.metadata,
                     capability=item.capability,
                     capability_input=item.capability_input,

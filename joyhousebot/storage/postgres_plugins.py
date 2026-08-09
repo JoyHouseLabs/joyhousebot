@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 
 from joyhousebot.storage.json_codec import Jsonb
@@ -32,7 +33,7 @@ class PostgresPluginStoreMixin:
             distribution_name TEXT NOT NULL DEFAULT '',
             build_digest TEXT NOT NULL DEFAULT '',
             manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
-            status TEXT NOT NULL DEFAULT 'active',
+            status TEXT NOT NULL DEFAULT 'discovered',
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             PRIMARY KEY(plugin_id, version)
@@ -82,6 +83,41 @@ class PostgresPluginStoreMixin:
                 ddl=ddl,
                 description="plugin release catalog and operational projections",
             )
+            governance = """
+            ALTER TABLE plugin_releases ALTER COLUMN status SET DEFAULT 'discovered';
+            WITH ranked AS (
+                SELECT plugin_id,version,
+                       row_number() OVER (
+                           PARTITION BY plugin_id ORDER BY updated_at DESC,version DESC
+                       ) AS position
+                FROM plugin_releases WHERE status='active'
+            )
+            UPDATE plugin_releases release SET status='retired'
+            FROM ranked WHERE release.plugin_id=ranked.plugin_id
+              AND release.version=ranked.version AND ranked.position>1;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_releases_one_active
+                ON plugin_releases(plugin_id) WHERE status='active';
+            """
+            conn.execute(governance)
+            self._record_migration(
+                conn,
+                name="plugins",
+                version=2,
+                ddl=governance,
+                description="discovered, staged, active, and retired plugin release states",
+            )
+            integrity = """
+            ALTER TABLE plugin_releases
+                ADD COLUMN IF NOT EXISTS manifest_sha256 TEXT NOT NULL DEFAULT '';
+            """
+            conn.execute(integrity)
+            self._record_migration(
+                conn,
+                name="plugins",
+                version=3,
+                ddl=integrity,
+                description="immutable plugin manifest integrity identity",
+            )
 
     def upsert_plugin_release(self, manifest: dict[str, Any]) -> None:
         value = dict(manifest)
@@ -90,9 +126,12 @@ class PostgresPluginStoreMixin:
         build_digest = str(value.get("build_digest") or "").strip()
         if not build_digest:
             raise ValueError("plugin release build_digest is required")
+        manifest_sha256 = sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         with self._pool.connection() as conn, conn.transaction():
             existing = conn.execute(
-                """SELECT build_digest FROM plugin_releases
+                """SELECT build_digest,manifest_sha256 FROM plugin_releases
                    WHERE plugin_id=%s AND version=%s FOR UPDATE""",
                 (plugin_id, version),
             ).fetchone()
@@ -100,25 +139,94 @@ class PostgresPluginStoreMixin:
                 raise ValueError(
                     "plugin release is immutable; publish a new version for a new build digest"
                 )
+            if existing is not None and str(existing["manifest_sha256"] or "") not in {
+                "",
+                manifest_sha256,
+            }:
+                raise ValueError(
+                    "plugin manifest is immutable; publish a new plugin version"
+                )
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO plugin_releases
+                       (plugin_id,version,name,description,distribution_name,build_digest,
+                        manifest_sha256,manifest,status)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'discovered')""",
+                    (
+                        plugin_id,
+                        version,
+                        str(value.get("name") or plugin_id),
+                        str(value.get("description") or ""),
+                        str(value.get("distribution_name") or ""),
+                        build_digest,
+                        manifest_sha256,
+                        Jsonb(value),
+                    ),
+                )
+            elif not str(existing["manifest_sha256"] or ""):
+                # One-time canonicalisation for releases discovered before
+                # manifest hashes became part of the control-plane schema.
+                conn.execute(
+                    """UPDATE plugin_releases SET name=%s,description=%s,
+                           distribution_name=%s,manifest_sha256=%s,manifest=%s,
+                           updated_at=clock_timestamp()
+                       WHERE plugin_id=%s AND version=%s""",
+                    (
+                        str(value.get("name") or plugin_id),
+                        str(value.get("description") or ""),
+                        str(value.get("distribution_name") or ""),
+                        manifest_sha256,
+                        Jsonb(value),
+                        plugin_id,
+                        version,
+                    ),
+                )
+
+    def stage_plugin_release(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        actor_id: str,
+        activation_mode: str = "automatic",
+        timeout_seconds: int = 300,
+        auto_rollback: bool = True,
+        require_healthy_workers: bool = True,
+    ) -> str:
+        with self._pool.connection() as conn, conn.transaction():
+            release = conn.execute(
+                """SELECT * FROM plugin_releases
+                   WHERE plugin_id=%s AND version=%s FOR UPDATE""",
+                (plugin_id, version),
+            ).fetchone()
+            if release is None:
+                raise ValueError("plugin release has not been discovered by a Worker")
+            if str(release["status"]) == "active":
+                raise ValueError("plugin release is already active")
             conn.execute(
-                """INSERT INTO plugin_releases
-                       (plugin_id,version,name,description,distribution_name,build_digest,manifest)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(plugin_id,version) DO UPDATE SET
-                       name=EXCLUDED.name,description=EXCLUDED.description,
-                       distribution_name=EXCLUDED.distribution_name,
-                       build_digest=EXCLUDED.build_digest,manifest=EXCLUDED.manifest,
-                       status='active',updated_at=clock_timestamp()""",
-                (
-                    plugin_id,
-                    version,
-                    str(value.get("name") or plugin_id),
-                    str(value.get("description") or ""),
-                    str(value.get("distribution_name") or ""),
-                    build_digest,
-                    Jsonb(value),
-                ),
+                """UPDATE plugin_releases SET status='staged',updated_at=clock_timestamp()
+                   WHERE plugin_id=%s AND version=%s""",
+                (plugin_id, version),
             )
+            rollout_id = self._create_configuration_rollout(
+                conn,
+                aggregate_type="plugin",
+                aggregate_id=plugin_id,
+                revision_id=version,
+                actor_id=actor_id,
+                activation_mode=activation_mode,
+                timeout_seconds=timeout_seconds,
+                auto_rollback=auto_rollback,
+                require_healthy_workers=require_healthy_workers,
+            )
+            conn.execute(
+                """INSERT INTO configuration_events
+                       (aggregate_type,aggregate_id,revision_id,event_type,actor_id)
+                   VALUES ('plugin',%s,%s,'publish.requested',%s)""",
+                (plugin_id, version, actor_id),
+            )
+            self._notify(conn, f"config:plugin:{plugin_id}")
+        return rollout_id
 
     def sync_plugin_components(
         self,
@@ -130,36 +238,66 @@ class PostgresPluginStoreMixin:
     ) -> None:
         with self._pool.connection() as conn, conn.transaction():
             component_ids = [str(item["component_id"]) for item in components]
-            if replace:
-                conn.execute(
-                    "DELETE FROM plugin_components WHERE plugin_id=%s AND plugin_version=%s"
-                    + (" AND NOT (component_id = ANY(%s))" if component_ids else ""),
-                    (plugin_id, plugin_version, component_ids)
-                    if component_ids
-                    else (plugin_id, plugin_version),
+            if len(component_ids) != len(set(component_ids)):
+                raise ValueError("plugin component ids must be unique within a release")
+            release = conn.execute(
+                """SELECT status FROM plugin_releases
+                   WHERE plugin_id=%s AND version=%s FOR UPDATE""",
+                (plugin_id, plugin_version),
+            ).fetchone()
+            if release is None:
+                raise ValueError("plugin release must be discovered before its components")
+            existing_rows = conn.execute(
+                """SELECT * FROM plugin_components
+                   WHERE plugin_id=%s AND plugin_version=%s FOR UPDATE""",
+                (plugin_id, plugin_version),
+            ).fetchall()
+            existing = {str(row["component_id"]): row for row in existing_rows}
+            if replace and existing and set(existing) != set(component_ids):
+                raise ValueError(
+                    "plugin component catalog is immutable; publish a new plugin version"
                 )
             for component in components:
                 value = dict(component)
+                component_id = str(value["component_id"])
+                comparable = {
+                    "component_type": str(value["component_type"]),
+                    "name": str(value.get("name") or component_id),
+                    "description": str(value.get("description") or ""),
+                    "reference_id": str(value.get("reference_id") or ""),
+                    "reference_version": str(value.get("reference_version") or ""),
+                    "metadata": dict(value.get("metadata") or {}),
+                }
+                prior = existing.get(component_id)
+                if prior is not None:
+                    stored = {
+                        "component_type": str(prior["component_type"]),
+                        "name": str(prior["name"]),
+                        "description": str(prior["description"]),
+                        "reference_id": str(prior["reference_id"]),
+                        "reference_version": str(prior["reference_version"]),
+                        "metadata": dict(_json(prior["metadata"], {})),
+                    }
+                    if stored != comparable:
+                        raise ValueError(
+                            "plugin component is immutable; publish a new plugin version"
+                        )
+                    continue
                 conn.execute(
                     """INSERT INTO plugin_components
                            (plugin_id,plugin_version,component_id,component_type,name,description,
                             reference_id,reference_version,metadata)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT(plugin_id,plugin_version,component_id) DO UPDATE SET
-                           component_type=EXCLUDED.component_type,name=EXCLUDED.name,
-                           description=EXCLUDED.description,reference_id=EXCLUDED.reference_id,
-                           reference_version=EXCLUDED.reference_version,
-                           metadata=EXCLUDED.metadata,updated_at=clock_timestamp()""",
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         plugin_id,
                         plugin_version,
-                        str(value["component_id"]),
-                        str(value["component_type"]),
-                        str(value.get("name") or value["component_id"]),
-                        str(value.get("description") or ""),
-                        str(value.get("reference_id") or ""),
-                        str(value.get("reference_version") or ""),
-                        Jsonb(dict(value.get("metadata") or {})),
+                        component_id,
+                        comparable["component_type"],
+                        comparable["name"],
+                        comparable["description"],
+                        comparable["reference_id"],
+                        comparable["reference_version"],
+                        Jsonb(comparable["metadata"]),
                     ),
                 )
 
@@ -167,7 +305,18 @@ class PostgresPluginStoreMixin:
         with self._pool.connection() as conn:
             rows = conn.execute(
                 """SELECT DISTINCT ON (plugin_id) * FROM plugin_releases
-                   WHERE status='active' ORDER BY plugin_id,updated_at DESC"""
+                   ORDER BY plugin_id,
+                     CASE status WHEN 'active' THEN 0 WHEN 'staged' THEN 1 ELSE 2 END,
+                     updated_at DESC"""
+            ).fetchall()
+        return [self._release_dict(row) for row in rows]
+
+    def list_plugin_release_versions(self, plugin_id: str) -> list[dict[str, Any]]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT * FROM plugin_releases WHERE plugin_id=%s
+                   ORDER BY updated_at DESC,version DESC""",
+                (plugin_id,),
             ).fetchall()
         return [self._release_dict(row) for row in rows]
 
@@ -177,16 +326,25 @@ class PostgresPluginStoreMixin:
         with self._pool.connection() as conn:
             if version:
                 row = conn.execute(
-                    """SELECT * FROM plugin_releases WHERE plugin_id=%s AND version=%s
-                       AND status='active'""",
+                    """SELECT * FROM plugin_releases WHERE plugin_id=%s AND version=%s""",
                     (plugin_id, version),
                 ).fetchone()
             else:
                 row = conn.execute(
-                    """SELECT * FROM plugin_releases WHERE plugin_id=%s AND status='active'
-                       ORDER BY updated_at DESC LIMIT 1""",
+                    """SELECT * FROM plugin_releases WHERE plugin_id=%s
+                       ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'staged' THEN 1 ELSE 2 END,
+                                updated_at DESC LIMIT 1""",
                     (plugin_id,),
                 ).fetchone()
+        return self._release_dict(row) if row else None
+
+    def get_active_plugin_release(self, plugin_id: str) -> dict[str, Any] | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT * FROM plugin_releases
+                   WHERE plugin_id=%s AND status='active'""",
+                (plugin_id,),
+            ).fetchone()
         return self._release_dict(row) if row else None
 
     @staticmethod
@@ -195,7 +353,9 @@ class PostgresPluginStoreMixin:
             "plugin_id": str(row["plugin_id"]), "version": str(row["version"]),
             "name": str(row["name"]), "description": str(row["description"]),
             "distribution_name": str(row["distribution_name"]),
-            "build_digest": str(row["build_digest"]), "manifest": dict(_json(row["manifest"], {})),
+            "build_digest": str(row["build_digest"]),
+            "manifest_sha256": str(row["manifest_sha256"]),
+            "manifest": dict(_json(row["manifest"], {})),
             "status": str(row["status"]), "created_at": _iso(row["created_at"]),
             "updated_at": _iso(row["updated_at"]),
         }
@@ -220,7 +380,7 @@ class PostgresPluginStoreMixin:
         ]
 
     def list_plugin_workers(self, plugin_id: str) -> list[dict[str, Any]]:
-        release = self.get_plugin_release(plugin_id)
+        release = self.get_active_plugin_release(plugin_id)
         values = []
         for worker in self.list_runtime_workers(limit=5000):
             plugin = next(

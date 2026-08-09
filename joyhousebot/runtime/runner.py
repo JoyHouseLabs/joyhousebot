@@ -39,12 +39,14 @@ class NativeAgentRuntime(
         worker_enabled: bool = True,
         scheduler_enabled: bool = True,
         maintenance_enabled: bool = False,
+        presence_enabled: bool | None = None,
         worker_name: str = "runtime",
         capabilities: dict[str, Any] | None = None,
         plugin_releases: list[dict[str, Any]] | None = None,
         projection_registry: Any | None = None,
         default_agent_id: str = "default",
         poll_interval_seconds: float = 0.2,
+        monitor_reconciler: Callable[..., Any] | None = None,
     ) -> None:
         self.agent = agent
         self.agent_resolver = agent_resolver
@@ -61,10 +63,16 @@ class NativeAgentRuntime(
         self.worker_enabled = worker_enabled
         self.scheduler_enabled = scheduler_enabled
         self.maintenance_enabled = maintenance_enabled
+        self.presence_enabled = (
+            bool(worker_enabled or scheduler_enabled)
+            if presence_enabled is None
+            else bool(presence_enabled)
+        )
         self.capabilities = capabilities or {"agent": True, "graph_task": True}
         self.plugin_releases = [dict(item) for item in (plugin_releases or [])]
         self.projection_registry = projection_registry
         self.default_agent_id = str(default_agent_id or "default").strip() or "default"
+        self.monitor_reconciler = monitor_reconciler
         self.task_worker_count = max(1, min(int(max_concurrent_runs or 4), 32))
         self.work_signal = RuntimeWorkSignal(
             store, fallback_poll_seconds=poll_interval_seconds
@@ -85,11 +93,14 @@ class NativeAgentRuntime(
                 return
             self._started = True
             self._closing = False
-            # API replicas use a submit-only runtime facade. They must not
-            # register as execution workers or scan/claim durable work.
-            if not self.worker_enabled and not self.scheduler_enabled:
+            # API replicas use a submit-only runtime facade. Channel workers
+            # do not execute Runs either, but they still need a leased cluster
+            # identity so operators can distinguish a live connector process
+            # from a configured-but-unowned Channel.
+            if not self.presence_enabled:
                 return
-            await self.work_signal.start()
+            if self.worker_enabled or self.scheduler_enabled:
+                await self.work_signal.start()
             register = getattr(self.store, "register_runtime_worker", None)
             if register is not None:
                 await asyncio.to_thread(
@@ -101,12 +112,18 @@ class NativeAgentRuntime(
                         "plugins": self.plugin_releases,
                     },
                 )
-            await self._scan_incomplete_runs()
             self._worker_tasks = []
             if self.worker_enabled or self.scheduler_enabled:
+                await self._scan_incomplete_runs()
                 self._worker_tasks.append(
                     asyncio.create_task(
                         self._runtime_coordinator_loop(), name="runtime-coordinator"
+                    )
+                )
+            else:
+                self._worker_tasks.append(
+                    asyncio.create_task(
+                        self._runtime_presence_loop(), name="runtime-presence"
                     )
                 )
             if self.worker_enabled:
@@ -134,9 +151,17 @@ class NativeAgentRuntime(
         await self.work_signal.close()
         await self.supervisor.close()
         unregister = getattr(self.store, "unregister_runtime_worker", None)
-        if unregister is not None:
+        if unregister is not None and self.presence_enabled:
             await asyncio.to_thread(unregister, self.worker_id)
         self._started = False
+
+    async def _runtime_presence_loop(self) -> None:
+        """Renew a non-executing role's PostgreSQL-backed presence lease."""
+        while not self._closing:
+            await asyncio.sleep(30)
+            heartbeat = getattr(self.store, "heartbeat_runtime_worker", None)
+            if heartbeat is not None:
+                await asyncio.to_thread(heartbeat, self.worker_id)
 
     async def _log(
         self,

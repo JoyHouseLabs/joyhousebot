@@ -34,6 +34,37 @@ class CreateRunRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GenerateWorkflowRequest(BaseModel):
+    """Ask an Agent to design or revise an executable Workflow draft."""
+
+    goal: str = Field(min_length=1, max_length=4000)
+    instruction: str = Field(default="", max_length=2000)
+    workflow_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    agent_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    base_graph: dict[str, Any] | None = None
+
+
+class SaveWorkflowRequest(BaseModel):
+    """Persist an immutable Workflow revision owned by the current user."""
+
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(default="", max_length=1000)
+    goal: str = Field(min_length=1, max_length=4000)
+    graph: dict[str, Any]
+    change_note: str = Field(default="", max_length=1000)
+    source_run_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+
+
+class PublishWorkflowRequest(BaseModel):
+    revision_id: str = Field(pattern=_ID_PATTERN)
+
+
+class ExecuteWorkflowRequest(BaseModel):
+    revision_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    input: str = Field(default="", max_length=4000)
+    preview: bool = False
+
+
 class ResolveRunInputRequest(BaseModel):
     input_request_id: str = Field(min_length=1, pattern=_ID_PATTERN)
     answers: dict[str, Any] = Field(min_length=1)
@@ -57,9 +88,49 @@ class ResolveMemoryCandidateRequest(BaseModel):
     note: str | None = Field(default=None, max_length=4000)
 
 
+class CreateKnowledgeBaseRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+
+
+class UpdateKnowledgeBaseRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    status: Literal["active", "archived"] | None = None
+
+
 class ReceiveGraphEventRequest(BaseModel):
     event_type: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     payload: Any
+
+
+class ReceiveWebhookEventRequest(BaseModel):
+    event_type: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+    payload: Any
+
+
+class CreateEventTriggerRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(default="default", pattern=_ID_PATTERN)
+    event_type_filter: str = Field(
+        default="*", min_length=1, max_length=128, pattern=r"^(\*|[A-Za-z0-9_.:-]+)$"
+    )
+    instruction: str = Field(min_length=1, max_length=4000)
+    session_mode: Literal["shared", "per_event"] = "shared"
+    session_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    enabled: bool = True
+
+
+class UpdateEventTriggerRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    agent_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    event_type_filter: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^(\*|[A-Za-z0-9_.:-]+)$"
+    )
+    instruction: str | None = Field(default=None, min_length=1, max_length=4000)
+    session_mode: Literal["shared", "per_event"] | None = None
+    session_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    enabled: bool | None = None
 
 
 class CreateRunFeedbackRequest(BaseModel):
@@ -144,7 +215,28 @@ class SaveAgentRevisionRequest(BaseModel):
         ),
     )
     output_policy: dict[str, Any] = Field(default_factory=dict)
+    monitor_policy: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Desired-state policy for a user-scoped managed Agent Monitor. "
+            "Set enabled=true to reconcile one standard Schedule per user after Agent use."
+        ),
+    )
     plugin_requirements: list[dict[str, str]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_monitor_policy(self) -> "SaveAgentRevisionRequest":
+        from joyhousebot.cron.managed_monitor import validate_managed_monitor_policy
+
+        self.monitor_policy = validate_managed_monitor_policy(self.monitor_policy)
+        return self
+
+
+class RolloutPolicyRequest(BaseModel):
+    activation_mode: Literal["automatic", "manual"] = "automatic"
+    timeout_seconds: int = Field(default=300, ge=10, le=86400)
+    auto_rollback: bool = True
+    require_healthy_workers: bool = True
 
 
 class SaveMCPServerRequest(BaseModel):
@@ -201,6 +293,7 @@ class PublishCapabilityRequest(BaseModel):
     cost_policy: dict[str, Any] = Field(default_factory=dict)
     configuration_schema: dict[str, Any] = Field(default_factory=dict)
     configuration: dict[str, Any] = Field(default_factory=dict)
+    rollout_policy: RolloutPolicyRequest = Field(default_factory=RolloutPolicyRequest)
 
 
 class SaveCapabilityRuntimeSettingsRequest(BaseModel):
@@ -269,6 +362,19 @@ class ExecuteEvalRunRequest(BaseModel):
     case_timeout_seconds: float = Field(default=300.0, ge=1, le=3600)
 
 
+class SaveEvalScheduleRequest(BaseModel):
+    policy_id: str = Field(pattern=_ID_PATTERN)
+    suite_id: str = Field(pattern=_ID_PATTERN)
+    suite_version: int = Field(ge=1)
+    target_type: Literal["agent", "scenario", "capability"]
+    target_id: str = Field(pattern=_ID_PATTERN)
+    target_revision_id: str = Field(pattern=_ID_PATTERN)
+    cadence_seconds: int = Field(ge=60, le=31_536_000)
+    enabled: bool = True
+    next_run_at: str | None = None
+    execution_configuration: dict[str, Any] = Field(default_factory=dict)
+
+
 class RecordEvalObservationRequest(BaseModel):
     case_id: str = Field(pattern=_ID_PATTERN)
     output: Any = None
@@ -283,6 +389,9 @@ class ReleaseGateRequirementRequest(BaseModel):
     suite_version: int = Field(ge=1)
     min_pass_rate: float = Field(default=1.0, ge=0, le=1)
     max_age_hours: int = Field(default=168, ge=1, le=8760)
+    max_total_cost_usd: float | None = Field(default=None, ge=0)
+    max_p95_latency_ms: float | None = Field(default=None, ge=0)
+    min_cost_coverage: float = Field(default=0.0, ge=0, le=1)
     require_automated: bool = False
 
 
@@ -401,6 +510,9 @@ class GraphTaskRequest(BaseModel):
     name: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
     max_attempts: int = Field(default=1, ge=1, le=20)
+    max_input_tokens: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    max_cost_usd: float | None = Field(default=None, gt=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
     capability: CapabilityRefRequest | None = None
     capability_input: dict[str, Any] = Field(default_factory=dict)
@@ -444,6 +556,9 @@ class CreateGraphRequest(BaseModel):
     failure_policy: dict[str, Any] = Field(default_factory=dict)
     aggregate: bool = True
     aggregation_policy: dict[str, Any] = Field(default_factory=dict)
+    max_input_tokens: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    max_cost_usd: float | None = Field(default=None, gt=0)
 
 
 class GraphPatchOperationRequest(BaseModel):
@@ -472,10 +587,47 @@ class ScheduleSpec(BaseModel):
 
 
 class SchedulePayload(BaseModel):
+    kind: Literal["agent_turn", "agent_monitor"] = "agent_turn"
     message: str = Field(min_length=1)
     deliver: bool = False
     channel: str | None = Field(default=None, max_length=32)
     to: str | None = Field(default=None, max_length=128)
+    session_mode: Literal["isolated", "main"] = "isolated"
+    session_id: str | None = Field(default=None, min_length=1, pattern=_ID_PATTERN)
+    quiet_token: str = Field(default="NO_ACTION", min_length=1, max_length=64)
+    defer_when_busy: bool = True
+    busy_backoff_ms: int = Field(default=60_000, ge=1_000, le=3_600_000)
+    preflight_mode: Literal["always", "runtime_attention"] = "always"
+    context_mode: Literal["full", "light"] = "full"
+    active_hours: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def normalize_monitor_session(self) -> "SchedulePayload":
+        if self.kind == "agent_monitor" and self.session_mode == "main":
+            self.session_id = self.session_id or "main"
+        if self.kind != "agent_monitor" and self.preflight_mode != "always":
+            raise ValueError("preflight_mode is only available for agent_monitor")
+        if self.kind != "agent_monitor" and self.context_mode != "full":
+            raise ValueError("context_mode is only available for agent_monitor")
+        if self.kind != "agent_monitor" and self.active_hours is not None:
+            raise ValueError("active_hours is only available for agent_monitor")
+        if self.active_hours is not None:
+            from joyhousebot.cron.active_hours import normalize_active_hours
+
+            self.active_hours = normalize_active_hours(self.active_hours)
+        if not self.quiet_token.strip():
+            raise ValueError("quiet_token must contain a non-whitespace character")
+        self.quiet_token = self.quiet_token.strip()
+        return self
+
+
+class SchedulePolicy(BaseModel):
+    max_submit_attempts: int = Field(default=3, ge=1, le=10)
+    max_run_retries: int = Field(default=0, ge=0, le=10)
+    retry_backoff_ms: int = Field(default=60_000, ge=1_000, le=3_600_000)
+    misfire_policy: Literal["fire_once", "skip"] = "fire_once"
+    misfire_grace_ms: int = Field(default=300_000, ge=0, le=86_400_000)
+    overlap_policy: Literal["serialize", "skip"] = "serialize"
 
 
 class CreateScheduleRequest(BaseModel):
@@ -483,6 +635,7 @@ class CreateScheduleRequest(BaseModel):
     agent_id: str = Field(default="default", pattern=_ID_PATTERN)
     schedule: ScheduleSpec
     payload: SchedulePayload
+    policy: SchedulePolicy = Field(default_factory=SchedulePolicy)
     enabled: bool = True
 
 
@@ -491,4 +644,10 @@ class UpdateScheduleRequest(BaseModel):
     agent_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     schedule: ScheduleSpec | None = None
     payload: SchedulePayload | None = None
+    policy: SchedulePolicy | None = None
     enabled: bool | None = None
+
+
+class UpdateMonitorScratchRequest(BaseModel):
+    content: str = Field(max_length=16384)
+    expected_revision: int = Field(ge=0)

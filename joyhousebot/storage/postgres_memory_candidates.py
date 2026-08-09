@@ -5,8 +5,17 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any
 
+from joyhousebot.domain.memory import memory_layer_for_path
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.memory_candidate_records import MemoryCandidateRecord
+
+_MEMORY_LAYER_SQL = """CASE
+    WHEN document_path ~ '(^|/)PROFILE\\.md$' THEN 'profile'
+    WHEN document_path LIKE 'agent/%%' THEN 'agent'
+    WHEN document_path ~ '(^|/)(HISTORY\\.md|\\.abstract|[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md)$'
+        THEN 'episodic'
+    ELSE 'long_term'
+END"""
 
 
 def _content_hash(content: str) -> str:
@@ -91,6 +100,99 @@ class PostgresMemoryCandidateStoreMixin:
                 description="governed long-term Memory candidate inbox and atomic merge",
             )
 
+    def list_memory_documents(
+        self,
+        *,
+        user_id: str,
+        agent_id: str,
+        layer: str | None = None,
+        search: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """List owner-scoped Memory metadata without returning whole documents."""
+        term = str(search or "").strip()
+        params: list[Any] = [user_id, agent_id]
+        filters: list[str] = []
+        if layer:
+            filters.append("layer=%s")
+            params.append(layer)
+        if term:
+            filters.append("(document_path ILIKE %s OR content ILIKE %s)")
+            pattern = f"%{term}%"
+            params.extend((pattern, pattern))
+        params.append(max(1, min(500, int(limit))))
+        where = " WHERE " + " AND ".join(filters) if filters else ""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT scope_key,document_path,layer,version,created_at_ms,updated_at_ms,
+                          octet_length(content) AS size_bytes,left(content,280) AS preview
+                     FROM (SELECT scope_key,document_path,content,version,created_at_ms,
+                                  updated_at_ms,"""
+                + _MEMORY_LAYER_SQL
+                + """ AS layer FROM memory_documents
+                            WHERE user_id=%s AND agent_id=%s) AS documents"""
+                + where
+                + " ORDER BY updated_at_ms DESC,document_path LIMIT %s",
+                tuple(params),
+            ).fetchall()
+        items = [
+            {
+                "scope_key": str(row["scope_key"]),
+                "document_path": str(row["document_path"]),
+                "layer": str(row["layer"]),
+                "version": int(row["version"]),
+                "size_bytes": int(row["size_bytes"] or 0),
+                "preview": str(row["preview"] or ""),
+                "created_at_ms": int(row["created_at_ms"]),
+                "updated_at_ms": int(row["updated_at_ms"]),
+            }
+            for row in rows
+        ]
+        return items
+
+    def summarize_memory_documents(self, *, user_id: str, agent_id: str) -> dict[str, Any]:
+        """Count durable documents by the same layer mapping used by the runtime."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT document_path FROM memory_documents
+                    WHERE user_id=%s AND agent_id=%s""",
+                (user_id, agent_id),
+            ).fetchall()
+        by_layer = {"profile": 0, "long_term": 0, "episodic": 0, "agent": 0}
+        for row in rows:
+            by_layer[memory_layer_for_path(str(row["document_path"]))] += 1
+        return {"total": sum(by_layer.values()), "by_layer": by_layer}
+
+    def get_memory_document(
+        self,
+        *,
+        user_id: str,
+        agent_id: str,
+        scope_key: str,
+        document_path: str,
+    ) -> dict[str, Any] | None:
+        """Read one document only when all owner/scope coordinates match."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT scope_key,document_path,content,version,created_at_ms,updated_at_ms,
+                          octet_length(content) AS size_bytes
+                     FROM memory_documents
+                    WHERE user_id=%s AND agent_id=%s AND scope_key=%s AND document_path=%s""",
+                (user_id, agent_id, scope_key, document_path),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "scope_key": str(row["scope_key"]),
+            "document_path": str(row["document_path"]),
+            "layer": memory_layer_for_path(str(row["document_path"])),
+            "content": str(row["content"]),
+            "version": int(row["version"]),
+            "size_bytes": int(row["size_bytes"] or 0),
+            "created_at_ms": int(row["created_at_ms"]),
+            "updated_at_ms": int(row["updated_at_ms"]),
+        }
+
     def create_memory_candidate(self, **kwargs: Any) -> tuple[MemoryCandidateRecord, bool]:
         """Freeze one proposal against the current document revision."""
         with self._pool.connection() as conn, conn.transaction():
@@ -171,21 +273,29 @@ class PostgresMemoryCandidateStoreMixin:
         return self._memory_candidate(row) if row else None
 
     def list_memory_candidates(
-        self, *, user_id: str, status: str | None = "pending", limit: int = 100
+        self,
+        *,
+        user_id: str,
+        agent_id: str | None = None,
+        status: str | None = "pending",
+        limit: int = 100,
     ) -> list[MemoryCandidateRecord]:
-        clause = " AND status=%s" if status else ""
-        params: tuple[Any, ...] = (
-            (user_id, status, max(1, min(500, int(limit))))
-            if status
-            else (user_id, max(1, min(500, int(limit))))
-        )
+        filters = ["user_id=%s"]
+        params: list[Any] = [user_id]
+        if agent_id:
+            filters.append("agent_id=%s")
+            params.append(agent_id)
+        if status:
+            filters.append("status=%s")
+            params.append(status)
+        params.append(max(1, min(500, int(limit))))
         with self._pool.connection() as conn, conn.transaction():
             self._expire_memory_candidates(conn, expected_user_id=user_id)
             rows = conn.execute(
-                """SELECT * FROM memory_candidates WHERE user_id=%s"""
-                + clause
+                "SELECT * FROM memory_candidates WHERE "
+                + " AND ".join(filters)
                 + " ORDER BY created_at DESC LIMIT %s",
-                params,
+                tuple(params),
             ).fetchall()
         return [self._memory_candidate(row) for row in rows]
 

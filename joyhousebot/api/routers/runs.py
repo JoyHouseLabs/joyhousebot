@@ -112,6 +112,9 @@ async def create_graph(body: CreateGraphRequest, context: ContextDep, container:
         failure_policy=body.failure_policy,
         aggregate=body.aggregate,
         aggregation_policy=body.aggregation_policy,
+        max_input_tokens=body.max_input_tokens,
+        max_output_tokens=body.max_output_tokens,
+        max_cost_usd=body.max_cost_usd,
         tasks=[GraphTaskCommand(**item.model_dump()) for item in body.tasks],
     )
     return record_dict(record)

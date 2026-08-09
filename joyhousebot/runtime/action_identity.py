@@ -3,26 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 from joyhousebot.domain.capabilities import CapabilityRef
+from joyhousebot.domain.identity import canonical_json, payload_hash
 
-
-def canonical_json(value: Any) -> str:
-    """Return the stable JSON representation used by execution identities."""
-
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-
-
-def payload_hash(value: Any) -> str:
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+__all__ = ["canonical_json", "durable_action_id", "durable_turn_id", "payload_hash"]
 
 
 def durable_turn_id(

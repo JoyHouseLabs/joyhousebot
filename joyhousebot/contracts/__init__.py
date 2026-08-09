@@ -12,9 +12,11 @@ from joyhousebot.contracts.capabilities import (
     CapabilityResult,
     OperationReconciler,
     OperationReconciliationResult,
+    WriteReceipt,
 )
 from joyhousebot.contracts.events import DomainEvent
 from joyhousebot.contracts.plugins import (
+    PLUGIN_COMPONENT_TYPES,
     Plugin,
     PluginComponent,
     PluginHealthCheck,
@@ -38,8 +40,10 @@ __all__ = [
     "CapabilityResult",
     "OperationReconciler",
     "OperationReconciliationResult",
+    "WriteReceipt",
     "DomainEvent",
     "Plugin",
+    "PLUGIN_COMPONENT_TYPES",
     "PluginComponent",
     "PluginHealthCheck",
     "PluginHealthContext",

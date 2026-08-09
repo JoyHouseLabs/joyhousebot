@@ -25,7 +25,7 @@ npm install
 npm run dev
 ```
 
-访问 `http://localhost:5178/ui/overview`。Vite 将 `/v1`、`/healthz` 和 `/readyz` 代理到 18790。无 Token 的开发模式默认使用测试用户 `local-dev`；后端仅在显式 insecure 模式把该用户引导为管理员。生产环境使用 Bearer Token。operator token 打开控制台时，同一个浏览器身份会作为 `X-Impersonate-User-ID`，普通用户 token 的服务端身份始终优先。
+访问 `http://localhost:5178/ui/overview`。Vite 将 `/v1`、`/healthz` 和 `/readyz` 代理到 18790。无 Token 的开发模式默认使用测试用户 `joyhousebot`；后端仅在显式 insecure 模式把该用户引导为管理员。生产环境使用 Bearer Token。operator token 打开控制台时，同一个浏览器身份会作为 `X-Impersonate-User-ID`，普通用户 token 的服务端身份始终优先。
 
 ## 验证和打包
 

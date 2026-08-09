@@ -198,7 +198,11 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
         assert simulation.status_code == 200
         assert simulation.json()["next_question"]["fields"] == ["voice"]
 
-        published = client.post("/v1/admin/scenarios/tts/versions/1/publish", headers=editor)
+        published = client.post(
+            "/v1/admin/scenarios/tts/versions/1/publish",
+            headers=editor,
+            json={"require_healthy_workers": False},
+        )
         assert published.status_code == 200
         assert published.json()["status"] == "published"
 
@@ -430,13 +434,20 @@ def test_insecure_default_user_is_explicit_test_admin(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "cloud.db")
     client = TestClient(create_app(build_api_container(config=config, store=store)))
     with client:
-        identity = client.get("/v1/me", headers={"X-User-Id": "local-dev"})
+        identity = client.get("/v1/me", headers={"X-User-Id": "joyhousebot"})
         assert identity.status_code == 200
         assert identity.json()["role"] == "admin"
         assert identity.json()["is_admin"] is True
-        admins = client.get("/v1/admin/users", headers={"X-User-Id": "local-dev"})
+        admins = client.get("/v1/admin/users", headers={"X-User-Id": "joyhousebot"})
         assert admins.status_code == 200
         assert admins.json()["items"][0]["is_test_user"] is True
+
+        login = client.post(
+            "/v1/auth/login",
+            json={"user_id": "joyhousebot", "password": "joyhousebot"},
+        )
+        assert login.status_code == 200
+        assert login.json()["must_change_password"] is True
 
         ordinary = client.get("/v1/admin/overview", headers={"X-User-Id": "someone-else"})
         assert ordinary.status_code == 403
@@ -569,6 +580,7 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
                 "kind": "skill",
                 "name": "Research Skill",
                 "adapter": "prompt-skill:research",
+                "rollout_policy": {"require_healthy_workers": False},
             },
         )
         assert skill.status_code == 200
@@ -601,12 +613,58 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         published = client.post(
             "/v1/admin/agents/research/revisions/research:v1/publish",
             headers=admin_headers,
+            json={"require_healthy_workers": False},
         )
         assert published.status_code == 200
         agents = client.get("/v1/admin/agents", headers=admin_headers).json()["items"]
         assert any(item["agent_id"] == "research" for item in agents)
         rollouts = client.get("/v1/admin/rollouts", headers=admin_headers).json()["items"]
         assert rollouts[0]["status"] == "completed"
+
+        next_draft = client.put(
+            "/v1/admin/agents/research/revisions/research:v2",
+            headers=admin_headers,
+            json={
+                "revision_id": "research:v2",
+                "version": 2,
+                "name": "Research",
+                "role": "specialist",
+                "instructions": "Use primary sources and preserve citations.",
+                "model_policy": {"primary": "test/model"},
+            },
+        )
+        assert next_draft.status_code == 200
+        manual_publish = client.post(
+            "/v1/admin/agents/research/revisions/research:v2/publish",
+            headers=admin_headers,
+            json={
+                "activation_mode": "manual",
+                "timeout_seconds": 60,
+                "auto_rollback": True,
+                "require_healthy_workers": False,
+            },
+        )
+        assert manual_publish.status_code == 200
+        manual_rollout = client.get(
+            "/v1/admin/rollouts", headers=admin_headers
+        ).json()["items"][0]
+        assert manual_rollout["status"] == "awaiting_approval"
+        rollout_id = manual_rollout["rollout_id"]
+        approved = client.post(
+            f"/v1/admin/rollouts/{rollout_id}/approve", headers=admin_headers
+        )
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "completed"
+        store.register_runtime_worker(worker_id="rollback-agent", capabilities={"agent": True})
+        rolled_back = client.post(
+            f"/v1/admin/rollouts/{rollout_id}/rollback", headers=admin_headers
+        )
+        assert rolled_back.status_code == 200
+        assert rolled_back.json()["status"] == "rollback_pending"
+        assert store.acknowledge_agent_revision(
+            worker_id="rollback-agent", agent_id="research", revision_id="research:v1"
+        )
+        assert store.get_configuration_rollout(rollout_id).status == "rolled_back"
 
         issued = client.post(
             "/v1/admin/access-tokens",
@@ -758,6 +816,30 @@ def test_rate_limit_counts_failed_auth_per_client_ip(tmp_path: Path, monkeypatch
         assert 429 in codes
 
 
+def test_rate_limit_window_is_anchored_per_key(tmp_path: Path) -> None:
+    """Crossing a wall-clock minute must not reset an active client budget."""
+    store = PostgresTestStore(tmp_path / "anchored-rate-limit.db")
+    key = "test:anchored-window"
+    assert store.check_api_rate_limit(key, limit=1, window_seconds=60)
+    with store._pool.connection() as connection, connection.transaction():
+        connection.execute(
+            """UPDATE api_rate_limits SET
+                   window_start=floor(extract(epoch FROM clock_timestamp()))::bigint-59
+               WHERE rate_key=%s""",
+            (key,),
+        )
+    assert not store.check_api_rate_limit(key, limit=1, window_seconds=60)
+    with store._pool.connection() as connection, connection.transaction():
+        connection.execute(
+            """UPDATE api_rate_limits SET
+                   window_start=floor(extract(epoch FROM clock_timestamp()))::bigint-60
+               WHERE rate_key=%s""",
+            (key,),
+        )
+    assert store.check_api_rate_limit(key, limit=1, window_seconds=60)
+    store.close()
+
+
 def test_cors_uses_configured_origins(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     with client:
@@ -866,6 +948,14 @@ def test_schedules_are_user_scoped(tmp_path: Path) -> None:
         "agent_id": "joy",
         "schedule": {"kind": "every", "every_ms": 60_000},
         "payload": {"message": "review"},
+        "policy": {
+            "max_submit_attempts": 2,
+            "max_run_retries": 1,
+            "retry_backoff_ms": 1_000,
+            "misfire_policy": "skip",
+            "misfire_grace_ms": 30_000,
+            "overlap_policy": "skip",
+        },
     }
     with client:
         created = client.post(
@@ -875,6 +965,7 @@ def test_schedules_are_user_scoped(tmp_path: Path) -> None:
         )
         assert created.status_code == 201
         schedule_id = created.json()["id"]
+        assert created.json()["policy"] == schedule["policy"]
         own = client.get("/v1/schedules", headers={"Authorization": "Bearer token-a"})
         other = client.get("/v1/schedules", headers={"Authorization": "Bearer token-b"})
         assert [item["id"] for item in own.json()["items"]] == [schedule_id]
@@ -882,11 +973,16 @@ def test_schedules_are_user_scoped(tmp_path: Path) -> None:
         updated = client.patch(
             f"/v1/schedules/{schedule_id}",
             headers={"Authorization": "Bearer token-a"},
-            json={"name": "weekly-review", "enabled": False},
+            json={
+                "name": "weekly-review",
+                "enabled": False,
+                "policy": {**schedule["policy"], "max_run_retries": 0},
+            },
         )
         assert updated.status_code == 200
         assert updated.json()["name"] == "weekly-review"
         assert updated.json()["enabled"] is False
+        assert updated.json()["policy"]["max_run_retries"] == 0
         assert (
             client.delete(
                 f"/v1/schedules/{schedule_id}",
@@ -894,3 +990,137 @@ def test_schedules_are_user_scoped(tmp_path: Path) -> None:
             ).status_code
             == 404
         )
+
+
+def test_agent_monitor_schedule_contract_and_filter(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    monitor = {
+        "name": "attention-monitor",
+        "agent_id": "joy",
+        "schedule": {"kind": "every", "every_ms": 300_000},
+        "payload": {
+            "kind": "agent_monitor",
+            "message": "Check whether anything needs my attention.",
+            "session_mode": "main",
+            "quiet_token": "NO_ACTION",
+            "defer_when_busy": True,
+            "busy_backoff_ms": 30_000,
+            "preflight_mode": "runtime_attention",
+            "context_mode": "light",
+            "active_hours": {
+                "start": "08:00",
+                "end": "22:00",
+                "timezone": "Asia/Shanghai",
+            },
+        },
+    }
+    with client:
+        created = client.post(
+            "/v1/schedules",
+            headers={"Authorization": "Bearer token-a"},
+            json=monitor,
+        )
+        assert created.status_code == 201, created.text
+        payload = created.json()
+        assert payload["payload"]["kind"] == "agent_monitor"
+        assert payload["payload"]["session_id"] == "main"
+        assert payload["payload"]["preflight_mode"] == "runtime_attention"
+        assert payload["payload"]["context_mode"] == "light"
+        assert payload["payload"]["active_hours"]["timezone"] == "Asia/Shanghai"
+        assert payload["policy"]["misfire_policy"] == "skip"
+        assert payload["policy"]["overlap_policy"] == "skip"
+
+        filtered = client.get(
+            "/v1/schedules?kind=agent_monitor",
+            headers={"Authorization": "Bearer token-a"},
+        )
+        assert filtered.status_code == 200
+        assert [item["id"] for item in filtered.json()["items"]] == [payload["id"]]
+
+        invalid = {**monitor, "payload": {**monitor["payload"], "quiet_token": "   "}}
+        assert (
+            client.post(
+                "/v1/schedules",
+                headers={"Authorization": "Bearer token-a"},
+                json=invalid,
+            ).status_code
+            == 422
+        )
+        invalid_zone = {
+            **monitor,
+            "payload": {
+                **monitor["payload"],
+                "active_hours": {
+                    "start": "08:00",
+                    "end": "22:00",
+                    "timezone": "Mars/Olympus",
+                },
+            },
+        }
+        assert (
+            client.post(
+                "/v1/schedules",
+                headers={"Authorization": "Bearer token-a"},
+                json=invalid_zone,
+            ).status_code
+            == 422
+        )
+
+
+def test_agent_monitor_scratch_api_is_versioned_and_user_scoped(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    monitor = {
+        "name": "stateful-monitor",
+        "agent_id": "joy",
+        "schedule": {"kind": "every", "every_ms": 300_000},
+        "payload": {"kind": "agent_monitor", "message": "Track a private cursor."},
+    }
+    with client:
+        created = client.post(
+            "/v1/schedules",
+            headers={"Authorization": "Bearer token-a"},
+            json=monitor,
+        )
+        assert created.status_code == 201
+        schedule_id = created.json()["id"]
+        path = f"/v1/schedules/{schedule_id}/monitor-scratch"
+
+        initial = client.get(path, headers={"Authorization": "Bearer token-a"})
+        assert initial.status_code == 200
+        assert initial.json()["revision"] == 0
+        assert client.get(path, headers={"Authorization": "Bearer token-b"}).status_code == 404
+
+        updated = client.put(
+            path,
+            headers={
+                "Authorization": "Bearer token-a",
+                "Idempotency-Key": "scratch-1",
+            },
+            json={"content": "cursor=17", "expected_revision": 0},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["revision"] == 1
+        duplicate = client.put(
+            path,
+            headers={
+                "Authorization": "Bearer token-a",
+                "Idempotency-Key": "scratch-1",
+            },
+            json={"content": "cursor=17", "expected_revision": 0},
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.json()["revision"] == 1
+        conflict = client.put(
+            path,
+            headers={"Authorization": "Bearer token-a"},
+            json={"content": "stale", "expected_revision": 0},
+        )
+        assert conflict.status_code == 409
+
+        history = client.get(
+            f"{path}/revisions", headers={"Authorization": "Bearer token-a"}
+        )
+        assert history.status_code == 200
+        assert [(row["revision"], row["content"]) for row in history.json()["items"]] == [
+            (1, "cursor=17")
+        ]

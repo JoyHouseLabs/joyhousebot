@@ -51,7 +51,10 @@
         <div class="editor-header">
           <div>
             <span class="eyebrow">{{ selectedAgentId ? (draftSaved ? 'REVISION DRAFT' : 'NEW DRAFT FROM PUBLISHED') : 'NEW DEFINITION' }}</span>
-            <h2>{{ draft.name || '新建 Agent' }}</h2>
+            <div class="editor-title-line">
+              <h2>{{ draft.name || '新建 Agent' }}</h2>
+              <span class="role-chip">{{ roleLabel(draft.role) }}</span>
+            </div>
             <p v-if="draft.agent_id"><code>{{ draft.revision_id }}</code> · v{{ draft.version }}<span v-if="skillBindingsSourceRevision && !draftSaved"> · 基于 {{ skillBindingsSourceRevision }}</span></p>
           </div>
           <div class="editor-actions">
@@ -155,6 +158,25 @@
           </section>
         </div>
 
+        <div v-else-if="editorTab === 'monitor'" class="agent-form">
+          <section class="form-section">
+            <header><div><span>05</span><h3>Agent Monitor</h3></div><p>发布后，Runtime 会为使用此 Agent 的每位用户对账一个托管 Schedule；仍走统一 Occurrence、Run、投递与重试链路。</p></header>
+            <div class="form-grid">
+              <label class="switch-label wide"><input v-model="draft.monitor_enabled" type="checkbox" /><span><strong>启用托管 Monitor</strong><small>用户首次使用 Agent 时自动创建；新 Revision 发布后更新已有托管 Monitor。</small></span></label>
+              <label><span>检查间隔（分钟）</span><input v-model.number="draft.monitor_every_minutes" type="number" min="1" :disabled="!draft.monitor_enabled" /></label>
+              <label><span>上下文模式</span><select v-model="draft.monitor_context_mode" :disabled="!draft.monitor_enabled"><option value="light">Light：不注入历史、记忆和 Skill Prompt</option><option value="full">Full：完整上下文</option></select></label>
+              <label><span>预检策略</span><select v-model="draft.monitor_preflight_mode" :disabled="!draft.monitor_enabled"><option value="runtime_attention">仅 Runtime attention 变化时运行</option><option value="always">每个有效 tick 运行</option></select></label>
+              <label><span>会话模式</span><select v-model="draft.monitor_session_mode" :disabled="!draft.monitor_enabled"><option value="isolated">隔离 Monitor 会话</option><option value="main">用户 main 会话</option></select></label>
+              <label><span>投递策略</span><select v-model="draft.monitor_delivery" :disabled="!draft.monitor_enabled"><option value="none">仅保留 Run 结果</option><option value="origin">投递到最近一次外部来源</option></select></label>
+              <label class="wide"><span>Monitor 指令</span><textarea v-model="draft.monitor_message" rows="5" :disabled="!draft.monitor_enabled" placeholder="检查待处理事项、异常和需要用户关注的变化。" /></label>
+              <label class="switch-label wide"><input v-model="draft.monitor_active_hours_enabled" type="checkbox" :disabled="!draft.monitor_enabled" /><span><strong>限制 Active Hours</strong><small>窗口外 occurrence 记录为 skipped_inactive_hours；手动 Run Now 不受限制。</small></span></label>
+              <label><span>开始</span><input v-model="draft.monitor_active_hours_start" type="time" :disabled="!draft.monitor_enabled || !draft.monitor_active_hours_enabled" /></label>
+              <label><span>结束</span><input v-model="draft.monitor_active_hours_end" type="time" :disabled="!draft.monitor_enabled || !draft.monitor_active_hours_enabled" /></label>
+              <label class="wide"><span>IANA 时区</span><input v-model.trim="draft.monitor_active_hours_timezone" :disabled="!draft.monitor_enabled || !draft.monitor_active_hours_enabled" placeholder="Asia/Shanghai" /></label>
+            </div>
+          </section>
+        </div>
+
         <div v-else-if="editorTab === 'memory'" class="agent-form">
           <section class="form-section">
             <header>
@@ -178,9 +200,68 @@
           </section>
         </div>
 
+        <div v-else-if="editorTab === 'memoryData'" class="memory-data-pane">
+          <section class="form-section">
+            <header>
+              <div><span>06</span><h3>记忆数据</h3></div>
+              <p>查看当前用户在此 Agent 下真实落库的记忆文档与候选写入；数据不会跨用户或跨 Agent 展示。</p>
+            </header>
+            <div v-if="!selectedAgentId" class="empty-state"><span>◇</span><strong>请先保存 Agent</strong><p>Agent 建立后才能形成隔离的记忆空间。</p></div>
+            <template v-else>
+              <div class="memory-summary-grid">
+                <button type="button" :class="{ active: memoryLayer === 'all' }" @click="chooseMemoryLayer('all')"><strong>{{ memorySummary.total }}</strong><span>全部文档</span></button>
+                <button v-for="item in memoryLayerOptions" :key="item.id" type="button" :class="{ active: memoryLayer === item.id }" @click="chooseMemoryLayer(item.id)"><strong>{{ memorySummary.by_layer[item.id] || 0 }}</strong><span>{{ item.label }}</span></button>
+                <div><strong>{{ pendingMemoryCandidates }}</strong><span>待确认候选</span></div>
+              </div>
+              <div class="memory-data-toolbar">
+                <div class="segmented-control">
+                  <button type="button" :class="{ active: memoryDataView === 'documents' }" @click="memoryDataView = 'documents'">已生效记忆</button>
+                  <button type="button" :class="{ active: memoryDataView === 'candidates' }" @click="memoryDataView = 'candidates'">候选记忆</button>
+                </div>
+                <template v-if="memoryDataView === 'documents'">
+                  <input v-model.trim="memorySearch" type="search" placeholder="搜索路径或记忆内容" @keyup.enter="loadMemoryDocuments" />
+                  <button class="secondary-button" type="button" @click="loadMemoryDocuments">搜索</button>
+                </template>
+                <template v-else>
+                  <select v-model="memoryCandidateStatus" @change="loadMemoryCandidates"><option value="all">全部状态</option><option value="pending">待确认</option><option value="conflicted">有冲突</option><option value="merged">已合并</option><option value="rejected">已拒绝</option><option value="expired">已过期</option></select>
+                </template>
+                <button class="secondary-button" type="button" :disabled="memoryLoading" @click="loadMemoryData">{{ memoryLoading ? '刷新中…' : '刷新数据' }}</button>
+              </div>
+              <div v-if="memoryError" class="notice error-notice memory-error">{{ memoryError }}</div>
+              <div v-if="memoryDataView === 'documents'" class="memory-browser">
+                <aside class="memory-document-list">
+                  <button v-for="item in memoryDocuments" :key="`${item.scope_key}:${item.document_path}`" type="button" :class="{ active: selectedMemoryDocument?.scope_key === item.scope_key && selectedMemoryDocument?.document_path === item.document_path }" @click="selectMemoryDocument(item)">
+                    <span class="memory-layer-tag">{{ memoryLayerLabel(item.layer) }}</span>
+                    <strong>{{ item.document_path }}</strong>
+                    <p>{{ item.preview || '空文档' }}</p>
+                    <small>v{{ item.version }} · {{ formatBytes(item.size_bytes) }} · {{ formatTimestamp(item.updated_at_ms) }}</small>
+                  </button>
+                  <div v-if="!memoryDocuments.length && !memoryLoading" class="empty-state compact"><span>◇</span><strong>此范围暂无记忆</strong><p>运行中的 Agent 会按已发布策略写入文档或候选箱。</p></div>
+                </aside>
+                <section class="memory-document-detail">
+                  <template v-if="memoryDocumentDetail">
+                    <header><div><span class="memory-layer-tag">{{ memoryLayerLabel(memoryDocumentDetail.layer) }}</span><h4>{{ memoryDocumentDetail.document_path }}</h4></div><small>版本 {{ memoryDocumentDetail.version }} · {{ formatTimestamp(memoryDocumentDetail.updated_at_ms) }}</small></header>
+                    <pre>{{ memoryDocumentDetail.content || '（空文档）' }}</pre>
+                    <footer><code>{{ memoryDocumentDetail.scope_key }}</code><span>{{ formatBytes(memoryDocumentDetail.size_bytes) }}</span></footer>
+                  </template>
+                  <div v-else class="empty-state"><span>▤</span><strong>选择一份记忆文档</strong><p>右侧将展示完整内容、版本、作用域和更新时间。</p></div>
+                </section>
+              </div>
+              <div v-else class="memory-candidate-list">
+                <article v-for="item in memoryCandidates" :key="item.candidate_id">
+                  <header><div><span class="memory-layer-tag">{{ memoryLayerLabel(item.layer) }}</span><strong>{{ item.document_path }}</strong></div><span class="status-badge" :class="memoryCandidateClass(item.status)">{{ memoryCandidateLabel(item.status) }}</span></header>
+                  <pre>{{ item.content }}</pre>
+                  <footer><span>{{ item.operation === 'replace' ? '替换' : '追加' }} · {{ item.source_kind }}<template v-if="item.confidence !== null && item.confidence !== undefined"> · 置信度 {{ Math.round(item.confidence * 100) }}%</template></span><code v-if="item.source_run_id">Run {{ item.source_run_id }}</code><span>{{ formatDate(item.created_at) }}</span></footer>
+                </article>
+                <div v-if="!memoryCandidates.length && !memoryLoading" class="empty-state"><span>✓</span><strong>当前没有候选记忆</strong><p>候选写入不会直接改变长期资产，确认后才会进入已生效记忆。</p></div>
+              </div>
+            </template>
+          </section>
+        </div>
+
         <div v-else-if="editorTab === 'skills'" class="skills-pane">
           <section class="form-section">
-            <header><div><span>06</span><h3>Skill 绑定</h3></div><p v-if="draftSaved">Skill 绑定到已保存 Draft，发布后随 Agent 版本冻结。</p><p v-else-if="skillBindingsSourceRevision">当前展示 {{ skillBindingsSourceRevision }} 的冻结绑定；保存新的 Draft 后才能修改，已有绑定会自动继承。</p><p v-else>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
+            <header><div><span>07</span><h3>Skill 绑定</h3></div><p v-if="draftSaved">Skill 绑定到已保存 Draft，发布后随 Agent 版本冻结。</p><p v-else-if="skillBindingsSourceRevision">当前展示 {{ skillBindingsSourceRevision }} 的冻结绑定；保存新的 Draft 后才能修改，已有绑定会自动继承。</p><p v-else>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
             <form class="skill-bind-form" @submit.prevent="addSkillBinding">
               <label><span>Skill</span><select v-model="skillDraft.skill_id" required><option value="" disabled>选择已发布 Skill</option><option v-for="skill in skillCapabilities" :key="skill.ref.capability_id" :value="skill.ref.capability_id">{{ skill.name }} · {{ skill.ref.version }}</option></select></label>
               <label><span>激活方式</span><select v-model="skillDraft.activation_mode"><option value="coordinator_selected">协调器选择</option><option value="always">始终启用</option><option value="scenario_required">场景要求</option></select></label>
@@ -200,7 +281,8 @@
 
         <div v-else class="revision-pane">
           <section class="form-section">
-            <header><div><span>07</span><h3>版本与发布</h3></div><p>发布会将 Draft 设为只读，并触发 Worker rollout。</p></header>
+            <header><div><span>08</span><h3>版本与发布</h3></div><p>发布会将 Draft 设为只读，并触发 Worker rollout。</p></header>
+            <div class="release-policy-row"><label><span>生效方式</span><select v-model="releasePolicy.activation_mode"><option value="automatic">全部预热后自动生效</option><option value="manual">全部预热后等待批准</option></select></label><label><span>预热超时（秒）</span><input v-model.number="releasePolicy.timeout_seconds" type="number" min="10" max="86400" /></label><label class="release-check"><input v-model="releasePolicy.require_healthy_workers" type="checkbox" />必须存在健康 Worker</label><label class="release-check"><input v-model="releasePolicy.auto_rollback" type="checkbox" />失败保护旧版本</label></div>
             <div class="revision-list">
               <article v-for="revision in revisions" :key="revision.revision_id" :class="{ current: currentAgent?.current_revision_id === revision.revision_id }">
                 <span class="revision-node" />
@@ -234,8 +316,18 @@ import {
   type AgentRevision,
   type AgentSkillBinding,
 } from '../api/admin'
+import {
+  getMemoryCandidates,
+  getMemoryDocument,
+  getMemoryDocuments,
+  type MemoryCandidate,
+  type MemoryDocument,
+  type MemoryDocumentListItem,
+  type MemoryDocumentSummary,
+  type MemoryLayer,
+} from '../api/memory'
 
-type EditorTab = 'profile' | 'model' | 'abilities' | 'planning' | 'memory' | 'skills' | 'revisions'
+type EditorTab = 'profile' | 'model' | 'abilities' | 'planning' | 'monitor' | 'memory' | 'memoryData' | 'skills' | 'revisions'
 type AgentRole = AdminAgent['role']
 const roleDefinitions: Array<{ id: AgentRole; label: string; en: string; title: string; summary: string; detail: string; boundary: string }> = [
   { id: 'coordinator', label: '协调器', en: 'Coordinator', title: '拆解、路由与汇总', summary: '负责理解目标并组织执行', detail: '分析用户目标，拆成可执行步骤，选择合适的 Agent、Skill 或 Tool，并汇总结果。', boundary: '默认负责规划和委派，不直接承担大部分业务操作。' },
@@ -259,6 +351,23 @@ const selectedAgentId = ref('')
 const editorTab = ref<EditorTab>('profile')
 const search = ref('')
 const capabilitySearch = ref('')
+const memoryLoading = ref(false)
+const memoryError = ref('')
+const memoryDataView = ref<'documents' | 'candidates'>('documents')
+const memoryLayer = ref<MemoryLayer | 'all'>('all')
+const memorySearch = ref('')
+const memoryCandidateStatus = ref<MemoryCandidate['status'] | 'all'>('all')
+const memoryDocuments = ref<MemoryDocumentListItem[]>([])
+const memoryDocumentDetail = ref<MemoryDocument | null>(null)
+const selectedMemoryDocument = ref<MemoryDocumentListItem | null>(null)
+const memoryCandidates = ref<MemoryCandidate[]>([])
+const memorySummary = ref<MemoryDocumentSummary>({ total: 0, by_layer: { profile: 0, long_term: 0, episodic: 0, agent: 0 } })
+const memoryLayerOptions: Array<{ id: MemoryLayer; label: string }> = [
+  { id: 'profile', label: '个人属性' },
+  { id: 'long_term', label: '长期记忆' },
+  { id: 'episodic', label: '情景记忆' },
+  { id: 'agent', label: 'Agent 经验' },
+]
 
 const blankDraft = () => ({
   agent_id: '', revision_id: '', version: 1, name: '', description: '',
@@ -272,16 +381,22 @@ const blankDraft = () => ({
   max_fan_out: 10, tool_execution_mode: 'sequential', max_parallel_calls: 4, memory_enabled: false, memory_mode: 'task_only', memory_scope: 'user_agent',
   memory_episodic: false, memory_profile: false, memory_long_term: false, memory_agent: false,
   memory_read_mode: 'none', memory_write: 'none', memory_top_k: 10, memory_max_tokens: 6000,
+  monitor_enabled: false, monitor_every_minutes: 30, monitor_context_mode: 'light',
+  monitor_preflight_mode: 'runtime_attention', monitor_session_mode: 'isolated',
+  monitor_delivery: 'none', monitor_message: 'Review Runtime attention and act if needed.',
+  monitor_active_hours_enabled: false, monitor_active_hours_start: '08:00',
+  monitor_active_hours_end: '22:00', monitor_active_hours_timezone: 'Asia/Shanghai',
 })
 
 const draft = reactive(blankDraft())
 const policyBase = reactive({
   persona: {} as Record<string, unknown>, model: {} as Record<string, unknown>,
   planning: {} as Record<string, unknown>, capability: {} as Record<string, unknown>,
-  memory: {} as Record<string, unknown>, output: {} as Record<string, unknown>,
+  memory: {} as Record<string, unknown>, monitor: {} as Record<string, unknown>, output: {} as Record<string, unknown>,
 })
 const savedFingerprint = ref('')
 const skillDraft = reactive({ skill_id: '', activation_mode: 'coordinator_selected' as AgentSkillBinding['activation_mode'], priority: 100 })
+const releasePolicy = reactive({ activation_mode: 'automatic' as 'automatic' | 'manual', timeout_seconds: 300, auto_rollback: true, require_healthy_workers: true })
 const currentAgent = computed(() => agents.value.find((item) => item.agent_id === selectedAgentId.value))
 const activeRevision = computed(() => revisions.value.find((item) => item.revision_id === draft.revision_id))
 const filteredAgents = computed(() => { const term = search.value.toLowerCase(); return agents.value.filter((item) => !term || `${item.name} ${item.agent_id} ${item.description}`.toLowerCase().includes(term)) })
@@ -292,19 +407,21 @@ const filteredExecutableCapabilities = computed(() => { const term = capabilityS
 const catalogGroups = computed(() => {
   const values = new Map<string, number>()
   for (const item of executableCapabilities.value) {
-    const id = item.ref.capability_id
-    const name = id.startsWith('dinq.') ? 'Dinq Discover' : kindLabel(item.ref.kind)
+    const name = kindLabel(item.ref.kind)
     values.set(name, (values.get(name) || 0) + 1)
   }
   return [...values].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count)
 })
 const draftSaved = computed(() => Boolean(activeRevision.value?.status === 'draft' && savedFingerprint.value === fingerprint()))
+const pendingMemoryCandidates = computed(() => memoryCandidates.value.filter((item) => item.status === 'pending' || item.status === 'conflicted').length)
 const canSave = computed(() => Boolean(draft.agent_id && draft.name && draft.revision_id && draft.primary_model))
 const editorTabs = computed(() => [
   { id: 'profile' as const, label: '身份指令' }, { id: 'model' as const, label: '模型策略' },
   { id: 'abilities' as const, label: '工具与能力', count: effectiveCapabilityCount.value },
   { id: 'planning' as const, label: '规划策略' },
+  { id: 'monitor' as const, label: 'Monitor' },
   { id: 'memory' as const, label: '记忆策略' },
+  { id: 'memoryData' as const, label: '记忆数据', count: memorySummary.value.total + pendingMemoryCandidates.value },
   { id: 'skills' as const, label: 'Skills', count: skillBindings.value.length },
   { id: 'revisions' as const, label: '版本发布', count: revisions.value.length },
 ])
@@ -328,10 +445,11 @@ function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | unde
   const planning = revision?.planning_policy || {}
   const ability = revision?.capability_policy || {}
   const memory = revision?.memory_policy || {}
+  const monitor = revision?.monitor_policy || {}
   const persona = revision?.persona || {}
   Object.assign(policyBase, {
     persona: { ...persona }, model: { ...model }, planning: { ...planning },
-    capability: { ...ability }, memory: { ...memory }, output: { ...(revision?.output_policy || {}) },
+    capability: { ...ability }, memory: { ...memory }, monitor: { ...monitor }, output: { ...(revision?.output_policy || {}) },
   })
   Object.assign(draft, blankDraft(), {
     agent_id: agent?.agent_id || '', revision_id: revisionId, version,
@@ -360,6 +478,17 @@ function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | unde
     memory_write: String(memory.write_mode || (memory.write === false ? 'none' : 'candidate')),
     memory_top_k: numberValue((memory.retrieval as any)?.top_k, 10),
     memory_max_tokens: numberValue((memory.retrieval as any)?.max_tokens, 6000),
+    monitor_enabled: monitor.enabled === true,
+    monitor_every_minutes: Math.max(1, numberValue((monitor.schedule as any)?.every_ms, 1800000) / 60000),
+    monitor_context_mode: String(monitor.context_mode || 'light'),
+    monitor_preflight_mode: String(monitor.preflight_mode || 'runtime_attention'),
+    monitor_session_mode: String(monitor.session_mode || 'isolated'),
+    monitor_delivery: String(monitor.delivery || 'none'),
+    monitor_message: String(monitor.message || 'Review Runtime attention and act if needed.'),
+    monitor_active_hours_enabled: Boolean(monitor.active_hours),
+    monitor_active_hours_start: String((monitor.active_hours as any)?.start || '08:00'),
+    monitor_active_hours_end: String((monitor.active_hours as any)?.end || '22:00'),
+    monitor_active_hours_timezone: String((monitor.active_hours as any)?.timezone || 'Asia/Shanghai'),
   })
 }
 
@@ -374,7 +503,7 @@ async function loadCatalog() {
 }
 
 async function selectAgent(agentId: string) {
-  selectedAgentId.value = agentId; editorTab.value = 'profile'; skillBindings.value = []; skillBindingsSourceRevision.value = ''
+  selectedAgentId.value = agentId; editorTab.value = 'profile'; skillBindings.value = []; skillBindingsSourceRevision.value = ''; resetMemoryData()
   try {
     revisions.value = await getAgentRevisions(agentId)
     const agent = agents.value.find((item) => item.agent_id === agentId)
@@ -393,7 +522,7 @@ async function selectAgent(agentId: string) {
 
 function createAgent() {
   selectedAgentId.value = ''; revisions.value = []; skillBindings.value = []; skillBindingsSourceRevision.value = ''; savedFingerprint.value = ''
-  Object.assign(draft, blankDraft()); Object.assign(policyBase, { persona: {}, model: {}, planning: {}, capability: {}, memory: {}, output: {} }); editorTab.value = 'profile'
+  Object.assign(draft, blankDraft()); Object.assign(policyBase, { persona: {}, model: {}, planning: {}, capability: {}, memory: {}, monitor: {}, output: {} }); resetMemoryData(); editorTab.value = 'profile'
 }
 
 function resetDraft() { if (selectedAgentId.value) void selectAgent(selectedAgentId.value); else createAgent() }
@@ -431,6 +560,21 @@ function payload() {
         agent: { read: draft.memory_enabled && draft.memory_agent, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
       },
       retrieval: { top_k: draft.memory_top_k, max_tokens: draft.memory_max_tokens },
+    },
+    monitor_policy: {
+      ...policyBase.monitor,
+      enabled: draft.monitor_enabled,
+      schedule: { kind: 'every', every_ms: Math.max(60000, Math.round(Number(draft.monitor_every_minutes) * 60000)) },
+      message: draft.monitor_message,
+      context_mode: draft.monitor_context_mode,
+      preflight_mode: draft.monitor_preflight_mode,
+      session_mode: draft.monitor_session_mode,
+      delivery: draft.monitor_delivery,
+      active_hours: draft.monitor_active_hours_enabled ? {
+        start: draft.monitor_active_hours_start,
+        end: draft.monitor_active_hours_end,
+        timezone: draft.monitor_active_hours_timezone,
+      } : null,
     },
     output_policy: { ...policyBase.output },
   }
@@ -471,27 +615,76 @@ async function addSkillBinding() {
 
 async function publish(revision: AgentRevision) {
   try {
-    await publishAgentRevision(draft.agent_id, revision.revision_id)
+    await publishAgentRevision(draft.agent_id, revision.revision_id, releasePolicy)
     message.success('Agent 版本已发布，Worker rollout 已启动')
     await loadCatalog(); editorTab.value = 'revisions'
   } catch (value) { message.error(errorText(value)) }
 }
 
+function resetMemoryData() {
+  memoryDocuments.value = []
+  memoryCandidates.value = []
+  memoryDocumentDetail.value = null
+  selectedMemoryDocument.value = null
+  memorySummary.value = { total: 0, by_layer: { profile: 0, long_term: 0, episodic: 0, agent: 0 } }
+  memoryError.value = ''
+}
+
+async function loadMemoryDocuments() {
+  if (!selectedAgentId.value) return
+  memoryLoading.value = true; memoryError.value = ''
+  try {
+    const result = await getMemoryDocuments(selectedAgentId.value, { layer: memoryLayer.value, search: memorySearch.value })
+    memoryDocuments.value = result.items; memorySummary.value = result.summary
+    const previous = selectedMemoryDocument.value
+    const next = result.items.find((item) => item.scope_key === previous?.scope_key && item.document_path === previous?.document_path) || result.items[0]
+    if (next) await selectMemoryDocument(next)
+    else { selectedMemoryDocument.value = null; memoryDocumentDetail.value = null }
+  } catch (value) { memoryError.value = errorText(value) } finally { memoryLoading.value = false }
+}
+
+async function loadMemoryCandidates() {
+  if (!selectedAgentId.value) return
+  memoryLoading.value = true; memoryError.value = ''
+  try { memoryCandidates.value = (await getMemoryCandidates(selectedAgentId.value, memoryCandidateStatus.value)).items }
+  catch (value) { memoryError.value = errorText(value) } finally { memoryLoading.value = false }
+}
+
+async function loadMemoryData() {
+  if (!selectedAgentId.value) return
+  await Promise.all([loadMemoryDocuments(), loadMemoryCandidates()])
+}
+
+async function selectMemoryDocument(item: MemoryDocumentListItem) {
+  if (!selectedAgentId.value) return
+  selectedMemoryDocument.value = item
+  try { memoryDocumentDetail.value = await getMemoryDocument(selectedAgentId.value, item) }
+  catch (value) { memoryDocumentDetail.value = null; memoryError.value = errorText(value) }
+}
+
+function chooseMemoryLayer(layer: MemoryLayer | 'all') { memoryLayer.value = layer; void loadMemoryDocuments() }
+
 function errorText(value: unknown) { return value instanceof Error ? value.message : '操作失败' }
 function roleLabel(value: AgentRole) { return ({ coordinator: '协调器', executor: '执行器', specialist: '专家' } as const)[value] }
 function statusLabel(value: DefinitionStatus) { return ({ active: '启用', disabled: '停用', archived: '归档' } as const)[value] }
+function memoryLayerLabel(value: MemoryLayer) { return ({ profile: '个人属性', long_term: '长期记忆', episodic: '情景记忆', agent: 'Agent 经验' } as const)[value] }
+function memoryCandidateLabel(value: MemoryCandidate['status']) { return ({ pending: '待确认', conflicted: '有冲突', merged: '已合并', rejected: '已拒绝', expired: '已过期' } as const)[value] }
+function memoryCandidateClass(value: MemoryCandidate['status']) { return value === 'merged' ? 'completed' : value === 'pending' ? 'queued' : 'cancelled' }
 function revisionClass(value: AgentRevision['status']) { return value === 'published' ? 'completed' : value === 'retired' ? 'cancelled' : 'queued' }
 function kindIcon(value: string) { return ({ tool: 'T', connector: 'C', workflow: 'W', agent: 'A' } as Record<string, string>)[value] || '◇' }
 function kindLabel(value: string) { return ({ tool: '工具', connector: '连接器', workflow: '工作流', agent: '子 Agent' } as Record<string, string>)[value] || value }
 function activationLabel(value: AgentSkillBinding['activation_mode']) { return ({ always: '始终启用', coordinator_selected: '协调器选择', scenario_required: '场景要求' } as const)[value] }
 function skillName(id: string) { return skillCapabilities.value.find((item) => item.ref.capability_id === id)?.name || id }
 function formatDate(value?: string | null) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
+function formatTimestamp(value?: number | null) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
+function formatBytes(value: number) { return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB` }
 
 onMounted(loadCatalog)
 watch(() => draft.agent_id, (agentId, previous) => {
   if (selectedAgentId.value) return
   if (!draft.revision_id || draft.revision_id === `${previous}:v1`) draft.revision_id = agentId ? `${agentId}:v1` : ''
 })
+watch(editorTab, (tab) => { if (tab === 'memoryData') void loadMemoryData() })
 </script>
 
 <style scoped>
@@ -500,20 +693,25 @@ watch(() => draft.agent_id, (agentId, previous) => {
 .agent-directory { position: sticky; top: calc(var(--topbar-height) + 18px); max-height: calc(100vh - var(--topbar-height) - 36px); overflow: auto; }
 .directory-heading { display: grid; gap: 14px; padding: 20px 16px 15px; }.directory-heading>div { display: flex; align-items: center; justify-content: space-between; }.directory-heading strong { color: var(--text-strong); font-size: 12px; }.directory-heading input,.ability-toolbar input { width: 100%; padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border); border-radius: 9px; outline: none; }
 .agent-row { display: grid; width: 100%; grid-template-columns: 35px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 12px 15px; color: var(--text); background: transparent; border: 0; border-top: 1px solid var(--border); text-align: left; cursor: pointer; }.agent-row:hover,.agent-row.active { background: var(--surface-hover); }.agent-row.active { box-shadow: inset 3px 0 var(--accent); }.agent-avatar { display: grid; width: 35px; height: 35px; place-items: center; color: var(--accent); background: var(--accent-subtle); border: 1px solid var(--accent-border); border-radius: 10px; font-weight: 700; }.agent-row-copy { min-width: 0; display: grid; gap: 2px; }.agent-row-copy strong,.agent-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.agent-row-copy strong { color: var(--text-strong); font-size: 12px; }.agent-row-copy small { color: var(--text-muted); font: 9px var(--font-mono); }.agent-row-state { display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 9px; }.agent-row-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }.agent-row-state i.disabled { background: var(--warning); }.agent-row-state i.archived { background: var(--text-muted); }
-.agent-editor { min-width: 0; overflow: hidden; }.editor-header { display: flex; min-height: 92px; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 22px; }.editor-header h2 { margin: 5px 0 2px; color: var(--text-strong); font-size: 20px; }.editor-header p { margin: 0; color: var(--text-muted); font-size: 10px; }.editor-actions { display: flex; align-items: center; gap: 8px; }
+.agent-editor { min-width: 0; overflow: hidden; }.editor-header { display: flex; min-height: 92px; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 22px; }.editor-header h2 { margin: 5px 0 2px; color: var(--text-strong); font-size: 20px; }.editor-header p { margin: 0; color: var(--text-muted); font-size: 10px; }.editor-actions { display: flex; align-items: center; gap: 8px; }.editor-title-line { display: flex; align-items: center; gap: 9px; }.role-chip { padding: 3px 8px; color: var(--accent); background: var(--accent-subtle); border: 1px solid var(--accent-border); border-radius: 99px; font-size: 9px; font-weight: 600; }
 .editor-tabs { display: flex; overflow-x: auto; padding: 0 18px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.editor-tabs button { display: flex; align-items: center; gap: 6px; padding: 13px 12px 11px; color: var(--text-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; }.editor-tabs button.active { color: var(--text-strong); border-bottom-color: var(--accent); }.editor-tabs small { min-width: 17px; padding: 1px 4px; color: var(--accent); background: var(--accent-subtle); border-radius: 99px; font: 9px var(--font-mono); }
 .agent-form,.skills-pane,.revision-pane { padding: 22px; }.form-section { border: 1px solid var(--border); border-radius: 13px; overflow: hidden; }.form-section>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px 18px; background: var(--surface-raised); border-bottom: 1px solid var(--border); }.form-section>header>div { display: flex; align-items: center; gap: 9px; }.form-section>header span { color: var(--accent); font: 600 9px var(--font-mono); }.form-section h3 { margin: 0; color: var(--text-strong); font-size: 14px; }.form-section>header p { margin: 0; color: var(--text-muted); font-size: 10px; text-align: right; }
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; padding: 18px; }.form-grid label,.skill-bind-form label,.ability-toolbar label { display: grid; gap: 6px; color: var(--text-muted); font-size: 10px; }.form-grid label.wide { grid-column: 1/-1; }.form-grid input,.form-grid select,.form-grid textarea,.skill-bind-form input,.skill-bind-form select,.ability-toolbar select { width: 100%; padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border-strong); border-radius: 9px; outline: none; }.form-grid textarea { resize: vertical; line-height: 1.65; }.form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-subtle); }.switch-label { display: flex !important; flex-direction: row !important; align-items: center; gap: 10px !important; min-height: 54px; padding: 9px 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; }.switch-label input { width: auto; }.switch-label span { display: grid; gap: 2px; }.switch-label strong { color: var(--text); font-size: 11px; }.switch-label small { color: var(--text-muted); }
 .abilities-pane { padding: 22px; }.catalog-summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; padding:20px; }.catalog-summary strong{color:var(--text-strong);font-size:14px}.catalog-summary p{margin:6px 0 0;color:var(--text-muted);font-size:11px;line-height:1.6}.catalog-groups{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.catalog-groups span{display:flex;gap:6px;align-items:center;padding:7px 10px;color:var(--text-muted);background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;font-size:10px}.catalog-groups b{color:var(--accent);font:600 11px var(--font-mono)}.ability-toolbar { display: grid; grid-template-columns: minmax(190px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.capability-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: center; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card>span:last-child { min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; }.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { grid-column: 1/-1; color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }
 .skill-bind-form { display: grid; grid-template-columns: 1.3fr 1fr 110px auto; gap: 12px; align-items: end; padding: 18px; border-bottom: 1px solid var(--border); }.binding-list article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto auto; gap: 11px; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--border); }.binding-list article:last-child { border-bottom: 0; }.binding-list article>div { min-width: 0; display: grid; gap: 2px; }.binding-list strong { color: var(--text-strong); font-size: 11px; }.binding-list small,.binding-list article>span:nth-last-child(2),.binding-list code { color: var(--text-muted); font-size: 9px; }
 .revision-list { padding: 4px 18px 18px; }.revision-list article { position: relative; display: grid; grid-template-columns: 12px minmax(0,1fr) auto auto; gap: 12px; align-items: center; min-height: 66px; padding: 11px 0; border-bottom: 1px solid var(--border); }.revision-list article.current { background: linear-gradient(90deg,var(--accent-subtle),transparent); }.revision-node { width: 9px; height: 9px; border: 2px solid var(--accent); border-radius: 50%; }.revision-list article>div { min-width: 0; display: grid; gap: 3px; }.revision-list strong { color: var(--text-strong); font-size: 11px; }.revision-list small { color: var(--text-muted); font: 9px var(--font-mono); }.current-label { color: var(--accent); font: 600 8px var(--font-mono); }
+.release-policy-row { display:grid;grid-template-columns:minmax(220px,1fr) 150px auto auto;gap:12px;align-items:end;padding:15px 18px;border-bottom:1px solid var(--border) }.release-policy-row label { display:grid;gap:6px;color:var(--text-muted);font-size:10px }.release-policy-row input,.release-policy-row select { width:100%;padding:9px 10px;color:var(--text);background:var(--input);border:1px solid var(--border-strong);border-radius:9px }.release-policy-row .release-check { display:flex;align-items:center;gap:7px;padding-bottom:10px;white-space:nowrap }.release-policy-row .release-check input { width:auto }
 .role-guide { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: -2px; }
 .role-card { display: grid; gap: 7px; min-height: 82px; padding: 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text-muted); text-align: left; cursor: pointer; }
 .role-card:hover,.role-card.selected { border-color: var(--accent); background: var(--accent-subtle); color: var(--text-strong); }
 .role-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-strong); }.role-card-top small { color: var(--text-muted); font-size: 10px; }.role-card>span:last-child { font-size: 12px; line-height: 1.45; }
 .role-detail { grid-column: 1/-1; padding: 11px 13px; border-left: 3px solid var(--accent); border-radius: 5px; background: var(--surface-raised); }.role-detail p { margin: 5px 0; color: var(--text-muted); font-size: 12px; line-height: 1.55; }.role-detail small { color: var(--text-muted); font-size: 11px; }
 .memory-guide { display: grid; gap: 5px; padding: 11px 13px; color: var(--text-muted); background: var(--surface-raised); border-left: 3px solid var(--accent); border-radius: 5px; font-size: 11px; line-height: 1.55; }.memory-guide strong { color: var(--text-strong); font-size: 11px; }
-@media (max-width: 1120px) { .capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-@media (max-width: 900px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 300px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.skill-bind-form { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; } }
+.memory-data-pane { padding: 22px; }.memory-summary-grid { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 8px; padding: 16px 18px; border-bottom: 1px solid var(--border); }.memory-summary-grid button,.memory-summary-grid>div { display: grid; gap: 3px; padding: 11px 12px; color: var(--text-muted); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 9px; text-align: left; }.memory-summary-grid button { cursor: pointer; }.memory-summary-grid button:hover,.memory-summary-grid button.active { background: var(--accent-subtle); border-color: var(--accent-border); }.memory-summary-grid strong { color: var(--text-strong); font: 600 18px var(--font-mono); }.memory-summary-grid span { font-size: 10px; }.memory-data-toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border); }.memory-data-toolbar input { min-width: 180px; flex: 1; }.memory-data-toolbar input,.memory-data-toolbar select { padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border-strong); border-radius: 9px; }.segmented-control { display: flex; padding: 3px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 9px; }.segmented-control button { padding: 7px 10px; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; cursor: pointer; white-space: nowrap; }.segmented-control button.active { color: var(--text-strong); background: var(--surface); box-shadow: var(--shadow-sm); }.memory-error { margin: 12px 18px 0; }
+.memory-browser { display: grid; grid-template-columns: minmax(250px,.8fr) minmax(0,1.3fr); min-height: 440px; }.memory-document-list { max-height: 580px; overflow: auto; border-right: 1px solid var(--border); }.memory-document-list>button { display: grid; width: 100%; gap: 5px; padding: 13px 16px; color: var(--text-muted); background: transparent; border: 0; border-bottom: 1px solid var(--border); text-align: left; cursor: pointer; }.memory-document-list>button:hover,.memory-document-list>button.active { background: var(--surface-hover); }.memory-document-list>button.active { box-shadow: inset 3px 0 var(--accent); }.memory-document-list strong { color: var(--text-strong); font: 600 11px var(--font-mono); }.memory-document-list p { display: -webkit-box; overflow: hidden; margin: 0; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 10px; white-space: pre-wrap; }.memory-document-list small { font-size: 8px; }.memory-layer-tag { width: max-content; padding: 2px 6px; color: var(--accent); background: var(--accent-subtle); border-radius: 99px; font-size: 8px; }
+.memory-document-detail { min-width: 0; background: var(--surface-raised); }.memory-document-detail>header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }.memory-document-detail>header>div { min-width: 0; display: flex; align-items: center; gap: 8px; }.memory-document-detail h4 { overflow: hidden; margin: 0; color: var(--text-strong); font: 600 12px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }.memory-document-detail>header small { color: var(--text-muted); font-size: 9px; white-space: nowrap; }.memory-document-detail pre,.memory-candidate-list pre { overflow: auto; margin: 0; color: var(--text); font: 11px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }.memory-document-detail pre { min-height: 330px; max-height: 500px; padding: 18px; }.memory-document-detail>footer { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; color: var(--text-muted); border-top: 1px solid var(--border); font-size: 8px; }.memory-document-detail>footer code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-candidate-list { display: grid; gap: 10px; padding: 16px 18px 18px; }.memory-candidate-list article { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }.memory-candidate-list article>header,.memory-candidate-list article>footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: var(--surface-raised); }.memory-candidate-list article>header>div { display: flex; align-items: center; gap: 8px; }.memory-candidate-list article>header strong { color: var(--text-strong); font: 600 10px var(--font-mono); }.memory-candidate-list pre { max-height: 240px; padding: 13px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.memory-candidate-list article>footer { color: var(--text-muted); font-size: 8px; }.memory-candidate-list article>footer code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1120px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 280px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.memory-browser { grid-template-columns: minmax(230px,.75fr) minmax(0,1.25fr); } }
+@media (max-width: 900px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 300px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.skill-bind-form { grid-template-columns: 1fr 1fr; }.memory-summary-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }.memory-browser { grid-template-columns: 1fr; }.memory-document-list { max-height: 300px; border-right: 0; border-bottom: 1px solid var(--border); } }
+@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide,.memory-summary-grid { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane,.memory-data-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; }.memory-data-toolbar { align-items: stretch; flex-direction: column; }.memory-candidate-list article>footer { align-items: flex-start; flex-direction: column; } }
 </style>

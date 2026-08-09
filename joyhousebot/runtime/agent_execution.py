@@ -24,6 +24,7 @@ from joyhousebot.runtime.context import (
     RunContext,
     VerificationFailedError,
 )
+from joyhousebot.runtime.execution_metadata import build_execution_metadata
 from joyhousebot.runtime.models import (
     AgentEvent,
     AgentOptions,
@@ -498,12 +499,11 @@ class AgentExecutionMixin(AgentTerminalMixin):
             )
             if scenario is not None:
                 scenario_execution_policy = dict(getattr(scenario, "execution_policy", {}) or {})
-        execution_metadata = {
-            "scenario_id": str(getattr(scenario_state, "scenario_id", "") or ""),
-            "scenario_version": int(getattr(scenario_state, "scenario_version", 0) or 0),
-            "scenario_inputs": dict(getattr(scenario_state, "collected_inputs", {}) or {}),
-            "scenario_execution_policy": scenario_execution_policy,
-        }
+        execution_metadata = build_execution_metadata(
+            metadata,
+            scenario_state=scenario_state,
+            scenario_execution_policy=scenario_execution_policy,
+        )
         context = RunContext(
             run_id=run_id,
             task_id=task_id,

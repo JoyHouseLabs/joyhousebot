@@ -9,6 +9,8 @@
  * 代价是打开新标签页需要重新登录，这是对 operator 凭据刻意的取舍。
  */
 
+import { getIdentityHeaders } from './identity'
+
 const CONTROL_TOKEN_STORAGE_KEY = 'joyhousebot_control_token'
 
 let volatileControlToken: string | null = null
@@ -102,6 +104,9 @@ export function getApiHeaders(): Record<string, string> {
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const auth = getApiHeaders()
   const headers = new Headers(init?.headers)
+  for (const [k, v] of Object.entries(getIdentityHeaders())) {
+    headers.set(k, v)
+  }
   for (const [k, v] of Object.entries(auth)) {
     headers.set(k, v)
   }

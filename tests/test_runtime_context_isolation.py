@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.agent.tools.base import Tool
+from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.config.schema import Config
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.runtime.context import (
@@ -63,11 +65,37 @@ class _ConcurrentMessageProvider(LLMProvider):
             tool_calls=[
                 ToolCallRequest(
                     id=f"call-{prompt}",
-                    name="message",
+                    name="routing_probe",
                     arguments={"content": f"out:{prompt}"},
                 )
             ],
         )
+
+
+class _RoutingProbeTool(Tool):
+    """Read-only test probe for ContextVar routing, with no business write."""
+
+    name = "routing_probe"
+    description = "Record the current execution route"
+    parameters = {
+        "type": "object",
+        "properties": {"content": {"type": "string"}},
+        "required": ["content"],
+    }
+
+    def __init__(self, sink) -> None:
+        self._sink = sink
+
+    async def execute(self, content: str, **kwargs) -> str:
+        context = kwargs["tool_context"]
+        await self._sink(
+            OutboundMessage(
+                channel=context.channel,
+                chat_id=context.chat_id,
+                content=content,
+            )
+        )
+        return "recorded"
 
 
 class _ConcurrencyProbeProvider(LLMProvider):
@@ -151,6 +179,7 @@ async def test_concurrent_sessions_keep_tool_routing_isolated(tmp_path: Path) ->
         max_iterations=2,
         outbound_sink=sink,
     )
+    loop.capabilities.register_tool(_RoutingProbeTool(sink))
 
     await asyncio.gather(
         loop.process_direct("alpha", session_key="web:a", channel="web", chat_id="a"),

@@ -14,6 +14,8 @@ export interface RuntimeUsageSummary {
 export interface RuntimeIdentity {
   subject: string
   user_id: string
+  actor_user_id: string
+  impersonating: boolean
   role: string
   permissions: string[]
   is_admin: boolean
@@ -26,7 +28,23 @@ export interface ScheduleItem {
   agent_id: string
   enabled: boolean
   schedule: { kind: string; at_ms?: number | null; every_ms?: number | null; expr?: string | null; tz?: string | null }
-  payload: { message: string; deliver?: boolean; channel?: string | null; to?: string | null }
+  payload: {
+    kind?: 'agent_turn' | 'agent_monitor'
+    message: string
+    deliver?: boolean
+    channel?: string | null
+    to?: string | null
+    session_mode?: 'isolated' | 'main'
+    session_id?: string | null
+    quiet_token?: string
+    defer_when_busy?: boolean
+    busy_backoff_ms?: number
+    preflight_mode?: 'always' | 'runtime_attention'
+    context_mode?: 'full' | 'light'
+    active_hours?: { start: string; end: string; timezone: string } | null
+    managed_by?: 'user' | 'agent_revision'
+    managed_revision_id?: string | null
+  }
   state: { next_run_at_ms?: number | null; last_run_at_ms?: number | null; last_status?: string | null }
 }
 

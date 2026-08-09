@@ -9,7 +9,7 @@
     <section class="filter-bar">
       <label><span>状态</span><select v-model="statusFilter" @change="resetAndLoad"><option value="">全部状态</option><option v-for="item in statuses" :key="item" :value="item">{{ statusLabel(item) }}</option></select></label>
       <label><span>Agent</span><select v-model="agentFilter" @change="resetAndLoad"><option value="">全部 Agent</option><option v-for="agent in agents" :key="agent.id" :value="agent.id">{{ agent.name || agent.id }}</option></select></label>
-      <label class="search-field"><span>筛选</span><input v-model="search" placeholder="Run ID、Session 或摘要" @keyup.enter="resetAndLoad" /><small>按 Enter 搜索</small></label>
+      <label class="search-field"><span>筛选</span><div class="search-control"><input v-model="search" placeholder="Run ID、Session 或摘要" @keyup.enter="resetAndLoad" /><small>按 Enter 搜索</small></div></label>
       <span class="result-count">第 {{ page }} / {{ totalPages }} 页 · {{ totalRuns }} Runs</span>
     </section>
 

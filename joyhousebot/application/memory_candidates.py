@@ -17,12 +17,14 @@ class MemoryCandidateService:
         self,
         context: RequestContext,
         *,
+        agent_id: str | None = None,
         status: str | None = "pending",
         limit: int = 100,
     ) -> list[Any]:
         return await asyncio.to_thread(
             self.store.list_memory_candidates,
             user_id=context.user_id,
+            agent_id=agent_id,
             status=status,
             limit=limit,
         )

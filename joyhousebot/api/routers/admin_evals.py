@@ -11,6 +11,7 @@ from joyhousebot.api.schemas import (
     CreateEvalRunRequest,
     ExecuteEvalRunRequest,
     RecordEvalObservationRequest,
+    SaveEvalScheduleRequest,
     SaveEvalSuiteRequest,
     SaveReleaseGateRequest,
 )
@@ -89,18 +90,37 @@ async def finalize_eval_run(
     return await container.evals.finalize_run(eval_run_id)
 
 
-@router.post("/eval-runs/{eval_run_id}/execute")
+@router.post("/eval-runs/{eval_run_id}/execute", status_code=202)
 async def execute_eval_run(
     eval_run_id: str,
     body: ExecuteEvalRunRequest,
     principal: EvalsWriterDep,
     container: ContainerDep,
 ):
-    return await container.eval_execution.execute(
+    return await container.eval_execution.enqueue(
         eval_run_id,
         actor_id=principal.subject,
         max_concurrency=body.max_concurrency,
         case_timeout_seconds=body.case_timeout_seconds,
+    )
+
+
+@router.get("/eval-schedules")
+async def list_eval_schedules(principal: EvalsReaderDep, container: ContainerDep):
+    return {"items": await container.evals.list_schedules()}
+
+
+@router.put("/eval-schedules/{policy_id}")
+async def save_eval_schedule(
+    policy_id: str,
+    body: SaveEvalScheduleRequest,
+    principal: EvalsWriterDep,
+    container: ContainerDep,
+):
+    if body.policy_id != policy_id:
+        raise HTTPException(status_code=400, detail="schedule identity must match path")
+    return await container.evals.save_schedule(
+        body.model_dump(), actor_id=principal.subject
     )
 
 

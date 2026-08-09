@@ -23,13 +23,17 @@
 - Tool、Skill、Agent、Workflow、Connector 使用统一 CapabilityDefinition/Invocation/Result。
 - Agent、Capability、Scenario 是平台共享版本化资源，不为每个用户复制。
 
-### 1.3 Agent 配置发布
+### 1.3 配置发布治理
 
 - `agent_definitions` 保存稳定身份，`agent_revisions` 保存不可变策略版本。
 - Skill 只能绑定 draft Agent revision；发布后正文和绑定都不可修改。
-- 发布创建 `configuration_rollouts` 和固定的 `configuration_rollout_targets`。
-- Worker 的 AgentRuntimeCatalog 主动预热精确 revision，并记录 loaded/failed ACK。
+- Agent、Capability、Scenario 发布统一创建 `configuration_rollouts` 和固定的
+  `configuration_rollout_targets`，不会再由 Capability/Scenario 绕过集群校验直接切换。
+- Worker 的 AgentRuntimeCatalog 主动预热精确 revision、Capability 插件构建和 Scenario 依赖，
+  并记录 loaded/failed ACK。
 - 全部目标成功后才原子切换 current revision；失败时旧版本继续服务。
+- 发布支持自动激活或人工批准、超时、显式取消、失败节点重试和显式回滚；重试保留已成功节点，
+  回滚只允许切回发布前冻结的 revision。自动回滚策略在切换前失败时保护旧指针，不制造短暂错误流量。
 - Run 创建时固化 Agent revision 与 Skill 绑定，回放不会被后续发布漂移。
 - CapabilityRef 已固定到产生它的插件发布单元；Scenario、Graph 和 MCP 任务只持久化完整引用，不会
   因同名 capability 发布新版本而漂移。
@@ -63,10 +67,19 @@
 
 - Overview 展示数据库全量聚合指标，不再用最近 1000 条冒充总量。
 - Runs 展示瀑布、模型调用、推理、日志、Task、子 Run、Artifact、Trace Blob 和回放。
-- 平台页按访问控制、集群发布、审计、运行摘要分区；Agent、Skills、Tools、MCP Server 和 Channels 在配置子菜单中分别维护，Dinq 运维保持独立入口。
+- 平台页按访问控制、集群发布、审计、运行摘要分区；插件中心、Agent、Skills、Tools、MCP Server 和 Channels 在配置子菜单中分别维护。业务插件只通过通用 Manifest、Quickstart、组件、健康与调用界面进入核心控制台。
 - 管理员可用角色模板选择权限、签发/吊销 Token、创建 Agent draft、发布 revision、发布
   Capability，并观察每个 Worker 的 ACK/失败。
 - Chat 是真实用户链路试用，不绕过身份、Session、Run 或 Worker。
+
+### 1.7 Schedule 与 Agent Monitor 闭环
+
+- Schedule、Occurrence、Run terminal projection 与 Channel outbox 已形成 PostgreSQL 闭环；提交重试、
+  显式 Run 重试、misfire、overlap、quiet delivery 和 dead-letter 都有可查询状态。
+- Agent Monitor 复用 Scheduler claim loop，不维护第二套 heartbeat timer；支持 Runtime attention 预检、
+  版本化 scratch、busy defer、active hours 与 light context。
+- Agent revision 的 `monitor_policy` 是审计化 desired state。Runtime 按用户首次使用对账一个托管
+  Schedule，revision 发布更新既有用户，仍保持 `user_id + agent_id + root_run_id` 数据边界。
 
 ## 2. 智能执行底座 V2 改进方案
 
@@ -429,7 +442,7 @@ Task 传播均进入 PostgreSQL 状态机。生产开放写业务数据前仍须
 save draft
    │
    ▼
-publish request ── transaction ──▶ immutable published revision
+publish request ── transaction ──▶ immutable staged revision
                                       │
                                       ▼
                               snapshot healthy Agent Workers
@@ -438,15 +451,19 @@ publish request ── transaction ──▶ immutable published revision
                      ▼                                 ▼
                 loaded ACK                         failed ACK
                      │                                 │
-          all targets loaded                         retain old current
+          all targets loaded                retry failed targets / cancel
                      │                                 │
                      ▼                                 ▼
-              activate revision                  rollout.failed event
+       automatic activate or await approval       retain old current
+                     │
+                     ▼
+          activate revision ── explicit rollback ──▶ previous revision
 ```
 
 目标 Worker 集合在发布事务中冻结，新扩容 Worker 不阻塞既有 rollout；它首次执行 Run 时仍会按
-snapshot revision 懒加载。Worker 重启后 worker_id 改变，旧目标若在发布期间消失会使 rollout
-保持进行中，管理员可以据此判断需要恢复实例或执行后续的显式终止/替代发布。
+snapshot revision 懒加载。Worker 重启后 worker_id 改变，旧目标若在发布期间消失，rollout 会在
+deadline 到达后进入 `timed_out`；管理员可以取消、只重试失败/超时目标，或发起替代发布。人工模式在
+全部 ACK 后进入 `awaiting_approval`，批准才切换 current pointer。
 
 ## 4. 当前控制面 API
 
@@ -455,6 +472,7 @@ snapshot revision 懒加载。Worker 重启后 worker_id 改变，旧目标若�
 - Agent：`/v1/admin/agents`、`agents/{id}/revisions/*`、Skill binding。
 - Capability：`/v1/admin/capabilities/*`。
 - Scenario：`/v1/admin/scenarios/*`。
+- 用户 Workflow：`/v1/workflows/*`，包括设计 Run、不可变 revision、发布和编译到 TaskGraph 执行。
 - 访问：`/v1/admin/users`、`access-tokens`、`permissions`。
 - 审计：`/v1/admin/configuration-events`、`access-events`。
 - 安全摘要：`/v1/admin/config`，永不返回凭据正文。
@@ -476,10 +494,9 @@ snapshot revision 懒加载。Worker 重启后 worker_id 改变，旧目标若�
 
 ### P0：发布控制
 
-- 增加 rollout 超时、显式取消、重试失败 Worker、批准后激活和自动回滚策略。
-- Capability/Scenario 采用与 Agent 相同的目标校验与 rollout（当前已有不可变发布和审计，只有
-  Agent 需要 Worker 预热 ACK）。
-- 发布前执行 provider 连通性、模型权限、Tool 依赖和 Schema compatibility 检查。
+- 发布前进一步执行真实 provider 连通性、模型账号权限和外部 Connector 健康检查；当前已检查
+  Agent 模型/插件可解析、Capability JSON Schema 与精确插件构建、Scenario 精确能力依赖。
+- 增加跨 Agent/Capability/Scenario 的 change-set，把必须一起生效的多个 revision 作为原子发布单元。
 
 ### P1：密钥和业务配置
 

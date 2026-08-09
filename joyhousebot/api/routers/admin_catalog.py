@@ -18,6 +18,7 @@ from joyhousebot.api.dependencies import (
     ContainerDep,
     PlatformAdminDep,
     RolloutsReaderDep,
+    RolloutsWriterDep,
     SettingsReaderDep,
     SettingsWriterDep,
     WorkersReaderDep,
@@ -25,6 +26,7 @@ from joyhousebot.api.dependencies import (
 from joyhousebot.api.schemas import (
     BindAgentSkillRequest,
     PublishCapabilityRequest,
+    RolloutPolicyRequest,
     SaveAgentRevisionRequest,
     SaveCapabilityRuntimeSettingsRequest,
     SaveMCPServerRequest,
@@ -124,6 +126,7 @@ async def save_agent_revision(
         capability_policy=body.capability_policy,
         memory_policy=body.memory_policy,
         output_policy=body.output_policy,
+        monitor_policy=body.monitor_policy,
         plugin_requirements=tuple(
             PluginReleaseRequirement.from_dict(item) for item in body.plugin_requirements
         ),
@@ -142,10 +145,14 @@ async def publish_agent_revision(
     revision_id: str,
     principal: AgentsPublisherDep,
     container: ContainerDep,
+    body: RolloutPolicyRequest | None = None,
 ):
     try:
         return await container.platform.publish_agent_revision(
-            agent_id, revision_id, actor_id=principal.subject
+            agent_id,
+            revision_id,
+            actor_id=principal.subject,
+            rollout_policy=body.model_dump() if body is not None else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -278,7 +285,11 @@ async def publish_capability(
         configuration=body.configuration,
     )
     try:
-        return await container.platform.publish_capability(definition, actor_id=principal.subject)
+        return await container.platform.publish_capability(
+            definition,
+            actor_id=principal.subject,
+            rollout_policy=body.rollout_policy.model_dump(),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -290,6 +301,49 @@ async def rollouts(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     return {"items": await container.platform.list_rollouts(limit=limit)}
+
+
+async def _rollout_action(action, rollout_id: str, principal, container):
+    try:
+        changed = await action(rollout_id, actor_id=principal.subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not changed:
+        raise HTTPException(status_code=404, detail="rollout not found")
+    rollout = await asyncio.to_thread(container.store.get_configuration_rollout, rollout_id)
+    assert rollout is not None
+    targets = await asyncio.to_thread(
+        container.store.list_configuration_rollout_targets, rollout_id
+    )
+    return {**rollout.to_dict(), "targets": targets}
+
+
+@router.post("/rollouts/{rollout_id}/approve")
+async def approve_rollout(
+    rollout_id: str, principal: RolloutsWriterDep, container: ContainerDep
+):
+    return await _rollout_action(container.platform.approve_rollout, rollout_id, principal, container)
+
+
+@router.post("/rollouts/{rollout_id}/cancel")
+async def cancel_rollout(
+    rollout_id: str, principal: RolloutsWriterDep, container: ContainerDep
+):
+    return await _rollout_action(container.platform.cancel_rollout, rollout_id, principal, container)
+
+
+@router.post("/rollouts/{rollout_id}/retry")
+async def retry_rollout(
+    rollout_id: str, principal: RolloutsWriterDep, container: ContainerDep
+):
+    return await _rollout_action(container.platform.retry_rollout, rollout_id, principal, container)
+
+
+@router.post("/rollouts/{rollout_id}/rollback")
+async def rollback_rollout(
+    rollout_id: str, principal: RolloutsWriterDep, container: ContainerDep
+):
+    return await _rollout_action(container.platform.rollback_rollout, rollout_id, principal, container)
 
 
 @router.get("/configuration-events")

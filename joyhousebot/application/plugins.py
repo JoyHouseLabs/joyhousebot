@@ -26,12 +26,13 @@ def _configured_plugins(config: Any) -> tuple[Any, ...]:
 
 async def run_plugin_diagnostics(*, config: Any, store: Any, plugin_id: str) -> list[dict[str, Any]]:
     """Run a plugin's declared read-only checks and persist safe summaries."""
-    plugin = next((item for item in _configured_plugins(config) if item.plugin_id == plugin_id), None)
+    registry = configured_plugin_registry(config)
+    plugin = next((item for item in registry.plugins if item.plugin_id == plugin_id), None)
     if plugin is None:
         raise LookupError(f"configured plugin {plugin_id!r} is not installed in this API replica")
     release = store.get_plugin_release(plugin_id)
     version = str(release["version"] if release else plugin.version)
-    checks = getattr(plugin, "health_checks", lambda: ())()
+    checks = registry.list_health_checks(plugin_id)
     context = PluginHealthContext(store=store, config=config)
     results: list[dict[str, Any]] = []
     for check in checks:

@@ -676,6 +676,7 @@ version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
+    { name = "cryptography" },
     { name = "dingtalk-stream" },
     { name = "fastapi" },
     { name = "httpx", extra = ["socks"] },
@@ -714,6 +715,7 @@ observability = [
 [package.metadata]
 requires-dist = [
     { name = "croniter", specifier = ">=2.0.0" },
+    { name = "cryptography", specifier = ">=46.0.0" },
     { name = "dingtalk-stream", specifier = ">=0.4.0" },
     { name = "fastapi", specifier = ">=0.100.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.25.0" },

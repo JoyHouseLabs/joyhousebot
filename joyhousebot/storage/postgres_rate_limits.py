@@ -34,25 +34,35 @@ class PostgresRateLimitStoreMixin:
         with self._pool.connection() as conn, conn.transaction():
             if not increment:
                 row = conn.execute(
-                    """SELECT request_count FROM api_rate_limits
-                       WHERE rate_key=%s AND window_start=
-                           floor(extract(epoch FROM clock_timestamp())/%s)::bigint""",
-                    (rate_key, divisor),
+                    """SELECT request_count,
+                              floor(extract(epoch FROM clock_timestamp()))::bigint
+                                  - window_start AS window_age
+                       FROM api_rate_limits WHERE rate_key=%s""",
+                    (rate_key,),
                 ).fetchone()
-                return row is None or int(row["request_count"]) < max(1, int(limit))
+                return (
+                    row is None
+                    or int(row["window_age"]) >= divisor
+                    or int(row["window_age"]) < 0
+                    or int(row["request_count"]) < max(1, int(limit))
+                )
             row = conn.execute(
                 """INSERT INTO api_rate_limits(rate_key,window_start,request_count)
                    VALUES (
                        %s,
-                       floor(extract(epoch FROM clock_timestamp())/%s)::bigint,
+                       floor(extract(epoch FROM clock_timestamp()))::bigint,
                        1
                    ) ON CONFLICT(rate_key) DO UPDATE SET
-                       window_start=excluded.window_start,
+                       window_start=CASE
+                           WHEN excluded.window_start-api_rate_limits.window_start >= %s
+                                OR excluded.window_start < api_rate_limits.window_start
+                           THEN excluded.window_start ELSE api_rate_limits.window_start END,
                        request_count=CASE
-                           WHEN api_rate_limits.window_start=excluded.window_start
-                           THEN api_rate_limits.request_count+1 ELSE 1 END,
+                           WHEN excluded.window_start-api_rate_limits.window_start >= %s
+                                OR excluded.window_start < api_rate_limits.window_start
+                           THEN 1 ELSE api_rate_limits.request_count+1 END,
                        updated_at=clock_timestamp()
                    RETURNING request_count""",
-                (rate_key, divisor),
+                (rate_key, divisor, divisor),
             ).fetchone()
             return int(row["request_count"]) <= max(1, int(limit))

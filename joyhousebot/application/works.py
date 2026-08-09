@@ -59,6 +59,12 @@ class WorkService:
         if artifact is None:
             raise NotFoundError("source artifact not found")
         _bounded(artifact.get("content"), label="artifact content")
+        if artifact.get("content") is None and artifact.get("uri") and (
+            not artifact.get("content_sha256") or not artifact.get("object_version")
+        ):
+            raise ValidationError(
+                "URI artifacts require content_sha256 and object_version before becoming Works"
+            )
         return artifact
 
     @staticmethod
@@ -95,6 +101,10 @@ class WorkService:
             raise ValidationError(
                 "published works require embedded content or an HTTPS artifact URI"
             )
+        if not version.get("content_sha256"):
+            raise ValidationError("published works require an immutable content digest")
+        if version.get("content") is None and not version.get("source_object_version"):
+            raise ValidationError("published URI works require a frozen object version")
 
     async def create(
         self, context: RequestContext, value: dict[str, Any]

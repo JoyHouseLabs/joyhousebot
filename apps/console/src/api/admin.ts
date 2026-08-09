@@ -59,10 +59,27 @@ export interface ConfigurationRollout {
   target_worker_count: number
   acknowledged_worker_count: number
   failed_worker_count: number
+  previous_revision_id?: string | null
+  activation_mode: 'automatic' | 'manual'
+  timeout_seconds: number
+  deadline_at?: string | null
+  auto_rollback: boolean
+  approved_by?: string | null
+  approved_at?: string | null
+  cancelled_by?: string | null
+  cancelled_at?: string | null
+  rollback_revision_id?: string | null
   created_at: string
   updated_at: string
   completed_at?: string | null
-  targets: Array<{ worker_id: string; status: string; error?: Record<string, unknown> | null; acknowledged_at?: string | null }>
+  targets: Array<{ worker_id: string; status: string; error?: Record<string, unknown> | null; acknowledged_at?: string | null; attempt_count: number }>
+}
+
+export interface RolloutPolicy {
+  activation_mode: 'automatic' | 'manual'
+  timeout_seconds: number
+  auto_rollback: boolean
+  require_healthy_workers: boolean
 }
 
 export interface ConfigurationEvent {
@@ -97,6 +114,7 @@ export interface AgentRevision {
   capability_policy: Record<string, unknown>
   memory_policy: Record<string, unknown>
   output_policy: Record<string, unknown>
+  monitor_policy: Record<string, unknown>
   status: 'draft' | 'published' | 'retired'
   created_by: string
   created_at?: string | null
@@ -275,6 +293,14 @@ export const saveCapabilityRuntimeSettings = (capabilityId: string, value: Pick<
 export const getPlatformAdmins = async () => (await adminFetch<{ items: PlatformAdmin[] }>('/users')).items
 export const getPermissionCatalog = () => adminFetch<PermissionCatalog>('/permissions')
 export const getConfigurationRollouts = async () => (await adminFetch<{ items: ConfigurationRollout[] }>('/rollouts')).items
+export const approveConfigurationRollout = (rolloutId: string) =>
+  adminFetch<ConfigurationRollout>(`/rollouts/${encodeURIComponent(rolloutId)}/approve`, { method: 'POST' })
+export const cancelConfigurationRollout = (rolloutId: string) =>
+  adminFetch<ConfigurationRollout>(`/rollouts/${encodeURIComponent(rolloutId)}/cancel`, { method: 'POST' })
+export const retryConfigurationRollout = (rolloutId: string) =>
+  adminFetch<ConfigurationRollout>(`/rollouts/${encodeURIComponent(rolloutId)}/retry`, { method: 'POST' })
+export const rollbackConfigurationRollout = (rolloutId: string) =>
+  adminFetch<ConfigurationRollout>(`/rollouts/${encodeURIComponent(rolloutId)}/rollback`, { method: 'POST' })
 export const getConfigurationEvents = async () => (await adminFetch<{ items: ConfigurationEvent[] }>('/configuration-events')).items
 export const getAccessEvents = async () => (await adminFetch<{ items: Array<Record<string, unknown>> }>('/access-events')).items
 export const getAccessTokens = async () => (await adminFetch<{ items: AccessToken[] }>('/access-tokens')).items
@@ -309,10 +335,14 @@ export function saveAgentRevision(agentId: string, revisionId: string, value: Re
   )
 }
 
-export const publishAgentRevision = (agentId: string, revisionId: string) =>
+export const publishAgentRevision = (agentId: string, revisionId: string, policy?: RolloutPolicy) =>
   adminFetch<Record<string, unknown>>(
     `/agents/${encodeURIComponent(agentId)}/revisions/${encodeURIComponent(revisionId)}/publish`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      headers: policy ? { 'Content-Type': 'application/json' } : undefined,
+      body: policy ? JSON.stringify(policy) : undefined,
+    },
   )
 
 export function publishCapability(capabilityId: string, version: string, value: Record<string, unknown>) {

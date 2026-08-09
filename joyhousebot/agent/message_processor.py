@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 
 class MessageProcessorMixin:
     @staticmethod
+    def _context_mode(run_context: RunContext) -> str:
+        """Return the frozen context mode for a scheduled Monitor Run."""
+        metadata = dict(run_context.metadata or {})
+        if (
+            metadata.get("schedule_payload_kind") == "agent_monitor"
+            and metadata.get("monitor_context_mode") == "light"
+        ):
+            return "light"
+        return "full"
+
+    @staticmethod
     def _message_lock_key(msg: InboundMessage, session_key: str | None) -> str:
         if session_key:
             return session_key
@@ -142,6 +153,7 @@ class MessageProcessorMixin:
                 memory_policy=dict(getattr(self, "memory_policy", {})),
             )
         )
+        context_mode = self._context_mode(run_context)
 
         # Handle slash commands (only when config.commands.native is not False)
         cmd = msg.content.strip().lower()
@@ -179,7 +191,7 @@ class MessageProcessorMixin:
                 channel=msg.channel, chat_id=msg.chat_id, content="Commands are disabled."
             )
 
-        if len(session.messages) > self.memory_window:
+        if context_mode != "light" and len(session.messages) > self.memory_window:
             await self._consolidate_memory(session, run_context=run_context)
 
         (
@@ -187,7 +199,11 @@ class MessageProcessorMixin:
             context_sources,
             context_candidates,
         ) = self.context.build_messages_with_candidates(
-            history=session.get_history(max_messages=self.memory_window),
+            history=(
+                []
+                if context_mode == "light"
+                else session.get_history(max_messages=self.memory_window)
+            ),
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
@@ -197,6 +213,7 @@ class MessageProcessorMixin:
             skill_names=list(run_context.skill_names),
             skill_refs=list(run_context.skill_refs),
             context_timestamp=run_context.context_timestamp,
+            context_mode=context_mode,
         )
         run_instructions = self._apply_run_instructions(initial_messages, run_context)
         if run_instructions:
@@ -348,12 +365,17 @@ class MessageProcessorMixin:
                 memory_policy=dict(getattr(self, "memory_policy", {})),
             )
         )
+        context_mode = self._context_mode(run_context)
         (
             initial_messages,
             context_sources,
             context_candidates,
         ) = self.context.build_messages_with_candidates(
-            history=session.get_history(max_messages=self.memory_window),
+            history=(
+                []
+                if context_mode == "light"
+                else session.get_history(max_messages=self.memory_window)
+            ),
             current_message=msg.content,
             channel=origin_channel,
             chat_id=origin_chat_id,
@@ -362,6 +384,7 @@ class MessageProcessorMixin:
             skill_names=list(run_context.skill_names),
             skill_refs=list(run_context.skill_refs),
             context_timestamp=run_context.context_timestamp,
+            context_mode=context_mode,
         )
         run_instructions = self._apply_run_instructions(initial_messages, run_context)
         if run_instructions:

@@ -17,7 +17,14 @@ class ScenarioStudioService:
         self.router = ScenarioRouter(store)
         self.clarifications = ClarificationEngine(store)
 
-    async def publish(self, scenario_id: str, version: int, *, actor_id: str) -> dict[str, Any]:
+    async def publish(
+        self,
+        scenario_id: str,
+        version: int,
+        *,
+        actor_id: str,
+        rollout_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         draft = await self._version(scenario_id, version)
         await require_release_gate(
             self.store,
@@ -49,13 +56,16 @@ class ScenarioStudioService:
             )
         try:
             await asyncio.to_thread(
-                self.store.publish_scenario,
+                self.store.stage_scenario_release,
                 scenario_id,
                 version,
                 actor_id=actor_id,
+                **dict(rollout_policy or {}),
             )
         except ValueError as exc:
-            raise NotFoundError(str(exc)) from exc
+            if "not found" in str(exc):
+                raise NotFoundError(str(exc)) from exc
+            raise ConflictError(str(exc)) from exc
         scenario = await asyncio.to_thread(
             self.store.get_scenario_version, scenario_id, version
         )

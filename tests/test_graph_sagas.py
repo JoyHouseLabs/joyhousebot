@@ -157,6 +157,10 @@ class _SagaAgent:
         self.capabilities.register_tool(apply, definition=definitions[1])
         self.capabilities.register_tool(_FailTool(), definition=definitions[2])
         self.capabilities.register_tool(_ReadTool(), definition=definitions[3])
+        for definition in definitions:
+            store.publish_capability(
+                definition, actor_id="test:trusted-saga-fixture"
+            )
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("Saga Graph must execute pinned capabilities without a model")

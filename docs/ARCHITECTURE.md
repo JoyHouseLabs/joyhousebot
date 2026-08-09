@@ -1,6 +1,6 @@
-# Joyhousebot 云 Agent 平台架构
+# Joyhousebot 个人数据与智能执行底座架构
 
-本文是当前代码唯一有效的总体架构说明。Joyhousebot 是面向多用户并发的 Agent 云运行平台，不是本地单 Agent 客户端，也不兼容 OpenClaw Gateway。
+本文是当前代码唯一有效的总体架构说明。Joyhousebot 是以个人资源归属为核心、同时支持本地一体化与云端多用户并发部署的智能执行底座。它不是本地单 Agent 聊天客户端，也不兼容 OpenClaw Gateway；多用户并发是 Runtime 能力，当前产品不预设企业租户模型。
 
 ## 不可变原则
 
@@ -29,6 +29,26 @@ User
 ```
 
 聊天、定时任务、Channel 入站和多 Agent 工作流最终都提交 Run。父子关系由 `root_run_id / parent_run_id / parent_task_id` 表达；子 Agent 先持久化再返回 ID，不依赖进程内后台任务。
+
+### AI Workflow Studio
+
+Workflow 是用户拥有、可版本化的“执行定义”，不是另一套运行时。用户在独立 Studio 页面描述目标，
+API 只提交一个 `workflow_design` Run；Agent Worker 在禁用 Tool 的设计上下文中输出受 JSON Schema
+约束的 DAG。用户可以查看节点、依赖、Agent 与能力绑定，并继续用自然语言要求修改。每次确认保存都会
+产生不可变 `user_workflow_revision`，发布只切换该用户 Workflow 的已发布 revision。
+
+执行时，服务把选定 revision 确定性编译为已有 `TaskGraphSpec`，随后仍走统一的 Run、Task、Lease、
+Approval、Event、Artifact、审计和回放链路。当前 Studio 支持 Agent 节点与人工确认节点；节点不以
+拖拉拽作为主要创作方式，避免界面配置与自然语言目标形成两个事实源。草稿可显式试运行，正式复用默认
+只接受已发布 revision。
+
+```text
+自然语言目标 → design Run（无 Tool）→ 结构化 DAG → 可视化审查/对话修改
+                                              ↓
+                                      immutable revision
+                                              ↓ publish
+                                      TaskGraphSpec → Runtime
+```
 
 ## 部署拓扑
 
@@ -60,11 +80,107 @@ Client ──HTTP/SSE──▶ API replicas ────────────
   `ChannelRuntimeBridge` 已经形成独立边界，但尚未拆成可单独安装的 `joyhousebot-channel-*` 包。
   拆包属于后续扩展，不改变统一 Run/Task 契约。
 
+### 定时任务闭环
+
+Scheduler claim `schedules` 后先创建不可变的 `schedule_occurrences` 快照，再使用
+`schedule_id + scheduled_for_ms + execution attempt` 生成 Run 幂等键。提交成功只把 Occurrence
+推进到 `submitted`，不再把“已提交”误记为“执行成功”。Agent Worker 通过
+`finish_runtime_run` 提交 Run 终态时，会在同一个 PostgreSQL 事务内完成以下投影：
+
+1. 以 Worker ID 和 lease version fencing 更新 Run，并写入唯一终态 Event；
+2. 写入最终不可变 Artifact；Artifact 冲突会回滚 Run 与 Event，而不是留下半完成状态；
+3. 将 Run 的 `completed / failed / cancelled / timed_out` 回写到对应 Occurrence；
+4. 对允许重试的失败将 Occurrence 置为 `retry_wait`，由 Scheduler 重新提交下一次 Run attempt；
+5. 对最终结果按需写入 `channel_outbox`，再由 Channel Worker 独立投递。
+
+新建的定时 Run 带 submission-ready 栅栏；Scheduler 将 Run ID 绑定到 Occurrence、推进下一调度游标
+并提交同一事务后才解除栅栏和唤醒 Agent Worker，避免极速 Run 在绑定前结束而漏掉终态投影。
+
+Occurrence 保存所有 `run_ids`、当前 execution/submit attempt、下次重试时间以及
+`delivery_status / delivery_error / delivered_at_ms`，因此控制面可以区分调度、执行和投递三段状态。
+Run 重试默认关闭，因为失败前可能已经产生外部副作用；提交重试默认开启并复用同一幂等键。
+
+Schedule 的 `policy` 是版本化 HTTP 契约中的可选增量字段：
+
+- `max_submit_attempts`：提交 Runtime 失败的最大尝试次数，默认 3；
+- `max_run_retries`：Run 失败或超时后的额外执行次数，默认 0；
+- `retry_backoff_ms`：上述两类重试的指数退避基数，默认 60 秒，单次最多 1 小时；
+- `misfire_policy=fire_once|skip` 与 `misfire_grace_ms`：宕机恢复后执行一次，或跳过超过宽限期的旧触发；
+- `overlap_policy=serialize|skip`：同一 Schedule 的 Run 通过固定 session 串行，或在前序
+  Occurrence 仍活跃时直接记录 `skipped_overlap`。
+
+Channel Outbox 的 deterministic `outbound_id` 防止数据库内重复入队；发送失败按指数退避重试，
+达到 `gateway.channelSendMaxAttempts` 后进入 `dead`。由于外部 Channel 未必支持幂等键，发送成功后
+Worker 在确认数据库前崩溃仍可能导致外部重复消息，投递语义是 at-least-once，而不是伪装成
+exactly-once。
+
+#### Agent Monitor
+
+`agent_monitor` 是现有 Schedule 的一等 Payload Kind，不启动第二套 Heartbeat timer。每次 tick 仍按
+`Schedule → Occurrence → Run → terminal projection → Channel Outbox` 执行，因此继承用户隔离、Agent
+版本冻结、Capability 权限、重试、审计和回放。
+
+- `session_mode=isolated`（默认）使用稳定的 `monitor:<schedule_id>` 会话，保留该 Monitor 自己的上下文，
+  不污染用户主会话；`session_mode=main` 只有显式选择时才进入指定 `session_id`（默认 `main`）。
+- `defer_when_busy=true` 时，目标会话存在非终态顶层 Run 就不调用模型，而把同一 Occurrence 放入
+  `retry_wait`，按 `busy_backoff_ms` 重试；超过 `misfire_grace_ms` 后记录 `skipped_busy`。
+- Monitor 未显式提供 Policy 时默认 `misfire_policy=skip`、`overlap_policy=skip`，避免恢复风暴和
+  重叠唤醒。
+- Runtime 会把静默契约加入 Monitor Prompt；完成内容精确等于 `quiet_token`（默认 `NO_ACTION`）时，
+  Run 和 Occurrence 仍正常完成，但投递状态记为 `suppressed`，不写 Channel Outbox。
+- `preflight_mode=runtime_attention` 会先在 PostgreSQL 内确定性地快照当前用户的待处理审批、最近七天
+  非 Monitor 顶层 Run 失败以及 dead Channel 投递。首次无信号或快照未变化时，Occurrence 直接记录
+  `skipped_unchanged`，不创建模型 Run；快照摘要与 SHA-256 写入 Occurrence，便于解释和回放。
+- 每个 Monitor 有独立、用户隔离的 `schedule_monitor_state` 和不可变
+  `schedule_monitor_scratch_revisions`。实际提交前，Occurrence 冻结一个 scratch revision；提交重试和
+  Run 重试继续读取该 revision，避免同一触发在重试时静默更换上下文。Agent 只能在带有 Monitor
+  Run metadata 的上下文中通过 `monitor_scratch` Capability 乐观更新，仍经过统一 Dispatcher。
+- `active_hours={start,end,timezone}` 使用 IANA 时区限制自动 tick；窗口可以跨午夜，起止相等表示全天。
+  窗口外 Occurrence 明确记为 `skipped_inactive_hours`，手动 Run Now 绕过该限制，原 occurrence 的提交或
+  Run 重试不受后续窗口配置影响。
+- `context_mode=light` 只注入不可变系统策略、Agent revision、当前 Monitor request 和会话路由；不自动
+  注入历史消息、持久记忆、Active Skill 指令或 Skill catalog。Tool schema、Capability 权限和显式检索
+  工具不变。`full` 保留正常 Agent 上下文。
+
+Agent revision 可发布 `monitor_policy` 作为 desired state。`enabled=true` 时，用户首次使用该 Agent 后，
+Runtime 以 `user_id + agent_id` 的稳定散列对账一个 `managed_by=agent_revision` 的普通 Schedule；不会建立
+第二个 timer 或跨用户共享会话。新 revision 发布后会更新已物化用户的 Schedule，遗漏的对账会在该用户
+下一次 Run 时修复。托管 Schedule 不能从普通 Schedule API 修改或删除，应通过新 Agent revision 禁用或
+调整；`delivery=origin` 只记住真实外部 Channel 来源，API/CLI 来源不会变成投递目标。
+
+Agent 可以通过 Cron Tool 的 `monitor=true` 创建 Monitor，并选择 `session_mode=isolated|main` 与
+`preflight_mode=always|runtime_attention`、`context_mode=full|light` 和可选 active hours。内置预检刻意只覆盖 Runtime attention；业务数据变化应由
+版本化 Connector/Capability 提供，不允许定时脚本绕过权限层，也不允许 Scheduler 直接执行 Tool。
+
+控制台的“立即补跑”调用 `POST /v1/schedules/{schedule_id}/runs`。API 只 claim 一个带不可变
+Occurrence 快照的手动触发并提交 Run，模型和 Tool 仍由 Worker 执行；暂停的个人 Schedule 也可显式
+补跑，但补跑不会绕过用户归属、会话串行、Monitor 预检、幂等键或审计链。
+
+### Webhook 与外部事件入口
+
+用户可以通过 `event_triggers` 配置外部事件到 Agent Run 的稳定映射。管理 API 绑定认证用户，入口密钥
+在创建或轮换时只返回一次，数据库只保存 SHA-256 摘要。公开接收端点
+`POST /v1/hooks/{trigger_id}` 必须同时携带：
+
+- `X-Joyhouse-Webhook-Secret`：验证入口归属，错误密钥统一返回 404；
+- `Idempotency-Key`：外部系统稳定事件 ID，缺失时拒绝；
+- `{event_type, payload}`：事件类型必须匹配规则，Payload 最大 64 KiB。
+
+每次请求先在 `event_trigger_deliveries` 冻结 Payload hash。相同键与相同 Payload 返回原 Run，相同键与
+不同 Payload 返回 409。投递记录只保存 hash、事件类型、状态、尝试次数和 Run ID，不保存原始业务
+Payload；实际 Run 仍由 PostgreSQL Runtime 创建，并进入统一 Worker、权限、回放与成果链路。
+
 ## 身份与认证
 
-生产请求的 `user_id` 只能来自数据库签发的 Bearer Token。`api_access_tokens` 只保存 SHA-256 指纹，明文仅在签发响应中返回一次；吊销在所有 API 副本即时生效。普通用户不能通过 Header 或请求体指定资源归属。环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 是紧急 operator 凭据，代用户操作必须显式发送 `X-Impersonate-User-ID`（每次代操作都会写 warning 级审计日志）。认证 fail-closed：没有有效 token 时默认拒绝（401）；仅当显式设置 `gateway.allowInsecureAuth=true` 的开发模式下，`X-User-ID`/`JOYHOUSEBOT_DEV_USER_ID` 才生效，默认用户为 `local-dev`，启动时会打印 INSECURE DEV MODE 警告。
+普通用户和自动化请求的 `user_id` 只能来自数据库签发的 Bearer Token。`api_access_tokens` 只保存 SHA-256 指纹，明文仅在签发响应中返回一次；吊销在所有 API 副本即时生效。普通用户不能通过 Header 或请求体指定资源归属。环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 是紧急 operator 凭据，代用户操作必须显式发送 `X-Impersonate-User-ID`（每次代操作都会写 warning 级审计日志）。认证 fail-closed：没有有效 token 时默认拒绝（401）；仅当显式设置 `gateway.allowInsecureAuth=true` 的开发模式下，`X-User-ID`/`JOYHOUSEBOT_DEV_USER_ID` 才生效，默认用户为 `joyhousebot`，启动时会打印 INSECURE DEV MODE 警告。
 
-`user_id` 只表达业务资源归属，管理权限来自独立的 `platform_admins` 表。权限按 `runs.read/runs.cancel`、`agents.write/agents.publish`、`tokens.write` 等操作拆分，不存在“只读管理员可以取消 Run”的隐式升级。最后一个拥有 `admins.write` 的启用管理员由数据库事务和 PG advisory lock 保护，不能被并发删除或降权。开发模式首次启动会把默认 `local-dev` 显式登记为 `is_test_user=true` 的平台管理员；生产模式绝不自动创建管理员。
+控制台管理员另有密码登录链路。`admin_login_credentials` 只保存带随机盐的 Scrypt 哈希，连续失败会在
+PostgreSQL 中跨 API 副本锁定；`admin_auth_sessions` 和 MFA challenge 也只保存 Token 指纹并有明确过期时间。
+Google Authenticator 使用 RFC 6238 的 30 秒 TOTP、最多前后一个时间窗，并以已接受 counter 阻止同码重放。
+TOTP shared secret 用 `JOYHOUSEBOT_AUTH_ENCRYPTION_KEY` 做 AES-256-GCM 加密；恢复码只保存哈希、单次消费，
+明文只在激活响应出现一次。管理员会话、密码、TOTP 与恢复码操作全部写入 `platform_admin_events`。
+
+`user_id` 只表达业务资源归属，管理权限来自独立的 `platform_admins` 表。权限按 `runs.read/runs.cancel`、`agents.write/agents.publish`、`tokens.write` 等操作拆分，不存在“只读管理员可以取消 Run”的隐式升级。最后一个拥有 `admins.write` 的启用管理员由数据库事务和 PG advisory lock 保护，不能被并发删除或降权。开发模式首次启动会把默认 `joyhousebot` 显式登记为 `is_test_user=true` 的平台管理员并创建必须修改的本地初始密码；生产仅在同时提供 `JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER` 与 `JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD` 时执行一次性引导，仓库内没有生产固定密码。
 
 JSON 配置不接受明文 token、API key、password 或 database URL；敏感值只能来自进程环境或 `env://VARIABLE` 引用。Agent、Capability、Scenario 和权限是数据库业务配置，进程配置只保留数据库连接、进程角色和本地执行参数。
 
@@ -82,6 +198,8 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
 - `POST /v1/runs/graphs` 提交显式 DAG；每个 Task 可声明 `output_schema`、
   `verification_policy` 和 `max_repairs`，普通请求也可由主协调器自动提升为 Graph。Graph 在执行前冻结为
   不可变 revision；`GET /v1/runs/{run_id}/graph-revisions` 返回 owner 隔离的节点、边、定义 hash 和版本来源。
+  Graph 与每个 Agent/aggregate Task 还可分别声明 `max_input_tokens / max_output_tokens / max_cost_usd`；
+  节点调用先执行局部门槛，最终收敛再次核对全图累计使用量，超限只能以失败终结。
   `branch` 节点只允许从直连上游已验证的 `structured_output` 读取值，并使用 allowlist 运算符选择已冻结的
   直连目标，不执行表达式或模型生成代码。`foreach` 只从已验证数组展开最多 64 个模板实例，并同时受
   节点级和 Run 级并发上限约束；`bounded_loop` 只允许最多 32 轮的显式状态迭代；`wait_event` 冻结
@@ -97,10 +215,23 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   `POST /v1/run-events/{wait_id}` 和 `X-Joyhouse-Event-Token` 投递；数据库只保存 token SHA-256，Payload
   必须通过冻结 Schema，重复投递只有在事件类型和 Payload hash 相同时才幂等成功。
 - `GET/DELETE /v1/sessions`。
-- `GET/POST/PATCH/DELETE /v1/schedules`。
-- `GET /v1/memory/candidates` 和 `POST /v1/memory/candidates/{candidate_id}/resolve`
-  提供 owner 隔离的候选查看、接受与拒绝；候选正文属于用户私有数据，不进入公开 Run 事件或
-  ContextManifest。
+- `GET/POST/PATCH/DELETE /v1/schedules`；`GET /v1/schedules/runs` 返回 Occurrence 的 Run
+  终态、execution/submit attempt、Run ID 历史、Monitor 预检摘要和 Channel 投递状态；
+  `GET/PUT /v1/schedules/{id}/monitor-scratch` 以及其 `/revisions` 查询提供 owner 隔离、乐观并发的
+  Monitor 私有状态契约。
+- `GET /v1/memory/documents`、`GET /v1/memory/documents/{document_path}` 按认证用户和 Agent
+  返回持久记忆台账与文档详情；详情还必须匹配 scope，控制台可查看个人属性、长期、情景和 Agent
+  经验层，但平台管理员不能因此越权读取其他用户数据。`GET /v1/memory/candidates` 和
+  `POST /v1/memory/candidates/{candidate_id}/resolve` 提供同一 owner 边界内的候选查看、接受与拒绝；
+  候选正文属于用户私有数据，不进入公开 Run 事件或 ContextManifest。
+- `GET /v1/knowledge/documents`、`GET /v1/knowledge/documents/{doc_id}` 提供 owner 隔离的知识源清单、
+  索引汇总、分块正文与来源证据；`DELETE /v1/knowledge/documents/{doc_id}` 删除文档及分块并保留
+  `knowledge_asset_events` 审计事件。知识抓取和解析仍由 Worker Tool 执行，HTTP API 不直接访问外部来源。
+  当前 `agent_id` 只表示采集来源，知识检索仍按用户隔离；不能把它解释为已发布的 Agent 授权绑定。
+- `GET/POST /v1/knowledge/bases` 和 `PATCH/DELETE /v1/knowledge/bases/{knowledge_base_id}` 管理
+  owner 私有知识库；`PUT/DELETE /v1/knowledge/bases/{knowledge_base_id}/documents/{doc_id}` 幂等维护
+  知识源绑定。知识源可进入多个知识库，删除知识库只级联删除绑定，不删除 `knowledge_documents`；
+  创建、更新、归档、绑定和删除进入 `knowledge_base_events`。
 - `GET /v1/agents`、`GET /v1/capabilities`、`GET /v1/scenarios`、`GET /v1/me`、
   `GET /v1/usage`。
 - `/v1/admin/scenarios` 提供草稿、发布、模拟和能力目录，分别要求 scenarios.read/write/publish。
@@ -139,21 +270,33 @@ replace 使用提议时的文档 version/hash 做乐观检查，目标已变化�
 
 ## 配置发布状态机
 
-Agent 发布不是立即覆盖 current revision：
+Agent、Capability 和 Scenario 发布都不会立即覆盖 current revision：
 
 ```text
-draft → published/immutable → rollout(target worker snapshot)
-                               ├─ all loaded → activated/current pointer switch
-                               └─ any failed → rollout.failed/old pointer retained
+draft → staged/immutable → rollout(target worker snapshot)
+                           ├─ all loaded → automatic activate
+                           │             └─ or awaiting_approval → approve → activate
+                           ├─ failed/timed_out → retry failed targets or cancel
+                           └─ completed → rollback rollout(previous revision)
+                                          └─ worker ACK → atomically activate previous
 ```
 
 发布事务冻结当时健康且具备 `agent` 能力的目标 Worker。每个 Worker 的 revision-aware Runtime Catalog 主动拉取待加载版本并逐机 ACK；新请求仍按 Run snapshot 中的精确 revision 懒加载作为容错。只有全部目标成功后，PG 才原子更新 `agent_definitions.current_revision_id`。因此跨进程发布不要求重启，也不会把流量提前切给未加载版本。Agent 已发布 revision、Skill 绑定、Capability version 和 Scenario version 都不可原地修改。
 
 Agent revision 可声明精确 `plugin_requirements`。保存时会校验 PostgreSQL 存在同一
 `plugin_id + version + build_digest` 的活跃发布单元；Run snapshot 固化这些依赖，Worker 在执行前比对
-自身已加载插件清单，缺失时明确失败而不会换成同名新插件。插件注册阶段将每个 Capability 绑定到
+自身已加载插件清单，缺失时明确失败而不会换成同名新插件。Capability 发布会校验 JSON Schema 与
+精确插件构建，Scenario 发布会校验其精确 Capability 依赖；三类配置使用同一 ACK、超时、取消、
+失败目标重试、人工批准和回滚状态机。回滚不是直接改 current pointer：控制面会创建一个指向旧版本的
+子 rollout，重新冻结目标 Worker、预热并收齐 ACK 后才切换；回滚预热失败时当前版本继续服务。
+插件注册阶段将每个 Capability 绑定到
 manifest 的 build digest；开发环境若 manifest 未提供 digest，框架只从已加载插件类源码导出 SHA-256，
 再将该不可变值写入控制面。
+
+Plugin Manifest 使用 `runtime_api_version=v1`，冻结包 URI、签名/SBOM 引用、执行隔离、最小权限、
+组件目录与 manifest SHA-256。发现插件只创建 `discovered` 发布单元；发布后依次进入 `staged → Worker
+loaded ACK → active`，同一插件只有一个 active 版本。Agent、Channel、Connector、Event Trigger、
+Knowledge Provider、MCP Server、Projection、Scenario、Skill、Tool 和 Workflow 都通过同一组件目录注册。
 
 Capability Registry 同时维护两个索引：模型可见目录按 capability 名称取当前启用版本；已持久化的
 Task 和 MCP 调用则按 `capability_id + version` 从版本索引取得 Adapter。后者绝不回退到当前版本。
@@ -177,6 +320,27 @@ manifest；部署者创建或发布业务 Agent revision，显式写入该插件
 这使业务能力可以确定性执行用户确认的约束，即使模型生成 Tool 参数时漏掉字段；插件不需要读取核心表，
 也不能把模型输出当成约束事实源。
 
+## Eval、成本和持续质量闭环
+
+Eval Suite/Case、Eval Run、Case Result、执行作业和周期策略都以 PostgreSQL 为事实源。API 创建或排队，
+Scheduler 只物化到期 Eval Run；Agent Worker 以 lease/fencing claim `eval_execution_jobs`，崩溃后其他
+Worker 可接管。自动 Eval 精确固定目标 revision，旧版本结果不能满足新版本发布门禁。
+
+Suite 和 Release Gate 可同时约束通过率、平均分、总成本、P95 时延与成本观测覆盖率。供应商未返回成本
+时不会伪装为已观测的零成本：结果会降低 `cost_coverage`；生产门禁可要求覆盖率为 1。发布决策把所用
+Eval Run、实测值、阈值、是否自动执行和结果写入不可变 evidence，便于回放和审计。
+
+## Artifact 与 Work
+
+Runtime Artifact 是 append-only 证据：同一 `artifact_id` 只能精确幂等重放，换内容必须使用新身份；
+恢复执行产生的协调计划按 lease version 保留。最终 Artifact 与 Run 终态同事务提交。Capability 返回的
+Artifact 自动补齐 Run/Task、Capability、Invocation 与内容 hash provenance。
+
+Work 从指定 Artifact 创建不可变版本，冻结 source digest/object version、Run execution snapshot、
+Verification、Action/Invocation 与 evidence manifest。URI Artifact 没有内容 digest 和 object version
+不能发布。公开或 unlisted 分享只暴露经过分级的 Work 投影；原始 Artifact URL 永远不是公开链接，
+分享链接可过期、撤销并产生访问审计。
+
 ## PostgreSQL 数据模型
 
 当前实现的专用表：
@@ -191,8 +355,10 @@ manifest；部署者创建或发布业务 Agent revision，显式写入该插件
 - 会话与追踪：`conversation_sessions`、`request_trace_events`、`execution_spans`、
   `model_invocations`、`model_reasoning_segments`、`trace_blobs`、`replay_runs`、
   `model_response_cache`。
-- 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`。
-- 调度：`schedules`、`schedule_occurrences`。
+- 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`、
+  `knowledge_asset_events`、`knowledge_bases`、`knowledge_base_documents`、`knowledge_base_events`。
+- 调度：`schedules`、`schedule_occurrences`、`schedule_monitor_state`、
+  `schedule_monitor_scratch_revisions`。
 - Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。
 - Provider：`provider_profile_health`。
 - 网关准入：`api_rate_limits`。
@@ -376,7 +542,7 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
 - 监控概览读取平台全局 Run/User/Session/Token/Worker 指标。
 - 运行中心使用管理 API 查询所有用户 Run；详情统一展示 Task、Event、Log、Artifact、
   Capability Invocation、Request Trace、模型调用、原始推理、性能瀑布、回放对比和动态子 Agent。
-- 配置导航分为平台和业务能力配置两组。平台只负责访问控制、集群发布、审计和运行摘要；Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护，避免重复编辑入口。Dinq 运维作为独立插件运维入口保留。
+- 配置导航分为运行治理和通用能力配置两组。平台负责访问控制、集群发布、审计和运行摘要；插件中心、Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护。核心控制台只读取通用插件 Manifest、组件、Quickstart、健康与调用，不包含 Dinq 等业务专属导航、路由或字段。
 - 场景工作台负责路由、追问 DAG 与执行策略配置，可编辑单选、多选、Other、选项说明和条件边；试用页将
   InputRequest 渲染为可提交的交互卡片，并显示题目进度。
 - Agent 试用仍以当前 `user_id` 提交普通用户 Run，用于验证真实业务链路，不绕过用户隔离。
@@ -384,13 +550,15 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
   只有通过精确 revision gate 才能激活，失败继续保留旧版本。
 - Work 工作台把 Run Artifact 转为不可变成果版本，支持 private/unlisted/public、数据分级、协作者、
   可撤销且可过期的固定版本分享链接和访问审计。Artifact 本身永远不因生成而自动公开。
-- 代用户操作是显式动作：控制台默认只携带 operator 自身身份，只有操作员在常驻代操作入口显式设置
-  目标用户后才发送 `X-Impersonate-User-ID`（选择存 sessionStorage，关标签页即失效，代操作中界面
-  有常驻醒目提示）。control token 只存 sessionStorage，不落 localStorage。
+- 代用户操作是显式动作：管理员可在密码登录时分别填写管理员账号与本次操作的个人 `user_id`，也可在
+  常驻入口切换；只有两者不同时才发送 `X-Impersonate-User-ID`（选择存 sessionStorage，关标签页即
+  失效，代操作中界面有常驻醒目提示）。后端只允许它改变用户数据 API 的资源归属，`auth/admin/system`
+  控制面仍使用真实管理员；`/v1/me` 同时返回资源主体和管理员 actor。control token 只存
+  sessionStorage，不落 localStorage。
 
 ## 已删除且不得恢复
 
-- OpenClaw compatibility、device pairing、client Node、control plane。
+- OpenClaw compatibility 以及旧 Gateway 风格的 device pairing、client Node 和 control plane。未来本地执行节点必须通过 Joyhousebot 自己的版本化协议、用户边界和统一 Run/Task 状态机接入。
 - `/ws/rpc`、`/ws/chat`、`/ws/agent-stream` 和两套 HTTP/RPC handler。
 - 进程内业务队列、通用 shared-state、旧 heartbeat scheduler。
 - 单一全局 wallet/x402、旧本地 identity/task/knowledge service 入口。

@@ -38,6 +38,70 @@ _HISTORY_DDL = """CREATE TABLE IF NOT EXISTS schema_migration_history (
     PRIMARY KEY (name, version)
 )"""
 
+_RUNTIME_CLOSURE_V4_DDL = """
+CREATE TABLE IF NOT EXISTS channel_leases (
+    channel_id TEXT PRIMARY KEY,
+    owner_worker_id TEXT NOT NULL,
+    lease_until_ms BIGINT NOT NULL,
+    lease_version BIGINT NOT NULL DEFAULT 1,
+    updated_at_ms BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_channel_leases_owner
+    ON channel_leases(owner_worker_id, lease_until_ms);
+CREATE TABLE IF NOT EXISTS channel_outbox (
+    outbound_id TEXT PRIMARY KEY,
+    user_id TEXT,
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    reply_to TEXT,
+    media JSONB NOT NULL DEFAULT '[]'::jsonb,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    request_id TEXT,
+    tracker_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt INTEGER NOT NULL DEFAULT 0,
+    available_at_ms BIGINT NOT NULL,
+    lease_owner TEXT,
+    lease_until_ms BIGINT,
+    lease_version BIGINT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at_ms BIGINT NOT NULL,
+    updated_at_ms BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_channel_outbox_claim
+    ON channel_outbox(channel, available_at_ms, outbound_id)
+    WHERE status IN ('pending', 'sending');
+CREATE INDEX IF NOT EXISTS ix_channel_outbox_user
+    ON channel_outbox(user_id, created_at_ms DESC);
+CREATE TABLE IF NOT EXISTS channel_deliveries (
+    delivery_id TEXT PRIMARY KEY,
+    outbound_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    worker_id TEXT NOT NULL,
+    error TEXT,
+    created_at_ms BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_channel_deliveries_outbound
+    ON channel_deliveries(outbound_id, created_at_ms DESC);
+"""
+
+_RUNTIME_ARTIFACT_V5_DDL = """
+ALTER TABLE runtime_artifacts
+    ADD COLUMN IF NOT EXISTS artifact_type TEXT NOT NULL DEFAULT 'runtime.output',
+    ADD COLUMN IF NOT EXISTS operation TEXT NOT NULL DEFAULT 'create',
+    ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS content_sha256 TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS object_version TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS ix_runtime_artifacts_content_sha256
+    ON runtime_artifacts(content_sha256) WHERE content_sha256<>'';
+"""
+
 # Development-only reset: legacy runtime tables dropped when the destructive
 # gate is explicitly enabled, in dependency-safe order.
 _DESTRUCTIVE_DROP_TABLES = (
@@ -78,6 +142,8 @@ class PostgresMigrationMixin:
             self.migrate_execution_loop()
             self.migrate_context_manifests()
             self.migrate_memory_candidates()
+            self.migrate_event_triggers()
+            self.migrate_user_workflows()
             self.migrate_loop_decisions()
             self.migrate_verifications()
             self.migrate_approvals()
@@ -413,6 +479,8 @@ class PostgresMigrationMixin:
                 # tables so the idempotent DDL above never requires data loss.
                 self._migrate_runtime_columns(conn)
                 conn.execute(ddl)
+                conn.execute(_RUNTIME_CLOSURE_V4_DDL)
+                conn.execute(_RUNTIME_ARTIFACT_V5_DDL)
                 conn.execute(
                     """INSERT INTO runtime_schema_migrations(version,description)
                        VALUES (3,'observable multi-agent event envelope and projections')
@@ -424,6 +492,20 @@ class PostgresMigrationMixin:
                     version=3,
                     ddl=ddl,
                     description=("observable multi-agent event envelope and projections"),
+                )
+                self._record_migration(
+                    conn,
+                    name="runtime",
+                    version=4,
+                    ddl=_RUNTIME_CLOSURE_V4_DDL,
+                    description="transactional Channel outbox for terminal Runtime Runs",
+                )
+                self._record_migration(
+                    conn,
+                    name="runtime",
+                    version=5,
+                    ddl=_RUNTIME_ARTIFACT_V5_DDL,
+                    description="immutable content-addressed Runtime Artifacts with evidence",
                 )
 
     def _migrate_runtime_columns(self, conn: Any) -> None:

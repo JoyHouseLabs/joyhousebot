@@ -46,6 +46,9 @@ def _task_spec(command: GraphTaskCommand) -> GraphTaskSpec:
         name=command.name or "",
         timeout_seconds=command.timeout_seconds or 300.0,
         max_attempts=command.max_attempts,
+        max_input_tokens=command.max_input_tokens,
+        max_output_tokens=command.max_output_tokens,
+        max_cost_usd=command.max_cost_usd,
         metadata=dict(command.metadata),
         capability=command.capability,
         capability_input=dict(command.capability_input),
@@ -171,6 +174,21 @@ class GraphPatchService:
             failure_policy=dict(settings.get("failure_policy") or {}),
             aggregate=bool(settings.get("aggregate", True)),
             aggregation_policy=dict(settings.get("aggregation_policy") or {}),
+            max_input_tokens=(
+                int(settings["max_input_tokens"])
+                if settings.get("max_input_tokens") is not None
+                else None
+            ),
+            max_output_tokens=(
+                int(settings["max_output_tokens"])
+                if settings.get("max_output_tokens") is not None
+                else None
+            ),
+            max_cost_usd=(
+                float(settings["max_cost_usd"])
+                if settings.get("max_cost_usd") is not None
+                else None
+            ),
             metadata=dict(settings.get("metadata") or {}),
         )
         try:

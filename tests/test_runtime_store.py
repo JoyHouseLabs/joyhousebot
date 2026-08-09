@@ -2,16 +2,19 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from joyhousebot.config.schema import Config
+from joyhousebot.contracts import Artifact
+from joyhousebot.runtime.artifact_materialization import materialize_capability_artifacts
 from joyhousebot.runtime.models import AgentEvent, GraphTaskSpec, TaskGraphSpec
 from joyhousebot.runtime.narrative import redact_runtime_value
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.runtime.tracking import safe_trace_data
-from joyhousebot.storage.factory import create_runtime_store
+from joyhousebot.storage.factory import _auto_migrate, create_runtime_store
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
@@ -47,7 +50,61 @@ def test_runtime_artifacts_preserve_plain_text_jsonb_scalars(tmp_path: Path) -> 
         media_type="text/plain",
         content="A plain-text final answer",
     )
-    assert store.list_runtime_artifacts(run.run_id)[0]["content"] == "A plain-text final answer"
+    artifact = store.list_runtime_artifacts(run.run_id)[0]
+    assert artifact["content"] == "A plain-text final answer"
+    assert artifact["content_sha256"]
+
+
+def test_runtime_artifacts_are_immutable_and_plugin_outputs_are_materialized(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "immutable-artifact.db")
+    run = _create_run(store, "immutable-artifact")
+    result = SimpleNamespace(
+        ok=True,
+        invocation_id="inv_artifact",
+        artifacts=(
+            Artifact(
+                artifact_id="artifact_plugin_result",
+                artifact_type="business.report",
+                operation="upsert",
+                data={"answer": 42},
+                evidence={"source": "business-system"},
+            ).to_dict(),
+        ),
+    )
+    assert materialize_capability_artifacts(
+        store,
+        run_id=run.run_id,
+        task_id=None,
+        agent_id="default",
+        capability_result=result,
+        capability_id="business.report.generate",
+    ) == ("artifact_plugin_result",)
+    artifact = store.list_runtime_artifacts(run.run_id)[0]
+    assert artifact["artifact_type"] == "business.report"
+    assert artifact["provenance"]["invocation_id"] == "inv_artifact"
+    assert artifact["content_sha256"]
+
+    # Exact replay is idempotent; changing a frozen Artifact identity is not.
+    materialize_capability_artifacts(
+        store,
+        run_id=run.run_id,
+        task_id=None,
+        agent_id="default",
+        capability_result=result,
+        capability_id="business.report.generate",
+    )
+    with pytest.raises(ValueError, match="immutable"):
+        store.add_runtime_artifact(
+            artifact_id="artifact_plugin_result",
+            run_id=run.run_id,
+            name="business.report",
+            media_type="application/json",
+            content={"answer": 43},
+            artifact_type="business.report",
+            operation="upsert",
+        )
 
 
 def test_postgres_runtime_fencing_logs_and_graph_reconciliation(tmp_path: Path) -> None:
@@ -293,6 +350,14 @@ def test_postgres_atomically_commits_terminal_state_and_event(tmp_path: Path) ->
             data={"content": "done"},
         ),
         result={"content": "done"},
+        artifacts=[
+            {
+                "artifact_id": "atomic:final",
+                "name": "final-output",
+                "media_type": "text/plain",
+                "content": "done",
+            }
+        ],
         worker_id="owner",
         lease_version=claimed.lease_version,
     )
@@ -303,6 +368,7 @@ def test_postgres_atomically_commits_terminal_state_and_event(tmp_path: Path) ->
     assert projected.result == {"content": "done"}
     assert projected.last_event_sequence == terminal.sequence
     assert [event.type for event in store.list_runtime_events(run.run_id)] == ["run.completed"]
+    assert store.list_runtime_artifacts(run.run_id)[0]["content"] == "done"
 
     # A stale worker cannot write a second terminal event after ownership ends.
     stale = store.finish_runtime_run(
@@ -315,6 +381,114 @@ def test_postgres_atomically_commits_terminal_state_and_event(tmp_path: Path) ->
     )
     assert stale is None
     assert [event.type for event in store.list_runtime_events(run.run_id)] == ["run.completed"]
+
+
+def test_terminal_artifact_conflict_rolls_back_run_and_event(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "atomic-artifact-conflict.db")
+    run = _create_run(store, "atomic-artifact-conflict")
+    store.add_runtime_artifact(
+        artifact_id=f"{run.run_id}:final",
+        run_id=run.run_id,
+        name="final-output",
+        media_type="text/plain",
+        content="older candidate",
+    )
+    claimed = store.claim_runtime_run(run.run_id, worker_id="owner", lease_seconds=30)
+    assert claimed is not None
+    with pytest.raises(ValueError, match="immutable"):
+        store.finish_runtime_run(
+            run.run_id,
+            status="completed",
+            event=AgentEvent(run_id=run.run_id, type="run.completed"),
+            result={"content": "new candidate"},
+            artifacts=[
+                {
+                    "artifact_id": f"{run.run_id}:final",
+                    "name": "final-output",
+                    "media_type": "text/plain",
+                    "content": "new candidate",
+                }
+            ],
+            worker_id="owner",
+            lease_version=claimed.lease_version,
+        )
+    projected = store.get_runtime_run(run.run_id)
+    assert projected is not None and projected.status == "running"
+    assert store.list_runtime_events(run.run_id) == []
+
+
+def test_channel_reply_intent_commits_with_terminal_run(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "atomic-channel-finish.db")
+    run = store.create_runtime_run(
+        run_id="atomic-channel",
+        user_id="channel:user-1",
+        session_id="telegram:chat-1",
+        agent_id="default",
+        kind="agent",
+        prompt="hello",
+        options={
+            "request_id": "request-1",
+            "tracker_id": "tracker-1",
+            "metadata": {
+                "_runtime_channel_delivery": {
+                    "channel": "telegram",
+                    "chat_id": "chat-1",
+                    "reply_to": "message-1",
+                    "request_id": "request-1",
+                    "tracker_id": "tracker-1",
+                }
+            },
+        },
+    )[0]
+    claimed = store.claim_runtime_run(run.run_id, worker_id="owner", lease_seconds=30)
+    assert claimed is not None
+
+    terminal = store.finish_runtime_run(
+        run.run_id,
+        status="completed",
+        event=AgentEvent(
+            event_id="atomic-channel:completed",
+            run_id=run.run_id,
+            type="run.completed",
+            status="completed",
+            data={"content": "delivered"},
+        ),
+        result={"content": "delivered"},
+        worker_id="owner",
+        lease_version=claimed.lease_version,
+    )
+    assert terminal is not None
+    with store._pool.connection() as connection:
+        outbound = connection.execute(
+            "SELECT * FROM channel_outbox WHERE outbound_id=%s",
+            (f"run-reply:{run.run_id}",),
+        ).fetchone()
+    assert outbound is not None
+    assert outbound["content"] == "delivered"
+    assert outbound["channel"] == "telegram"
+    assert outbound["chat_id"] == "chat-1"
+    assert outbound["reply_to"] == "message-1"
+    assert outbound["metadata"]["run_id"] == run.run_id
+
+    # Replaying the same event and projection cannot create a second delivery.
+    assert store.finish_runtime_run(
+        run.run_id,
+        status="completed",
+        event=AgentEvent(
+            event_id="atomic-channel:completed",
+            run_id=run.run_id,
+            type="run.completed",
+        ),
+        result={"content": "duplicate"},
+        worker_id="owner",
+        lease_version=claimed.lease_version,
+    ) is None
+    with store._pool.connection() as connection:
+        count = connection.execute(
+            "SELECT count(*) AS count FROM channel_outbox WHERE outbound_id=%s",
+            (f"run-reply:{run.run_id}",),
+        ).fetchone()
+    assert int(count["count"]) == 1
 
 
 def test_heartbeat_fails_once_lease_has_expired(tmp_path: Path) -> None:
@@ -464,6 +638,20 @@ def test_runtime_store_factory_requires_postgres_url(
     config.runtime.store.database_url = ""
     with pytest.raises(ValueError, match="database_url"):
         create_runtime_store(config)
+
+
+def test_runtime_store_factory_supports_single_migrator_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JOYHOUSEBOT_AUTO_MIGRATE", raising=False)
+    assert _auto_migrate(True) is True
+    monkeypatch.setenv("JOYHOUSEBOT_AUTO_MIGRATE", "false")
+    assert _auto_migrate(True) is False
+    monkeypatch.setenv("JOYHOUSEBOT_AUTO_MIGRATE", "true")
+    assert _auto_migrate(False) is True
+    monkeypatch.setenv("JOYHOUSEBOT_AUTO_MIGRATE", "sometimes")
+    with pytest.raises(ValueError, match="must be true or false"):
+        _auto_migrate(True)
 
 
 @pytest.mark.postgres

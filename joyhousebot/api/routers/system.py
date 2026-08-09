@@ -17,6 +17,10 @@ async def me(principal: PrincipalDep):
     return {
         "subject": principal.subject,
         "user_id": principal.user_id,
+        "actor_user_id": principal.actor_user_id or principal.user_id,
+        "impersonating": bool(
+            principal.actor_user_id and principal.actor_user_id != principal.user_id
+        ),
         "role": principal.role,
         "permissions": list(principal.permissions),
         "token_scopes": list(principal.token_scopes),

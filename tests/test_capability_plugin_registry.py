@@ -5,8 +5,18 @@ from dataclasses import dataclass
 import pytest
 
 from joyhousebot.capabilities import CapabilityPluginRegistry, CapabilityRegistry
-from joyhousebot.contracts import CapabilityContext, CapabilityResult, ProjectionContext
-from joyhousebot.contracts.plugins import PluginManifest
+from joyhousebot.contracts import (
+    CapabilityContext,
+    CapabilityResult,
+    ProjectionContext,
+    WriteReceipt,
+)
+from joyhousebot.contracts.plugins import (
+    PluginComponent,
+    PluginHealthCheck,
+    PluginHealthResult,
+    PluginManifest,
+)
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.runtime.context import ToolExecutionContext
 from tests.support.postgres_store import PostgresTestStore
@@ -17,6 +27,7 @@ class Definition:
     name: str
     ref: object = None
     permissions: tuple[str, ...] = ()
+    side_effect: str = "none"
 
 
 @dataclass(frozen=True)
@@ -85,6 +96,77 @@ def test_plugin_registry_owns_named_projection_providers():
     assert provider is not None
     assert provider.build(ProjectionContext(run={"run_id": "run-1"}))["run"]["run_id"] == "run-1"
     assert registry.get_projection("dinq.search") is None
+
+
+def test_plugin_registry_standardizes_business_components_and_health_checks(tmp_path):
+    class Provider:
+        pass
+
+    provider = Provider()
+
+    class BusinessPlugin:
+        plugin_id = "business-suite"
+        version = "2.0.0"
+
+        def manifest(self):
+            return PluginManifest(
+                plugin_id=self.plugin_id,
+                version=self.version,
+                name="Business Suite",
+                build_digest="sha256:business-suite-v2",
+                runtime_contract_version=2,
+            )
+
+        def register(self, registry):
+            for kind, reference in (
+                ("scenario", "business.onboarding"),
+                ("workflow", "business.month_end"),
+                ("agent", "business.reviewer"),
+                ("mcp_server", "business.erp"),
+            ):
+                registry.register_component(
+                    PluginComponent(
+                        component_id=f"{kind}:{reference}",
+                        component_type=kind,
+                        name=reference,
+                        reference_id=reference,
+                        reference_version="2.0.0",
+                    ),
+                    provider,
+                )
+            registry.register_health_check(
+                PluginHealthCheck(
+                    name="business-api",
+                    description="read-only dependency probe",
+                    run=lambda _context: PluginHealthResult(
+                        status="healthy", summary="reachable"
+                    ),
+                )
+            )
+
+    store = PostgresTestStore(tmp_path / "plugin-components.db")
+    registry = CapabilityRegistry(store=store)
+    registry.register_plugin(BusinessPlugin())
+
+    components = registry.plugins.list_components("business-suite")
+    assert {item.component_type for item in components} == {
+        "scenario",
+        "workflow",
+        "agent",
+        "mcp_server",
+    }
+    assert registry.plugins.get_component_provider(
+        "business-suite", "workflow:business.month_end"
+    ) is provider
+    assert [item.name for item in registry.plugins.list_health_checks("business-suite")] == [
+        "business-api"
+    ]
+    assert {item["component_type"] for item in store.list_plugin_components("business-suite")} == {
+        "scenario",
+        "workflow",
+        "agent",
+        "mcp_server",
+    }
 
 
 @pytest.mark.asyncio
@@ -182,6 +264,9 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
     store = PostgresTestStore(tmp_path / "plugin-settings.db")
     registry = CapabilityRegistry(store=store)
     registry.register_plugin(SettingsPlugin())
+    definition = registry.get_definition("settings.echo", "1.0.0")
+    assert definition is not None
+    store.publish_capability(definition, actor_id="test:trusted-fixture")
     store.save_capability_runtime_settings("settings.echo", enabled=True, configuration={"prefix": "configured"}, actor_id="admin")
     context = ToolExecutionContext(
         run_id="run", session_key="session", channel="api", chat_id="chat",
@@ -197,17 +282,35 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
 
 
 @pytest.mark.asyncio
-async def test_plugin_receives_durable_action_and_idempotency_identity():
+async def test_plugin_receives_durable_action_and_idempotency_identity(tmp_path):
     observed = {}
 
     class IdentityHandler:
         async def execute(self, context, input):
             observed.update(context.metadata)
-            return CapabilityResult(success=True, output={"ok": True})
+            observed["first_class_action_id"] = context.action_id
+            observed["first_class_idempotency_key"] = context.idempotency_key
+            return CapabilityResult(
+                success=True,
+                output={"ok": True},
+                write_receipt=WriteReceipt(
+                    action_id=context.action_id,
+                    idempotency_key=context.idempotency_key,
+                    provider_operation_id="business-write-1",
+                ),
+            )
 
     class IdentityPlugin:
         plugin_id = "identity"
         version = "1.0.0"
+
+        def manifest(self):
+            return PluginManifest(
+                plugin_id=self.plugin_id,
+                version=self.version,
+                name="Identity",
+                runtime_contract_version=2,
+            )
 
         def register(self, registry):
             registry.register_capability(
@@ -218,13 +321,37 @@ async def test_plugin_receives_durable_action_and_idempotency_identity():
                     input_schema={"type": "object"},
                     output_schema={"type": "object"},
                     adapter="identity.write",
-                    side_effect="write",
+                    side_effect="internal",
                 ),
                 IdentityHandler(),
             )
 
-    registry = CapabilityRegistry()
+    store = PostgresTestStore(tmp_path / "plugin-action-identity.db")
+    run = store.create_runtime_run(
+        run_id="run",
+        user_id="system",
+        session_id="session",
+        agent_id="default",
+        kind="agent",
+        prompt="write",
+        options={},
+    )[0]
+    claimed = store.claim_runtime_run(run.run_id, worker_id="worker")
+    assert claimed is not None
+    store.create_runtime_turn(
+        turn_id="turn_durable",
+        run_id=run.run_id,
+        task_id=None,
+        turn_index=0,
+        model="test",
+        request_hash="request",
+        worker_id="worker",
+    )
+    registry = CapabilityRegistry(store=store)
     registry.register_plugin(IdentityPlugin())
+    definition = registry.get_definition("identity.write", "1.0.0")
+    assert definition is not None
+    store.publish_capability(definition, actor_id="test:trusted-fixture")
     result = await registry.invoke_tool(
         "identity.write",
         {},
@@ -233,6 +360,7 @@ async def test_plugin_receives_durable_action_and_idempotency_identity():
             session_key="session",
             channel="api",
             chat_id="chat",
+            worker_id="worker",
             turn_id="turn_durable",
             turn_index=0,
             action_index=0,
@@ -241,6 +369,67 @@ async def test_plugin_receives_durable_action_and_idempotency_identity():
     assert result.ok is True
     assert observed["action_id"].startswith("act_")
     assert observed["idempotency_key"] == f"action:{observed['action_id']}"
+    assert observed["first_class_action_id"] == observed["action_id"]
+    assert observed["first_class_idempotency_key"] == observed["idempotency_key"]
+    assert result.operation["idempotency_key"] == observed["idempotency_key"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_write_receipt_must_echo_frozen_identity():
+    class BadReceiptHandler:
+        async def execute(self, context, input):
+            return CapabilityResult(
+                success=True,
+                output={"ok": True},
+                write_receipt=WriteReceipt(
+                    action_id="different-action",
+                    idempotency_key="different-key",
+                ),
+            )
+
+    class WritePlugin:
+        plugin_id = "bad-receipt"
+        version = "1.0.0"
+
+        def manifest(self):
+            return PluginManifest(
+                plugin_id=self.plugin_id,
+                version=self.version,
+                name="Bad receipt",
+                runtime_contract_version=2,
+            )
+
+        def register(self, registry):
+            registry.register_capability(
+                CapabilityDefinition(
+                    name="bad-receipt.write",
+                    ref=CapabilityRef(
+                        "bad-receipt.write", "1.0.0", CapabilityKind.CONNECTOR
+                    ),
+                    description="business write",
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    adapter="bad-receipt.write",
+                    side_effect="write",
+                ),
+                BadReceiptHandler(),
+            )
+
+    plugins = CapabilityPluginRegistry()
+    plugins.register_plugin(WritePlugin())
+    result = await plugins.invoke(
+        "bad-receipt.write",
+        {},
+        context=CapabilityContext(
+            user_id="u",
+            session_id="s",
+            run_id="r",
+            action_id="act_expected",
+            idempotency_key="action:act_expected",
+        ),
+    )
+    assert result.success is False
+    assert result.error["code"] == "WRITE_IDENTITY_MISMATCH"
 
 
 @pytest.mark.asyncio

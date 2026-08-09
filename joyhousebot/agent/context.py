@@ -46,6 +46,7 @@ class ContextBuilder:
         scope_key: str | None = None,
         skill_refs: list[dict[str, str]] | None = None,
         context_timestamp: str | None = None,
+        context_mode: str = "full",
     ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
@@ -62,6 +63,7 @@ class ContextBuilder:
             scope_key=scope_key,
             skill_refs=skill_refs,
             context_timestamp=context_timestamp,
+            context_mode=context_mode,
         )
         return prompt
 
@@ -71,6 +73,7 @@ class ContextBuilder:
         scope_key: str | None = None,
         skill_refs: list[dict[str, str]] | None = None,
         context_timestamp: str | None = None,
+        context_mode: str = "full",
     ) -> tuple[str, list[dict[str, Any]]]:
         """Build the system prompt and content-free provenance descriptors."""
         prompt, sources, _candidates = self._build_system_context(
@@ -78,6 +81,7 @@ class ContextBuilder:
             scope_key=scope_key,
             skill_refs=skill_refs,
             context_timestamp=context_timestamp,
+            context_mode=context_mode,
         )
         return prompt, sources
 
@@ -87,6 +91,7 @@ class ContextBuilder:
         scope_key: str | None = None,
         skill_refs: list[dict[str, str]] | None = None,
         context_timestamp: str | None = None,
+        context_mode: str = "full",
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
         """Build system text, public descriptors, and private budget candidates."""
         parts: list[str] = []
@@ -161,6 +166,12 @@ class ContextBuilder:
                 priority=100,
                 required=True,
             )
+
+        # A Monitor light context is intentionally narrow: immutable system
+        # policy and Agent profile remain, while durable memory and Skill
+        # prompt material are omitted. Runtime/tool permissions are unchanged.
+        if context_mode == "light":
+            return "\n\n---\n\n".join(parts), sources, candidates
 
         # Durable memory documents are resolved from the shared runtime store.
         memory, memory_sources = self._get_memory_context_with_sources(scope_key=scope_key)
@@ -386,6 +397,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
         max_context_tokens: int | None = None,
         scope_key: str | None = None,
         context_timestamp: str | None = None,
+        context_mode: str = "full",
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -414,6 +426,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
             max_context_tokens=max_context_tokens,
             scope_key=scope_key,
             context_timestamp=context_timestamp,
+            context_mode=context_mode,
         )
         return messages
 
@@ -429,6 +442,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
         max_context_tokens: int | None = None,
         scope_key: str | None = None,
         context_timestamp: str | None = None,
+        context_mode: str = "full",
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Build model messages plus source descriptors without storing source content."""
         messages, sources, _candidates = self.build_messages_with_candidates(
@@ -442,6 +456,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
             max_context_tokens=max_context_tokens,
             scope_key=scope_key,
             context_timestamp=context_timestamp,
+            context_mode=context_mode,
         )
         return messages, sources
 
@@ -457,6 +472,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
         max_context_tokens: int | None = None,
         scope_key: str | None = None,
         context_timestamp: str | None = None,
+        context_mode: str = "full",
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """Build messages and retain private candidates for per-Turn reallocation."""
         _system_prompt, sources, candidates = self._build_system_context(
@@ -464,6 +480,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
             scope_key=scope_key,
             skill_refs=skill_refs,
             context_timestamp=context_timestamp,
+            context_mode=context_mode,
         )
         if channel and chat_id:
             session_context = f"## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
@@ -491,7 +508,8 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
                 )
             )
 
-        for index, message in enumerate(history):
+        admitted_history = history if context_mode != "light" else []
+        for index, message in enumerate(admitted_history):
             role = str(message.get("role") or "unknown")
             history_source = source_entry(
                 source_kind="conversation_history",

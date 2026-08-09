@@ -9,6 +9,8 @@ from typing import Any
 
 from joyhousebot.runtime.models import AgentEvent
 from joyhousebot.storage.json_codec import Jsonb
+from joyhousebot.storage.postgres_event_writes import append_runtime_event_in_transaction
+from joyhousebot.storage.postgres_task_claiming import lock_claimable_task_run
 from joyhousebot.storage.runtime_store import (
     RuntimeTaskRecord,
 )
@@ -41,115 +43,9 @@ def _json(value: Any, default: Any = None) -> Any:
 class PostgresTaskStoreMixin:
     def append_runtime_event(self, event: AgentEvent) -> AgentEvent:
         with self._pool.connection() as conn, conn.transaction():
-            row = conn.execute(
-                """INSERT INTO runtime_events
-                       (event_id,run_id,task_id,root_run_id,parent_run_id,parent_task_id,
-                        user_id,session_id,agent_id,turn_id,span_id,parent_span_id,tool_call_id,
-                        attempt,phase,status,visibility,summary,worker_id,lease_version,
-                        schema_version,event_type,data,created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamptz)
-                   ON CONFLICT(event_id) DO UPDATE SET event_id=EXCLUDED.event_id
-                   RETURNING sequence, created_at""",
-                (
-                    event.event_id,
-                    event.run_id,
-                    event.task_id,
-                    event.root_run_id,
-                    event.parent_run_id,
-                    event.parent_task_id,
-                    event.user_id,
-                    event.session_id,
-                    event.agent_id,
-                    event.turn_id,
-                    event.span_id,
-                    event.parent_span_id,
-                    event.tool_call_id,
-                    event.attempt,
-                    event.phase,
-                    event.status,
-                    event.visibility,
-                    event.summary,
-                    event.worker_id,
-                    event.lease_version,
-                    event.schema_version,
-                    event.type,
-                    Jsonb(event.data),
-                    event.created_at,
-                ),
-            ).fetchone()
-            assert row is not None
-            sequence = int(row["sequence"])
-            span_delta = (
-                1
-                if event.type in {"model.request.started", "capability.started"}
-                else (
-                    -1
-                    if event.type
-                    in {
-                        "model.response.completed",
-                        "capability.completed",
-                        "capability.failed",
-                    }
-                    else 0
-                )
-            )
-            conn.execute(
-                """UPDATE runtime_runs SET
-                       root_run_id=COALESCE(root_run_id,%s),
-                       current_phase=COALESCE(%s,current_phase),
-                       status_summary=COALESCE(%s,status_summary),
-                       status_reason=COALESCE(%s,status_reason),
-                       next_action=COALESCE(%s,next_action),
-                       waiting_on=COALESCE(%s,waiting_on),
-                       active_turn_id=COALESCE(%s,active_turn_id),
-                       active_span_count=GREATEST(0,active_span_count + %s),
-                       completed_task_count=(SELECT count(*) FROM runtime_tasks
-                           WHERE run_id=%s AND status IN ('completed','failed','cancelled','timed_out','skipped')),
-                       last_event_sequence=GREATEST(last_event_sequence,%s),
-                       last_progress_at=clock_timestamp(), updated_at=clock_timestamp()
-                   WHERE run_id=%s""",
-                (
-                    event.root_run_id or event.run_id,
-                    event.phase,
-                    event.summary,
-                    event.data.get("reason"),
-                    event.data.get("next_action"),
-                    event.data.get("waiting_on"),
-                    event.turn_id,
-                    span_delta,
-                    event.run_id,
-                    sequence,
-                    event.run_id,
-                ),
-            )
+            persisted = append_runtime_event_in_transaction(conn, event)
             self._notify(conn, event.run_id)
-        return AgentEvent(
-            event_id=event.event_id,
-            sequence=int(row["sequence"]),
-            run_id=event.run_id,
-            task_id=event.task_id,
-            root_run_id=event.root_run_id,
-            parent_run_id=event.parent_run_id,
-            parent_task_id=event.parent_task_id,
-            user_id=event.user_id,
-            session_id=event.session_id,
-            agent_id=event.agent_id,
-            turn_id=event.turn_id,
-            span_id=event.span_id,
-            parent_span_id=event.parent_span_id,
-            tool_call_id=event.tool_call_id,
-            attempt=event.attempt,
-            phase=event.phase,
-            status=event.status,
-            visibility=event.visibility,
-            summary=event.summary,
-            worker_id=event.worker_id,
-            lease_version=event.lease_version,
-            schema_version=event.schema_version,
-            type=event.type,
-            data=event.data,
-            created_at=_iso(row["created_at"]) or event.created_at,
-        )
+        return persisted
 
     def list_runtime_events(
         self,
@@ -299,6 +195,7 @@ class PostgresTaskStoreMixin:
         retry_delay_seconds: float | None = None,
         worker_id: str | None = None,
         lease_version: int | None = None,
+        event: AgentEvent | None = None,
     ) -> bool:
         terminal = status in _TASK_TERMINAL
         delay = max(0.0, retry_delay_seconds or 0.0)
@@ -339,6 +236,10 @@ class PostgresTaskStoreMixin:
                            WHERE d.task_id=t.task_id AND dep.status!='completed')"""
                 )
             if row:
+                if event is not None:
+                    if event.run_id != str(row["run_id"]) or event.task_id != task_id:
+                        raise ValueError("task transition event identity mismatch")
+                    append_runtime_event_in_transaction(conn, event)
                 refresh = getattr(self, "_refresh_graph_run_waiting", None)
                 if refresh is not None and status not in {"waiting_approval", "waiting_external"}:
                     refresh(conn, str(row["run_id"]))
@@ -418,6 +319,9 @@ class PostgresTaskStoreMixin:
                              ('branch','foreach','wait_event','approval','verify','compensation',
                               'bounded_loop','aggregate')"""
                 )
+            selected_run_id = lock_claimable_task_run(conn, run_id)
+            if selected_run_id is None:
+                return None
             row = conn.execute(
                 """WITH candidate AS (
                        SELECT t.task_id FROM runtime_tasks t
@@ -445,7 +349,7 @@ class PostgresTaskStoreMixin:
                            OR COALESCE(t.result->>'stop_reason','')='foreach_expanded'
                            OR COALESCE(t.result->>'stop_reason','')='bounded_loop_waiting'
                          )
-                         AND (%s::text IS NULL OR t.run_id=%s)
+                         AND t.run_id=%s
                          AND (
                            (t.status='queued' AND r.status IN ('queued','running'))
                            OR (t.status='waiting_external'
@@ -503,7 +407,7 @@ class PostgresTaskStoreMixin:
                            THEN 0 ELSE 1 END,
                        started_at=COALESCE(t.started_at,clock_timestamp()),updated_at=clock_timestamp()
                    FROM candidate c WHERE t.task_id=c.task_id RETURNING t.*""",
-                (run_id, run_id, worker_id, max(1, lease_seconds)),
+                (selected_run_id, worker_id, max(1, lease_seconds)),
             ).fetchone()
             if row:
                 self._audit(

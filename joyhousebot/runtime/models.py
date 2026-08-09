@@ -269,6 +269,9 @@ class GraphTaskSpec:
     name: str = ""
     timeout_seconds: float = 300.0
     max_attempts: int = 1
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_cost_usd: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     capability: CapabilityRef | None = None
     capability_input: dict[str, Any] = field(default_factory=dict)
@@ -292,6 +295,11 @@ class GraphTaskSpec:
             self.capability = CapabilityRef.from_dict(self.capability)
         if self.capability is not None and not isinstance(self.capability, CapabilityRef):
             raise ValueError("graph task capability must be a pinned CapabilityRef")
+        if any(
+            value is not None and value <= 0
+            for value in (self.max_input_tokens, self.max_output_tokens, self.max_cost_usd)
+        ):
+            raise ValueError("graph task budgets must be greater than zero")
         resolved_type = self.node_type or ("capability" if self.capability else "agent")
         if resolved_type not in {
             "agent",
@@ -340,6 +348,21 @@ class GraphTaskSpec:
                 value.get("timeout_seconds") or value.get("timeoutSeconds") or 300
             ),
             max_attempts=max(1, int(value.get("max_attempts") or value.get("maxAttempts") or 1)),
+            max_input_tokens=(
+                int(value["max_input_tokens"])
+                if value.get("max_input_tokens") is not None
+                else None
+            ),
+            max_output_tokens=(
+                int(value["max_output_tokens"])
+                if value.get("max_output_tokens") is not None
+                else None
+            ),
+            max_cost_usd=(
+                float(value["max_cost_usd"])
+                if value.get("max_cost_usd") is not None
+                else None
+            ),
             metadata=dict(value.get("metadata") or {}),
             capability=(
                 CapabilityRef.from_dict(dict(value["capability"]))
@@ -379,6 +402,9 @@ class TaskGraphSpec:
     aggregate: bool = True
     # Frozen with the graph at submission time.  See orchestration.aggregation.
     aggregation_policy: dict[str, Any] = field(default_factory=dict)
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_cost_usd: float | None = None
     idempotency_key: str | None = None
     request_id: str | None = None
     tracker_id: str | None = None
@@ -386,3 +412,10 @@ class TaskGraphSpec:
     traceparent: str | None = None
     tracestate: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if any(
+            value is not None and value <= 0
+            for value in (self.max_input_tokens, self.max_output_tokens, self.max_cost_usd)
+        ):
+            raise ValueError("graph budgets must be greater than zero")

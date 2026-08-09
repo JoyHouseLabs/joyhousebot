@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
 from joyhousebot.runtime.models import AgentEvent
 from joyhousebot.storage.json_codec import Jsonb
+from joyhousebot.storage.postgres_artifact_writes import (
+    insert_runtime_artifact_in_transaction,
+)
+from joyhousebot.storage.postgres_channel_callbacks import project_channel_run_terminal
+from joyhousebot.storage.postgres_event_writes import append_runtime_event_in_transaction
 from joyhousebot.storage.postgres_quotas import check_top_level_submission_quota
+from joyhousebot.storage.postgres_schedule_callbacks import project_schedule_run_terminal
 from joyhousebot.storage.runtime_store import (
     RuntimeRunRecord,
 )
@@ -198,6 +203,11 @@ class PostgresRunStoreMixin:
                         WHERE ready.run_id=pending.run_id
                           AND ready.event_type='run.queued'
                       )
+                    ) AND (
+                      COALESCE(
+                        pending.options->'metadata'->>'_runtime_schedule_submission_ready',
+                        'true'
+                      ) <> 'false'
                     ) AND (
                       pending.kind!='graph' OR NOT EXISTS (
                         SELECT 1 FROM runtime_tasks graph_task
@@ -462,93 +472,60 @@ class PostgresRunStoreMixin:
         event: AgentEvent,
         result: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
         worker_id: str | None = None,
         lease_version: int | None = None,
     ) -> AgentEvent | None:
-        """Atomically fence the owner, commit terminal state, and append its event."""
+        """Compatibility entry point returning the terminal event only."""
+        bundle = self.finish_runtime_run_bundle(
+            run_id,
+            status=status,
+            event=event,
+            result=result,
+            error=error,
+            artifacts=artifacts,
+            worker_id=worker_id,
+            lease_version=lease_version,
+        )
+        return bundle[1] if bundle is not None else None
+
+    def finish_runtime_run_bundle(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        event: AgentEvent,
+        result: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        events_before_terminal: list[AgentEvent] | None = None,
+        worker_id: str | None = None,
+        lease_version: int | None = None,
+    ) -> tuple[list[AgentEvent], AgentEvent] | None:
+        """Atomically commit output events, Artifacts, and terminal state."""
         if status not in _TERMINAL:
             raise ValueError("finish_runtime_run requires a terminal status")
+        persisted_before: list[AgentEvent] = []
         with self._pool.connection() as conn, conn.transaction():
-            updated = conn.execute(
-                """
-                UPDATE runtime_runs SET status=%s, result=COALESCE(%s,result), error=%s,
-                    finished_at=clock_timestamp(), lease_owner=NULL, lease_expires_at=NULL,
-                    status_summary=COALESCE(%s,status_summary),
-                    status_reason=COALESCE(%s,status_reason), waiting_on=NULL,
-                    active_span_count=0, updated_at=clock_timestamp()
-                WHERE run_id=%s
-                  AND status NOT IN ('completed','failed','cancelled','timed_out')
-                  AND (
-                    (%s::text IS NOT NULL AND lease_owner=%s)
-                    OR (%s::text IS NULL AND (
-                      lease_owner IS NULL OR lease_expires_at IS NULL
-                      OR lease_expires_at < clock_timestamp()))
-                  )
-                  AND (%s::bigint IS NULL OR lease_version=%s)
-                RETURNING run_id
-                """,
-                (
-                    status,
-                    Jsonb(result) if result is not None else None,
-                    Jsonb(error) if error is not None else None,
-                    event.summary,
-                    event.data.get("error") or event.data.get("reason"),
-                    run_id,
-                    worker_id,
-                    worker_id,
-                    worker_id,
-                    lease_version,
-                    lease_version,
-                ),
-            ).fetchone()
-            if updated is None:
-                return None
-            row = conn.execute(
-                """INSERT INTO runtime_events
-                       (event_id,run_id,task_id,root_run_id,parent_run_id,parent_task_id,
-                        user_id,session_id,agent_id,turn_id,span_id,parent_span_id,tool_call_id,
-                        attempt,phase,status,visibility,summary,worker_id,lease_version,
-                        schema_version,event_type,data,created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamptz)
-                   ON CONFLICT(event_id) DO UPDATE SET event_id=EXCLUDED.event_id
-                   RETURNING sequence,created_at""",
-                (
-                    event.event_id,
-                    event.run_id,
-                    event.task_id,
-                    event.root_run_id,
-                    event.parent_run_id,
-                    event.parent_task_id,
-                    event.user_id,
-                    event.session_id,
-                    event.agent_id,
-                    event.turn_id,
-                    event.span_id,
-                    event.parent_span_id,
-                    event.tool_call_id,
-                    event.attempt,
-                    event.phase,
-                    event.status,
-                    event.visibility,
-                    event.summary,
-                    event.worker_id,
-                    event.lease_version,
-                    event.schema_version,
-                    event.type,
-                    Jsonb(event.data),
-                    event.created_at,
-                ),
-            ).fetchone()
-            assert row is not None
-            sequence = int(row["sequence"])
-            conn.execute(
-                """UPDATE runtime_runs SET root_run_id=COALESCE(root_run_id,%s),
-                       current_phase=COALESCE(%s,current_phase),
-                       last_event_sequence=GREATEST(last_event_sequence,%s),
-                       last_progress_at=clock_timestamp(),updated_at=clock_timestamp()
-                   WHERE run_id=%s""",
-                (event.root_run_id or run_id, event.phase, sequence, run_id),
+            persisted = self._finish_runtime_run_in_transaction(
+                conn,
+                run_id=run_id,
+                status=status,
+                event=event,
+                result=result,
+                error=error,
+                events_before_terminal=events_before_terminal,
+                persisted_events_before_terminal=persisted_before,
+                worker_id=worker_id,
+                lease_version=lease_version,
             )
+            if persisted is None:
+                return None
+            for artifact in artifacts or []:
+                insert_runtime_artifact_in_transaction(
+                    conn,
+                    **{**artifact, "run_id": run_id},
+                )
             self._audit(
                 conn,
                 run_id=run_id,
@@ -556,9 +533,89 @@ class PostgresRunStoreMixin:
                 stage="store.run.finished",
                 message=f"Run and terminal event committed as {status}",
                 level="error" if status == "failed" else "info",
-                data={"status": status, "lease_version": lease_version, "event_id": event.event_id},
+                data={
+                    "status": status,
+                    "lease_version": lease_version,
+                    "event_id": persisted.event_id,
+                },
             )
             self._notify(conn, run_id)
-        return replace(
-            event, sequence=sequence, created_at=_iso(row["created_at"]) or event.created_at
+        return persisted_before, persisted
+
+    def _finish_runtime_run_in_transaction(
+        self,
+        conn: Any,
+        *,
+        run_id: str,
+        status: str,
+        event: AgentEvent,
+        result: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+        events_before_terminal: list[AgentEvent] | None = None,
+        persisted_events_before_terminal: list[AgentEvent] | None = None,
+        worker_id: str | None = None,
+        lease_version: int | None = None,
+        force_fence: bool = False,
+    ) -> AgentEvent | None:
+        """Terminal transition primitive shared by workers and approval recovery."""
+        if status not in _TERMINAL:
+            raise ValueError("terminal Run transition requires a terminal status")
+        updated = conn.execute(
+                """
+                UPDATE runtime_runs SET status=%s, result=COALESCE(%s,result), error=%s,
+                    finished_at=clock_timestamp(), lease_owner=NULL, lease_expires_at=NULL,
+                    lease_version=CASE WHEN %s THEN lease_version+1 ELSE lease_version END,
+                    status_summary=COALESCE(%s,status_summary),
+                    status_reason=COALESCE(%s,status_reason), waiting_on=NULL,
+                    active_span_count=0, updated_at=clock_timestamp()
+                WHERE run_id=%s
+                  AND status NOT IN ('completed','failed','cancelled','timed_out')
+                  AND (%s OR (
+                    (%s::text IS NOT NULL AND lease_owner=%s)
+                    OR (%s::text IS NULL AND (
+                      lease_owner IS NULL OR lease_expires_at IS NULL
+                      OR lease_expires_at < clock_timestamp()))
+                  ))
+                  AND (%s OR %s::bigint IS NULL OR lease_version=%s)
+                RETURNING run_id,user_id,options
+                """,
+                (
+                    status,
+                    Jsonb(result) if result is not None else None,
+                    Jsonb(error) if error is not None else None,
+                    force_fence,
+                    event.summary,
+                    event.data.get("error") or event.data.get("reason"),
+                    run_id,
+                    force_fence,
+                    worker_id,
+                    worker_id,
+                    worker_id,
+                    force_fence,
+                    lease_version,
+                    lease_version,
+                ),
+            ).fetchone()
+        if updated is None:
+            return None
+        project_schedule_run_terminal(
+            conn,
+            run_id=run_id,
+            status=status,
+            result=result,
+            error=error,
         )
+        project_channel_run_terminal(
+            conn,
+            run_id=run_id,
+            user_id=str(updated["user_id"]),
+            status=status,
+            options=updated["options"],
+            result=result,
+            error=error,
+        )
+        for prior_event in events_before_terminal or []:
+            prior = append_runtime_event_in_transaction(conn, prior_event)
+            if persisted_events_before_terminal is not None:
+                persisted_events_before_terminal.append(prior)
+        return append_runtime_event_in_transaction(conn, event)

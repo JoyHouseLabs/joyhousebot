@@ -133,7 +133,7 @@ See [Architecture](docs/ARCHITECTURE.md) and [Operations](docs/OPERATIONS.md) fo
 ```bash
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: local-dev' \
+  -H 'X-User-ID: joyhousebot' \
   -d '{"agent_id":"main-coordinator","session_id":"demo","input":{"content":"Analyze this task"}}'
 ```
 

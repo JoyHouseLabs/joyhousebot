@@ -1,10 +1,10 @@
 # Joyhousebot
 
-## 企业 Agent 应用治理平台
+## 个人数据与智能的云端/本地执行体
 
-Joyhousebot 不是单 Agent 客户端，也不是模型供应商 SDK。它解决企业把 Agent 应用投入真实业务后最难管理的问题：权限边界、能力准入、版本发布、并发执行、故障恢复、全流程审计、结果回放，以及成本和性能治理。
+Joyhousebot 帮助每个人可靠完成事情，把数据、经验、技能和成果沉淀为真正属于自己的长期资产。它不是单 Agent 聊天客户端，也不是模型供应商 SDK，而是 PostgreSQL-first 的智能执行底座：自然语言目标进入持久 Run/Task 链路，经过能力准入、长任务恢复、验证、人工反馈、审计和回放，最终形成可积累的 Artifact 与 Work。
 
-它提供一个 PostgreSQL-first 的控制面与运行面，让企业可以统一构建、发布、运行和治理多个 Agent 应用。
+同一套 Runtime 可以本地一体化运行，也可以部署为云端多用户并发服务。资源始终以 `user_id` 归属，不预设企业租户模型；个人数据默认私有，只有用户主动发布的 Skill、Agent、Workflow 或 Work 才能被其他人复用和派生。
 
 ## 项目结构
 
@@ -12,6 +12,7 @@ Joyhousebot 不是单 Agent 客户端，也不是模型供应商 SDK。它解决
 joyhousebot/
 ├── joyhousebot/              # 开源 Runtime：API、Worker、Agent、任务、工具、存储与权限
 ├── apps/
+│   ├── joyclaw/              # 面向个人用户的极简智能执行入口
 │   ├── console/              # 运行监控、Agent 配置、场景与回放控制台
 │   ├── website/              # joyhousebot.com 官网
 │   └── browser-extension/    # 浏览器智能外挂（独立仓库 submodule）
@@ -48,6 +49,8 @@ PostgreSQL 事实源
 - 草稿 → 发布 → Worker 加载确认 → 生效切换是明确的 rollout 状态机；失败发布不会覆盖旧版本。
 - 场景支持意图路由、字段校验、单选/多选/Other 交互输入、条件追问 DAG、能力绑定和执行策略，可在控制台模拟和发布。
 - 主协调器可以路由到固定场景、在缺少必要信息时生成受控的动态追问，或创建并行 Task Graph；业务应用不需要硬编码进核心运行时。
+- AI Workflow Studio 允许用户直接描述目标，由 Agent 生成可执行 DAG；流程可视化审查、自然语言修改、
+  试运行和版本发布，执行时仍编译到统一 TaskGraph/Run 链路，不维护第二套工作流引擎。
 
 ### 能力与安全治理
 
@@ -95,14 +98,26 @@ Run Artifact 可进入 Work 的不可变版本链。所有者可以显式选择 
 
 ### 统一执行入口
 
-公共协议是版本化 HTTP + SSE。聊天、定时任务、Channel 入站、多 Agent DAG 和 MCP `tools/call` 都进入同一套 Run/Task 链路，不维护第二套 RPC 或 MCP 执行引擎。
+公共协议是版本化 HTTP + SSE。聊天、定时任务、签名 Webhook、Channel 入站、多 Agent DAG 和 MCP
+`tools/call` 都进入同一套 Run/Task 链路，不维护第二套 RPC 或 MCP 执行引擎。自动化中心可以管理
+Schedule 的启停、补跑和触发历史，也可以把带 Secret、Event Type 与 Idempotency-Key 的外部事件
+可靠映射为用户自己的 Agent Run。
 
 ## 身份与权限
 
 当前核心模型不引入 `tenant_id`：资源归属由认证主体 `user_id` 表达，会话边界是 `user_id + agent_id + session_id`；Agent、Skill、Tool 和子 Agent 是平台共享能力。平台管理员存放在独立的 `platform_admins` 表中，与普通用户身份分离。
 
-生产环境使用数据库签发的 Bearer Token，数据库只保存 SHA-256 指纹；`X-User-ID` 仅在显式开发模式生效。
-账号 RBAC 与令牌 scope 分层校验，服务令牌必须使用最小 scope 和有效期；签发、使用时间、轮换期限、吊销人
+控制台支持管理员密码和 Google Authenticator/TOTP 登录：密码使用 Scrypt 加盐哈希，浏览器只持有短期
+会话 Token，数据库保存 Token 指纹；TOTP 密钥由独立部署密钥加密，恢复码仅在激活时显示一次。生产环境
+没有代码内置固定密码，首次管理员由环境变量引导并强制改密。本地 `config.dev.json` 的默认管理员为
+`joyhousebot / joyhousebot`，仅用于回环地址开发，首次登录后必须立即改密。
+
+登录控制台时可另外选择本次操作的个人 `user_id`。管理员账号负责认证和平台权限，操作 `user_id` 负责
+个人 Run、记忆、自动化与成果归属；控制面接口不会随操作用户切换。代操作需要
+`users.impersonate` 权限并由界面持续提示，普通 API Token 始终只能访问自身资源。
+
+自动化与业务客户端继续使用数据库签发的 Bearer API Token；`X-User-ID` 仅在显式开发模式生效。账号
+RBAC 与令牌 scope 分层校验，服务令牌必须使用最小 scope 和有效期；签发、使用时间、轮换期限、吊销人
 及事件均可审计。权限按操作拆分，例如 `runs.read`、`runs.cancel`、`agents.publish`、
 `reasoning.read_raw` 和 `replay.execute`，管理操作全部产生审计事件。
 
@@ -136,6 +151,22 @@ Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
 ![运行中心](docs/pictures/ScreenShot_2026-08-05_230608_764.png)
 
 ![Run 详情与执行时间线](docs/pictures/ScreenShot_2026-08-05_230625_459.png)
+
+## JoyClaw 个人入口
+
+`apps/joyclaw` 是面向个人用户的默认产品壳：用户只需要描述目标、处理必要的追问或确认，并查看执行结果与成果。Agent、模型、能力、安全策略和版本发布继续由 JoyhouseBot Console 管理。JoyClaw 不创建第二套 Runtime，所有请求仍进入同一套 Run/Task/Event/Artifact/Work 链路。
+
+本地启动：
+
+```bash
+cd apps/joyclaw
+npm install
+npm run dev
+```
+
+打开 `http://127.0.0.1:5179/joy/`。
+
+产品壳与 Runtime/Console 的完整边界见 [JoyClaw 产品架构](docs/JOYCLAW.md)。
 
 ## 快速启动
 
@@ -173,7 +204,7 @@ Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`�
 ```bash
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: local-dev' \
+  -H 'X-User-ID: joyhousebot' \
   -d '{"agent_id":"main-coordinator","session_id":"demo","input":{"content":"分析这个任务"}}'
 ```
 

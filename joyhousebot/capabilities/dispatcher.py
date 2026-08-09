@@ -52,6 +52,17 @@ class CapabilityDispatcher:
         **kwargs: Any,
     ) -> CapabilityResult:
         action_id = self._resolve_action_id(adapter, inputs, context)
+        side_effect = str(adapter.definition.side_effect or "unknown").strip().lower()
+        requires_durable_action = side_effect not in {"none", "read"}
+        if requires_durable_action and action_id is None:
+            return CapabilityResult.failed(
+                f"inv_{tool_call_id or 'unfrozen'}",
+                code="DURABLE_ACTION_REQUIRED",
+                message=(
+                    f"Side-effecting capability '{adapter.definition.ref.capability_id}' "
+                    "requires a Runtime-frozen turn/action identity"
+                ),
+            )
         invocation_id = (
             f"inv_{action_id}" if action_id else f"inv_{tool_call_id or uuid4().hex}"
         )
@@ -85,6 +96,12 @@ class CapabilityDispatcher:
         persist = self.store is not None and await asyncio.to_thread(
             self.store.get_runtime_run, execution_context.run_id
         ) is not None
+        if requires_durable_action and not persist:
+            return CapabilityResult.failed(
+                invocation_id,
+                code="DURABLE_RUNTIME_REQUIRED",
+                message="Side-effecting capabilities require a durable PostgreSQL Run",
+            )
         persist_action = bool(
             persist
             and action_id

@@ -87,6 +87,31 @@ def test_branch_validation_rejects_unverified_or_undeclared_routing() -> None:
         validate_and_order_graph(undeclared)
 
 
+def test_graph_budgets_are_frozen_into_revision_and_task_payloads() -> None:
+    task = GraphTaskSpec(
+        id="budgeted",
+        prompt="bounded execution",
+        max_input_tokens=1000,
+        max_output_tokens=250,
+        max_cost_usd=0.05,
+    )
+    spec = TaskGraphSpec(
+        goal="bounded graph",
+        tasks=[task],
+        max_input_tokens=2000,
+        max_output_tokens=500,
+        max_cost_usd=0.10,
+    )
+    revision = freeze_graph_revision(
+        "budgeted-graph", spec, [task], source="contract-test"
+    )
+    assert revision["settings"]["max_cost_usd"] == 0.10
+    assert revision["nodes"][0]["max_output_tokens"] == 250
+    payload = graph_task_rows("budgeted-graph", revision)[0]["payload"]
+    assert payload["max_input_tokens"] == 1000
+    assert payload["max_cost_usd"] == 0.05
+
+
 class _BranchAgent:
     def __init__(self) -> None:
         self.calls: list[str] = []

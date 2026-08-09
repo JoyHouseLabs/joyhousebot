@@ -74,6 +74,7 @@ class AgentRevision:
     capability_policy: dict[str, Any] = field(default_factory=dict)
     memory_policy: dict[str, Any] = field(default_factory=dict)
     output_policy: dict[str, Any] = field(default_factory=dict)
+    monitor_policy: dict[str, Any] = field(default_factory=dict)
     plugin_requirements: tuple[PluginReleaseRequirement, ...] = ()
     status: str = "draft"
     created_by: str = "system"
@@ -118,6 +119,7 @@ class AgentRevision:
             capability_policy=dict(value.get("capability_policy") or {}),
             memory_policy=dict(value.get("memory_policy") or {}),
             output_policy=dict(value.get("output_policy") or {}),
+            monitor_policy=dict(value.get("monitor_policy") or {}),
             plugin_requirements=tuple(
                 PluginReleaseRequirement.from_dict(dict(item))
                 for item in value.get("plugin_requirements") or ()
@@ -153,6 +155,7 @@ class AgentExecutionSnapshot:
     capability_policy: dict[str, Any]
     memory_policy: dict[str, Any]
     output_policy: dict[str, Any]
+    monitor_policy: dict[str, Any] = field(default_factory=dict)
     plugin_requirements: tuple[PluginReleaseRequirement, ...] = ()
     skill_bindings: tuple[dict[str, Any], ...] = ()
     created_at: str | None = None

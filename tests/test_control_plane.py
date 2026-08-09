@@ -4,6 +4,8 @@ from uuid import uuid4
 import pytest
 
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from joyhousebot.domain.scenarios import ScenarioVersion
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
@@ -75,6 +77,198 @@ def test_failed_agent_rollout_keeps_previous_revision_active(tmp_path: Path) -> 
     assert rollout.status == "failed"
     assert rollout.failed_worker_count == 1
     assert store.list_configuration_events()[0].event_type == "rollout.failed"
+
+
+def test_manual_rollout_requires_approval_and_can_be_rolled_back(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "rollout-manual.db")
+    current = store.get_agent_definition("joy")
+    assert current is not None
+    store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
+    store.save_agent_revision(current, _revision(2))
+
+    store.publish_agent_revision(
+        "joy", "joy:v2", actor_id="publisher", activation_mode="manual"
+    )
+    rollout = store.list_configuration_rollouts()[0]
+    assert rollout.previous_revision_id == "joy:v1"
+    assert rollout.activation_mode == "manual"
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-a", agent_id="joy", revision_id="joy:v2"
+    )
+    rollout = store.get_configuration_rollout(rollout.rollout_id)
+    assert rollout is not None and rollout.status == "awaiting_approval"
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v1"
+
+    assert store.approve_configuration_rollout(
+        rollout.rollout_id, actor_id="release-approver"
+    )
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v2"
+    assert store.rollback_configuration_rollout(
+        rollout.rollout_id, actor_id="release-operator"
+    )
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v2"
+    rolled_back = store.get_configuration_rollout(rollout.rollout_id)
+    assert rolled_back is not None
+    assert rolled_back.status == "rollback_pending"
+    assert rolled_back.rollback_revision_id == "joy:v1"
+    rollback_rollout = next(
+        item
+        for item in store.list_configuration_rollouts()
+        if item.rollback_of_rollout_id == rollout.rollout_id
+    )
+    assert rollback_rollout.revision_id == "joy:v1"
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-a", agent_id="joy", revision_id="joy:v1"
+    )
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v1"
+    assert store.get_configuration_rollout(rollout.rollout_id).status == "rolled_back"
+
+
+def test_failed_rollback_preheat_keeps_current_revision_active(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "rollout-safe-rollback.db")
+    current = store.get_agent_definition("joy")
+    assert current is not None
+    store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
+    store.save_agent_revision(current, _revision(2))
+    store.publish_agent_revision("joy", "joy:v2", actor_id="publisher")
+    rollout = store.list_configuration_rollouts()[0]
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-a", agent_id="joy", revision_id="joy:v2"
+    )
+
+    assert store.rollback_configuration_rollout(rollout.rollout_id, actor_id="operator")
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-a",
+        agent_id="joy",
+        revision_id="joy:v1",
+        status="failed",
+        error={"message": "old plugin package unavailable"},
+    )
+
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v2"
+    assert store.get_configuration_rollout(rollout.rollout_id).status == "completed"
+    assert store.list_configuration_events()[0].event_type == "rollback.failed"
+
+
+def test_failed_worker_target_can_be_retried_without_reloading_successes(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "rollout-retry.db")
+    current = store.get_agent_definition("joy")
+    assert current is not None
+    store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
+    store.register_runtime_worker(worker_id="agent-b", capabilities={"agent": True})
+    store.save_agent_revision(current, _revision(2))
+    store.publish_agent_revision("joy", "joy:v2", actor_id="publisher")
+    rollout = store.list_configuration_rollouts()[0]
+
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-a", agent_id="joy", revision_id="joy:v2"
+    )
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-b",
+        agent_id="joy",
+        revision_id="joy:v2",
+        status="failed",
+        error={"message": "plugin unavailable"},
+    )
+    assert store.get_configuration_rollout(rollout.rollout_id).status == "failed"
+    assert store.retry_configuration_rollout(rollout.rollout_id, actor_id="operator")
+    targets = {
+        item["worker_id"]: item
+        for item in store.list_configuration_rollout_targets(rollout.rollout_id)
+    }
+    assert targets["agent-a"]["status"] == "loaded"
+    assert targets["agent-a"]["attempt_count"] == 1
+    assert targets["agent-b"]["status"] == "pending"
+    assert targets["agent-b"]["attempt_count"] == 2
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-b", agent_id="joy", revision_id="joy:v2"
+    )
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v2"
+
+
+def test_rollout_timeout_is_reconciled_and_keeps_previous_revision(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "rollout-timeout.db")
+    current = store.get_agent_definition("joy")
+    assert current is not None
+    store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
+    store.save_agent_revision(current, _revision(2))
+    store.publish_agent_revision("joy", "joy:v2", actor_id="publisher")
+    rollout = store.list_configuration_rollouts()[0]
+    with store._pool.connection() as connection:  # noqa: SLF001 - deadline fixture
+        connection.execute(
+            """UPDATE configuration_rollouts
+               SET deadline_at=clock_timestamp()-interval '1 second'
+               WHERE rollout_id=%s""",
+            (rollout.rollout_id,),
+        )
+
+    assert store.reconcile_configuration_rollouts() == 1
+    timed_out = store.get_configuration_rollout(rollout.rollout_id)
+    assert timed_out is not None
+    assert timed_out.status == "timed_out"
+    assert timed_out.rollback_revision_id == "joy:v1"
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v1"
+
+
+def test_capability_and_scenario_use_the_same_worker_rollout_contract(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "rollout-catalogs.db")
+    store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
+    capability = CapabilityDefinition(
+        ref=CapabilityRef(
+            "demo.echo",
+            "2.0.0",
+            CapabilityKind.TOOL,
+            "demo.plugin",
+            "2.0.0",
+            "sha256:demo-v2",
+        ),
+        name="Demo echo",
+        description="",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        adapter="demo.echo",
+    )
+    store.stage_capability_release(capability, actor_id="publisher")
+    rollout = store.list_configuration_rollouts()[0]
+    assert rollout.aggregate_type == "capability"
+    assert store.get_capability_definition("demo.echo") is None
+    assert store.acknowledge_configuration_revision(
+        worker_id="agent-a",
+        aggregate_type="capability",
+        aggregate_id="demo.echo",
+        revision_id="2.0.0",
+    )
+    assert store.get_capability_definition("demo.echo")["ref"]["version"] == "2.0.0"
+
+    scenario = ScenarioVersion(
+        scenario_id="demo.scenario",
+        version=1,
+        name="Demo scenario",
+        description="",
+        fields=(),
+        nodes=(),
+        edges=(),
+        allowed_capabilities=(capability.ref,),
+        planning_mode="dynamic",
+        execution_policy={},
+        routing_rules=(),
+    )
+    store.save_scenario_version(scenario)
+    store.stage_scenario_release("demo.scenario", 1, actor_id="publisher")
+    scenario_rollout = store.list_configuration_rollouts()[0]
+    assert scenario_rollout.aggregate_type == "scenario"
+    assert store.get_scenario_version("demo.scenario") is None
+    assert store.acknowledge_configuration_revision(
+        worker_id="agent-a",
+        aggregate_type="scenario",
+        aggregate_id="demo.scenario",
+        revision_id="1",
+    )
+    assert store.get_scenario_version("demo.scenario").status == "published"
 
 
 def test_last_admin_authority_is_transactionally_protected(tmp_path: Path) -> None:

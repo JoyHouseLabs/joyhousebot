@@ -57,6 +57,18 @@ class ConfigurationRolloutRecord:
     target_worker_count: int
     acknowledged_worker_count: int
     failed_worker_count: int
+    previous_revision_id: str | None
+    activation_mode: str
+    timeout_seconds: int
+    deadline_at: str | None
+    auto_rollback: bool
+    retry_of_rollout_id: str | None
+    approved_by: str | None
+    approved_at: str | None
+    cancelled_by: str | None
+    cancelled_at: str | None
+    rollback_revision_id: str | None
+    rollback_of_rollout_id: str | None
     created_at: str
     updated_at: str
     completed_at: str | None

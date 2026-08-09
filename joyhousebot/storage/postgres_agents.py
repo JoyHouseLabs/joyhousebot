@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
 
 from joyhousebot.domain.agents import (
     AgentDefinition,
@@ -43,6 +42,7 @@ class PostgresAgentStoreMixin:
             capability_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
             memory_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
             output_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+            monitor_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
             plugin_requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_by TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -140,6 +140,52 @@ class PostgresAgentStoreMixin:
                 """ALTER TABLE agent_revisions ADD COLUMN IF NOT EXISTS
                        plugin_requirements JSONB NOT NULL DEFAULT '[]'::jsonb"""
             )
+            conn.execute(
+                """ALTER TABLE agent_revisions ADD COLUMN IF NOT EXISTS
+                       monitor_policy JSONB NOT NULL DEFAULT '{}'::jsonb"""
+            )
+            governance_ddl = """
+            ALTER TABLE configuration_rollouts
+                ADD COLUMN IF NOT EXISTS previous_revision_id TEXT,
+                ADD COLUMN IF NOT EXISTS activation_mode TEXT NOT NULL DEFAULT 'automatic',
+                ADD COLUMN IF NOT EXISTS timeout_seconds INTEGER NOT NULL DEFAULT 300,
+                ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS auto_rollback BOOLEAN NOT NULL DEFAULT TRUE,
+                ADD COLUMN IF NOT EXISTS retry_of_rollout_id TEXT,
+                ADD COLUMN IF NOT EXISTS approved_by TEXT,
+                ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS cancelled_by TEXT,
+                ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS rollback_revision_id TEXT;
+            ALTER TABLE configuration_rollout_targets
+                ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1;
+            CREATE INDEX IF NOT EXISTS ix_configuration_rollouts_active
+                ON configuration_rollouts(status,deadline_at)
+                WHERE status IN ('rolling_out','awaiting_approval');
+            """
+            conn.execute(governance_ddl)
+            self._record_migration(
+                conn,
+                name="agents",
+                version=2,
+                ddl=governance_ddl,
+                description="governed rollout lifecycle, deadlines, approval, retry, and rollback",
+            )
+            rollback_ddl = """
+            ALTER TABLE configuration_rollouts
+                ADD COLUMN IF NOT EXISTS rollback_of_rollout_id TEXT;
+            CREATE INDEX IF NOT EXISTS ix_configuration_rollouts_rollback_of
+                ON configuration_rollouts(rollback_of_rollout_id)
+                WHERE rollback_of_rollout_id IS NOT NULL;
+            """
+            conn.execute(rollback_ddl)
+            self._record_migration(
+                conn,
+                name="agents",
+                version=3,
+                ddl=rollback_ddl,
+                description="rollback preheat rollout relationship",
+            )
         self._seed_default_agents()
 
     def _seed_default_agents(self) -> None:
@@ -207,9 +253,10 @@ class PostgresAgentStoreMixin:
             conn.execute(
                 """INSERT INTO agent_revisions
                        (revision_id,agent_id,version,status,persona,instructions,model_policy,
-                        planning_policy,capability_policy,memory_policy,output_policy,plugin_requirements,created_by,
+                        planning_policy,capability_policy,memory_policy,output_policy,
+                        monitor_policy,plugin_requirements,created_by,
                         published_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                            CASE WHEN %s='published' THEN clock_timestamp() ELSE NULL END)
                    ON CONFLICT(revision_id) DO UPDATE SET
                        persona=excluded.persona,instructions=excluded.instructions,
@@ -217,6 +264,7 @@ class PostgresAgentStoreMixin:
                        planning_policy=excluded.planning_policy,
                        capability_policy=excluded.capability_policy,
                        memory_policy=excluded.memory_policy,output_policy=excluded.output_policy,
+                       monitor_policy=excluded.monitor_policy,
                        plugin_requirements=excluded.plugin_requirements,
                        created_by=excluded.created_by
                    WHERE agent_revisions.status='draft'""",
@@ -232,6 +280,7 @@ class PostgresAgentStoreMixin:
                     Jsonb(revision.capability_policy),
                     Jsonb(revision.memory_policy),
                     Jsonb(revision.output_policy),
+                    Jsonb(revision.monitor_policy),
                     Jsonb([item.to_dict() for item in revision.plugin_requirements]),
                     revision.created_by,
                     revision.status,
@@ -245,9 +294,16 @@ class PostgresAgentStoreMixin:
                 )
 
     def publish_agent_revision(
-        self, agent_id: str, revision_id: str, *, actor_id: str = "system"
+        self,
+        agent_id: str,
+        revision_id: str,
+        *,
+        actor_id: str = "system",
+        activation_mode: str = "automatic",
+        timeout_seconds: int = 300,
+        auto_rollback: bool = True,
+        require_healthy_workers: bool = True,
     ) -> AgentProfile:
-        rollout_id = f"rollout_{uuid4().hex}"
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(
                 """SELECT status FROM agent_revisions WHERE revision_id=%s AND agent_id=%s
@@ -268,49 +324,17 @@ class PostgresAgentStoreMixin:
                    VALUES ('agent',%s,%s,'publish.requested',%s)""",
                 (agent_id, revision_id, actor_id),
             )
-            targets = conn.execute(
-                """SELECT worker_id FROM runtime_workers
-                   WHERE status='online'
-                     AND last_heartbeat > clock_timestamp()-interval '2 minutes'
-                     AND capabilities @> '{"agent": true}'::jsonb
-                   ORDER BY worker_id"""
-            ).fetchall()
-            target_count = len(targets)
-            conn.execute(
-                """INSERT INTO configuration_rollouts
-                       (rollout_id,aggregate_type,aggregate_id,revision_id,status,
-                        created_by,target_worker_count,completed_at)
-                   VALUES (%s,'agent',%s,%s,%s,%s,%s,
-                           CASE WHEN %s=0 THEN clock_timestamp() ELSE NULL END)""",
-                (
-                    rollout_id,
-                    agent_id,
-                    revision_id,
-                    "completed" if target_count == 0 else "rolling_out",
-                    actor_id,
-                    target_count,
-                    target_count,
-                ),
+            self._create_configuration_rollout(
+                conn,
+                aggregate_type="agent",
+                aggregate_id=agent_id,
+                revision_id=revision_id,
+                actor_id=actor_id,
+                activation_mode=activation_mode,
+                timeout_seconds=timeout_seconds,
+                auto_rollback=auto_rollback,
+                require_healthy_workers=require_healthy_workers,
             )
-            if targets:
-                with conn.cursor() as cursor:
-                    cursor.executemany(
-                        """INSERT INTO configuration_rollout_targets(rollout_id,worker_id)
-                           VALUES (%s,%s)""",
-                        [(rollout_id, row["worker_id"]) for row in targets],
-                    )
-            else:
-                conn.execute(
-                    """UPDATE agent_definitions SET current_revision_id=%s,
-                           updated_at=clock_timestamp() WHERE agent_id=%s""",
-                    (revision_id, agent_id),
-                )
-                conn.execute(
-                    """INSERT INTO configuration_events
-                           (aggregate_type,aggregate_id,revision_id,event_type,actor_id)
-                       VALUES ('agent',%s,%s,'activated',%s)""",
-                    (agent_id, revision_id, actor_id),
-                )
             self._notify(conn, f"config:agent:{agent_id}")
         definition = self.get_agent_definition(agent_id)
         revision = self.get_agent_revision(revision_id)
@@ -439,6 +463,7 @@ class PostgresAgentStoreMixin:
             "capability_policy": revision.capability_policy,
             "memory_policy": revision.memory_policy,
             "output_policy": revision.output_policy,
+            "monitor_policy": revision.monitor_policy,
             "plugin_requirements": [item.to_dict() for item in revision.plugin_requirements],
             "skill_bindings": list(bindings),
         }
@@ -487,6 +512,7 @@ class PostgresAgentStoreMixin:
             capability_policy=dict(value["capability_policy"]),
             memory_policy=dict(value["memory_policy"]),
             output_policy=dict(value["output_policy"]),
+            monitor_policy=dict(value.get("monitor_policy") or {}),
             plugin_requirements=tuple(
                 PluginReleaseRequirement.from_dict(dict(item))
                 for item in value.get("plugin_requirements") or ()
@@ -575,6 +601,7 @@ class PostgresAgentStoreMixin:
                 "capability_policy": dict(row["capability_policy"]),
                 "memory_policy": dict(row["memory_policy"]),
                 "output_policy": dict(row["output_policy"]),
+                "monitor_policy": dict(row["monitor_policy"] or {}),
                 "plugin_requirements": list(row["plugin_requirements"] or ()),
                 "created_by": row["created_by"],
                 "created_at": _iso(row["created_at"]),

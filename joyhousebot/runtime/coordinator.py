@@ -185,6 +185,12 @@ class RuntimeCoordinatorMixin(
                             expire_workers,
                             stale_after_seconds=max(120, self.lease_seconds * 2),
                         )
+                    if self.maintenance_enabled:
+                        reconcile_rollouts = getattr(
+                            self.store, "reconcile_configuration_rollouts", None
+                        )
+                        if reconcile_rollouts is not None:
+                            await asyncio.to_thread(reconcile_rollouts)
                 if self.maintenance_enabled and now - last_purge_at >= _PURGE_INTERVAL_SECONDS:
                     last_purge_at = now
                     await self._purge_old_runtime_data()

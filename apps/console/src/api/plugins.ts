@@ -41,8 +41,16 @@ export interface PluginMetrics {
   p50_duration_ms: number | null; p95_duration_ms: number | null
   by_component: Array<{ capability_id: string; total: number; succeeded: number; failed: number; p50_duration_ms: number | null; p95_duration_ms: number | null }>
 }
+export interface PluginListItem {
+  plugin_id: string; version: string; name: string; description: string
+  distribution_name: string; build_digest: string; status: string
+  component_count: number; metrics: PluginMetrics
+  manifest: { dependencies?: Array<Record<string, unknown>>; quickstarts?: PluginQuickstart[] }
+  created_at: string; updated_at: string
+}
 export interface PluginOverview {
-  release: { plugin_id: string; version: string; name: string; description: string; distribution_name: string; build_digest: string; manifest: { dependencies?: Array<Record<string, unknown>>; quickstarts?: PluginQuickstart[] } }
+  release: { plugin_id: string; version: string; status: string; name: string; description: string; distribution_name: string; build_digest: string; manifest: { dependencies?: Array<Record<string, unknown>>; quickstarts?: PluginQuickstart[] } }
+  releases: Array<{ plugin_id: string; version: string; status: string; build_digest: string; updated_at: string }>
   components: PluginComponent[]; metrics: PluginMetrics; worker_summary: { total: number; healthy_loaded: number }
 }
 export interface PluginTopology { nodes: Array<{ id: string; kind: string; label: string; data?: Record<string, unknown> }>; edges: Array<{ source: string; target: string; kind: string }> }
@@ -50,10 +58,15 @@ export interface PluginInvocation { invocation_id: string; capability_id: string
 export interface PluginHealth { status: string; checks: Array<{ name: string; status: string; summary: string }> }
 export interface PluginPlaygroundRun { run_id: string; user_id: string; status: string; session_id: string; agent_id: string; prompt: string }
 
+export const listPlugins = () => pluginFetch<{ items: PluginListItem[] }>('')
 export const getPlugin = (id: string) => pluginFetch<PluginOverview>(`/${encodeURIComponent(id)}`)
 export const getPluginTopology = (id: string) => pluginFetch<PluginTopology>(`/${encodeURIComponent(id)}/topology`)
 export const getPluginHealth = (id: string) => pluginFetch<PluginHealth>(`/${encodeURIComponent(id)}/health`)
 export const getPluginInvocations = (id: string) => pluginFetch<{ items: PluginInvocation[] }>(`/${encodeURIComponent(id)}/invocations`)
 export const runPluginDiagnostics = (id: string) => pluginPost<{ items: PluginHealth['checks'] }>(`/${encodeURIComponent(id)}/diagnostics`)
+export const publishPluginRelease = (id: string, version: string) =>
+  pluginPost<Record<string, unknown>>(`/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}/publish`, {
+    activation_mode: 'automatic', timeout_seconds: 300, auto_rollback: true, require_healthy_workers: true,
+  })
 export const createPluginPlaygroundRun = (id: string, value: { capability_id: string; input: Record<string, unknown>; session_id?: string }) =>
   pluginPost<PluginPlaygroundRun>(`/${encodeURIComponent(id)}/playground/runs`, value)

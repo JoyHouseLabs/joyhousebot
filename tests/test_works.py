@@ -103,6 +103,12 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         slug = work["public_slug"]
         assert work["current_version"] == 1
         assert work["published_version"] is None
+        assert work["version"]["source_artifact_sha256"]
+        assert work["version"]["evidence_manifest_sha256"]
+        assert (
+            work["version"]["evidence_manifest"]["artifact"]["artifact_id"]
+            == "work-artifact-v1"
+        )
 
         unsafe_publish = client.patch(
             f"/v1/works/{work_id}",
@@ -126,6 +132,7 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         public_v1 = client.get(f"/v1/public/works/{slug}")
         assert public_v1.status_code == 200
         assert public_v1.json()["version"] == 1
+        assert "evidence_manifest" not in public_v1.json()
         assert "owner_user_id" not in public_v1.json()
         assert "source_run_id" not in public_v1.json()
 
@@ -216,6 +223,42 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
             "collaborator.granted",
             "collaborator.revoked",
         } <= event_types
+
+
+def test_uri_artifact_requires_content_digest_and_object_version_for_work(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "work-uri-integrity.db")
+    owner = _user(store, "work-uri-owner")
+    store.create_runtime_run(
+        run_id="work-uri-run",
+        user_id="work-uri-owner",
+        session_id="works",
+        agent_id="default",
+        kind="agent",
+        prompt="produce object",
+        options={},
+    )
+    store.add_runtime_artifact(
+        artifact_id="work-uri-artifact",
+        run_id="work-uri-run",
+        name="external-object",
+        media_type="application/pdf",
+        uri="https://objects.example/report.pdf",
+    )
+    container = build_api_container(config=Config(), store=store)
+    with TestClient(create_app(container)) as client:
+        response = client.post(
+            "/v1/works",
+            headers=owner,
+            json={
+                "run_id": "work-uri-run",
+                "artifact_id": "work-uri-artifact",
+                "title": "Unfrozen URI",
+            },
+        )
+    assert response.status_code == 422
+    assert "object_version" in response.text
 
 
 def test_archived_work_is_not_public_and_cannot_be_reopened(tmp_path: Path) -> None:

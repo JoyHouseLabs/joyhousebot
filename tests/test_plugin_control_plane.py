@@ -49,6 +49,7 @@ def test_plugin_catalog_is_durable_and_metrics_are_empty_without_invocations(tmp
     store = _store(tmp_path)
     release = store.get_plugin_release("example.discover")
     assert release and release["name"] == "Example Discover"
+    assert release["status"] == "discovered"
     assert [item["component_id"] for item in store.list_plugin_components("example.discover")] == [
         "skill.example.search",
         "example.search",
@@ -56,6 +57,38 @@ def test_plugin_catalog_is_durable_and_metrics_are_empty_without_invocations(tmp
     metrics = store.get_plugin_metrics("example.discover")
     assert metrics["total"] == 0
     assert metrics["by_component"] == []
+
+
+def test_plugin_release_activates_only_after_exact_worker_load_ack(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.register_runtime_worker(
+        worker_id="agent-plugin-a",
+        capabilities={"agent": True},
+        metadata={
+            "plugins": [
+                {
+                    "plugin_id": "example.discover",
+                    "version": "1.0.0",
+                    "build_digest": "sha256:test-example-discover",
+                }
+            ]
+        },
+    )
+
+    rollout_id = store.stage_plugin_release(
+        "example.discover", "1.0.0", actor_id="release-admin"
+    )
+    assert store.get_plugin_release("example.discover", "1.0.0")["status"] == "staged"
+    assert store.get_active_plugin_release("example.discover") is None
+    assert store.acknowledge_configuration_revision(
+        worker_id="agent-plugin-a",
+        aggregate_type="plugin",
+        aggregate_id="example.discover",
+        revision_id="1.0.0",
+    )
+
+    assert store.get_configuration_rollout(rollout_id).status == "completed"
+    assert store.get_active_plugin_release("example.discover")["version"] == "1.0.0"
 
 
 def test_plugin_release_digest_cannot_be_overwritten(tmp_path: Path) -> None:
@@ -68,6 +101,33 @@ def test_plugin_release_digest_cannot_be_overwritten(tmp_path: Path) -> None:
                 name="Example Discover",
                 build_digest="sha256:different-build",
             ).to_dict()
+        )
+
+
+def test_plugin_manifest_and_component_catalog_are_immutable(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(ValueError, match="manifest is immutable"):
+        store.upsert_plugin_release(
+            PluginManifest(
+                plugin_id="example.discover",
+                version="1.0.0",
+                name="Renamed release",
+                build_digest="sha256:test-example-discover",
+            ).to_dict()
+        )
+    with pytest.raises(ValueError, match="component is immutable"):
+        store.sync_plugin_components(
+            "example.discover",
+            "1.0.0",
+            [
+                PluginComponent(
+                    component_id="example.search",
+                    component_type="tool",
+                    name="Mutated search",
+                    reference_id="example.search",
+                    reference_version="1.0.0",
+                ).to_dict()
+            ],
         )
 
 
@@ -188,6 +248,10 @@ def test_plugin_playground_creates_a_direct_durable_tool_run(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_declared_plugin_diagnostics_are_persisted(tmp_path: Path) -> None:
+    pytest.importorskip(
+        "dinq_plugin.discover.plugin",
+        reason="external Dinq plugin package is not installed",
+    )
     store = _store(tmp_path)
     config = Config(tools=ToolsConfig(capability_plugins=["dinq_plugin.discover.plugin"]))
     # The Dinq catalog is deliberately absent here: the diagnostic must report

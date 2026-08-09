@@ -4,7 +4,9 @@
 
 ## 1. 项目定位
 
-JoyhouseBot 是面向个人与企业的开源、AI-native 智能工作中心：将自然语言目标转化为可追踪、可协同、可治理的业务执行。核心不是单一聊天客户端或模型 SDK，而是 PostgreSQL-first 的 Agent Runtime 与控制面：能力准入、版本发布、多 Agent 协作、长任务、人工反馈、审计、回放和持续优化都进入统一 Run/Task 链路。
+JoyhouseBot 是面向个人数据与智能的开源云端/本地执行体：帮助每个人把自然语言目标转化为可追踪、可恢复、可验证的执行，并把数据、经验、技能和成果沉淀为属于用户的长期资产。多用户并发是 Runtime 能力，但当前产品首先解决个人问题，不预设企业租户模型，也不引入 `tenant_id`。核心不是单一聊天客户端或模型 SDK，而是 PostgreSQL-first 的 Agent Runtime 与控制面：能力准入、版本发布、多 Agent 协作、长任务、人工反馈、审计、回放和持续优化都进入统一 Run/Task 链路。
+
+个人数据、记忆、会话和执行产物默认私有。用户主动分享时，分享对象应是脱离私有上下文、经过版本化和验证的 Skill、Agent、Workflow 或 Work；其他用户可以复用或派生发布物，但不能因此获得发布者的个人数据。
 
 业务项目应通过独立插件包注册 Scenario、Capability、Tool、Skill 或 MCP Server；不要把某个业务项目的路由、页面、数据模型或硬编码流程写入 `joyhousebot` 核心包。
 
@@ -13,6 +15,7 @@ JoyhouseBot 是面向个人与企业的开源、AI-native 智能工作中心：�
 - `joyhousebot/`：核心 Python Runtime。包括 API、Worker、Agent、场景编排、能力目录、权限、存储、渠道、任务、审计和回放。它是可复用框架，不承载具体业务应用代码。
 - `joyhousebot/api/`、`application/`、`domain/`、`runtime/`、`storage/`：遵循 API/适配层 → application → runtime/domain services → PostgreSQL repositories 的单向边界。API 负责认证、提交与查询；模型和工具只在 Worker 执行。
 - `apps/console/`：Vue/Vite 管理控制台，用于运行监控、Agent 配置、能力目录、场景、执行时间线和回放。它只调用版本化 HTTP/SSE API，不直接读写数据库或实现运行时逻辑。
+- `apps/joyclaw/`：面向个人用户的极简执行入口，用于提交自然语言目标、查看需要关注的执行、浏览成果和个人自动化。它复用 JoyhouseBot 公共 API，不复制 Agent 配置、运行状态机或治理逻辑；高级设置必须链接到 `apps/console/`。
 - `apps/website/`：Nuxt 静态官网，用于介绍 JoyhouseBot、文档入口、下载和产品引导；不承载 Runtime 控制台或登录后业务流程。
 - `apps/browser-extension/`：浏览器智能外挂，独立 Git 仓库的子模块（`JoyHouseLabs/ext-joyhousebot`）。修改扩展应在子模块仓库中提交、发布，再在此仓库更新固定 commit；不要把扩展源码复制进 Runtime 仓库。
 - `bridges/`：独立渠道桥接实现。新增渠道优先保持为适配层，通过公共执行入口接入，不得创建第二套 Run/Task 状态机。
@@ -31,6 +34,7 @@ JoyhouseBot 是面向个人与企业的开源、AI-native 智能工作中心：�
 - 业务输出先形成 Artifact；成为可分享成果时必须进入 Work 的不可变版本、分级、发布、分享链接、撤销和审计链，不能把原始私有 Artifact URL 直接当公开链接。
 - API 仅处理认证、提交和查询；LLM、工具和长任务由 Worker 执行。不得把模型/工具调用重新塞回 HTTP 请求线程。
 - 数据和产物按 `user_id + agent_id + root_run_id` 隔离。密钥只通过环境变量或 `env://VARIABLE` 引用，禁止提交、打印或写入日志。
+- 管理员密码只能保存为自带随机盐的慢哈希；浏览器会话、MFA challenge、API Token 和恢复码只能保存指纹。TOTP shared secret 必须由独立环境密钥加密。生产环境禁止源码默认密码，bootstrap 密码只允许首次引导并强制改密。
 - 不能将供应商未暴露的内部推理伪装成思维链；推理原文、请求与响应 Blob 均按权限读取并产生审计事件。
 
 ## 4. 本地开发与验证
@@ -47,6 +51,9 @@ uv sync
 
 # 控制台
 cd apps/console && npm install && npm run build
+
+# JoyClaw 个人入口
+cd apps/joyclaw && npm install && npm run build
 
 # 官网静态生成
 cd apps/website && pnpm install && pnpm generate

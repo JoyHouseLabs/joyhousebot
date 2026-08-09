@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from jsonschema import Draft202012Validator, SchemaError
+from loguru import logger
+
 from joyhousebot.application.evals import require_release_gate
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
 from joyhousebot.domain.capabilities import CapabilityDefinition
 
 
 class PlatformService:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, monitor_reconciler: Any | None = None) -> None:
         self.store = store
+        self.monitor_reconciler = monitor_reconciler
 
     async def list_workers(self) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self.store.list_runtime_workers, limit=500)
@@ -58,7 +62,12 @@ class PlatformService:
         return stored.to_dict()
 
     async def publish_agent_revision(
-        self, agent_id: str, revision_id: str, *, actor_id: str
+        self,
+        agent_id: str,
+        revision_id: str,
+        *,
+        actor_id: str,
+        rollout_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await require_release_gate(
             self.store,
@@ -73,7 +82,21 @@ class PlatformService:
             agent_id,
             revision_id,
             actor_id=actor_id,
+            **dict(rollout_policy or {}),
         )
+        active_profile = await asyncio.to_thread(self.store.get_agent_profile, agent_id)
+        if (
+            self.monitor_reconciler is not None
+            and active_profile is not None
+            and active_profile.revision.revision_id == revision_id
+        ):
+            try:
+                await asyncio.to_thread(self.monitor_reconciler, active_profile)
+            except Exception:
+                # Publication already committed. Existing user schedules will
+                # be repaired on their next Run, so do not report a false
+                # transactional failure to the administrator.
+                logger.exception("Managed Agent Monitor publish reconciliation failed")
         return profile.to_dict()
 
     async def bind_agent_skill(self, **kwargs: Any) -> None:
@@ -83,7 +106,11 @@ class PlatformService:
         return await asyncio.to_thread(self.store.list_capability_definitions)
 
     async def publish_capability(
-        self, definition: CapabilityDefinition, *, actor_id: str
+        self,
+        definition: CapabilityDefinition,
+        *,
+        actor_id: str,
+        rollout_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await require_release_gate(
             self.store,
@@ -93,10 +120,65 @@ class PlatformService:
             purpose="publish_capability_version",
             actor_id=actor_id,
         )
+        try:
+            for schema in (
+                definition.input_schema,
+                definition.output_schema,
+                definition.configuration_schema,
+            ):
+                if schema:
+                    Draft202012Validator.check_schema(schema)
+        except SchemaError as exc:
+            raise ValueError(f"invalid capability JSON Schema: {exc.message}") from exc
         await asyncio.to_thread(
-            self.store.publish_capability, definition, actor_id=actor_id
+            self.store.stage_capability_release,
+            definition,
+            actor_id=actor_id,
+            **dict(rollout_policy or {}),
         )
         return definition.to_dict()
+
+    async def publish_plugin_release(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        actor_id: str,
+        rollout_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        release = await asyncio.to_thread(
+            self.store.get_plugin_release, plugin_id, version
+        )
+        if release is None:
+            raise ValueError("plugin release has not been discovered")
+        rollout_id = await asyncio.to_thread(
+            self.store.stage_plugin_release,
+            plugin_id,
+            version,
+            actor_id=actor_id,
+            **dict(rollout_policy or {}),
+        )
+        return {**release, "status": "staged", "rollout_id": rollout_id}
+
+    async def approve_rollout(self, rollout_id: str, *, actor_id: str) -> bool:
+        return await asyncio.to_thread(
+            self.store.approve_configuration_rollout, rollout_id, actor_id=actor_id
+        )
+
+    async def cancel_rollout(self, rollout_id: str, *, actor_id: str) -> bool:
+        return await asyncio.to_thread(
+            self.store.cancel_configuration_rollout, rollout_id, actor_id=actor_id
+        )
+
+    async def retry_rollout(self, rollout_id: str, *, actor_id: str) -> bool:
+        return await asyncio.to_thread(
+            self.store.retry_configuration_rollout, rollout_id, actor_id=actor_id
+        )
+
+    async def rollback_rollout(self, rollout_id: str, *, actor_id: str) -> bool:
+        return await asyncio.to_thread(
+            self.store.rollback_configuration_rollout, rollout_id, actor_id=actor_id
+        )
 
     async def list_rollouts(self, *, limit: int) -> list[dict[str, Any]]:
         rows = await asyncio.to_thread(

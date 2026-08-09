@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import re
 from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -12,9 +13,33 @@ from loguru import logger
 
 from joyhousebot.application.context import Principal, RequestContext
 from joyhousebot.runtime.tracking import normalize_request_id
+from joyhousebot.security.admin_auth import DEFAULT_DEVELOPMENT_ADMIN_USER
 from joyhousebot.utils.permissions import permission_granted
 
 _READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+_USER_ID_PATTERN = re.compile(r"^[^\s\x00-\x1f\x7f]{1,128}$")
+_SESSION_IMPERSONATION_CONTROL_PREFIXES = ("/v1/admin", "/v1/auth", "/v1/system")
+
+
+def _impersonation_target(value: str | None) -> str | None:
+    target = str(value or "").strip()
+    if not target:
+        return None
+    if not _USER_ID_PATTERN.fullmatch(target):
+        raise HTTPException(
+            status_code=400,
+            detail="X-Impersonate-User-ID must be 1-128 characters without whitespace",
+        )
+    return target
+
+
+def _is_user_data_request(request: Request) -> bool:
+    """Keep administrator/control APIs bound to the authenticated admin."""
+    path = request.url.path.rstrip("/") or "/"
+    return not any(
+        path == prefix or path.startswith(f"{prefix}/")
+        for prefix in _SESSION_IMPERSONATION_CONTROL_PREFIXES
+    )
 
 
 def required_api_scope(request: Request) -> str:
@@ -23,9 +48,13 @@ def required_api_scope(request: Request) -> str:
     operation = "read" if request.method.upper() in _READ_METHODS else "write"
     if path.startswith("/v1/admin"):
         return f"admin.{operation}"
-    for namespace in ("runs", "memory", "sessions", "schedules", "works"):
+    for namespace in ("runs", "memory", "sessions", "schedules", "works", "workflows"):
         if path == f"/v1/{namespace}" or path.startswith(f"/v1/{namespace}/"):
             return f"{namespace}.{operation}"
+    if path == "/v1/event-triggers" or path.startswith("/v1/event-triggers/"):
+        return f"automation.{operation}"
+    if path == "/v1/event-trigger-deliveries":
+        return "automation.read"
     if path.startswith("/v1/system/"):
         return "system.read"
     if path in {"/v1/me", "/v1/agents", "/v1/capabilities", "/v1/scenarios", "/v1/usage"}:
@@ -69,7 +98,7 @@ async def get_principal(
 
     control_token = str(os.getenv("JOYHOUSEBOT_CONTROL_TOKEN") or "")
     if token and control_token and hmac.compare_digest(token, control_token):
-        user_id = str(x_impersonate_user_id or "").strip() or None
+        user_id = _impersonation_target(x_impersonate_user_id)
         # Audit trail for operator impersonation: who is acting as whom, where.
         logger.warning(
             "operator impersonation: subject=operator target_user={} method={} path={}",
@@ -77,7 +106,13 @@ async def get_principal(
             request.method,
             request.url.path,
         )
-        return Principal(subject="operator", user_id=user_id, role="operator", permissions=("*",))
+        return Principal(
+            subject="operator",
+            user_id=user_id,
+            role="operator",
+            permissions=("*",),
+            actor_user_id="operator" if user_id else None,
+        )
     access = (
         await asyncio.to_thread(
             get_container(request).store.authenticate_api_access_token, token
@@ -86,6 +121,11 @@ async def get_principal(
         else None
     )
     if access is not None:
+        if _impersonation_target(x_impersonate_user_id) is not None:
+            raise HTTPException(
+                status_code=403,
+                detail="API access tokens cannot impersonate another user",
+            )
         _enforce_token_scope(access, request)
         resolved_user_id = str(access["user_id"])
         admin = await asyncio.to_thread(
@@ -107,11 +147,68 @@ async def get_principal(
             token_type=str(access.get("token_type") or "user"),
         )
 
+    session = (
+        await asyncio.to_thread(
+            get_container(request).store.authenticate_admin_session, token
+        )
+        if token
+        else None
+    )
+    if session is not None:
+        if session.get("must_change_password") and request.url.path not in {
+            "/v1/auth/status",
+            "/v1/auth/password",
+            "/v1/auth/logout",
+        }:
+            raise HTTPException(status_code=403, detail="administrator password change required")
+        session_user_id = str(session["user_id"])
+        permissions = tuple(str(item) for item in session.get("permissions") or ())
+        target_user_id = _impersonation_target(x_impersonate_user_id)
+        if (
+            target_user_id
+            and target_user_id != session_user_id
+            and _is_user_data_request(request)
+        ):
+            role = str(session["role"])
+            if role != "operator" and not any(
+                permission_granted(grant, "users.impersonate") for grant in permissions
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="user impersonation permission required",
+                )
+            logger.warning(
+                "administrator impersonation: actor_user={} target_user={} method={} path={}",
+                session_user_id,
+                target_user_id,
+                request.method,
+                request.url.path,
+            )
+            return Principal(
+                subject=f"session:{session['session_id']}",
+                user_id=target_user_id,
+                role=role,
+                permissions=permissions,
+                token_type="browser_session",
+                actor_user_id=session_user_id,
+            )
+        return Principal(
+            subject=f"session:{session['session_id']}",
+            user_id=session_user_id,
+            role=str(session["role"]),
+            permissions=permissions,
+            token_type="browser_session",
+        )
+
     # Fail closed: an empty token configuration rejects requests instead of
     # silently trusting caller-supplied identity headers. The insecure dev
     # mode (X-User-Id) requires an explicit allow_insecure_auth=true opt-in.
     if bool(getattr(gateway, "allow_insecure_auth", False)):
-        dev_user = str(x_user_id or os.getenv("JOYHOUSEBOT_DEV_USER_ID") or "local-dev").strip()
+        dev_user = str(
+            x_user_id
+            or os.getenv("JOYHOUSEBOT_DEV_USER_ID")
+            or DEFAULT_DEVELOPMENT_ADMIN_USER
+        ).strip()
         admin = await asyncio.to_thread(
             get_container(request).store.get_platform_admin, dev_user
         )
@@ -242,6 +339,10 @@ AuditReaderDep = Annotated[
 ]
 RolloutsReaderDep = Annotated[
     Principal, Depends(_permission_dependency("rollouts.read", "rollout read permission required"))
+]
+RolloutsWriterDep = Annotated[
+    Principal,
+    Depends(_permission_dependency("rollouts.write", "rollout write permission required")),
 ]
 ScenarioReaderDep = Annotated[
     Principal, Depends(_permission_dependency("scenarios.read", "scenario read permission required"))

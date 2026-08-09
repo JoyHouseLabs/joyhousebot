@@ -26,6 +26,7 @@ from joyhousebot.storage.postgres_capabilities import PostgresCapabilityStoreMix
 from joyhousebot.storage.postgres_clarifications import PostgresClarificationStoreMixin
 from joyhousebot.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
 from joyhousebot.storage.postgres_evals import PostgresEvalStoreMixin
+from joyhousebot.storage.postgres_event_triggers import PostgresEventTriggerStoreMixin
 from joyhousebot.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
 from joyhousebot.storage.postgres_graph_actions import PostgresGraphActionStoreMixin
 from joyhousebot.storage.postgres_graph_branches import PostgresGraphBranchStoreMixin
@@ -55,6 +56,7 @@ from joyhousebot.storage.postgres_runs import PostgresRunStoreMixin
 from joyhousebot.storage.postgres_scenarios import PostgresScenarioStoreMixin
 from joyhousebot.storage.postgres_tasks import PostgresTaskStoreMixin
 from joyhousebot.storage.postgres_verifications import PostgresVerificationStoreMixin
+from joyhousebot.storage.postgres_workflows import PostgresWorkflowStoreMixin
 from joyhousebot.storage.postgres_works import PostgresWorkStoreMixin
 from joyhousebot.storage.runtime_store import (
     RuntimeRunRecord,
@@ -86,6 +88,7 @@ def _json(value: Any, default: Any = None) -> Any:
 
 class PostgresRuntimeStore(
     PostgresMigrationMixin,
+    PostgresWorkflowStoreMixin,
     PostgresGraphRevisionStoreMixin,
     PostgresGraphSagaStoreMixin,
     PostgresGraphPatchStoreMixin,
@@ -98,6 +101,7 @@ class PostgresRuntimeStore(
     PostgresExecutionLoopStoreMixin,
     PostgresContextManifestStoreMixin,
     PostgresMemoryCandidateStoreMixin,
+    PostgresEventTriggerStoreMixin,
     PostgresLoopDecisionStoreMixin,
     PostgresVerificationStoreMixin,
     PostgresApprovalStoreMixin,

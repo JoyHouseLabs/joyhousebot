@@ -23,6 +23,32 @@ class EvalExecutionService:
         self.evals = evals
         self.scenarios = scenarios
 
+    async def enqueue(
+        self,
+        eval_run_id: str,
+        *,
+        actor_id: str,
+        max_concurrency: int = 4,
+        case_timeout_seconds: float = 300.0,
+    ) -> dict[str, Any]:
+        """Queue execution durably; a Scheduler Worker owns orchestration."""
+        try:
+            return await asyncio.to_thread(
+                self.store.enqueue_eval_execution,
+                eval_run_id,
+                configuration={
+                    "max_concurrency": max(1, min(int(max_concurrency), 16)),
+                    "case_timeout_seconds": max(
+                        1.0, min(float(case_timeout_seconds), 3600.0)
+                    ),
+                },
+                requested_by=actor_id,
+            )
+        except ValueError as exc:
+            if "not found" in str(exc):
+                raise NotFoundError(str(exc)) from exc
+            raise ConflictError(str(exc)) from exc
+
     async def execute(
         self,
         eval_run_id: str,

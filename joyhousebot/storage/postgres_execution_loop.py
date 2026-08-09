@@ -33,8 +33,9 @@ class PostgresExecutionLoopStoreMixin:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             UNIQUE(run_id, task_id, turn_index)
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_turns_run_root_index
-            ON runtime_turns(run_id, turn_index) WHERE task_id IS NULL;
+        -- The legacy root-turn index intentionally is not recreated here.
+        -- Version 2 keys root turns by scope; recreating the v1 index on every
+        -- startup rejects valid coordinator turns that share a turn_index.
         CREATE INDEX IF NOT EXISTS ix_runtime_turns_run_index
             ON runtime_turns(run_id, turn_index);
         CREATE INDEX IF NOT EXISTS ix_runtime_turns_active

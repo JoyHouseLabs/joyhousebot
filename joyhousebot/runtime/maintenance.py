@@ -34,6 +34,7 @@ class RuntimeMaintenanceMixin:
                 for request in expired:
                     await self.events.publish(
                         AgentEvent(
+                            event_id=f"approval:{request.approval_id}:resolved:expired",
                             run_id=request.run_id,
                             task_id=request.task_id,
                             type=EventType.APPROVAL_RESOLVED.value,
@@ -47,6 +48,11 @@ class RuntimeMaintenanceMixin:
                     )
                     await self.events.publish(
                         AgentEvent(
+                            event_id=(
+                                f"approval:{request.approval_id}:task.failed"
+                                if request.task_id
+                                else f"approval:{request.approval_id}:run.failed"
+                            ),
                             run_id=request.run_id,
                             task_id=request.task_id,
                             type=(

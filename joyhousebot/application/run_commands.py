@@ -37,6 +37,9 @@ class GraphTaskCommand:
     name: str | None = None
     timeout_seconds: float | None = None
     max_attempts: int = 1
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_cost_usd: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     capability: CapabilityRef | None = None
     capability_input: dict[str, Any] = field(default_factory=dict)
@@ -76,6 +79,11 @@ class GraphTaskCommand:
             raise ValidationError("unsupported graph node type")
         if resolved_type == "agent" and not self.prompt.strip():
             raise ValidationError("graph task prompt or capability is required")
+        if any(
+            value is not None and value <= 0
+            for value in (self.max_input_tokens, self.max_output_tokens, self.max_cost_usd)
+        ):
+            raise ValidationError("graph task budgets must be greater than zero")
         if resolved_type in {"capability", "compensation"} and self.capability is None:
             raise ValidationError(f"{resolved_type} graph task requires a pinned CapabilityRef")
         if (

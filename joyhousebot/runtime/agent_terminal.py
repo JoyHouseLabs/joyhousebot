@@ -62,10 +62,29 @@ class AgentTerminalMixin:
         event_type: EventType,
         result: dict[str, Any],
         error: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
         worker_id: str | None = None,
         lease_version: int | None = None,
     ) -> AgentEvent | None:
         """Atomically persist terminal state/event, then notify live subscribers."""
+        artifact_events = [
+            await self.events.prepare(
+                AgentEvent(
+                    event_id=f"artifact:{artifact['artifact_id']}:created",
+                    run_id=run_id,
+                    type=EventType.ARTIFACT_CREATED.value,
+                    status="completed",
+                    worker_id=worker_id,
+                    lease_version=lease_version,
+                    data={
+                        "artifact_id": artifact["artifact_id"],
+                        "name": artifact["name"],
+                        "media_type": artifact["media_type"],
+                    },
+                )
+            )
+            for artifact in artifacts or []
+        ]
         event = await self.events.prepare(
             AgentEvent(
                 run_id=run_id,
@@ -76,17 +95,22 @@ class AgentTerminalMixin:
                 data=result,
             )
         )
-        persisted = await asyncio.to_thread(
-            self.store.finish_runtime_run,
+        bundle = await asyncio.to_thread(
+            self.store.finish_runtime_run_bundle,
             run_id,
             status=status.value,
             event=event,
             result=result,
             error=error,
+            artifacts=artifacts,
+            events_before_terminal=artifact_events,
             worker_id=worker_id,
             lease_version=lease_version,
         )
-        if persisted is not None:
+        persisted = bundle[1] if bundle is not None else None
+        if bundle is not None:
+            for artifact_event in bundle[0]:
+                await self.events.fanout(artifact_event)
             await self.events.fanout(persisted)
             record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
             if record is not None and record.parent_run_id:

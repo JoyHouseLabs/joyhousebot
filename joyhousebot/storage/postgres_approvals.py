@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from joyhousebot.runtime.models import AgentEvent, EventType
 from joyhousebot.storage.approval_records import ApprovalRequestRecord
 from joyhousebot.storage.json_codec import Jsonb
+from joyhousebot.storage.postgres_event_writes import append_runtime_event_in_transaction
 
 
 class PostgresApprovalStoreMixin:
@@ -228,6 +230,25 @@ class PostgresApprovalStoreMixin:
                 return None
             if str(row.get("subject_type") or "action") == "graph_node":
                 saved = self._resolve_explicit_graph_approval(conn, row=row, **kwargs)
+                if saved is not None:
+                    self._append_approval_resolution_event(
+                        conn,
+                        run_id=kwargs["run_id"],
+                        task_id=str(row["task_id"]),
+                        approval_id=kwargs["approval_id"],
+                        action_id=None,
+                        status=str(saved["status"]),
+                        resolution=str(saved["resolution"] or resolution),
+                        actor_id=kwargs["actor_id"],
+                    )
+                    self._append_approval_task_event(
+                        conn,
+                        run_id=kwargs["run_id"],
+                        task_id=str(row["task_id"]),
+                        approval_id=kwargs["approval_id"],
+                        approved=str(saved["status"]) == "approved",
+                        explicit=True,
+                    )
                 self._notify(conn, kwargs["run_id"])
                 return self._approval_request(saved) if saved else None
             action = conn.execute(
@@ -272,6 +293,17 @@ class PostgresApprovalStoreMixin:
                    WHERE approval_id=%s RETURNING *""",
                 (status, resolution, kwargs.get("note"), kwargs["actor_id"], kwargs["approval_id"]),
             ).fetchone()
+            assert saved is not None
+            self._append_approval_resolution_event(
+                conn,
+                run_id=kwargs["run_id"],
+                task_id=(str(graph_task["task_id"]) if graph_task is not None else None),
+                approval_id=kwargs["approval_id"],
+                action_id=str(row["action_id"]),
+                status=status,
+                resolution=resolution,
+                actor_id=kwargs["actor_id"],
+            )
             if status == "approved":
                 resumed_graph = self._resume_graph_action_task(
                     conn,
@@ -287,6 +319,14 @@ class PostgresApprovalStoreMixin:
                            WHERE run_id=%s""",
                         (kwargs["run_id"],),
                     )
+                self._append_approval_task_event(
+                    conn,
+                    run_id=kwargs["run_id"],
+                    task_id=(str(graph_task["task_id"]) if resumed_graph else None),
+                    approval_id=kwargs["approval_id"],
+                    approved=True,
+                    explicit=False,
+                )
             else:
                 conn.execute(
                     """UPDATE action_intents SET status=%s,updated_at=clock_timestamp()
@@ -303,14 +343,32 @@ class PostgresApprovalStoreMixin:
                     error=error,
                 )
                 if not failed_graph:
-                    conn.execute(
-                        """UPDATE runtime_runs SET status='failed',error=%s,
-                               status_summary='审批未通过',status_reason=%s,next_action=NULL,
-                               waiting_on=NULL,lease_owner=NULL,lease_expires_at=NULL,
-                               active_span_count=0,finished_at=clock_timestamp(),
-                               updated_at=clock_timestamp()
-                           WHERE run_id=%s""",
-                        (Jsonb(error), f"approval_{status}", kwargs["run_id"]),
+                    terminal = self._finish_runtime_run_in_transaction(
+                        conn,
+                        run_id=kwargs["run_id"],
+                        status="failed",
+                        event=AgentEvent(
+                            event_id=f"approval:{kwargs['approval_id']}:run.failed",
+                            run_id=kwargs["run_id"],
+                            type=EventType.RUN_FAILED.value,
+                            status="failed",
+                            summary="审批未通过",
+                            data={"reason": f"approval_{status}"},
+                        ),
+                        error=error,
+                        force_fence=resolution == "revoke",
+                    )
+                    if terminal is None:
+                        raise RuntimeError("approval terminal Run transition was fenced")
+                else:
+                    self._append_approval_task_event(
+                        conn,
+                        run_id=kwargs["run_id"],
+                        task_id=str(graph_task["task_id"]),
+                        approval_id=kwargs["approval_id"],
+                        approved=False,
+                        explicit=False,
+                        reason=f"approval_{status}",
                     )
             self._notify(conn, kwargs["run_id"])
         return self._approval_request(saved) if saved else None
@@ -382,6 +440,25 @@ class PostgresApprovalStoreMixin:
                 if str(row.get("subject_type") or "action") == "graph_node":
                     updated = self._expire_explicit_graph_approval(conn, row)
                     if updated is not None:
+                        self._append_approval_resolution_event(
+                            conn,
+                            run_id=str(row["run_id"]),
+                            task_id=str(row["task_id"]),
+                            approval_id=str(row["approval_id"]),
+                            action_id=None,
+                            status="expired",
+                            resolution="expired",
+                            actor_id="system:expiry",
+                        )
+                        self._append_approval_task_event(
+                            conn,
+                            run_id=str(row["run_id"]),
+                            task_id=str(row["task_id"]),
+                            approval_id=str(row["approval_id"]),
+                            approved=False,
+                            explicit=True,
+                            reason="approval_expired",
+                        )
                         saved.append(updated)
                     self._notify(conn, str(row["run_id"]))
                     continue
@@ -392,6 +469,16 @@ class PostgresApprovalStoreMixin:
                        WHERE approval_id=%s RETURNING *""",
                     (row["approval_id"],),
                 ).fetchone()
+                self._append_approval_resolution_event(
+                    conn,
+                    run_id=str(row["run_id"]),
+                    task_id=(str(row["task_id"]) if row.get("task_id") else None),
+                    approval_id=str(row["approval_id"]),
+                    action_id=str(row["action_id"]),
+                    status="expired",
+                    resolution="expired",
+                    actor_id="system:expiry",
+                )
                 conn.execute(
                     """UPDATE action_intents SET status='expired',updated_at=clock_timestamp()
                        WHERE action_id=%s""",
@@ -408,20 +495,95 @@ class PostgresApprovalStoreMixin:
                     error=error,
                 )
                 if not failed_graph:
-                    conn.execute(
-                        """UPDATE runtime_runs SET status='failed',
-                               error=%s,status_summary='审批请求已过期',
-                               status_reason='approval_expired',next_action=NULL,
-                               waiting_on=NULL,lease_owner=NULL,lease_expires_at=NULL,
-                               active_span_count=0,finished_at=clock_timestamp(),
-                               updated_at=clock_timestamp()
-                           WHERE run_id=%s""",
-                        (Jsonb(error), row["run_id"]),
+                    terminal = self._finish_runtime_run_in_transaction(
+                        conn,
+                        run_id=str(row["run_id"]),
+                        status="failed",
+                        event=AgentEvent(
+                            event_id=f"approval:{row['approval_id']}:run.failed",
+                            run_id=str(row["run_id"]),
+                            type=EventType.RUN_FAILED.value,
+                            status="failed",
+                            summary="审批请求已过期",
+                            data={"reason": "approval_expired"},
+                        ),
+                        error=error,
+                    )
+                    if terminal is None:
+                        raise RuntimeError("expired approval terminal Run transition was fenced")
+                else:
+                    self._append_approval_task_event(
+                        conn,
+                        run_id=str(row["run_id"]),
+                        task_id=str(row["task_id"]),
+                        approval_id=str(row["approval_id"]),
+                        approved=False,
+                        explicit=False,
+                        reason="approval_expired",
                     )
                 if updated is not None:
                     saved.append(updated)
                 self._notify(conn, str(row["run_id"]))
         return [self._approval_request(row) for row in saved]
+
+    @staticmethod
+    def _append_approval_resolution_event(
+        conn: Any,
+        *,
+        run_id: str,
+        task_id: str | None,
+        approval_id: str,
+        action_id: str | None,
+        status: str,
+        resolution: str,
+        actor_id: str,
+    ) -> None:
+        append_runtime_event_in_transaction(
+            conn,
+            AgentEvent(
+                event_id=f"approval:{approval_id}:resolved:{status}",
+                run_id=run_id,
+                task_id=task_id,
+                type=EventType.APPROVAL_RESOLVED.value,
+                status=status,
+                data={
+                    "approval_id": approval_id,
+                    "action_id": action_id,
+                    "resolution": resolution,
+                    "resolved_by": actor_id,
+                },
+            ),
+        )
+
+    @staticmethod
+    def _append_approval_task_event(
+        conn: Any,
+        *,
+        run_id: str,
+        task_id: str | None,
+        approval_id: str,
+        approved: bool,
+        explicit: bool,
+        reason: str | None = None,
+    ) -> None:
+        if explicit:
+            event_type = EventType.TASK_COMPLETED if approved else EventType.TASK_FAILED
+        elif task_id:
+            event_type = EventType.TASK_QUEUED if approved else EventType.TASK_FAILED
+        else:
+            event_type = EventType.RUN_QUEUED if approved else EventType.RUN_FAILED
+        status = "completed" if explicit and approved else "queued" if approved else "failed"
+        append_runtime_event_in_transaction(
+            conn,
+            AgentEvent(
+                event_id=f"approval:{approval_id}:{event_type.value}",
+                run_id=run_id,
+                task_id=task_id,
+                type=event_type.value,
+                status=status,
+                data={"reason": reason or "approval_granted", "approval_id": approval_id},
+            ),
+        )
 
     @staticmethod
     def _approval_request(row: dict[str, Any]) -> ApprovalRequestRecord:

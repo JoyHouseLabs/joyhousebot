@@ -11,6 +11,9 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from joyhousebot.storage.json_codec import Jsonb
+from joyhousebot.storage.postgres_artifact_writes import (
+    insert_runtime_artifact_in_transaction,
+)
 from joyhousebot.storage.postgres_maintenance import PostgresMaintenanceStoreMixin
 from joyhousebot.storage.runtime_store import (
     RequestTraceEventRecord,
@@ -133,24 +136,33 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
         content: Any = None,
         uri: str | None = None,
         task_id: str | None = None,
+        artifact_type: str = "runtime.output",
+        operation: str = "create",
+        schema_version: int = 1,
+        metadata: dict[str, Any] | None = None,
+        content_sha256: str = "",
+        object_version: str = "",
+        provenance: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> None:
-        with self._pool.connection() as conn:
-            conn.execute(
-                """INSERT INTO runtime_artifacts
-                       (artifact_id,run_id,task_id,name,media_type,content,uri)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(artifact_id) DO UPDATE SET task_id=EXCLUDED.task_id,
-                       name=EXCLUDED.name,media_type=EXCLUDED.media_type,
-                       content=EXCLUDED.content,uri=EXCLUDED.uri""",
-                (
-                    artifact_id,
-                    run_id,
-                    task_id,
-                    name,
-                    media_type,
-                    Jsonb(content) if content is not None else None,
-                    uri,
-                ),
+        with self._pool.connection() as conn, conn.transaction():
+            insert_runtime_artifact_in_transaction(
+                conn,
+                artifact_id=artifact_id,
+                run_id=run_id,
+                name=name,
+                media_type=media_type,
+                content=content,
+                uri=uri,
+                task_id=task_id,
+                artifact_type=artifact_type,
+                operation=operation,
+                schema_version=schema_version,
+                metadata=metadata,
+                content_sha256=content_sha256,
+                object_version=object_version,
+                provenance=provenance,
+                evidence=evidence,
             )
 
     def list_runtime_artifacts(
@@ -176,6 +188,14 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 "media_type": str(r["media_type"]),
                 "content": _json(r["content"]),
                 "uri": r["uri"],
+                "artifact_type": str(r["artifact_type"]),
+                "operation": str(r["operation"]),
+                "schema_version": int(r["schema_version"]),
+                "metadata": dict(_json(r["metadata"], {})),
+                "content_sha256": str(r["content_sha256"]),
+                "object_version": str(r["object_version"]),
+                "provenance": dict(_json(r["provenance"], {})),
+                "evidence": dict(_json(r["evidence"], {})),
                 "created_at": _iso(r["created_at"]) or "",
             }
             for r in rows
