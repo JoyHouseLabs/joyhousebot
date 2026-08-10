@@ -39,7 +39,7 @@ class PostgresGraphStoreMixin:
             )
             if existing is not None:
                 return self._run(existing), False
-            revision = revision or self._legacy_graph_revision(
+            revision = revision or self._freeze_graph_revision_from_rows(
                 run_id, goal=prompt, options=options, tasks=tasks
             )
             options = {**options, "graph_revision_id": revision["revision_id"]}
@@ -146,7 +146,7 @@ class PostgresGraphStoreMixin:
             existing = conn.execute(
                 "SELECT COUNT(*) AS count FROM runtime_tasks WHERE run_id=%s", (run_id,)
             ).fetchone()
-            revision = revision or self._legacy_graph_revision(
+            revision = revision or self._freeze_graph_revision_from_rows(
                 run_id, goal=str(run["prompt"]), options=options, tasks=tasks
             )
             if run["kind"] == "graph" and int(existing["count"]) == len(tasks):
@@ -160,8 +160,8 @@ class PostgresGraphStoreMixin:
                 and (lease_version is None or int(run["lease_version"]) == lease_version)
             )
             # A clarified scenario is queued before graph materialization so a
-            # coordinator replica can claim it safely.  Accept that durable
-            # hand-off state in addition to the legacy planning state.
+            # coordinator replica can claim it safely. Accept both durable
+            # pre-execution states.
             materializable = run["status"] in {"planning", "queued"}
             if (not materializable and not owned_running) or int(existing["count"]):
                 raise ValueError("run cannot be materialized as a graph")

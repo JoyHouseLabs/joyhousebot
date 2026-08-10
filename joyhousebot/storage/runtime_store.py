@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from joyhousebot.contracts.events import AgentEvent
 from joyhousebot.domain.agents import (
     AgentDefinition,
     AgentExecutionSnapshot,
@@ -14,7 +15,6 @@ from joyhousebot.domain.agents import (
 )
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityInvocation
 from joyhousebot.domain.scenarios import ScenarioVersion
-from joyhousebot.runtime.models import AgentEvent
 from joyhousebot.storage.approval_records import ApprovalRequestRecord
 from joyhousebot.storage.context_records import ContextManifestRecord
 from joyhousebot.storage.decision_records import LoopDecisionRecord
@@ -49,7 +49,7 @@ DESTRUCTIVE_MIGRATE_PHRASE = "DROP_ALL_TABLES"
 
 
 def destructive_migrate_enabled() -> bool:
-    """Whether legacy destructive schema migrations are explicitly allowed.
+    """Whether a development schema reset is explicitly allowed.
 
     Development-only escape hatch: the environment variable must equal the
     exact phrase ``DROP_ALL_TABLES``; truthy values such as ``1`` no longer
@@ -288,12 +288,6 @@ class RuntimeStore(Protocol):
 
     def list_configuration_events(self, *, limit: int = 200) -> list[ConfigurationEventRecord]: ...
 
-    def list_mcp_servers(self) -> list[dict[str, Any]]: ...
-
-    def save_mcp_server(self, name: str, value: dict[str, Any]) -> None: ...
-
-    def delete_mcp_server(self, name: str) -> bool: ...
-
     def list_configuration_rollouts(
         self, *, limit: int = 100
     ) -> list[ConfigurationRolloutRecord]: ...
@@ -323,10 +317,6 @@ class RuntimeStore(Protocol):
     def rollback_configuration_rollout(self, rollout_id: str, *, actor_id: str) -> bool: ...
 
     def reconcile_configuration_rollouts(self) -> int: ...
-
-    def publish_capability(
-        self, definition: CapabilityDefinition, *, actor_id: str = "system"
-    ) -> None: ...
 
     def stage_capability_release(
         self, definition: CapabilityDefinition, **kwargs: Any
@@ -369,20 +359,6 @@ class RuntimeStore(Protocol):
     def list_plugin_components(self, plugin_id: str) -> list[dict[str, Any]]: ...
 
     def list_plugin_workers(self, plugin_id: str) -> list[dict[str, Any]]: ...
-
-    def record_plugin_check_result(
-        self,
-        plugin_id: str,
-        plugin_version: str,
-        check_name: str,
-        status: str,
-        summary: str,
-        **kwargs: Any,
-    ) -> None: ...
-
-    def list_plugin_check_results(
-        self, plugin_id: str, *, limit: int = 100
-    ) -> list[dict[str, Any]]: ...
 
     def get_plugin_metrics(self, plugin_id: str, *, hours: int = 24) -> dict[str, Any]: ...
 
@@ -514,8 +490,6 @@ class RuntimeStore(Protocol):
     def update_runtime_run(self, run_id: str, **kwargs: Any) -> bool: ...
 
     def request_runtime_cancel(self, run_id: str, **kwargs: Any) -> dict[str, Any] | None: ...
-
-    def finish_runtime_run(self, run_id: str, **kwargs: Any) -> AgentEvent | None: ...
 
     def finish_runtime_run_bundle(
         self, run_id: str, **kwargs: Any

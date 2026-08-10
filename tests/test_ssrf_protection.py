@@ -11,11 +11,13 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from joyhousebot_capability_context_assets import plugin as kb_module
+from joyhousebot_capability_research import WebFetchTool
+from joyhousebot_capability_research import plugin as web_module
+from joyhousebot_connector_mcp_client import MCPToolWrapper, connect_mcp_servers
 
-from joyhousebot.agent.tools import web as web_module
-from joyhousebot.agent.tools.mcp import MCPToolWrapper, connect_mcp_servers
-from joyhousebot.agent.tools.web import WebFetchTool
 from joyhousebot.capabilities.tool_adapter import ToolInvocationError
+from joyhousebot.extension_sdk import CapabilityContext
 from joyhousebot.runtime.http_tracking import TrackedAsyncClient
 from joyhousebot.utils import ssrf
 from joyhousebot.utils.ssrf import (
@@ -408,7 +410,12 @@ async def test_connect_mcp_servers_blocks_private_url():
     from joyhousebot.capabilities import CapabilityRegistry
 
     registry = CapabilityRegistry()
-    cfg = SimpleNamespace(command="", args=[], env={}, url="http://127.0.0.1:9/mcp")
+    cfg = {
+        "command": "",
+        "args": [],
+        "env": {},
+        "url": "http://127.0.0.1:9/mcp",
+    }
     async with AsyncExitStack() as stack:
         await connect_mcp_servers({"evil": cfg}, registry, stack)
     assert registry.get_tool("mcp_evil_read_file") is None
@@ -418,8 +425,6 @@ async def test_connect_mcp_servers_blocks_private_url():
 
 
 async def test_fetch_to_knowledgebase_validates_context_before_fetch(monkeypatch):
-    from joyhousebot.agent.tools import fetch_url_to_knowledgebase as kb_module
-
     called = False
 
     async def fake_fetch(url):
@@ -428,7 +433,16 @@ async def test_fetch_to_knowledgebase_validates_context_before_fetch(monkeypatch
         raise AssertionError("fetch must not run without a valid tool context")
 
     monkeypatch.setattr(kb_module, "fetch_and_ingest_url", fake_fetch)
-    tool = kb_module.FetchUrlToKnowledgebaseTool(runtime_store=None)
-    with pytest.raises(ToolInvocationError, match="durable runtime context is required"):
-        await tool.execute("http://example.com/")
+    result = await kb_module.FetchUrlToKnowledgebaseHandler().execute(
+        CapabilityContext(
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            action_id="action-a",
+            idempotency_key="idem-a",
+        ),
+        {"url": "http://example.com/"},
+    )
+    assert result.success is False
+    assert result.error["code"] == "CONTEXT_REQUIRED"
     assert called is False

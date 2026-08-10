@@ -1,4 +1,4 @@
-from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
+from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 
 
 def test_task_only_policy_blocks_persistent_memory() -> None:
@@ -44,9 +44,10 @@ def test_personalized_candidate_policy_separates_layers() -> None:
     assert policy.allows_path("MEMORY.md", "write")
 
 
-def test_legacy_policy_is_normalized() -> None:
-    policy = EffectiveMemoryPolicy.from_dict({"read": False, "write": False})
+def test_empty_or_removed_shorthand_policy_fails_closed() -> None:
+    policy = EffectiveMemoryPolicy.from_dict({"read": True, "write": True})
     assert not policy.can_read_context
+    assert not policy.can_read_tools
     assert policy.write_mode == "none"
 
 

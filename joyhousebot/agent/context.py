@@ -11,10 +11,10 @@ from joyhousebot.agent.context_budget import allocate_context, context_candidate
 from joyhousebot.agent.context_manifest import source_entry
 from joyhousebot.agent.context_media import media_sources
 from joyhousebot.agent.context_memory import build_memory_context
-from joyhousebot.agent.memory import MemoryStore
-from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.agent.skills import SkillsLoader
 from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
+from joyhousebot.services.memory.store import MemoryStore
 
 
 class ContextBuilder:
@@ -335,28 +335,25 @@ The catalog below is discovery metadata only; do not attempt to read host paths 
         now = instant.strftime("%Y-%m-%d %H:%M (%A)")
         tz = instant.tzname() or _time.strftime("%Z") or "UTC"
         memory_guidance = (
-            '- Durable memory is enabled for this Agent. Use `memory_get` or `retrieve(scope="memory")` to recall it.'
+            "- Durable memory is enabled for this Agent. Use an available Memory/Context "
+            "capability to recall it."
             if self.memory_policy.can_read_context
             else "- Durable personal memory is disabled for this Agent; do not read or write user memory."
         )
         return f"""# joyhousebot 🐈
 
-You are joyhousebot, a helpful AI assistant. You have access to tools that allow you to:
-- Read, write, and edit files
-- Execute shell commands
-- Search the web and fetch web pages
-- Send messages to users on chat channels
-- Spawn subagents for complex background tasks
+You are joyhousebot, a helpful AI assistant. Use only the versioned capabilities exposed
+in the current Run catalog; optional extensions may not be installed or authorized.
 
 ## Current Time
 {now} ({tz})
 
 ## Durable data and workspace
 - `memory/MEMORY.md`, `memory/PROFILE.md`, `memory/HISTORY.md` and other `memory/*` paths are virtual, durable, user-scoped database documents.
-- Use `read_file`, `write_file`, `memory_get` or `retrieve` for Memory; shell commands cannot inspect virtual Memory documents.
+- Memory is not scratch storage. Use an available Context/Memory capability; shell and filesystem capabilities cannot inspect virtual Memory documents.
 - {memory_guidance}
 - Other file paths are isolated scratch space for the current root Run, not shared host files.
-- Knowledge is durable and user-scoped. Use `retrieve` and the URL knowledge tool.
+- Knowledge is durable and user-scoped. Use an installed Context/Knowledge capability when available.
 - Agent skills are administrator-provided prompt policies selected by the coordinator.
 
 IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
@@ -365,7 +362,7 @@ For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. Report useful execution progress without exposing hidden chain-of-thought.
 When remembering something important, follow the Agent memory policy. Personal attributes belong in `memory/PROFILE.md`; durable project facts belong in `memory/MEMORY.md`.
-To recall past events, use `memory_get` or `retrieve` against Memory."""
+To recall past events, use an available Context/Memory capability."""
 
     def _get_agent_profile(self) -> str:
         """Render the immutable database revision selected for this worker."""
@@ -407,7 +404,7 @@ To recall past events, use `memory_get` or `retrieve` against Memory."""
             current_message: The new user message.
             skill_names: Coordinator-selected skills to bind as full instructions.
             media: Optional list of local file paths for images/media.
-            channel: Current channel (telegram, feishu, etc.).
+            channel: Current external channel identifier.
             chat_id: Current chat/user ID.
             max_context_tokens: Full model-input budget across all admitted context sources.
             scope_key: When set, use per-session/per-user memory for system prompt.

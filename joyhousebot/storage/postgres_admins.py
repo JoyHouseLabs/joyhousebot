@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from joyhousebot.application.permissions import normalize_permissions
+from joyhousebot.domain.permissions import normalize_permissions
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.platform_records import PlatformAdminRecord
 from joyhousebot.storage.postgres_admin_auth import PostgresAdminAuthStoreMixin

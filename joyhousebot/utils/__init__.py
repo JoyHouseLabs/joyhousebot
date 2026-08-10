@@ -12,10 +12,8 @@ from joyhousebot.utils.exceptions import (
     sanitize_error_message,
     tool_error_handler,
 )
-from joyhousebot.utils.helpers import ensure_dir
 
 __all__ = [
-    "ensure_dir",
     "JoyhouseBotError",
     "ValidationError",
     "TimeoutError",

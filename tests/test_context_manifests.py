@@ -383,7 +383,7 @@ async def test_runtime_persists_manifest_before_model_and_public_api_is_redacted
     assert "top secret context" not in json.dumps(body)
     assert "worker_id" not in json.dumps(body)
     assert other.status_code == 404
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio

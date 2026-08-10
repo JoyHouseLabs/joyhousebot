@@ -11,6 +11,25 @@ on:
     - cron: "30 2 * * *"
 
 jobs:
+  core-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Core without extensions
+        run: uv sync --extra dev --frozen
+
+      - name: Verify extension-free Core distribution
+        env:
+          JOYHOUSEBOT_CORE_ONLY_TEST: "1"
+        run: uv run pytest -q tests/core_only/test_core_only_distribution.py
+
   test:
     runs-on: ubuntu-latest
     services:
@@ -43,13 +62,15 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/console/package-lock.json
 
       - name: Install Python dependencies
-        run: uv sync --extra dev --frozen
+        run: |
+          uv sync --extra dev --frozen
+          bash scripts/install-test-extensions.sh
 
       - name: Install frontend dependencies
-        working-directory: frontend
+        working-directory: apps/console
         run: npm ci
 
       - name: Run quality checks

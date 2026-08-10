@@ -153,15 +153,6 @@ export interface CapabilityRuntimeSettings {
   updated_at?: string | null
 }
 
-export interface MCPServerConfig {
-  name: string
-  enabled: boolean
-  command: string
-  args: string[]
-  url: string
-  env_keys: string[]
-}
-
 export interface AgentSkillBinding {
   agent_revision_id: string
   skill_id: string
@@ -277,11 +268,6 @@ export interface ReplayRun {
 export const getAdminOverview = () => adminFetch<AdminOverview>('/overview')
 export const getAdminWorkers = async () => (await adminFetch<{ items: RuntimeWorker[] }>('/workers')).items
 export const getAdminConfig = () => adminFetch<Record<string, unknown>>('/config')
-export const getMCPServers = async () => (await adminFetch<{ items: MCPServerConfig[] }>('/mcp-servers')).items
-export const saveMCPServer = (name: string, value: { enabled: boolean; command: string; args: string[]; env: Record<string, string>; url: string }) =>
-  adminFetch<MCPServerConfig>(`/mcp-servers/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
-export const deleteMCPServer = (name: string) => adminFetch<{ deleted: boolean }>(`/mcp-servers/${encodeURIComponent(name)}`, { method: 'DELETE' })
-export const testMCPServer = (name: string) => adminFetch<{ ok: boolean; message: string }>(`/mcp-servers/${encodeURIComponent(name)}/test`, { method: 'POST' })
 export const getAdminAgents = async () => (await adminFetch<{ items: AdminAgent[] }>('/agents')).items
 export const getAdminCapabilities = async () => (await adminFetch<{ items: AdminCapability[] }>('/capabilities')).items
 export const getCapabilityRuntimeSettings = (capabilityId: string) =>

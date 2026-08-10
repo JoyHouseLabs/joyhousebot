@@ -11,16 +11,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.memory import MemoryStore
-from joyhousebot.agent.memory_candidates import MemoryWriteController
-from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
-from joyhousebot.agent.tools.filesystem import WriteFileTool
 from joyhousebot.api.app import create_app
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.config.schema import Config
 from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.providers.base import LLMProvider, LLMResponse
 from joyhousebot.runtime.context import RunContext, ToolExecutionContext
+from joyhousebot.services.memory.store import MemoryStore
+from joyhousebot.services.memory.writes import MemoryWriteController
 from joyhousebot.session.models import Session
 from joyhousebot.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
@@ -56,49 +55,6 @@ def _tool_context(user_id: str = "memory-owner") -> ToolExecutionContext:
         memory_scope=f"user:{user_id}:agent:default",
         memory_policy=_candidate_policy(candidate_confidence=0.8),
     )
-
-
-@pytest.mark.asyncio
-async def test_candidate_tool_write_does_not_mutate_memory_until_accepted(
-    tmp_path: Path,
-) -> None:
-    store = PostgresTestStore(tmp_path / "candidate-tool.db")
-    context = _tool_context()
-    writer = WriteFileTool(
-        allowed_dir=tmp_path,
-        workspace=tmp_path,
-        runtime_store=store,
-    )
-
-    output = await writer.execute(
-        path="memory/MEMORY.md",
-        content="The owner prefers concise weekly reports.",
-        tool_context=context,
-    )
-
-    assert "Memory update candidate created" in output
-    assert MemoryStore(store, context.memory_scope).read_long_term() == ""
-    candidates = store.list_memory_candidates(user_id=context.user_id)
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert candidate.source_action_id == context.action_id
-    assert candidate.fact_type == "long_term"
-    assert candidate.confidence == 0.8
-    assert candidate.base_document_version == 0
-    assert len(candidate.content_hash) == 64
-
-    merged, outcome = store.resolve_memory_candidate(
-        candidate_id=candidate.candidate_id,
-        user_id=context.user_id,
-        resolution="accept",
-        actor_id="test:owner",
-    )
-
-    assert outcome == "merged"
-    assert merged is not None and merged.status == "merged"
-    assert "concise weekly reports" in MemoryStore(
-        store, context.memory_scope
-    ).read_long_term()
 
 
 def test_replace_candidate_detects_document_change_instead_of_overwriting(
@@ -290,7 +246,7 @@ async def test_consolidation_stages_each_durable_layer_without_direct_write(
     }
     memory = MemoryStore(store, context.memory_scope)
     assert memory.list_relative() == []
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 def test_memory_candidate_api_is_owner_scoped_and_resolution_is_idempotent(

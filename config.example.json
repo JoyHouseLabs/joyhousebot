@@ -5,6 +5,7 @@
   },
   "runtime": {
     "scratchRoot": "~/.joyhousebot/runtime-scratch",
+    "bootstrapModel": "",
     "store": {
       "databaseUrl": "",
       "poolMinSize": 1,
@@ -15,18 +16,11 @@
     }
   },
   "tools": {
-    "capability_plugins": [],
-    "discover_capability_plugins": false,
-    "restrictToWorkspace": true,
-    "optionalAllowlist": [],
-    "exec": {
-      "timeout": 60,
-      "containerImage": "alpine:3.18",
-      "containerNetwork": "none"
-    },
-    "retrieval": {
-      "memoryScope": "user"
-    }
+    "optionalAllowlist": []
   },
-  "channels": {}
+  "extensions": {
+    "enabled": [],
+    "discoverEntryPoints": true,
+    "settings": {}
+  }
 }

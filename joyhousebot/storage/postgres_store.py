@@ -39,7 +39,6 @@ from joyhousebot.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
 from joyhousebot.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
 from joyhousebot.storage.postgres_graphs import PostgresGraphStoreMixin
 from joyhousebot.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
-from joyhousebot.storage.postgres_mcp import PostgresMCPStoreMixin
 from joyhousebot.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
 from joyhousebot.storage.postgres_migrations import PostgresMigrationMixin
 from joyhousebot.storage.postgres_observability import PostgresObservabilityStoreMixin
@@ -124,7 +123,6 @@ class PostgresRuntimeStore(
     PostgresRolloutStoreMixin,
     PostgresOperationsStoreMixin,
     PostgresPluginStoreMixin,
-    PostgresMCPStoreMixin,
 ):
     """Production runtime store backed by a psycopg connection pool."""
 
@@ -138,11 +136,13 @@ class PostgresRuntimeStore(
         max_pool_size: int = 10,
         application_name: str = "joyhousebot-runtime",
         auto_migrate: bool = True,
+        bootstrap_model: str = "unconfigured/model",
     ) -> None:
         if not database_url.strip():
             raise ValueError("PostgreSQL database_url is required")
         self.database_url = database_url
         self.application_name = application_name
+        self.bootstrap_model = str(bootstrap_model).strip() or "unconfigured/model"
         self._pool = ConnectionPool(
             conninfo=database_url,
             min_size=max(0, min_pool_size),

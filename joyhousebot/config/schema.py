@@ -1,141 +1,19 @@
 """Typed configuration for the cloud API and independently deployed workers."""
 
+import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import BaseSettings
 
 
-class WhatsAppConfig(BaseModel):
-    """WhatsApp channel configuration."""
+class ExtensionsConfig(BaseModel):
+    """Installed extension discovery and explicitly enabled release settings."""
 
-    enabled: bool = False
-    bridge_url: str = "ws://localhost:3001"
-    bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
-    allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
+    model_config = ConfigDict(extra="forbid")
 
-
-class TelegramConfig(BaseModel):
-    """Telegram channel configuration."""
-
-    enabled: bool = False
-    token: str = ""  # Bot token from @BotFather
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
-    proxy: str | None = (
-        None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
-    )
-    # Override global native-command handling for this channel.
-    commands_native: bool | Literal["auto"] | None = None
-
-
-class FeishuConfig(BaseModel):
-    """Feishu/Lark channel configuration using WebSocket long connection."""
-
-    enabled: bool = False
-    app_id: str = ""  # App ID from Feishu Open Platform
-    app_secret: str = ""  # App Secret from Feishu Open Platform
-    encrypt_key: str = ""  # Encrypt Key for event subscription (optional)
-    verification_token: str = ""  # Verification Token for event subscription (optional)
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
-
-
-class DingTalkConfig(BaseModel):
-    """DingTalk channel configuration using Stream mode."""
-
-    enabled: bool = False
-    client_id: str = ""  # AppKey
-    client_secret: str = ""  # AppSecret
-    allow_from: list[str] = Field(default_factory=list)  # Allowed staff_ids
-
-
-class DiscordConfig(BaseModel):
-    """Discord channel configuration."""
-
-    enabled: bool = False
-    token: str = ""  # Bot token from Discord Developer Portal
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
-    gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
-    intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
-
-
-class EmailConfig(BaseModel):
-    """Email channel configuration (IMAP inbound + SMTP outbound)."""
-
-    enabled: bool = False
-    consent_granted: bool = False  # Explicit owner permission to access mailbox data
-
-    # IMAP (receive)
-    imap_host: str = ""
-    imap_port: int = 993
-    imap_username: str = ""
-    imap_password: str = ""
-    imap_mailbox: str = "INBOX"
-    imap_use_ssl: bool = True
-
-    # SMTP (send)
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_use_tls: bool = True
-    smtp_use_ssl: bool = False
-    from_address: str = ""
-
-    # Behavior
-    auto_reply_enabled: bool = (
-        True  # If false, inbound email is read but no automatic reply is sent
-    )
-    poll_interval_seconds: int = 30
-    mark_seen: bool = True
-    max_body_chars: int = 12000
-    subject_prefix: str = "Re: "
-    allow_from: list[str] = Field(default_factory=list)  # Allowed sender email addresses
-
-
-class SlackDMConfig(BaseModel):
-    """Slack DM policy configuration."""
-
-    enabled: bool = True
-    policy: str = "open"  # "open" or "allowlist"
-    allow_from: list[str] = Field(default_factory=list)  # Allowed Slack user IDs
-
-
-class SlackConfig(BaseModel):
-    """Slack channel configuration."""
-
-    enabled: bool = False
-    mode: str = "socket"  # "socket" supported
-    webhook_path: str = "/slack/events"
-    bot_token: str = ""  # xoxb-...
-    app_token: str = ""  # xapp-...
-    user_token_read_only: bool = True
-    group_policy: str = "mention"  # "mention", "open", "allowlist"
-    group_allow_from: list[str] = Field(default_factory=list)  # Allowed channel IDs if allowlist
-    dm: SlackDMConfig = Field(default_factory=SlackDMConfig)
-
-
-class QQConfig(BaseModel):
-    """QQ channel configuration using botpy SDK."""
-
-    enabled: bool = False
-    app_id: str = ""  # 机器人 ID (AppID) from q.qq.com
-    secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
-    allow_from: list[str] = Field(
-        default_factory=list
-    )  # Allowed user openids (empty = public access)
-
-
-class ChannelsConfig(BaseModel):
-    """Configuration for chat channels."""
-
-    whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
-    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    discord: DiscordConfig = Field(default_factory=DiscordConfig)
-    feishu: FeishuConfig = Field(default_factory=FeishuConfig)
-    dingtalk: DingTalkConfig = Field(default_factory=DingTalkConfig)
-    email: EmailConfig = Field(default_factory=EmailConfig)
-    slack: SlackConfig = Field(default_factory=SlackConfig)
-    qq: QQConfig = Field(default_factory=QQConfig)
+    enabled: list[str] = Field(default_factory=list)
+    discover_entry_points: bool = True
+    settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ProviderConfig(BaseModel):
@@ -149,22 +27,21 @@ class ProviderConfig(BaseModel):
 class ProvidersConfig(BaseModel):
     """Configuration for LLM providers."""
 
+    model_config = ConfigDict(extra="forbid")
+
     # Explicit single-provider route selected by LLM_PROVIDER.  This is
     # deployment state populated by the loader, not a credential.
     default_provider: str = ""
-    custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
-    anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
-    openai: ProviderConfig = Field(default_factory=ProviderConfig)
-    openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
-    deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
-    groq: ProviderConfig = Field(default_factory=ProviderConfig)
-    zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
-    dashscope: ProviderConfig = Field(default_factory=ProviderConfig)  # 阿里云通义千问
-    vllm: ProviderConfig = Field(default_factory=ProviderConfig)
-    gemini: ProviderConfig = Field(default_factory=ProviderConfig)
-    moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
-    minimax: ProviderConfig = Field(default_factory=ProviderConfig)
-    aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
+    # Provider extensions own the corresponding names, endpoint defaults and
+    # environment aliases. Core accepts only this vendor-neutral map.
+    settings: dict[str, ProviderConfig] = Field(default_factory=dict)
+
+    def get_provider_config(self, name: str) -> ProviderConfig | None:
+        normalized = str(name).strip().lower()
+        return self.settings.get(normalized)
+
+    def iter_provider_configs(self) -> dict[str, ProviderConfig]:
+        return dict(self.settings)
 
 
 class GatewayConfig(BaseModel):
@@ -188,7 +65,6 @@ class GatewayConfig(BaseModel):
 
 class AuthProfileConfig(BaseModel):
     provider: str = ""
-    mode: str = "api_key"  # api_key | oauth | token
     enabled: bool = True
     api_key: str = ""
     token: str = ""
@@ -209,90 +85,13 @@ class AuthConfig(BaseModel):
     cooldowns: AuthCooldownsConfig = Field(default_factory=AuthCooldownsConfig)
 
 
-class WebSearchConfig(BaseModel):
-    """Web search tool configuration."""
-
-    api_key: str = ""  # Brave Search API key
-    max_results: int = 5
-
-
-class WebToolsConfig(BaseModel):
-    """Web tools configuration."""
-
-    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
-
-
-class ExecToolConfig(BaseModel):
-    """Shell exec tool configuration."""
-
-    timeout: int = 60
-    # Run through sh -c when shell syntax such as pipes is required.
-    shell_mode: bool = False
-    # Cloud-safe default: shell execution requires an isolated container and
-    # fails closed when that sandbox is unavailable.
-    container_image: str = "alpine:3.18"
-    # Host path for workspace mount; empty means use working_dir. Container path is /workspace.
-    container_workspace_mount: str = ""
-    container_user: str = "65534:65534"  # nobody; set "" to run as the image default user
-    container_network: str = "none"  # "none" | bridge name; "host" is rejected (falls back to "none")
-    # Container resource limits (fail-closed sandbox defaults).
-    container_memory: str = "512m"
-    container_cpus: str = "1"
-    container_pids_limit: int = 256
-
-
-class MCPServerConfig(BaseModel):
-    """MCP server connection configuration (stdio or HTTP)."""
-
-    enabled: bool = True
-    command: str = ""  # Stdio: command to run (e.g. "npx")
-    args: list[str] = Field(default_factory=list)  # Stdio: command arguments
-    env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
-    url: str = ""  # HTTP: streamable HTTP endpoint URL
-
-
-class RetrievalConfig(BaseModel):
-    """Platform defaults for durable knowledge and memory behavior.
-
-    Agent Revision ``memory_policy`` is the authoritative per-Agent override.
-    These settings provide only the shared scope and consolidation defaults;
-    they do not automatically enable personal memory for every Agent.
-    """
-
-    memory_first: bool = (
-        False  # When True, agent is prompted to consult L0/memory before knowledge base
-    )
-    memory_top_k: int = 10
-    memory_include_daily_in_context: bool = True  # Inject today and yesterday's daily memory.
-    history_max_entries: int = 0  # When > 0, keep only last N entries in HISTORY.md (0 = no limit)
-    # Optional model call to capture durable notes before consolidation.
-    memory_flush_before_consolidation: bool = False
-    memory_flush_system_prompt: str = "Session nearing compaction. Output only valid JSON."
-    memory_flush_prompt: str = "Write any lasting notes: return JSON with optional keys daily_log_entry (string for memory/YYYY-MM-DD.md) and memory_additions (string to append to MEMORY.md). If nothing to store, return {}."
-    # Multi-user safe by default. "shared" is an explicit project-wide opt-in.
-    memory_scope: Literal["shared", "session", "user"] = "user"
-    memory_user_id_from: Literal["sender_id", "metadata"] = (
-        "sender_id"  # Only when memory_scope=user
-    )
-    memory_user_id_metadata_key: str = (
-        "user_id"  # When memory_user_id_from=metadata, read from msg.metadata[this key]
-    )
-
-
 class ToolsConfig(BaseModel):
-    """Tools configuration."""
+    """Core Tool governance; implementations configure themselves as extensions."""
 
-    web: WebToolsConfig = Field(default_factory=WebToolsConfig)
-    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
-    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
-    # Never expose arbitrary host paths to a user run. Explicit local-only
-    # deployments may opt out, but cloud composition keeps this enabled.
-    restrict_to_workspace: bool = True
+    model_config = ConfigDict(extra="forbid")
+
     # Optional network/integration tools are disabled unless explicitly enabled.
     optional_allowlist: list[str] = Field(default_factory=list)
-    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
-    capability_plugins: list[str] = Field(default_factory=list)
-    discover_capability_plugins: bool = False
 
 
 class SkillEntryConfig(BaseModel):
@@ -317,7 +116,6 @@ class MessagesConfig(BaseModel):
     suppress_tool_errors: bool | None = None  # hide tool error warnings from user
     # After tool execution: user message sent to LLM to get final reply. None = use built-in concise prompt.
     after_tool_results_prompt: str | None = None
-    group_chat: dict[str, Any] | None = None  # mention_patterns, history_limit (optional)
 
 
 class CommandsConfig(BaseModel):
@@ -325,14 +123,6 @@ class CommandsConfig(BaseModel):
 
     # Enable native commands (/new, /help). "auto" = current behavior (Telegram registers, Loop handles).
     native: bool | Literal["auto"] = "auto"
-    # Enable skill slash commands (reserved for future).
-    native_skills: bool | Literal["auto"] = "auto"
-
-
-class EnvConfig(BaseModel):
-    """Inline env vars applied when the process does not define them."""
-
-    vars: dict[str, str] | None = None  # key -> value; applied with setdefault so existing env wins
 
 
 class RuntimeStoreConfig(BaseModel):
@@ -354,12 +144,15 @@ class RuntimeConfig(BaseModel):
     store: RuntimeStoreConfig = Field(default_factory=RuntimeStoreConfig)
     worker_name: str = ""
     scratch_root: str = "~/.joyhousebot/runtime-scratch"
+    # Used only when seeding a genuinely empty Agent catalog. The resulting
+    # revision freezes the exact value; workers never resolve a moving alias.
+    bootstrap_model: str = ""
 
 
-class Config(BaseSettings):
+class Config(BaseModel):
     """Root configuration for joyhousebot."""
 
-    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    extensions: ExtensionsConfig = Field(default_factory=ExtensionsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
@@ -368,13 +161,12 @@ class Config(BaseSettings):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     messages: MessagesConfig | None = None
     commands: CommandsConfig | None = None
-    env: EnvConfig | None = None
 
     def _match_provider(
         self, model: str | None = None
     ) -> tuple["ProviderConfig | None", str | None]:
         """Match provider config and its registry name. Returns (config, spec_name)."""
-        from joyhousebot.providers.registry import PROVIDERS, find_by_name
+        from joyhousebot.providers.registry import find_by_name, provider_specs
 
         model_lower = (model or "").lower()
 
@@ -382,24 +174,39 @@ class Config(BaseSettings):
         # OpenRouter that serve model families owned by several vendors.  It
         # must win over model-prefix inference and unrelated native keys.
         preferred_name = self.providers.default_provider.strip().lower()
-        preferred_spec = find_by_name(preferred_name) if preferred_name else None
+        preferred_spec = find_by_name(self, preferred_name) if preferred_name else None
         if preferred_spec is not None:
-            preferred = getattr(self.providers, preferred_spec.name, None)
+            preferred = self._provider_config(preferred_spec)
             if preferred and (preferred.api_key or preferred_spec.is_local):
                 return preferred, preferred_spec.name
 
         # Match by keyword (order follows PROVIDERS registry)
-        for spec in PROVIDERS:
-            p = getattr(self.providers, spec.name, None)
+        for spec in provider_specs(self):
+            p = self._provider_config(spec)
             if p and any(kw in model_lower for kw in spec.keywords) and p.api_key:
                 return p, spec.name
 
         # Fallback: gateways first, then others (follows registry order)
-        for spec in PROVIDERS:
-            p = getattr(self.providers, spec.name, None)
+        for spec in provider_specs(self):
+            p = self._provider_config(spec)
             if p and p.api_key:
                 return p, spec.name
         return None, None
+
+    def _provider_config(self, spec: Any) -> "ProviderConfig | None":
+        """Resolve a provider-native key only after its extension is loaded."""
+        provider = self.providers.get_provider_config(spec.name)
+        native_key = (
+            (os.environ.get(spec.env_key) or "").strip()
+            if str(getattr(spec, "env_key", "") or "").strip()
+            else ""
+        )
+        if provider is None and native_key:
+            provider = ProviderConfig(api_key=native_key)
+            self.providers.settings[spec.name] = provider
+        elif provider is not None and native_key:
+            provider.api_key = native_key
+        return provider
 
     def get_provider(self, model: str | None = None) -> ProviderConfig | None:
         """Get matched provider config (api_key, api_base, extra_headers). Falls back to first available."""
@@ -407,7 +214,7 @@ class Config(BaseSettings):
         return p
 
     def get_provider_name(self, model: str | None = None) -> str | None:
-        """Get the registry name of the matched provider (e.g. "deepseek", "openrouter")."""
+        """Get the registry name selected by the enabled provider extensions."""
         _, name = self._match_provider(model)
         return name
 
@@ -419,9 +226,14 @@ class Config(BaseSettings):
         if p and p.api_base:
             return p.api_base
         if name:
-            spec = find_by_name(name)
+            spec = find_by_name(self, name)
             if spec and spec.default_api_base:
                 return spec.default_api_base
         return None
+
+    def get_bootstrap_model(self) -> str:
+        """Return a provider-neutral, exact model id for an empty catalog."""
+        configured = self.runtime.bootstrap_model.strip()
+        return configured or "unconfigured/model"
 
     model_config = ConfigDict(env_prefix="JOYHOUSEBOT_", env_nested_delimiter="__")

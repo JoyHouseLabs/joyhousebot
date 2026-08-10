@@ -1,6 +1,183 @@
+import ast
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_core_default_dependencies_exclude_channel_vendor_sdks() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    dependencies = {str(item).split("[", 1)[0].split(">", 1)[0] for item in project["dependencies"]}
+    assert dependencies.isdisjoint(
+        {
+            "dingtalk-stream",
+            "lark-oapi",
+            "python-telegram-bot",
+            "qq-botpy",
+            "slack-sdk",
+            "websockets",
+        }
+    )
+
+
+def test_channel_extensions_only_import_the_public_joyhousebot_sdk() -> None:
+    violations: list[str] = []
+    for path in (ROOT / "extensions").glob("channel-*/src/**/*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = str(node.module or "")
+                if module.startswith("joyhousebot.") and not module.startswith(
+                    "joyhousebot.extension_sdk"
+                ):
+                    violations.append(f"{path.relative_to(ROOT)}:{module}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("joyhousebot.") and not alias.name.startswith(
+                        "joyhousebot.extension_sdk"
+                    ):
+                        violations.append(f"{path.relative_to(ROOT)}:{alias.name}")
+    assert violations == []
+
+
+def test_provider_extensions_only_import_the_public_joyhousebot_sdk() -> None:
+    violations: list[str] = []
+    for path in (ROOT / "extensions").glob("provider-*/src/**/*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = str(node.module or "")
+                if module.startswith("joyhousebot.") and not module.startswith(
+                    "joyhousebot.extension_sdk"
+                ):
+                    violations.append(f"{path.relative_to(ROOT)}:{module}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("joyhousebot.") and not alias.name.startswith(
+                        "joyhousebot.extension_sdk"
+                    ):
+                        violations.append(f"{path.relative_to(ROOT)}:{alias.name}")
+    assert violations == []
+
+
+def test_capability_extensions_only_import_the_public_joyhousebot_sdk() -> None:
+    violations: list[str] = []
+    for path in (ROOT / "extensions").glob("capability-*/src/**/*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                modules = [str(node.module or "")]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            for module in modules:
+                if module.startswith("joyhousebot.") and not module.startswith(
+                    "joyhousebot.extension_sdk"
+                ):
+                    violations.append(f"{path.relative_to(ROOT)}:{module}")
+    assert violations == []
+
+
+def test_connector_extensions_only_import_the_public_joyhousebot_sdk() -> None:
+    violations: list[str] = []
+    for path in (ROOT / "extensions").glob("connector-*/src/**/*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                modules = [str(node.module or "")]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            for module in modules:
+                if module.startswith("joyhousebot.") and not module.startswith(
+                    "joyhousebot.extension_sdk"
+                ):
+                    violations.append(f"{path.relative_to(ROOT)}:{module}")
+    assert violations == []
+
+
+def test_research_implementation_is_not_in_core() -> None:
+    assert not (ROOT / "joyhousebot/agent/tools/web.py").exists()
+
+
+def test_context_assets_implementation_is_not_in_core() -> None:
+    for relative in (
+        "joyhousebot/agent/tools/retrieve.py",
+        "joyhousebot/agent/tools/memory_get.py",
+        "joyhousebot/agent/tools/fetch_url_to_knowledgebase.py",
+        "joyhousebot/agent/tools/ingest/url_ingest.py",
+    ):
+        assert not (ROOT / relative).exists()
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    assert not any(
+        str(item).startswith("readability-lxml") for item in project["dependencies"]
+    )
+
+
+def test_filesystem_tool_implementation_is_not_in_core() -> None:
+    assert not (ROOT / "joyhousebot/agent/tools/filesystem.py").exists()
+    assert not (
+        ROOT
+        / "extensions/capability-filesystem/src/joyhousebot_capability_filesystem/legacy.py"
+    ).exists()
+
+
+def test_shell_tool_implementation_is_not_in_core() -> None:
+    assert not (ROOT / "joyhousebot/agent/tools/shell.py").exists()
+    assert not (
+        ROOT / "extensions/capability-shell/src/joyhousebot_capability_shell/legacy.py"
+    ).exists()
+
+
+def test_runtime_control_tool_implementations_are_not_in_core() -> None:
+    for name in ("message.py", "spawn.py", "cron.py", "monitor_scratch.py"):
+        assert not (ROOT / "joyhousebot/agent/tools" / name).exists()
+    extension = (
+        ROOT
+        / "extensions/capability-runtime-control/src/joyhousebot_capability_runtime_control"
+    )
+    assert not list(extension.glob("legacy_*.py"))
+
+
+def test_mcp_client_implementation_is_not_in_core() -> None:
+    assert not (ROOT / "joyhousebot/agent/tools/mcp.py").exists()
+    runtime = (ROOT / "joyhousebot/agent/tool_runtime.py").read_text(encoding="utf-8")
+    assert "connect_mcp_servers" not in runtime
+
+
+def test_migrated_provider_implementations_are_not_in_core() -> None:
+    assert not (ROOT / "joyhousebot/providers/anthropic.py").exists()
+    assert not (ROOT / "joyhousebot/providers/openai_compatible.py").exists()
+    registry = (ROOT / "joyhousebot/providers/registry.py").read_text(encoding="utf-8")
+    assert "api.openai.com" not in registry
+    assert "api.deepseek.com" not in registry
+    assert "openrouter.ai" not in registry
+    assert not (ROOT / "joyhousebot/providers/transcription.py").exists()
+    defaults = (ROOT / "joyhousebot/domain/agents/defaults.py").read_text(
+        encoding="utf-8"
+    )
+    migrations = (ROOT / "joyhousebot/storage/postgres_agents.py").read_text(
+        encoding="utf-8"
+    )
+    assert "openrouter/deepseek" not in defaults
+    assert "openrouter/deepseek" not in migrations
+    assert "anthropic/claude" not in migrations
+
+
+def test_migrated_channel_implementations_are_not_in_core() -> None:
+    builtin = ROOT / "joyhousebot/channels/plugins/builtin"
+    assert not list(builtin.glob("*.py"))
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert "channel-dingtalk" not in project["optional-dependencies"]
+    assert "channel-discord" not in project["optional-dependencies"]
+    assert "channel-feishu" not in project["optional-dependencies"]
+    assert "channel-qq" not in project["optional-dependencies"]
+    assert "channel-slack" not in project["optional-dependencies"]
+    assert "channel-telegram" not in project["optional-dependencies"]
+    assert "channel-whatsapp" not in project["optional-dependencies"]
 
 
 def test_removed_public_stacks_do_not_return() -> None:
@@ -77,7 +254,7 @@ def test_cluster_repository_files_are_bounded() -> None:
     repository_files = [
         "joyhousebot/scheduling/repository.py",
         "joyhousebot/channels/repository.py",
-        "joyhousebot/agent/memory_repository.py",
+        "joyhousebot/services/memory/repository.py",
         "joyhousebot/agent/profile_health_repository.py",
         "joyhousebot/services/retrieval/knowledge_repository.py",
     ]
@@ -93,13 +270,12 @@ def test_cloud_tool_defaults_fail_closed() -> None:
     from joyhousebot.config.schema import Config
 
     config = Config()
-    assert config.tools.restrict_to_workspace is True
-    assert config.tools.exec.container_image
     assert config.tools.optional_allowlist == []
-
-    from joyhousebot.agent.tools.shell import ExecTool
-
-    assert not hasattr(ExecTool, "_execute_direct")
+    assert not (ROOT / "joyhousebot/agent/tools/shell.py").exists()
+    assert not (
+        ROOT
+        / "extensions/capability-shell/src/joyhousebot_capability_shell/legacy.py"
+    ).exists()
 
 
 # --- Import-direction guard -------------------------------------------------
@@ -140,6 +316,8 @@ PACKAGE_TIERS = {
     "config": 4,
     "channels": 4,
     "cron": 4,
+    # Stable outward-facing facade over lower Core contracts/adapters.
+    "extension_sdk": 4,
     # 5 — application use cases.
     "application": 5,
     # 6 — entrypoints.
@@ -148,35 +326,6 @@ PACKAGE_TIERS = {
     "cli": 6,
     "__main__": 6,
 }
-
-# Known drift, recorded edge by edge (source file -> imported module) so the
-# guard passes today but fails on any *new* violation.  Each entry names the
-# cycle it belongs to; remove entries as the cycles are eliminated.
-KNOWN_LAYER_VIOLATIONS = {
-    # domain -> orchestration -> runtime -> domain 环：__post_init__ 里的 deferred import
-    ("domain/scenarios/models.py", "joyhousebot.orchestration.aggregation"),
-    # capabilities <-> agent 环：registry/tool_adapter 依赖 agent.tools.base.Tool
-    ("capabilities/registry.py", "joyhousebot.agent.tools.base"),
-    ("capabilities/tool_adapter.py", "joyhousebot.agent.tools.base"),
-    # orchestration <-> runtime 环：planner/task_graph 反向依赖 runtime.models
-    ("orchestration/planner.py", "joyhousebot.runtime.models"),
-    ("orchestration/task_graph.py", "joyhousebot.runtime.models"),
-    # cron <-> scheduling 环：scheduling 仓储反向依赖 cron.types
-    ("scheduling/repository.py", "joyhousebot.cron.types"),
-    # services <-> agent 环：retrieval adapter 反向依赖 agent.memory
-    ("services/retrieval/adapter.py", "joyhousebot.agent.memory"),
-    # storage 越层：仓储层向上依赖 runtime 模型
-    ("storage/runtime_store.py", "joyhousebot.runtime.models"),
-    ("storage/postgres_runs.py", "joyhousebot.runtime.models"),
-    ("storage/postgres_tasks.py", "joyhousebot.runtime.models"),
-    ("storage/postgres_approvals.py", "joyhousebot.runtime.models"),
-    # storage 越层：仓储层向上依赖 application 权限模型
-    ("storage/postgres_admins.py", "joyhousebot.application.permissions"),
-    # storage 越层：仓储层 deferred import bootstrap 默认数据
-    ("storage/postgres_agents.py", "joyhousebot.bootstrap.default_agents"),
-    ("storage/postgres_capabilities.py", "joyhousebot.bootstrap.default_skills"),
-}
-
 
 def _package_import_edges() -> list[tuple[str, str]]:
     """Collect (source file, imported joyhousebot module) edges via AST.
@@ -226,12 +375,5 @@ def test_internal_imports_follow_layering() -> None:
         target_tier = PACKAGE_TIERS.get(target_package)
         if target_tier is None or target_tier <= source_tier:
             continue
-        if (source, module) in KNOWN_LAYER_VIOLATIONS:
-            continue
         violations.append(f"{source} -> {module}")
     assert violations == []
-
-    # Stale exemptions must be removed once the underlying drift is fixed.
-    active = {(source, module) for source, module in _package_import_edges()}
-    stale = sorted(KNOWN_LAYER_VIOLATIONS - active)
-    assert stale == []

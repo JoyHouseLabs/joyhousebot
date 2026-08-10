@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.agent.memory import MemoryStore
 from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.channels.manager import ChannelManager
 from joyhousebot.config.schema import Config
 from joyhousebot.cron.service import CronService
-from joyhousebot.cron.types import CronSchedule
+from joyhousebot.domain.schedules import CronSchedule
+from joyhousebot.services.memory.store import MemoryStore
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 

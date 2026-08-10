@@ -15,6 +15,11 @@ from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.channels.plugins import ChannelPlugin, ChannelRegistry
 from joyhousebot.channels.repository import ChannelRepository
 from joyhousebot.channels.run_adapter import RunAdapter
+from joyhousebot.config.extensions import (
+    enabled_channel_extension_ids,
+    enabled_channel_ids,
+    extension_settings,
+)
 from joyhousebot.config.schema import Config
 from joyhousebot.utils.exceptions import classify_exception, sanitize_error_message
 
@@ -28,7 +33,6 @@ class ChannelManager:
     def __init__(
         self,
         config: Config,
-        bus: Any | None = None,
         *,
         runtime_store: Any | None = None,
         worker_id: str | None = None,
@@ -47,28 +51,52 @@ class ChannelManager:
         self._coordinator_task: asyncio.Task[Any] | None = None
         self._init_channels()
 
-    def _channel_config(self, channel_id: str) -> Any:
-        return getattr(self.config.channels, channel_id, None)
+    def _channel_config(self, channel_id: str, plugin: ChannelPlugin) -> Any:
+        manifest = getattr(plugin, "extension_manifest", None)
+        extension_id = (
+            str(manifest.extension_id) if manifest is not None else f"channel-{channel_id}"
+        )
+        values = extension_settings(self.config, extension_id)
+        values["enabled"] = True
+        return values
 
     def _init_channels(self) -> None:
         registry = self.registry
-        registry.load_all_builtins()
-        for channel_id in registry.list_channels():
-            channel_config = self._channel_config(channel_id)
-            if channel_config is None or not channel_config.enabled:
-                continue
+        extensions = self.config.extensions
+        if extensions.discover_entry_points:
+            registry.load_entry_points(enabled=enabled_channel_extension_ids(self.config))
+
+        for channel_id in sorted(enabled_channel_ids(self.config)):
             plugin = registry.get(channel_id)
             if plugin is None:
-                continue
-            self.plugins[channel_id] = plugin
+                raise RuntimeError(
+                    f"channel {channel_id!r} is enabled but no installed extension provides it"
+                )
+            channel_config = self._channel_config(channel_id, plugin)
+            enabled = (
+                bool(channel_config.get("enabled"))
+                if isinstance(channel_config, dict)
+                else bool(getattr(channel_config, "enabled", False))
+            )
+            if enabled:
+                self.plugins[channel_id] = plugin
+
+        if self.repository is not None:
+            for manifest in registry.manifests():
+                self.repository.store.upsert_plugin_release(manifest.to_release_dict())
+
+    def extension_releases(self) -> list[dict[str, Any]]:
+        return [manifest.to_release_dict() for manifest in self.registry.manifests()]
 
     def set_run_adapter(self, adapter: RunAdapter) -> None:
         self.run_adapter = adapter
         for channel_id, plugin in self.plugins.items():
-            channel_config = self._channel_config(channel_id)
-            values = channel_config.model_dump()
-            if channel_id == "telegram":
-                values["groq_api_key"] = self.config.providers.groq.api_key
+            channel_config = self._channel_config(channel_id, plugin)
+            values = (
+                dict(channel_config)
+                if isinstance(channel_config, dict)
+                else channel_config.model_dump()
+            )
             values["messages_config"] = self.config.messages
             values["commands_config"] = self.config.commands
             plugin.configure(values, adapter)
@@ -324,7 +352,7 @@ class ChannelManager:
     def get_status(self) -> dict[str, dict[str, Any]]:
         leases = self.repository.list_leases() if self.repository is not None else {}
         counts = self.repository.status_counts() if self.repository is not None else {}
-        names = set(self.registry.list_builtins()) | set(self.plugins) | set(leases)
+        names = set(self.registry.list_channels()) | set(self.plugins) | set(leases)
         # Lease expiry is compared against the database clock that wrote it.
         now_ms = (
             self.repository.db_now_ms()

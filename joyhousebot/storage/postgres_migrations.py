@@ -1,4 +1,4 @@
-"""Schema migration history and the shared cluster-wide migration lock.
+"""Core schema migration history and cluster-wide migration lock.
 
 Every domain migration records ``(name, version, checksum, applied_at)`` in
 ``schema_migration_history`` after applying its DDL.  A checksum mismatch on
@@ -6,12 +6,8 @@ an already-recorded migration means the DDL was edited after it shipped; that
 is drift, and it is surfaced as a warning instead of being silently absorbed
 by ``IF NOT EXISTS`` idempotency.
 
-Plugins that own business tables must apply their DDL under the same
-cluster-wide advisory lock as the core: either through the public
-:meth:`PostgresMigrationMixin.schema_migration_lock` context manager on the
-runtime store, or by taking ``SCHEMA_MIGRATION_LOCK_ID`` directly on their
-own connection.  Plugin migrations then record themselves through
-:meth:`PostgresMigrationMixin.record_plugin_migration`.
+Extensions never receive this lock or a RuntimeStore. Business services own
+their database, migration history, and deployment coordination independently.
 """
 
 from __future__ import annotations
@@ -102,8 +98,8 @@ CREATE INDEX IF NOT EXISTS ix_runtime_artifacts_content_sha256
     ON runtime_artifacts(content_sha256) WHERE content_sha256<>'';
 """
 
-# Development-only reset: legacy runtime tables dropped when the destructive
-# gate is explicitly enabled, in dependency-safe order.
+# Development-only reset: runtime tables dropped when the destructive gate is
+# explicitly enabled, in dependency-safe order.
 _DESTRUCTIVE_DROP_TABLES = (
     "runtime_task_dependencies",
     "runtime_events",
@@ -156,18 +152,10 @@ class PostgresMigrationMixin:
             self.migrate_clarifications()
             self.migrate_rate_limits()
             self.migrate_observability()
-            self.migrate_mcp_servers()
 
     @contextmanager
     def schema_migration_lock(self) -> Iterator[None]:
-        """Hold the cluster-wide schema migration advisory lock.
-
-        Core and plugin DDL must both run inside this lock so they never
-        interleave.  Session-level and transaction-level advisory locks with
-        the same lock ID mutually exclude, so a plugin may equivalently take
-        ``SCHEMA_MIGRATION_LOCK_ID`` with ``pg_advisory_xact_lock`` on its
-        own connection.
-        """
+        """Hold the Core cluster-wide schema migration advisory lock."""
         with psycopg.connect(
             self.database_url,
             autocommit=True,
@@ -220,24 +208,6 @@ class PostgresMigrationMixin:
                WHERE name=%s AND version=%s""",
             (checksum, description, name, version),
         )
-
-    def record_plugin_migration(
-        self,
-        *,
-        name: str,
-        version: int,
-        ddl: str,
-        description: str = "",
-    ) -> None:
-        """Record a plugin-owned migration in the shared history table.
-
-        Call this after applying plugin DDL inside
-        :meth:`schema_migration_lock`; use a ``plugin:<plugin_id>`` name.
-        """
-        with self._pool.connection() as conn, conn.transaction():
-            self._record_migration(
-                conn, name=name, version=version, ddl=ddl, description=description
-            )
 
     def migrate(self) -> None:
         """Apply idempotent schema changes under a cluster-wide advisory lock."""

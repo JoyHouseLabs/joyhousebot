@@ -600,16 +600,16 @@ class TurnEngineMixin(ContextScopeMixin):
 
         return final_content, tools_used, False, last_response
 
-    async def close_mcp(self) -> None:
-        """Close MCP connections and the model HTTP connection pool."""
-        async with self._mcp_connect_lock:
-            if self._mcp_stack:
+    async def close_tool_connectors(self) -> None:
+        """Close external Tool connector lifecycles and the model client."""
+        async with self._tool_connector_lock:
+            if self._tool_connector_stack:
                 try:
-                    await self._mcp_stack.aclose()
+                    await self._tool_connector_stack.aclose()
                 except (RuntimeError, BaseExceptionGroup):
-                    pass  # MCP SDK cancel scope cleanup is noisy but harmless
-                self._mcp_stack = None
-            self._mcp_connected = False
+                    pass  # Some connector SDK cancellation scopes are noisy on shutdown.
+                self._tool_connector_stack = None
+            self._tool_connectors_connected = False
         await self.provider.close()
 
     def stop(self) -> None:

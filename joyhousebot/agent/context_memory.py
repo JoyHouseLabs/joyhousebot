@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from joyhousebot.agent.context_manifest import source_entry, stable_hash
-from joyhousebot.agent.memory import MemoryStore
+from joyhousebot.services.memory.store import MemoryStore
 
 
 def build_memory_context(

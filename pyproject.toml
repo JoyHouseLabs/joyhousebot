@@ -1,7 +1,7 @@
 [project]
 name = "joyhousebot"
 version = "0.1.2"
-description = "Multi-user distributed Agent cloud runtime"
+description = "PostgreSQL-first personal Agent runtime for durable, governed execution"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
@@ -11,7 +11,7 @@ authors = [
 maintainers = [
     {name = "Joyhouse Team"}
 ]
-keywords = ["ai", "agent", "runtime", "distributed", "llm", "cloud"]
+keywords = ["ai", "agent", "runtime", "personal", "opc", "automation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -23,18 +23,10 @@ classifiers = [
 dependencies = [
     "typer>=0.9.0",
     "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "websockets>=12.0",
-    "httpx[socks]>=0.25.0",
+    "httpx>=0.25.0",
     "loguru>=0.7.0",
-    "readability-lxml>=0.8.0",
     "croniter>=2.0.0",
     "cryptography>=46.0.0",
-    "dingtalk-stream>=0.4.0",
-    "python-telegram-bot[socks]>=21.0",
-    "lark-oapi>=1.0.0",
-    "slack-sdk>=3.26.0",
-    "qq-botpy>=1.0.0",
     "mcp>=1.0.0,<2.0",
     "json-repair>=0.30.0",
     "fastapi>=0.100.0",
@@ -85,14 +77,12 @@ include = [
 [tool.hatch.build.targets.sdist]
 include = [
     "joyhousebot/",
-    "bridges/",
     "evals/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridges/whatsapp" = "joyhousebot/bridges/whatsapp"
 "evals/suites" = "joyhousebot/eval_suites"
 
 [tool.ruff]
@@ -107,6 +97,25 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = [
+    "extensions/channel-dingtalk/src",
+    "extensions/capability-context-assets/src",
+    "extensions/capability-filesystem/src",
+    "extensions/capability-groq-transcription/src",
+    "extensions/capability-research/src",
+    "extensions/capability-runtime-control/src",
+    "extensions/capability-shell/src",
+    "extensions/connector-mcp-client/src",
+    "extensions/channel-discord/src",
+    "extensions/channel-email/src",
+    "extensions/channel-feishu/src",
+    "extensions/channel-qq/src",
+    "extensions/channel-slack/src",
+    "extensions/channel-telegram/src",
+    "extensions/channel-whatsapp/src",
+    "extensions/provider-anthropic/src",
+    "extensions/provider-openai-compatible/src",
+]
 markers = [
     "postgres: requires JOYHOUSEBOT_TEST_POSTGRES_URL",
 ]

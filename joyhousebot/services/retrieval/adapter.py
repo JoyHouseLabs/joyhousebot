@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from joyhousebot.agent.memory import MemoryStore
+from joyhousebot.services.memory.store import MemoryStore
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
 

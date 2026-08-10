@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import importlib
 import inspect
 from collections.abc import Iterable
 from dataclasses import is_dataclass, replace
-from hashlib import sha256
-from importlib import metadata as importlib_metadata
 from typing import Any
 
 from joyhousebot.contracts.capabilities import CapabilityContext, CapabilityResult
 from joyhousebot.contracts.plugins import (
     PluginComponent,
-    PluginHealthCheck,
     PluginManifest,
 )
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.extension_discovery import enabled_entry_points, validate_manifest
 from joyhousebot.utils.permissions import missing_permissions
 
 
@@ -26,9 +23,7 @@ class CapabilityPluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[str, Any] = {}
         self._capabilities: dict[str, tuple[Any, Any, str | None]] = {}
-        self._projections: dict[str, tuple[Any, str | None]] = {}
         self._components: dict[str, tuple[PluginComponent, Any | None, str]] = {}
-        self._health_checks: dict[str, tuple[PluginHealthCheck, str]] = {}
         self._active_plugin: str | None = None
 
     def register_plugin(self, plugin: Any) -> None:
@@ -38,6 +33,9 @@ class CapabilityPluginRegistry:
         version = str(getattr(plugin, "version", "")).strip()
         if not version:
             raise ValueError(f"plugin {plugin_id} version is required")
+        manifest = self._manifest_for(plugin)
+        if manifest.plugin_id != plugin_id or manifest.version != version:
+            raise ValueError("plugin identity does not match its manifest")
         existing = self._plugins.get(plugin_id)
         if existing is not None and str(getattr(existing, "version", "")) != version:
             raise ValueError(f"plugin {plugin_id} is already registered at another version")
@@ -48,41 +46,30 @@ class CapabilityPluginRegistry:
         finally:
             self._active_plugin = None
 
-    def load_modules(self, modules: Iterable[str]) -> list[str]:
-        """Load plugins from configured Python modules."""
+    def load_entry_points(
+        self,
+        group: str = "joyhousebot.capabilities",
+        *,
+        enabled: Iterable[str] | None = None,
+    ) -> list[str]:
+        """Discover installed capability plugins and register enabled releases."""
+        allowed = {str(item).strip() for item in enabled or () if str(item).strip()}
         loaded: list[str] = []
-        for module_name in modules:
-            name = str(module_name).strip()
-            if not name:
-                continue
-            module = importlib.import_module(name)
-            factory = getattr(module, "create_plugin", None)
-            plugin = factory() if callable(factory) else getattr(module, "plugin", None)
-            if plugin is not None:
-                self.register_plugin(plugin)
-            else:
-                register = getattr(module, "register", None)
-                if not callable(register):
-                    raise TypeError(
-                        f"plugin module {name} must expose create_plugin, plugin, or register"
-                    )
-                self._active_plugin = name
-                try:
-                    register(self)
-                finally:
-                    self._active_plugin = None
-            loaded.append(name)
-        return loaded
-
-    def load_entry_points(self, group: str = "joyhousebot.capabilities") -> list[str]:
-        """Discover and register installed capability plugins."""
-        entries = importlib_metadata.entry_points()
-        selected = entries.select(group=group) if hasattr(entries, "select") else entries.get(group, ())
-        loaded: list[str] = []
-        for entry in selected:
+        for entry in enabled_entry_points(group, allowed):
             plugin = entry.load()
             if callable(plugin) and not hasattr(plugin, "register"):
                 plugin = plugin()
+            if str(getattr(plugin, "plugin_id", "")) != str(entry.name):
+                raise ValueError(
+                    f"entry point {entry.name!r} does not match plugin id "
+                    f"{getattr(plugin, 'plugin_id', None)!r}"
+                )
+            manifest = self._manifest_for(plugin)
+            validate_manifest(
+                manifest.to_extension_manifest(),
+                entry_name=str(entry.name),
+                expected_type="capability",
+            )
             self.register_plugin(plugin)
             loaded.append(entry.name)
         return loaded
@@ -146,29 +133,6 @@ class CapabilityPluginRegistry:
             raise ValueError(f"capability {key} is already registered")
         self._capabilities[key] = (definition, handler, self._active_plugin)
 
-    def register_projection(self, provider: Any) -> None:
-        """Register one named business read model owned by the active plugin."""
-        view_id = str(getattr(provider, "view_id", "")).strip()
-        schema_version = int(getattr(provider, "schema_version", 0) or 0)
-        if not view_id or schema_version < 1 or not callable(getattr(provider, "build", None)):
-            raise ValueError("projection provider requires view_id, schema_version, and build")
-        existing = self._projections.get(view_id)
-        if existing is not None and existing[0] is not provider:
-            raise ValueError(f"projection view {view_id} is already registered")
-        self._projections[view_id] = (provider, self._active_plugin)
-        if self._active_plugin:
-            self.register_component(
-                PluginComponent(
-                    component_id=f"projection:{view_id}",
-                    component_type="projection",
-                    name=view_id,
-                    reference_id=view_id,
-                    reference_version=str(schema_version),
-                    metadata={"schema_version": schema_version},
-                ),
-                provider,
-            )
-
     def register_component(
         self, component: PluginComponent, provider: Any | None = None
     ) -> None:
@@ -193,34 +157,6 @@ class CapabilityPluginRegistry:
         value = self._components.get(f"{plugin_id}:{component_id}")
         return value[1] if value else None
 
-    def register_health_check(self, check: PluginHealthCheck) -> None:
-        if not self._active_plugin or self._active_plugin not in self._plugins:
-            raise ValueError("health check registration requires an active plugin")
-        name = str(check.name).strip()
-        if not name or not callable(check.run):
-            raise ValueError("plugin health check name and run callable are required")
-        key = f"{self._active_plugin}:{name}"
-        existing = self._health_checks.get(key)
-        if existing is not None and existing[0] != check:
-            raise ValueError(f"plugin health check {name} is already registered")
-        self._health_checks[key] = (check, self._active_plugin)
-
-    def list_health_checks(self, plugin_id: str) -> tuple[PluginHealthCheck, ...]:
-        registered = [
-            value[0] for value in self._health_checks.values() if value[1] == plugin_id
-        ]
-        plugin = self._plugins.get(plugin_id)
-        declared = list(getattr(plugin, "health_checks", lambda: ())()) if plugin else []
-        by_name = {str(item.name): item for item in (*declared, *registered)}
-        return tuple(by_name.values())
-
-    def get_projection(self, view_id: str) -> Any | None:
-        value = self._projections.get(str(view_id).strip())
-        return value[0] if value else None
-
-    def list_projections(self) -> tuple[Any, ...]:
-        return tuple(value[0] for value in self._projections.values())
-
     def get(self, capability_id: str, version: str | None = None) -> tuple[Any, Any] | None:
         prefix = f"{capability_id}@"
         if version is not None:
@@ -239,7 +175,7 @@ class CapabilityPluginRegistry:
         return tuple(self._plugins.values())
 
     def manifests(self) -> tuple[PluginManifest, ...]:
-        """Return safe manifests, including a compatibility fallback."""
+        """Return safe manifests for registered plugin releases."""
         values: list[PluginManifest] = []
         for plugin in self.plugins:
             values.append(self._manifest_for(plugin))
@@ -250,22 +186,8 @@ class CapabilityPluginRegistry:
         declared = getattr(plugin, "manifest", None)
         manifest = declared() if callable(declared) else None
         if not isinstance(manifest, PluginManifest):
-            manifest = PluginManifest(
-                plugin_id=str(plugin.plugin_id),
-                version=str(plugin.version),
-                name=str(plugin.plugin_id),
-                description="External capability plugin",
-            )
-        if manifest.build_digest:
-            return manifest
-        # Package manifests must provide a source/build digest in production.
-        # During local development derive one from the loaded plugin class so
-        # every registered capability is still pinned to a concrete artifact.
-        try:
-            source = inspect.getsource(plugin.__class__).encode()
-        except (OSError, TypeError):
-            source = f"{plugin.__class__.__module__}:{plugin.__class__.__qualname__}".encode()
-        return replace(manifest, build_digest=f"sha256:{sha256(source).hexdigest()}")
+            raise TypeError(f"plugin {plugin.plugin_id!r} must declare a PluginManifest")
+        return manifest
 
     async def invoke(
         self,

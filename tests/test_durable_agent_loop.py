@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.tools.base import Tool
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.runtime.action_identity import durable_action_id
@@ -13,6 +13,7 @@ from joyhousebot.runtime.context import ActionOutcomeUnknownError, RunContext
 from joyhousebot.runtime.models import AgentOptions
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -168,7 +169,7 @@ async def test_recovery_reuses_model_response_and_observation_without_reexecutio
         max_iterations=3,
         session_manager=RuntimeSessionManager(store),
     )
-    executor.capabilities.register_tool(tool)
+    register_tool_fixture(executor.capabilities, tool)
     context = _context(store, run_id)
 
     with pytest.raises(RuntimeError, match="simulated worker loss"):
@@ -199,7 +200,7 @@ async def test_recovery_reuses_model_response_and_observation_without_reexecutio
     assert len(actions) == 1
     assert actions[0].status == "observed"
     assert store.get_action_observation(actions[0].action_id) is not None
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -216,7 +217,7 @@ async def test_unknown_action_outcome_is_not_blindly_replayed(tmp_path: Path) ->
         max_iterations=2,
         session_manager=RuntimeSessionManager(store),
     )
-    executor.capabilities.register_tool(tool)
+    register_tool_fixture(executor.capabilities, tool)
     context = _context(store, run_id)
 
     with pytest.raises(asyncio.CancelledError):
@@ -240,7 +241,7 @@ async def test_unknown_action_outcome_is_not_blindly_replayed(tmp_path: Path) ->
     )
     assert reconciliation is not None
     assert reconciliation.status == "manual_required"
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -257,7 +258,7 @@ async def test_runtime_fails_instead_of_completing_when_loop_is_exhausted(
         max_iterations=1,
         session_manager=RuntimeSessionManager(store),
     )
-    executor.capabilities.register_tool(tool)
+    register_tool_fixture(executor.capabilities, tool)
     runtime = NativeAgentRuntime(agent=executor, store=store)
 
     submitted = await runtime.submit_run(
@@ -277,7 +278,7 @@ async def test_runtime_fails_instead_of_completing_when_loop_is_exhausted(
     assert event_types.count("loop.exhausted") == 1
     assert event_types[-1] == "run.failed"
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -294,7 +295,7 @@ async def test_runtime_stops_repeated_action_before_second_execution(
         max_iterations=3,
         session_manager=RuntimeSessionManager(store),
     )
-    executor.capabilities.register_tool(tool)
+    register_tool_fixture(executor.capabilities, tool)
     runtime = NativeAgentRuntime(agent=executor, store=store)
 
     submitted = await runtime.submit_run(
@@ -319,7 +320,7 @@ async def test_runtime_stops_repeated_action_before_second_execution(
     assert event_types.count("loop.stalled") == 1
     assert event_types[-1] == "run.failed"
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio

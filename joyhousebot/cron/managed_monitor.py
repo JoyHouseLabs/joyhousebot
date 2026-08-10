@@ -6,7 +6,13 @@ import hashlib
 from typing import Any
 
 from joyhousebot.cron.active_hours import normalize_active_hours
-from joyhousebot.cron.types import CronJob, CronJobState, CronPayload, CronPolicy, CronSchedule
+from joyhousebot.domain.schedules import (
+    CronJob,
+    CronJobState,
+    CronPayload,
+    CronPolicy,
+    CronSchedule,
+)
 
 
 def managed_monitor_schedule_id(user_id: str, agent_id: str) -> str:

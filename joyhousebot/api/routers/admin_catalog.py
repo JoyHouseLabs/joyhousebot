@@ -20,7 +20,6 @@ from joyhousebot.api.dependencies import (
     RolloutsReaderDep,
     RolloutsWriterDep,
     SettingsReaderDep,
-    SettingsWriterDep,
     WorkersReaderDep,
 )
 from joyhousebot.api.schemas import (
@@ -29,18 +28,17 @@ from joyhousebot.api.schemas import (
     RolloutPolicyRequest,
     SaveAgentRevisionRequest,
     SaveCapabilityRuntimeSettingsRequest,
-    SaveMCPServerRequest,
 )
-from joyhousebot.application.permissions import permission_catalog_response
 from joyhousebot.application.presenters import public_capability_definition
-from joyhousebot.config.schema import MCPServerConfig
+from joyhousebot.config.extensions import enabled_channel_ids
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from joyhousebot.utils.ssrf import validate_url_with_dns
+from joyhousebot.domain.permissions import permission_catalog_response
+from joyhousebot.extension_discovery import installed_extensions
 
 router = APIRouter(prefix="/admin", tags=["platform-catalog"])
 
@@ -359,21 +357,14 @@ async def configuration_events(
 async def config_summary(principal: SettingsReaderDep, container: ContainerDep):
     config = container.config
     providers = {}
-    for name in getattr(type(config.providers), "model_fields", {}):
-        value = getattr(config.providers, name)
-        # ``default_provider`` is a routing string, while the remaining
-        # provider entries are ProviderConfig models. Keep the safe summary
-        # tolerant of both shapes (and of future scalar provider settings).
+    for name, value in config.providers.iter_provider_configs().items():
         api_key = getattr(value, "api_key", "")
         api_base = getattr(value, "api_base", None)
         providers[name] = {
             "configured": bool(api_key or api_base),
             "endpoint": _safe_endpoint(api_base),
         }
-    channels = {
-        name: bool(getattr(value, "enabled", False))
-        for name, value in vars(config.channels).items()
-    }
+    channels = {name: True for name in enabled_channel_ids(config)}
     store = config.runtime.store
     return {
         "auth": {
@@ -392,96 +383,12 @@ async def config_summary(principal: SettingsReaderDep, container: ContainerDep):
         },
         "providers": providers,
         "channels": channels,
-        "tools": {
-            "restrict_to_workspace": config.tools.restrict_to_workspace,
-            "optional_allowlist": list(config.tools.optional_allowlist),
-            "memory_scope": config.tools.retrieval.memory_scope,
+        "extensions": {
+            "enabled": list(config.extensions.enabled),
+            "discover_entry_points": bool(config.extensions.discover_entry_points),
+            "installed": [item.to_dict() for item in installed_extensions()],
         },
-    }
-
-
-def _mcp_public(name: str, value: MCPServerConfig | dict[str, object]) -> dict[str, object]:
-    if isinstance(value, dict):
-        enabled = bool(value.get("enabled", True))
-        command = str(value.get("command") or "")
-        args = list(value.get("args") or [])
-        url = str(value.get("url") or "")
-        env = dict(value.get("env") or {})
-    else:
-        enabled = value.enabled
-        command = value.command
-        args = list(value.args)
-        url = value.url
-        env = value.env
-    return {
-        "name": name,
-        "enabled": enabled,
-        "command": command,
-        "args": args,
-        "url": url,
-        "env_keys": sorted(env),
-    }
-
-
-@router.get("/mcp-servers")
-async def mcp_servers(principal: SettingsReaderDep, container: ContainerDep):
-    rows = await asyncio.to_thread(container.store.list_mcp_servers)
-    stored_names = {str(row["name"]) for row in rows}
-    configured = getattr(container.config.tools, "mcp_servers", {}) or {}
-    rows.extend(
-        {"name": name, **value.model_dump()}
-        for name, value in configured.items()
-        if name not in stored_names
-    )
-    return {"items": [_mcp_public(str(row["name"]), row) for row in rows]}
-
-
-@router.put("/mcp-servers/{name}")
-async def save_mcp_server(
-    name: str,
-    body: SaveMCPServerRequest,
-    principal: SettingsWriterDep,
-    container: ContainerDep,
-):
-    if not name or len(name) > 128 or not all(char.isalnum() or char in "_-" for char in name):
-        raise HTTPException(
-            status_code=422, detail="MCP server name must contain only letters, numbers, '_' or '-'"
-        )
-    if bool(body.command.strip()) == bool(body.url.strip()):
-        raise HTTPException(
-            status_code=422, detail="Configure exactly one of command (stdio) or url (HTTP)"
-        )
-    if body.url:
-        ok, error = await validate_url_with_dns(body.url)
-        if not ok:
-            raise HTTPException(status_code=422, detail=f"MCP URL blocked: {error}")
-    value = body.model_dump()
-    await asyncio.to_thread(container.store.save_mcp_server, name, value)
-    return _mcp_public(name, value)
-
-
-@router.delete("/mcp-servers/{name}")
-async def delete_mcp_server(name: str, principal: SettingsWriterDep, container: ContainerDep):
-    deleted = await asyncio.to_thread(container.store.delete_mcp_server, name)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="MCP server not found")
-    return {"deleted": True}
-
-
-@router.post("/mcp-servers/{name}/test")
-async def test_mcp_server(name: str, principal: SettingsWriterDep, container: ContainerDep):
-    rows = await asyncio.to_thread(container.store.list_mcp_servers)
-    value = next((row for row in rows if row["name"] == name), None)
-    if value is None:
-        raise HTTPException(status_code=404, detail="MCP server not found")
-    if not value["enabled"]:
-        return {"ok": False, "message": "MCP server is disabled"}
-    if value["url"]:
-        ok, error = await validate_url_with_dns(value["url"])
-        return {"ok": ok, "message": "URL DNS/SSRF 校验通过" if ok else error}
-    return {
-        "ok": bool(value["command"]),
-        "message": "stdio command 已配置，连接将在 Worker 启动时建立"
-        if value["command"]
-        else "command 未配置",
+        "tools": {
+            "optional_allowlist": list(config.tools.optional_allowlist),
+        },
     }

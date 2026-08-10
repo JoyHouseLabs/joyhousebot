@@ -57,6 +57,7 @@ class PostgresTestStore(PostgresRuntimeStore):
 
     def __init__(self, isolation_key=None, *args, **kwargs):  # noqa: ANN001
         require_postgres()
+        kwargs.setdefault("bootstrap_model", "test/default")
         super().__init__(TEST_DATABASE_URL, auto_migrate=True, *args, **kwargs)
         key = str(isolation_key) if isolation_key is not None else "__default__"
         if key != self.__class__._last_path:
@@ -64,6 +65,43 @@ class PostgresTestStore(PostgresRuntimeStore):
             self._seed_default_agents()
             self.__class__._last_path = key
         self.__class__._last_store = self
+
+    def publish_capability(self, definition, *, actor_id: str = "test:fixture") -> None:  # noqa: ANN001
+        """Install an active Capability fixture without adding a Runtime bypass API."""
+        self.discover_capability_release(definition, actor_id=actor_id)
+        with self._pool.connection() as connection, connection.transaction():
+            row = connection.execute(
+                """SELECT status FROM capability_versions
+                   WHERE capability_id=%s AND version=%s FOR UPDATE""",
+                (definition.ref.capability_id, definition.ref.version),
+            ).fetchone()
+            if row is None:
+                raise AssertionError("discovered Capability fixture is missing")
+            if str(row["status"]) == "published":
+                return
+            connection.execute(
+                """UPDATE capability_versions
+                   SET status='published', published_at=clock_timestamp()
+                   WHERE capability_id=%s AND version=%s""",
+                (definition.ref.capability_id, definition.ref.version),
+            )
+            connection.execute(
+                """UPDATE capability_definitions
+                   SET current_version=%s, updated_at=clock_timestamp()
+                   WHERE capability_id=%s""",
+                (definition.ref.version, definition.ref.capability_id),
+            )
+            connection.execute(
+                """INSERT INTO configuration_events
+                       (aggregate_type,aggregate_id,revision_id,event_type,actor_id)
+                   VALUES ('capability',%s,%s,'published',%s)""",
+                (definition.ref.capability_id, definition.ref.version, actor_id),
+            )
+
+    def finish_runtime_run(self, run_id: str, **kwargs):  # noqa: ANN003, ANN201
+        """Return only the terminal event for test fixtures that do not need the bundle."""
+        bundle = self.finish_runtime_run_bundle(run_id, **kwargs)
+        return bundle[1] if bundle is not None else None
 
     def _clear_test_rows(self) -> None:
         # The suite intentionally uses one PostgreSQL database.  A few tests

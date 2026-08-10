@@ -31,7 +31,6 @@ const router = createRouter({
         { path: 'workflows', name: 'Workflows', component: () => import('../views/Workflows.vue') },
         { path: 'skills', name: 'Skills', component: () => import('../views/CapabilityEditor.vue') },
         { path: 'tools', name: 'Tools', component: () => import('../views/CapabilityEditor.vue') },
-        { path: 'mcp', name: 'MCP', component: () => import('../views/MCPServers.vue') },
         { path: 'channels', name: 'Channels', component: () => import('../views/Channels.vue') },
         { path: 'scenarios', name: 'Scenarios', component: () => import('../views/Scenarios.vue') },
         { path: 'platform', name: 'Platform', component: () => import('../views/Platform.vue') },

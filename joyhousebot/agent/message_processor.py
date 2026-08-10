@@ -469,7 +469,7 @@ class MessageProcessorMixin:
         Returns:
             The agent's response text, or None if run was aborted.
         """
-        await self._connect_mcp()
+        await self._connect_tool_connectors()
         msg = InboundMessage(
             channel=channel,
             sender_id=sender_id,

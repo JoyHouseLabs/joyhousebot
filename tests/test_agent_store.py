@@ -14,19 +14,21 @@ from joyhousebot.domain.capabilities import (
 )
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
+TEST_PLUGIN_DIGEST = f"sha256:{'d' * 64}"
 
-def test_builtin_agent_model_uses_openrouter_slug_and_repairs_legacy_value(tmp_path) -> None:
+
+def test_neutral_agent_uses_bootstrap_model_without_rewriting_revision(tmp_path) -> None:
     path = tmp_path / "agents.db"
     store = PostgresTestStore(path)
     try:
-        profile = store.get_agent_profile("joy")
+        profile = store.get_agent_profile("default")
         assert profile is not None
-        assert profile.revision.model_policy["primary"] == "openrouter/deepseek/deepseek-v4-flash"
+        assert profile.revision.model_policy["primary"] == "test/default"
         with store._pool.connection() as conn, conn.transaction():
             policy = dict(profile.revision.model_policy)
-            policy["primary"] = "anthropic/claude-opus-4-5"
+            policy["primary"] = "operator/model-v1"
             conn.execute(
-                "UPDATE agent_revisions SET model_policy=%s WHERE revision_id='joy:v1'",
+                "UPDATE agent_revisions SET model_policy=%s WHERE revision_id='default:v1'",
                 (Jsonb(policy),),
             )
     finally:
@@ -34,9 +36,9 @@ def test_builtin_agent_model_uses_openrouter_slug_and_repairs_legacy_value(tmp_p
 
     reopened = PostgresTestStore(path)
     try:
-        repaired = reopened.get_agent_profile("joy")
+        repaired = reopened.get_agent_profile("default")
         assert repaired is not None
-        assert repaired.revision.model_policy["primary"] == "openrouter/deepseek/deepseek-v4-flash"
+        assert repaired.revision.model_policy["primary"] == "operator/model-v1"
     finally:
         reopened.close()
 
@@ -66,27 +68,24 @@ def test_default_agents_are_seeded_from_database(tmp_path: Path) -> None:
 
     default = store.get_agent_profile()
     assert default is not None
-    assert default.definition.agent_id == "main-coordinator"
+    assert default.definition.agent_id == "default"
     assert default.definition.is_default
-    assert default.revision.revision_id == "main-coordinator:v1"
-    assert {profile.definition.agent_id for profile in store.list_agent_profiles()} == {
-        "joy",
-        "main-coordinator",
-    }
+    assert default.revision.revision_id == "default:v1"
+    assert {profile.definition.agent_id for profile in store.list_agent_profiles()} == {"default"}
 
 
 def test_default_agent_seed_does_not_restore_pruned_revision(tmp_path: Path) -> None:
     """An operator-selected current revision survives a process restart."""
     store = PostgresTestStore(tmp_path / "agent-seed-prune.db")
     definition = AgentDefinition(
-        agent_id="main-coordinator",
-        name="Main Coordinator",
+        agent_id="default",
+        name="Default Agent",
         description="Operator managed coordinator",
         role="coordinator",
     )
     revision = AgentRevision(
-        revision_id="main-coordinator:v2",
-        agent_id="main-coordinator",
+        revision_id="default:v2",
+        agent_id="default",
         version=2,
         instructions="Use approved Dinq capabilities.",
         model_policy={"primary": "test/model"},
@@ -95,14 +94,14 @@ def test_default_agent_seed_does_not_restore_pruned_revision(tmp_path: Path) -> 
     )
     store.save_agent_revision(definition, revision)
     with store._pool.connection() as conn, conn.transaction():
-        conn.execute("DELETE FROM agent_revisions WHERE revision_id='main-coordinator:v1'")
+        conn.execute("DELETE FROM agent_revisions WHERE revision_id='default:v1'")
 
     store._seed_default_agents()
 
-    assert store.get_agent_revision("main-coordinator:v1") is None
-    profile = store.get_agent_profile("main-coordinator")
+    assert store.get_agent_revision("default:v1") is None
+    profile = store.get_agent_profile("default")
     assert profile is not None
-    assert profile.revision.revision_id == "main-coordinator:v2"
+    assert profile.revision.revision_id == "default:v2"
 
 
 def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> None:
@@ -111,7 +110,7 @@ def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> 
     pinned = replace(
         revision,
         plugin_requirements=(
-            PluginReleaseRequirement("dinq.discover", "0.4.0", "sha256:dinq-040"),
+            PluginReleaseRequirement("dinq.discover", "0.4.0", TEST_PLUGIN_DIGEST),
         ),
     )
     with pytest.raises(ValueError, match="unavailable plugin release"):
@@ -121,7 +120,7 @@ def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> 
             plugin_id="dinq.discover",
             version="0.4.0",
             name="Dinq Discover",
-            build_digest="sha256:dinq-040",
+            build_digest=TEST_PLUGIN_DIGEST,
         ).to_dict()
     )
     store.stage_plugin_release(
@@ -260,14 +259,14 @@ def test_postgres_run_snapshot_round_trip() -> None:
             run_id=run_id,
             user_id="snapshot-user",
             session_id=run_id,
-            agent_id="joy",
+            agent_id="default",
             kind="agent",
             prompt="snapshot",
             options={},
         )
-        snapshot = store.create_run_execution_snapshot(run_id, "joy")
+        snapshot = store.create_run_execution_snapshot(run_id, "default")
         restored = store.get_run_execution_snapshot(run_id)
         assert restored == snapshot
-        assert restored.agent_revision_id == "joy:v1"
+        assert restored.agent_revision_id == "default:v1"
     finally:
         store.close()

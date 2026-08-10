@@ -118,6 +118,17 @@ class PostgresPluginStoreMixin:
                 ddl=integrity,
                 description="immutable plugin manifest integrity identity",
             )
+            runtime_health = """
+            DROP TABLE IF EXISTS plugin_check_results;
+            """
+            conn.execute(runtime_health)
+            self._record_migration(
+                conn,
+                name="plugins",
+                version=4,
+                ddl=runtime_health,
+                description="replace extension callbacks with runtime-derived health",
+            )
 
     def upsert_plugin_release(self, manifest: dict[str, Any]) -> None:
         value = dict(manifest)
@@ -203,6 +214,11 @@ class PostgresPluginStoreMixin:
                 raise ValueError("plugin release has not been discovered by a Worker")
             if str(release["status"]) == "active":
                 raise ValueError("plugin release is already active")
+            manifest = dict(_json(release["manifest"], {}))
+            extension_types = set(manifest.get("extension_types") or ("capability",))
+            target_worker_capability = (
+                "channels" if "channel" in extension_types else "agent"
+            )
             conn.execute(
                 """UPDATE plugin_releases SET status='staged',updated_at=clock_timestamp()
                    WHERE plugin_id=%s AND version=%s""",
@@ -218,6 +234,7 @@ class PostgresPluginStoreMixin:
                 timeout_seconds=timeout_seconds,
                 auto_rollback=auto_rollback,
                 require_healthy_workers=require_healthy_workers,
+                target_worker_capability=target_worker_capability,
             )
             conn.execute(
                 """INSERT INTO configuration_events
@@ -385,7 +402,7 @@ class PostgresPluginStoreMixin:
         for worker in self.list_runtime_workers(limit=5000):
             plugin = next(
                 (
-                    item for item in worker["metadata"].get("plugins", [])
+                    item for item in worker["metadata"].get("extensions", [])
                     if item.get("plugin_id") == plugin_id
                 ),
                 None,
@@ -402,42 +419,6 @@ class PostgresPluginStoreMixin:
                 "execution_eligible": bool(worker.get("healthy")) and release_matched,
             })
         return values
-
-    def record_plugin_check_result(
-        self,
-        plugin_id: str,
-        plugin_version: str,
-        check_name: str,
-        status: str,
-        summary: str,
-        *,
-        details: dict[str, Any] | None = None,
-        worker_id: str | None = None,
-        duration_ms: int | None = None,
-    ) -> None:
-        with self._pool.connection() as conn:
-            conn.execute(
-                """INSERT INTO plugin_check_results
-                       (plugin_id,plugin_version,check_name,status,summary,details,worker_id,duration_ms)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (plugin_id, plugin_version, check_name, status, summary, Jsonb(details or {}), worker_id, duration_ms),
-            )
-
-    def list_plugin_check_results(self, plugin_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
-        with self._pool.connection() as conn:
-            rows = conn.execute(
-                """SELECT DISTINCT ON (check_name) check_name,status,summary,details,worker_id,duration_ms,created_at
-                   FROM plugin_check_results WHERE plugin_id=%s
-                   ORDER BY check_name,created_at DESC LIMIT %s""",
-                (plugin_id, max(1, min(200, limit))),
-            ).fetchall()
-        return [
-            {"name": str(row["check_name"]), "status": str(row["status"]),
-             "summary": str(row["summary"]), "details": dict(_json(row["details"], {})),
-             "worker_id": row["worker_id"], "duration_ms": row["duration_ms"],
-             "created_at": _iso(row["created_at"])}
-            for row in rows
-        ]
 
     def get_plugin_metrics(self, plugin_id: str, *, hours: int = 24) -> dict[str, Any]:
         components = self.list_plugin_components(plugin_id)

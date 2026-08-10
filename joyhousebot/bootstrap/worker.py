@@ -14,24 +14,36 @@ from joyhousebot.application.evals import EvalService
 from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.bootstrap.agent_catalog import default_agent_id
 from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
+from joyhousebot.bootstrap.extension_rollouts import ExtensionRolloutWatcher
 from joyhousebot.channels.manager import ChannelManager
 from joyhousebot.channels.repository import ChannelRepository
 from joyhousebot.channels.runtime_bridge import ChannelRuntimeBridge
 from joyhousebot.config.access import get_config
 from joyhousebot.cron.managed_monitor import reconcile_agent_monitor
 from joyhousebot.cron.service import CronService
-from joyhousebot.cron.types import CronJob, schedule_run_prompt, schedule_run_session_id
+from joyhousebot.domain.schedules import CronJob, schedule_run_prompt, schedule_run_session_id
 from joyhousebot.runtime.models import AgentOptions
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.storage.factory import create_runtime_store
 
 
-def _plugin_releases(agent: Any) -> list[dict[str, Any]]:
+def _extension_releases(agent: Any, config: Any) -> list[dict[str, Any]]:
+    releases: dict[str, dict[str, Any]] = {}
     registry = getattr(getattr(agent, "capabilities", None), "plugins", None)
     manifests = getattr(registry, "manifests", None)
-    if not callable(manifests):
-        return []
-    return [item.to_dict() for item in manifests()]
+    if callable(manifests):
+        for manifest in manifests():
+            releases[manifest.plugin_id] = manifest.to_release_dict()
+    from joyhousebot.providers.registry import get_provider_registry
+
+    for manifest in get_provider_registry(config).manifests():
+        releases[manifest.extension_id] = manifest.to_release_dict()
+    connectors = getattr(agent, "tool_connectors", None)
+    connector_manifests = getattr(connectors, "manifests", None)
+    if callable(connector_manifests):
+        for manifest in connector_manifests():
+            releases[manifest.extension_id] = manifest.to_release_dict()
+    return list(releases.values())
 
 
 @dataclass(slots=True)
@@ -161,13 +173,18 @@ class ChannelWorker:
     async def run(self) -> None:
         await self.runtime.start()
         bridge_task = asyncio.create_task(self.bridge.run(), name="channel-runtime-bridge")
+        rollout_task = asyncio.create_task(
+            ExtensionRolloutWatcher(store=self.store, runtime=self.runtime).watch(),
+            name="channel-extension-rollouts",
+        )
         try:
             await self.manager.start_all()
             await asyncio.Event().wait()
         finally:
             await self.bridge.close()
             bridge_task.cancel()
-            await asyncio.gather(bridge_task, return_exceptions=True)
+            rollout_task.cancel()
+            await asyncio.gather(bridge_task, rollout_task, return_exceptions=True)
             await self.manager.stop_all()
             await self.runtime.close()
             await asyncio.to_thread(self.store.close)
@@ -205,8 +222,7 @@ def build_execution_worker(config: Any | None = None) -> ExecutionWorker:
         maintenance_enabled=False,
         worker_name=config.runtime.worker_name or "agent-worker",
         capabilities={"agent": True, "graph_task": True, "graph_finalizer": True},
-        plugin_releases=_plugin_releases(default_agent),
-        projection_registry=getattr(default_agent.capabilities, "plugins", None),
+        plugin_releases=_extension_releases(default_agent, config),
         default_agent_id=default_id,
         poll_interval_seconds=config.runtime.store.poll_interval_seconds,
         monitor_reconciler=partial(reconcile_agent_monitor, schedules.repository),
@@ -302,6 +318,7 @@ def build_channel_worker(config: Any | None = None) -> ChannelWorker:
     store = create_runtime_store(config)
     resolved_default_id = default_agent_id(store)
     schedules = CronService(store, worker_id="channel-monitor-reconcile")
+    manager = ChannelManager(config, runtime_store=store)
     runtime = NativeAgentRuntime(
         agent=None,
         store=store,
@@ -310,10 +327,11 @@ def build_channel_worker(config: Any | None = None) -> ChannelWorker:
         presence_enabled=True,
         worker_name=config.runtime.worker_name or "channel-worker",
         capabilities={"channels": True},
+        plugin_releases=manager.extension_releases(),
         default_agent_id=resolved_default_id,
         monitor_reconciler=partial(reconcile_agent_monitor, schedules.repository),
     )
-    manager = ChannelManager(config, runtime_store=store, worker_id=runtime.worker_id)
+    manager.worker_id = runtime.worker_id
     bridge = ChannelRuntimeBridge(
         runtime=runtime,
         outbound_sink=manager.publish_outbound,

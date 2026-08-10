@@ -9,8 +9,9 @@ from typing import Any
 
 from joyhousebot.application.context import RequestContext
 from joyhousebot.application.errors import ConflictError, NotFoundError, ValidationError
+from joyhousebot.config.extensions import enabled_channel_ids
 from joyhousebot.cron.service import _compute_next_run
-from joyhousebot.cron.types import CronPayload, CronPolicy, CronSchedule
+from joyhousebot.domain.schedules import CronPayload, CronPolicy, CronSchedule
 from joyhousebot.scheduling.monitor_repository import ScratchRevisionConflictError
 
 # Delivery targets: phone numbers, channel user/chat ids, emails, @handles.
@@ -18,14 +19,7 @@ _DELIVERY_TARGET_PATTERN = re.compile(r"^[A-Za-z0-9_@.\-:+]{1,128}$")
 
 
 def _enabled_channels(config: Any) -> set[str]:
-    """Channel names whose config section exists and is enabled."""
-    channels = getattr(config, "channels", None)
-    enabled: set[str] = set()
-    for name in getattr(type(channels), "model_fields", {}) or {}:
-        section = getattr(channels, name, None)
-        if getattr(section, "enabled", False):
-            enabled.add(name)
-    return enabled
+    return enabled_channel_ids(config)
 
 
 class ScheduleService:

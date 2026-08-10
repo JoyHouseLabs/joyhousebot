@@ -2,7 +2,7 @@
   <div class="page plugin-page">
     <header class="page-heading">
       <div><span class="eyebrow">PLUGIN CONTROL PLANE</span><h1>{{ overview?.release.name || '插件详情' }}</h1><p>查看插件发布、组件、Quickstart、Worker 健康状态与真实执行链路。</p></div>
-      <div class="heading-actions"><button v-if="publishableRelease" class="primary-button" :disabled="publishing" @click="publishRelease">{{ publishing ? '提交中…' : `发布 v${publishableRelease.version} 并等待 Worker 确认` }}</button><button class="secondary-button" :disabled="diagnosing" @click="diagnose">{{ diagnosing ? '诊断中…' : '执行只读诊断' }}</button><button class="secondary-button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button></div>
+      <div class="heading-actions"><button v-if="publishableRelease" class="primary-button" :disabled="publishing" @click="publishRelease">{{ publishing ? '提交中…' : `发布 v${publishableRelease.version} 并等待 Worker 确认` }}</button><button class="secondary-button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button></div>
     </header>
     <div v-if="error" class="notice error-notice">{{ error }}</div>
     <template v-else-if="overview">
@@ -84,13 +84,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createPluginPlaygroundRun, getPlugin, getPluginHealth, getPluginInvocations, getPluginTopology, publishPluginRelease, runPluginDiagnostics, type PluginComponent, type PluginHealth, type PluginInvocation, type PluginOverview, type PluginQuickstart, type PluginTopology } from '../api/plugins'
+import { createPluginPlaygroundRun, getPlugin, getPluginHealth, getPluginInvocations, getPluginTopology, publishPluginRelease, type PluginComponent, type PluginHealth, type PluginInvocation, type PluginOverview, type PluginQuickstart, type PluginTopology } from '../api/plugins'
 import { getCapabilityRuntimeSettings, saveCapabilityRuntimeSettings, type CapabilityRuntimeSettings } from '../api/admin'
 import { getRuntimeArtifacts, getRuntimeRun, type RuntimeArtifact, type RuntimeRun } from '../api/runtime'
 import { simulateScenario } from '../api/scenarios'
 
 const route = useRoute(); const router = useRouter(); const pluginId = computed(() => String(route.params.pluginId || '')); const loading = ref(false); const error = ref(''); const tab = ref('overview')
-const overview = ref<PluginOverview | null>(null); const topology = ref<PluginTopology | null>(null); const health = ref<PluginHealth | null>(null); const invocations = ref<PluginInvocation[]>([]); const diagnosing = ref(false)
+const overview = ref<PluginOverview | null>(null); const topology = ref<PluginTopology | null>(null); const health = ref<PluginHealth | null>(null); const invocations = ref<PluginInvocation[]>([])
 const publishing = ref(false)
 const selectedComponent = ref<PluginComponent | null>(null); const settings = ref<CapabilityRuntimeSettings | null>(null); const settingsText = ref('{}'); const savedSettingsText = ref('{}'); const settingsSaving = ref(false)
 const playgroundComponentId = ref(''); const playgroundInput = ref('{}'); const scenarioPrompt = ref(''); const scenarioInputsText = ref('{}')
@@ -108,7 +108,6 @@ function percent(value: number) { return `${Math.round(value * 100)}%` }; functi
 function pretty(value: unknown) { return JSON.stringify(value || {}, null, 2) }; function configurable(item: PluginComponent) { return item.component_type === 'tool' || item.component_type === 'skill' }
 function links(id: string) { return (topology.value?.edges || []).filter((item) => item.source === id).map((item) => topology.value?.nodes.find((node) => node.id === item.target)?.label || item.target) }
 async function load() { if (!pluginId.value) return; loading.value = true; error.value = ''; overview.value = null; try { const [item, graph, checks, recent] = await Promise.all([getPlugin(pluginId.value), getPluginTopology(pluginId.value), getPluginHealth(pluginId.value), getPluginInvocations(pluginId.value)]); overview.value = item; topology.value = graph; health.value = checks; invocations.value = recent.items; if (item.components.length) selectPlaygroundComponent(item.components[0]) } catch (cause) { error.value = cause instanceof Error ? cause.message : '读取插件状态失败' } finally { loading.value = false } }
-async function diagnose() { if (!pluginId.value) return; diagnosing.value = true; error.value = ''; try { await runPluginDiagnostics(pluginId.value); await load(); tab.value = 'health' } catch (cause) { error.value = cause instanceof Error ? cause.message : '插件诊断失败' } finally { diagnosing.value = false } }
 async function publishRelease() { if (!publishableRelease.value) return; publishing.value = true; error.value = ''; try { await publishPluginRelease(pluginId.value, publishableRelease.value.version); await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : '插件发布失败' } finally { publishing.value = false } }
 async function openSettings(item: PluginComponent) { selectedComponent.value = item; settings.value = null; error.value = ''; try { const value = await getCapabilityRuntimeSettings(item.reference_id); settings.value = value; settingsText.value = pretty(value.configuration); savedSettingsText.value = settingsText.value } catch (cause) { error.value = cause instanceof Error ? cause.message : '读取组件配置失败' } }
 function closeSettings() { selectedComponent.value = null; settings.value = null; settingsText.value = '{}' }; function resetSettings() { settingsText.value = savedSettingsText.value }

@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 import json_repair
 from loguru import logger
 
-from joyhousebot.agent.memory import MemoryStore
-from joyhousebot.agent.memory_candidates import MemoryWriteController
-from joyhousebot.agent.memory_policy import EffectiveMemoryPolicy
+from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.runtime.context import (
     RunContext,
 )
+from joyhousebot.services.memory.store import MemoryStore
+from joyhousebot.services.memory.writes import MemoryWriteController
 from joyhousebot.utils.exceptions import (
     LLMError,
     classify_exception,

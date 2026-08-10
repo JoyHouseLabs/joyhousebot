@@ -24,6 +24,10 @@ class CapabilityContext:
     # adapters must pass the exact idempotency key to their write API.
     action_id: str | None = None
     idempotency_key: str | None = None
+    memory_scope: str | None = None
+    memory_policy: dict[str, Any] = field(default_factory=dict)
+    root_run_id: str | None = None
+    services: Any = field(default=None, repr=False, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

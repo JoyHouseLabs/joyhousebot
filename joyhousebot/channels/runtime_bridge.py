@@ -162,7 +162,7 @@ class ChannelRuntimeBridge(RunAdapter):
         if completed.status == "cancelled":
             return completed
 
-        # PostgreSQL workers project the reply in finish_runtime_run(). Waiting
+        # PostgreSQL workers project the reply in finish_runtime_run_bundle(). Waiting
         # here preserves the historical adapter return value, but enqueueing a
         # second message would violate exactly-once intent creation.
         if getattr(self.runtime.store, "backend_name", None) == "postgres":
@@ -201,10 +201,6 @@ class ChannelRuntimeBridge(RunAdapter):
             )
         )
         return completed
-
-    async def _handle_message(self, msg: InboundMessage) -> None:
-        """Compatibility task entrypoint used by the bridge loop."""
-        await self.handle(msg)
 
     async def close(self) -> None:
         self._running = False

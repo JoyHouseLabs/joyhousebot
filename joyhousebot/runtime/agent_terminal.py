@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any
 
-from loguru import logger
-
-from joyhousebot.contracts import ProjectionContext, ScopedRunProjectionQueries
 from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.models import AgentEvent, AgentResult, EventType, RunStatus, utc_now
 
@@ -135,102 +131,7 @@ class AgentTerminalMixin:
                         },
                     )
                 )
-            await self._materialize_terminal_projections(record)
         return persisted
-
-    async def _materialize_terminal_projections(self, record: Any | None) -> None:
-        """Persist plugin read models after the fenced terminal commit.
-
-        Projection failures are observable but cannot roll back an already
-        committed Run. Providers decide whether they own the Run; the runtime
-        never branches on a plugin or business-domain identifier.
-        """
-        registry = getattr(self, "projection_registry", None)
-        list_projections = getattr(registry, "list_projections", None)
-        if record is None or not callable(list_projections):
-            return
-        providers = tuple(list_projections())
-        if not providers:
-            return
-        event_limit = max(
-            1,
-            min(
-                max(int(getattr(provider, "event_limit", 1000) or 1000) for provider in providers),
-                5000,
-            ),
-        )
-        try:
-            artifacts, events, invocations, scenario_state = await asyncio.gather(
-                asyncio.to_thread(self.store.list_runtime_artifacts, record.run_id),
-                asyncio.to_thread(
-                    self.store.list_runtime_events,
-                    record.run_id,
-                    user_id=record.user_id,
-                    limit=event_limit,
-                ),
-                asyncio.to_thread(
-                    self.store.list_capability_invocations,
-                    record.run_id,
-                    expected_user_id=record.user_id,
-                ),
-                asyncio.to_thread(
-                    self.store.get_run_scenario_state,
-                    record.run_id,
-                    expected_user_id=record.user_id,
-                ),
-            )
-        except Exception:
-            logger.exception("Failed to load terminal projection evidence for Run {}", record.run_id)
-            return
-        context = ProjectionContext(
-            run=record,
-            artifacts=tuple(artifacts),
-            events=tuple(events),
-            invocations=tuple(invocations),
-            scenario_state=scenario_state,
-            queries=ScopedRunProjectionQueries(
-                self.store, run_id=record.run_id, user_id=record.user_id
-            ),
-            user_id=record.user_id,
-        )
-        for provider in providers:
-            supports = getattr(provider, "supports", None)
-            materialize = getattr(provider, "materialize", None)
-            if not callable(materialize):
-                continue
-            try:
-                if callable(supports):
-                    accepted = supports(context)
-                    accepted = await accepted if inspect.isawaitable(accepted) else accepted
-                    if not accepted:
-                        continue
-                if inspect.iscoroutinefunction(materialize):
-                    result = await materialize(context)
-                else:
-                    result = await asyncio.to_thread(materialize, context)
-                await asyncio.to_thread(
-                    self.store.append_runtime_log,
-                    run_id=record.run_id,
-                    stage="projection.materialized",
-                    message=f"Projection materialized: {provider.view_id}",
-                    data={
-                        "view_id": provider.view_id,
-                        "schema_version": provider.schema_version,
-                        "result": result if isinstance(result, dict) else {},
-                    },
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Projection {} failed for Run {}", provider.view_id, record.run_id
-                )
-                await asyncio.to_thread(
-                    self.store.append_runtime_log,
-                    run_id=record.run_id,
-                    stage="projection.failed",
-                    level="error",
-                    message=f"Projection failed: {provider.view_id}",
-                    data={"view_id": provider.view_id, "error_type": type(exc).__name__},
-                )
 
     async def _ensure_run_owned(
         self,

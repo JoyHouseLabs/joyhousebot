@@ -1,5 +1,3 @@
-import sys
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,9 +6,10 @@ from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
 from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
+from joyhousebot.config.schema import Config, ExtensionsConfig
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
+from tests.support.capabilities import TEST_PLUGIN_DIGEST
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -147,7 +146,7 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
     )
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -174,7 +173,7 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
                 "field_names": ["voice"],
             }
         ],
-        "allowed_capabilities": [{"capability_id": "speech.synthesize", "version": "1.0.0", "kind": "tool", "plugin_id": "test.plugin", "plugin_version": "1.0.0", "plugin_build_digest": "sha256:test"}],
+        "allowed_capabilities": [{"capability_id": "speech.synthesize", "version": "1.0.0", "kind": "tool", "plugin_id": "test.plugin", "plugin_version": "1.0.0", "plugin_build_digest": TEST_PLUGIN_DIGEST}],
         "planning_mode": "fixed",
         "routing_rules": [{"contains_any": ["语音", "朗读"]}],
     }
@@ -258,49 +257,23 @@ def test_api_replaces_invalid_request_tracking_headers(tmp_path: Path) -> None:
     assert response.headers["x-tracker-id"].startswith("trace_")
 
 
-def test_run_projection_is_resolved_through_configured_plugin(tmp_path: Path, monkeypatch) -> None:
-    module = types.ModuleType("test_projection_plugin")
-
-    class Provider:
-        view_id = "demo.search"
-        schema_version = 1
-
-        def build(self, context):
-            return {"view": self.view_id, "run_id": context.run.run_id, "user_id": context.user_id}
-
-    class Plugin:
-        plugin_id = "demo.projection"
-        version = "1.0.0"
-
-        def register(self, registry):
-            registry.register_projection(Provider())
-
-    module.create_plugin = lambda: Plugin()
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    config = Config(tools={"capability_plugins": [module.__name__]})
+def test_api_does_not_load_or_execute_extension_projections(tmp_path: Path) -> None:
+    config = Config(
+        extensions=ExtensionsConfig(enabled=["capability-not-installed"])
+    )
     store = PostgresTestStore(tmp_path / "projection.db")
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
     container = build_api_container(config=config, store=store)
-    client = TestClient(create_app(container))
-    headers = {"Authorization": "Bearer token-a"}
-    with client:
-        created = client.post("/v1/runs", headers=headers, json={
-            "agent_id": "default", "session_id": "projection-session",
-            "input": {"type": "message", "content": "hello"},
-        })
-        run_id = created.json()["run_id"]
-        projected = client.get(f"/v1/runs/{run_id}/projection?view=demo.search", headers=headers)
-        assert projected.status_code == 200
-        assert projected.json() == {"view": "demo.search", "run_id": run_id, "user_id": "user-a"}
-        unsupported = client.get(f"/v1/runs/{run_id}/projection?view=dinq.search", headers=headers)
-        assert unsupported.status_code == 400
+    assert not hasattr(container, "plugins")
+    assert "/v1/runs/{run_id}/projection" not in {
+        route.path for route in create_app(container).routes
+    }
 
 
 def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Path) -> None:
     client, store = _client(tmp_path)
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -317,14 +290,14 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
             fields=(ScenarioField("voice", "string", required=True, enum=("pro", "default")),),
             nodes=(ClarificationNode("voice", "question", "选择声音", ("voice",)),),
             edges=(),
-            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
+            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),),
             planning_mode="fixed",
             execution_policy={
                 "aggregate": False,
                 "tasks": [
                     {
                         "id": "synthesize",
-                        "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test").to_dict(),
+                        "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST).to_dict(),
                         "input": {"voice": "${voice}"},
                     }
                 ],
@@ -540,26 +513,7 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         }
         config_summary = client.get("/v1/admin/config", headers=admin_headers)
         assert config_summary.status_code == 200
-        assert config_summary.json()["providers"]["default_provider"] == {
-            "configured": False,
-            "endpoint": None,
-        }
-        mcp_saved = client.put(
-            "/v1/admin/mcp-servers/test-filesystem",
-            headers=admin_headers,
-            json={
-                "enabled": True,
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-                "env": {},
-                "url": "",
-            },
-        )
-        assert mcp_saved.status_code == 200
-        assert client.get("/v1/admin/mcp-servers", headers=admin_headers).json()["items"][0]["name"] == "test-filesystem"
-        mcp_test = client.post("/v1/admin/mcp-servers/test-filesystem/test", headers=admin_headers)
-        assert mcp_test.status_code == 200 and mcp_test.json()["ok"]
-        assert client.delete("/v1/admin/mcp-servers/test-filesystem", headers=admin_headers).status_code == 200
+        assert config_summary.json()["providers"] == {}
         draft = client.put(
             "/v1/admin/agents/research/revisions/research:v1",
             headers=admin_headers,
@@ -580,6 +534,9 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
                 "kind": "skill",
                 "name": "Research Skill",
                 "adapter": "prompt-skill:research",
+                "plugin_id": "test.plugin",
+                "plugin_version": "1.0.0",
+                "plugin_build_digest": TEST_PLUGIN_DIGEST,
                 "rollout_policy": {"require_healthy_workers": False},
             },
         )
@@ -912,7 +869,7 @@ def test_schedule_delivery_requires_enabled_channel(tmp_path: Path) -> None:
         assert rejected.status_code == 422
 
         config = client.app.state.container.config
-        config.channels.telegram.enabled = True
+        config.extensions.enabled.append("channel-telegram")
 
         # Unknown (not enabled) channel stays rejected.
         unknown = dict(schedule)

@@ -9,7 +9,7 @@ from joyhousebot.domain.scenarios import ScenarioVersion
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
-def _revision(version: int) -> AgentRevision:
+def _revision(version: int, *, status: str = "draft") -> AgentRevision:
     return AgentRevision(
         revision_id=f"joy:v{version}",
         agent_id="joy",
@@ -17,11 +17,27 @@ def _revision(version: int) -> AgentRevision:
         instructions=f"revision {version}",
         model_policy={"primary": "test/model"},
         created_by="test-admin",
+        status=status,
     )
 
 
+def _agent_store(path: Path) -> PostgresTestStore:
+    """Create the arbitrary Agent under rollout without relying on Core defaults."""
+    store = PostgresTestStore(path)
+    store.save_agent_revision(
+        AgentDefinition(
+            agent_id="joy",
+            name="Joy",
+            description="Rollout test Agent",
+            role="coordinator",
+        ),
+        _revision(1, status="published"),
+    )
+    return store
+
+
 def test_agent_rollout_activates_only_after_all_target_workers_ack(tmp_path: Path) -> None:
-    store = PostgresTestStore(tmp_path / "rollout.db")
+    store = _agent_store(tmp_path / "rollout.db")
     current = store.get_agent_definition("joy")
     assert current is not None
     store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
@@ -58,7 +74,7 @@ def test_agent_rollout_activates_only_after_all_target_workers_ack(tmp_path: Pat
 
 
 def test_failed_agent_rollout_keeps_previous_revision_active(tmp_path: Path) -> None:
-    store = PostgresTestStore(tmp_path / "rollout-failed.db")
+    store = _agent_store(tmp_path / "rollout-failed.db")
     current = store.get_agent_definition("joy")
     assert current is not None
     store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
@@ -80,7 +96,7 @@ def test_failed_agent_rollout_keeps_previous_revision_active(tmp_path: Path) -> 
 
 
 def test_manual_rollout_requires_approval_and_can_be_rolled_back(tmp_path: Path) -> None:
-    store = PostgresTestStore(tmp_path / "rollout-manual.db")
+    store = _agent_store(tmp_path / "rollout-manual.db")
     current = store.get_agent_definition("joy")
     assert current is not None
     store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
@@ -125,7 +141,7 @@ def test_manual_rollout_requires_approval_and_can_be_rolled_back(tmp_path: Path)
 
 
 def test_failed_rollback_preheat_keeps_current_revision_active(tmp_path: Path) -> None:
-    store = PostgresTestStore(tmp_path / "rollout-safe-rollback.db")
+    store = _agent_store(tmp_path / "rollout-safe-rollback.db")
     current = store.get_agent_definition("joy")
     assert current is not None
     store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
@@ -153,7 +169,7 @@ def test_failed_rollback_preheat_keeps_current_revision_active(tmp_path: Path) -
 def test_failed_worker_target_can_be_retried_without_reloading_successes(
     tmp_path: Path,
 ) -> None:
-    store = PostgresTestStore(tmp_path / "rollout-retry.db")
+    store = _agent_store(tmp_path / "rollout-retry.db")
     current = store.get_agent_definition("joy")
     assert current is not None
     store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})
@@ -189,7 +205,7 @@ def test_failed_worker_target_can_be_retried_without_reloading_successes(
 
 
 def test_rollout_timeout_is_reconciled_and_keeps_previous_revision(tmp_path: Path) -> None:
-    store = PostgresTestStore(tmp_path / "rollout-timeout.db")
+    store = _agent_store(tmp_path / "rollout-timeout.db")
     current = store.get_agent_definition("joy")
     assert current is not None
     store.register_runtime_worker(worker_id="agent-a", capabilities={"agent": True})

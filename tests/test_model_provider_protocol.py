@@ -2,12 +2,12 @@ import asyncio
 
 import httpx
 import pytest
+from joyhousebot_provider_anthropic import AnthropicProvider
+from joyhousebot_provider_openai_compatible import OpenAICompatibleProvider
 
-from joyhousebot.config.schema import Config
-from joyhousebot.providers.anthropic import AnthropicProvider
+from joyhousebot.config.schema import Config, ExtensionsConfig, ProviderConfig
 from joyhousebot.providers.factory import create_model_provider
 from joyhousebot.providers.observability import bind_model_observation
-from joyhousebot.providers.openai_compatible import OpenAICompatibleProvider
 from joyhousebot.providers.provider_support import (
     error_metadata,
     sanitize_tools,
@@ -24,16 +24,18 @@ class _TestError(Exception):
 
 
 def test_provider_factory_rejects_non_ascii_api_key() -> None:
-    config = Config()
-    config.providers.anthropic.api_key = "你的密钥"
+    config = Config(extensions=ExtensionsConfig(enabled=["provider-anthropic"]))
+    config.providers.settings["anthropic"] = ProviderConfig(api_key="你的密钥")
     with pytest.raises(RuntimeError, match="ASCII"):
         create_model_provider(config=config, model="anthropic/claude-test")
 
 
 def test_openrouter_keeps_vendor_qualified_model_name() -> None:
-    config = Config()
+    config = Config(
+        extensions=ExtensionsConfig(enabled=["provider-openai-compatible"])
+    )
     config.providers.default_provider = "openrouter"
-    config.providers.openrouter.api_key = "gateway-key"
+    config.providers.settings["openrouter"] = ProviderConfig(api_key="gateway-key")
     provider = create_model_provider(
         config=config,
         model="anthropic/claude-opus-4.5",

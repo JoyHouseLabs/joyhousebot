@@ -63,7 +63,6 @@ export const getPlugin = (id: string) => pluginFetch<PluginOverview>(`/${encodeU
 export const getPluginTopology = (id: string) => pluginFetch<PluginTopology>(`/${encodeURIComponent(id)}/topology`)
 export const getPluginHealth = (id: string) => pluginFetch<PluginHealth>(`/${encodeURIComponent(id)}/health`)
 export const getPluginInvocations = (id: string) => pluginFetch<{ items: PluginInvocation[] }>(`/${encodeURIComponent(id)}/invocations`)
-export const runPluginDiagnostics = (id: string) => pluginPost<{ items: PluginHealth['checks'] }>(`/${encodeURIComponent(id)}/diagnostics`)
 export const publishPluginRelease = (id: string, version: string) =>
   pluginPost<Record<string, unknown>>(`/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}/publish`, {
     activation_mode: 'automatic', timeout_seconds: 300, auto_rollback: true, require_healthy_workers: true,

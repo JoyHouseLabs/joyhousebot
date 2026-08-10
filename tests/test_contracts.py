@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from joyhousebot.contracts import Artifact, CapabilityContext, CapabilityResult, DomainEvent
+from joyhousebot.contracts import Artifact, CapabilityContext, CapabilityResult
 
 
 def test_artifact_is_business_opaque_and_serializable() -> None:
@@ -20,21 +20,6 @@ def test_artifact_is_business_opaque_and_serializable() -> None:
     assert value["data"] == {"name": "Ada"}
     assert value["metadata"]["namespace"] == "dinq"
     assert value["artifact_id"].startswith("artifact_")
-
-
-def test_domain_event_has_versioned_namespace() -> None:
-    event = DomainEvent(
-        type="candidate.verified",
-        namespace="dinq",
-        data={"candidate_id": "candidate_1"},
-    )
-
-    value = event.to_dict()
-
-    assert value["namespace"] == "dinq"
-    assert value["type"] == "candidate.verified"
-    assert value["schema_version"] == 1
-    assert value["data"]["candidate_id"] == "candidate_1"
 
 
 def test_capability_context_keeps_framework_identity_only() -> None:

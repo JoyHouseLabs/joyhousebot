@@ -25,6 +25,7 @@ from joyhousebot.runtime.context import (
     VerificationFailedError,
 )
 from joyhousebot.runtime.execution_metadata import build_execution_metadata
+from joyhousebot.runtime.identity import conversation_key as build_conversation_key
 from joyhousebot.runtime.models import (
     AgentEvent,
     AgentOptions,
@@ -36,10 +37,7 @@ from joyhousebot.runtime.models import (
     utc_now,
 )
 from joyhousebot.runtime.structured import StructuredOutputError, parse_structured_output
-from joyhousebot.runtime.tracking import (
-    append_trace_event_async,
-    ensure_tracking_ids,
-)
+from joyhousebot.runtime.tracking import append_trace_event_async, ensure_tracking_ids
 from joyhousebot.runtime.verification import verify_output
 
 
@@ -518,7 +516,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
             trace_store=self.store,
             user_id=user_id,
             agent_id=agent_id,
-            session_key=self._conversation_key(user_id, agent_id, session_id),
+            session_key=build_conversation_key(user_id, agent_id, session_id),
             session_id=session_id,
             channel=channel,
             chat_id=chat_id,

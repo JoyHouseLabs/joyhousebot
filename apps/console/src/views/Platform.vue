@@ -1,7 +1,7 @@
 <template>
   <div class="page platform-page">
     <header class="page-heading">
-      <div><span class="eyebrow">PLATFORM CONTROL</span><h1>平台</h1><p>只管理平台级权限、Worker 集群、配置发布和审计；Agent、Skills、Tools 与 MCP 在配置子菜单中维护。</p></div>
+      <div><span class="eyebrow">PLATFORM CONTROL</span><h1>平台</h1><p>只管理平台级权限、Worker 集群、配置发布和审计；具体连接器由插件中心管理。</p></div>
       <button class="secondary-button" type="button" :disabled="loading" @click="refresh">{{ loading ? '刷新中…' : '刷新全部' }}</button>
     </header>
     <div v-if="error" class="notice error-notice">{{ error }}</div>

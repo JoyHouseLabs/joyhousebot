@@ -11,7 +11,6 @@ from joyhousebot.runtime.agent_execution import AgentExecutionMixin
 from joyhousebot.runtime.controls import RuntimeControlsMixin
 from joyhousebot.runtime.coordinator import RuntimeCoordinatorMixin
 from joyhousebot.runtime.events import EventBroker
-from joyhousebot.runtime.identity import conversation_key
 from joyhousebot.runtime.narrative import redact_runtime_value
 from joyhousebot.runtime.request_coordination import RequestCoordinationMixin
 from joyhousebot.runtime.submission import SubmissionMixin
@@ -43,7 +42,6 @@ class NativeAgentRuntime(
         worker_name: str = "runtime",
         capabilities: dict[str, Any] | None = None,
         plugin_releases: list[dict[str, Any]] | None = None,
-        projection_registry: Any | None = None,
         default_agent_id: str = "default",
         poll_interval_seconds: float = 0.2,
         monitor_reconciler: Callable[..., Any] | None = None,
@@ -70,7 +68,6 @@ class NativeAgentRuntime(
         )
         self.capabilities = capabilities or {"agent": True, "graph_task": True}
         self.plugin_releases = [dict(item) for item in (plugin_releases or [])]
-        self.projection_registry = projection_registry
         self.default_agent_id = str(default_agent_id or "default").strip() or "default"
         self.monitor_reconciler = monitor_reconciler
         self.task_worker_count = max(1, min(int(max_concurrent_runs or 4), 32))
@@ -109,7 +106,7 @@ class NativeAgentRuntime(
                     capabilities=self.capabilities,
                     metadata={
                         "task_worker_count": self.task_worker_count,
-                        "plugins": self.plugin_releases,
+                        "extensions": self.plugin_releases,
                     },
                 )
             self._worker_tasks = []
@@ -183,11 +180,6 @@ class NativeAgentRuntime(
             message=message,
             data=redact_runtime_value(data or {}),
         )
-
-    @staticmethod
-    def _conversation_key(user_id: str, agent_id: str, session_id: str) -> str:
-        """Compatibility wrapper for the canonical conversation key."""
-        return conversation_key(user_id, agent_id, session_id)
 
     async def _resolve_execution_agent(self, run_id: str, agent_id: str) -> Any | None:
         """Resolve the immutable Agent revision frozen when the Run was accepted."""

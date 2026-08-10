@@ -18,7 +18,6 @@ from joyhousebot.application.graph_patches import GraphPatchService
 from joyhousebot.application.knowledge_assets import KnowledgeAssetService
 from joyhousebot.application.memory_candidates import MemoryCandidateService
 from joyhousebot.application.platform import PlatformService
-from joyhousebot.application.plugins import configured_plugin_registry
 from joyhousebot.application.reconciliations import ReconciliationService
 from joyhousebot.application.replays import ReplayService
 from joyhousebot.application.runs import RunService
@@ -34,7 +33,7 @@ from joyhousebot.cron.managed_monitor import (
     reconcile_existing_agent_monitors,
 )
 from joyhousebot.cron.service import CronService
-from joyhousebot.cron.types import CronJob, schedule_run_prompt, schedule_run_session_id
+from joyhousebot.domain.schedules import CronJob, schedule_run_prompt, schedule_run_session_id
 from joyhousebot.runtime.models import AgentOptions
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.security.admin_auth import (
@@ -70,7 +69,6 @@ class ApplicationContainer:
     scenarios: ScenarioStudioService
     works: WorkService
     workflows: WorkflowService
-    plugins: Any
     owns_store: bool = True
 
     async def close(self) -> None:
@@ -85,8 +83,8 @@ def build_api_container(
     config = config or get_config()
     owns_store = store is None
     store = store or create_runtime_store(config)
-    # Local development gets a documented password in addition to the legacy
-    # X-User-ID path. Production has no source-code default: its one-time
+    # Local development gets a documented password alongside the explicitly
+    # insecure X-User-ID mode. Production has no source-code default: its one-time
     # bootstrap credential must be injected through paired environment vars.
     production = str(os.getenv("JOYHOUSEBOT_ENVIRONMENT") or "development").strip().lower() in {
         "prod",
@@ -235,6 +233,5 @@ def build_api_container(
             store,
             default_agent_id=default_agent_id(store),
         ),
-        plugins=configured_plugin_registry(config),
         owns_store=owns_store,
     )

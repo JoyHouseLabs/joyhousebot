@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from joyhousebot.domain.aggregation import normalize_aggregation_policy
 from joyhousebot.domain.capabilities.models import CapabilityRef
 
 
@@ -149,8 +150,6 @@ class ScenarioVersion:
             raise ValueError("scenario allowed capability references must be unique")
         aggregation_policy = self.execution_policy.get("aggregation_policy")
         if aggregation_policy is not None:
-            from joyhousebot.orchestration.aggregation import normalize_aggregation_policy
-
             normalize_aggregation_policy(
                 dict(aggregation_policy),
                 aggregate=bool(self.execution_policy.get("aggregate", True)),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from joyhousebot.runtime.models import AgentEvent, EventType
+from joyhousebot.contracts.events import AgentEvent, EventType
 from joyhousebot.storage.approval_records import ApprovalRequestRecord
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_event_writes import append_runtime_event_in_transaction

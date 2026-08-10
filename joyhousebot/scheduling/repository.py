@@ -7,7 +7,11 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from joyhousebot.cron.types import CronJob, CronJobState, CronPayload, CronPolicy, CronSchedule
+from joyhousebot.domain.schedules import CronJob
+from joyhousebot.scheduling.row_mapper import (
+    occurrence_job_from_row,
+    schedule_job_from_row,
+)
 from joyhousebot.scheduling.schema import SCHEDULE_DDL
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_schedule_callbacks import (
@@ -42,45 +46,6 @@ class ScheduleRepository:
                 connection.execute("SELECT pg_advisory_xact_lock(%s)", (872341911,))
                 connection.execute(SCHEDULE_DDL)
 
-    @staticmethod
-    def _job(row: Any) -> CronJob:
-        schedule = row["schedule"] if "schedule" in row else row["schedule_json"]
-        payload = row["payload"] if "payload" in row else row["payload_json"]
-        policy = row.get("policy") or {}
-        if isinstance(schedule, str):
-            schedule = json.loads(schedule)
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if isinstance(policy, str):
-            policy = json.loads(policy)
-        return CronJob(
-            id=str(row["schedule_id"]),
-            name=str(row["name"]),
-            user_id=str(row["user_id"]),
-            enabled=bool(row["enabled"]),
-            agent_id=row["agent_id"],
-            schedule=CronSchedule(**schedule),
-            payload=CronPayload(**payload),
-            policy=CronPolicy(**policy),
-            state=CronJobState(
-                next_run_at_ms=row["next_run_at_ms"],
-                last_run_at_ms=row["last_run_at_ms"],
-                last_status=row["last_status"],
-                last_error=row["last_error"],
-                occurrence_id=row.get("occurrence_id"),
-                scheduled_for_ms=row.get("scheduled_for_ms"),
-                attempt=int(row.get("attempt") or 1),
-                submit_attempt=int(row.get("submit_attempt") or 0),
-                claim_scope=str(row.get("claim_scope") or "schedule"),
-            ),
-            created_at_ms=int(row["created_at_ms"]),
-            updated_at_ms=int(row["updated_at_ms"]),
-            delete_after_run=bool(row["delete_after_run"]),
-            lease_owner=row["lease_owner"],
-            lease_until_ms=row["lease_until_ms"],
-            lease_version=int(row["lease_version"]),
-        )
-
     def create(self, job: CronJob) -> CronJob:
         schedule = vars(job.schedule)
         payload = vars(job.payload)
@@ -110,10 +75,18 @@ class ScheduleRepository:
             )
         with self._connection() as connection:
             row = connection.execute(
-                f"INSERT INTO schedules ({columns}) VALUES ({','.join(['%s'] * 18)}) RETURNING *",
+                f"INSERT INTO schedules ({columns}) VALUES ({','.join(['%s'] * 18)}) "
+                "ON CONFLICT(schedule_id) DO NOTHING RETURNING *",
                 values,
             ).fetchone()
-        return self._job(row)
+            if row is None:
+                row = connection.execute(
+                    "SELECT * FROM schedules WHERE schedule_id=%s AND user_id=%s",
+                    (job.id, job.user_id),
+                ).fetchone()
+        if row is None:
+            raise PermissionError("schedule id belongs to another user")
+        return schedule_job_from_row(row)
 
     def list(self, *, user_id: str | None, include_disabled: bool) -> list[CronJob]:
         clauses: list[str] = []
@@ -130,7 +103,7 @@ class ScheduleRepository:
         query += " ORDER BY next_run_at_ms, created_at_ms"
         with self._connection() as connection:
             rows = connection.execute(query, params).fetchall()
-        return [self._job(row) for row in rows]
+        return [schedule_job_from_row(row) for row in rows]
 
     def set_enabled(
         self,
@@ -155,7 +128,7 @@ class ScheduleRepository:
         query = f"UPDATE schedules SET enabled={placeholder},next_run_at_ms={placeholder},updated_at_ms={placeholder},lease_owner=NULL,lease_until_ms=NULL WHERE {condition}"
         with self._connection() as connection:
             row = connection.execute(query + " RETURNING *", params).fetchone()
-        return self._job(row) if row else None
+        return schedule_job_from_row(row) if row else None
 
     def update(self, job: CronJob) -> CronJob | None:
         schedule = vars(job.schedule)
@@ -184,7 +157,7 @@ class ScheduleRepository:
         )
         with self._connection() as connection:
             row = connection.execute(query + " RETURNING *", params).fetchone()
-        return self._job(row) if row else None
+        return schedule_job_from_row(row) if row else None
 
     def delete(self, schedule_id: str, *, user_id: str | None) -> bool:
         placeholder = "%s"
@@ -265,7 +238,7 @@ class ScheduleRepository:
             submit_attempt=occurrence["submit_attempt"],
             claim_scope="schedule",
         )
-        return self._job(merged)
+        return schedule_job_from_row(merged)
 
     def _insert_occurrences(
         self, connection: Any, rows: list[Any], worker_id: str, lease_ms: int
@@ -309,38 +282,6 @@ class ScheduleRepository:
             occurrences[str(row["schedule_id"])] = occurrence
         return occurrences
 
-    @staticmethod
-    def _occurrence_job(row: Any) -> CronJob:
-        def decoded(value: Any) -> dict[str, Any]:
-            return json.loads(value) if isinstance(value, str) else dict(value or {})
-
-        return CronJob(
-            id=str(row["schedule_id"]),
-            name=str(row.get("name") or row["schedule_id"]),
-            user_id=str(row["user_id"]),
-            enabled=True,
-            agent_id=row["agent_id"],
-            schedule=CronSchedule(**decoded(row["schedule"])),
-            payload=CronPayload(**decoded(row["payload"])),
-            policy=CronPolicy(**decoded(row["policy"])),
-            state=CronJobState(
-                occurrence_id=str(row["occurrence_id"]),
-                scheduled_for_ms=int(row["scheduled_for_ms"]),
-                attempt=int(row["attempt"] or 1),
-                submit_attempt=int(row["submit_attempt"] or 0),
-                claim_scope="occurrence",
-                monitor_scratch_revision=row["monitor_scratch_revision"],
-                monitor_observation_hash=row["monitor_observation_hash"],
-                monitor_observation=decoded(row["monitor_observation"]),
-            ),
-            created_at_ms=int(row["started_at_ms"]),
-            updated_at_ms=int(row["started_at_ms"]),
-            delete_after_run=bool(row["delete_after_run"]),
-            lease_owner=row["lease_owner"],
-            lease_until_ms=row["lease_until_ms"],
-            lease_version=int(row["lease_version"]),
-        )
-
     def claim_due_retries(
         self, *, worker_id: str, lease_ms: int, limit: int = 32
     ) -> list[CronJob]:
@@ -364,7 +305,7 @@ class ScheduleRepository:
             rows = connection.execute(
                 query, (limit, worker_id, worker_id, lease_ms)
             ).fetchall()
-        return [self._occurrence_job(row) for row in rows]
+        return [occurrence_job_from_row(row) for row in rows]
 
     def begin_submit(self, job: CronJob, *, worker_id: str) -> CronJob | None:
         with self._connection() as connection:

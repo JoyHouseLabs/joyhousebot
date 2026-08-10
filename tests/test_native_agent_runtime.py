@@ -7,16 +7,16 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
 from joyhousebot.orchestration.clarification import ClarificationEngine
 from joyhousebot.orchestration.task_graph import validate_and_order_graph
 from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
 from joyhousebot.runtime.runner import NativeAgentRuntime
+from tests.support.capabilities import register_tool_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -166,64 +166,6 @@ async def test_agent_run_lifecycle_usage_events_and_idempotency(store: PostgresT
     assert [event.type for event in events][:2] == ["run.accepted", "run.queued"]
     assert "usage.updated" in [event.type for event in events]
     assert [event.type for event in events][-1] == "run.completed"
-    await runtime.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("prompt,expected_status", [("hello", "completed"), ("FAIL", "failed")])
-async def test_terminal_run_materializes_matching_plugin_projection(
-    store: PostgresTestStore,
-    prompt: str,
-    expected_status: str,
-) -> None:
-    observed: list[dict[str, Any]] = []
-
-    class Provider:
-        view_id = "example.search"
-        schema_version = 2
-        event_limit = 100
-
-        def supports(self, context):
-            return context.run.user_id == "user-a"
-
-        def materialize(self, context):
-            observed.append(
-                {
-                    "status": context.run.status,
-                    "events": [item.type for item in context.events],
-                    "user_id": context.user_id,
-                }
-            )
-            return {"status": "ready"}
-
-    class Registry:
-        @staticmethod
-        def list_projections():
-            return (Provider(),)
-
-    runtime = NativeAgentRuntime(
-        agent=FakeAgent(),
-        store=store,
-        projection_registry=Registry(),
-    )
-    submitted = await runtime.submit_run(
-        AgentOptions(
-            prompt=prompt,
-            user_id="user-a",
-            session_id="projection-session",
-            agent_id="default",
-        )
-    )
-    completed = await runtime.wait(submitted.run_id, timeout=2)
-
-    assert completed.status == expected_status
-    assert len(observed) == 1
-    assert observed[0]["status"] == expected_status
-    assert observed[0]["user_id"] == "user-a"
-    terminal_event = "run.completed" if expected_status == "completed" else "run.failed"
-    assert terminal_event in observed[0]["events"]
-    logs = store.list_runtime_logs(submitted.run_id)
-    assert any(item.stage == "projection.materialized" for item in logs)
     await runtime.close()
 
 
@@ -622,10 +564,13 @@ async def test_graph_executes_parallel_waves_and_dependencies(store: PostgresTes
 async def test_graph_task_invokes_capability_through_unified_dispatcher(
     store: PostgresTestStore,
 ) -> None:
+    definition = tool_definition(EchoCapability())
+
     class CapabilityAgent:
         def __init__(self) -> None:
             self.capabilities = CapabilityRegistry(store=store)
-            self.capabilities.register_tool(EchoCapability())
+            tool = EchoCapability()
+            register_tool_fixture(self.capabilities, tool, definition=definition)
 
         async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
             raise AssertionError("direct capability task must not call the model")
@@ -638,7 +583,7 @@ async def test_graph_task_invokes_capability_through_unified_dispatcher(
                 GraphTaskSpec(
                     id="echo",
                     prompt="",
-                    capability=CapabilityRef("echo", "1.0.1", CapabilityKind.TOOL, "joyhousebot.core", "0.1.2", "builtin"),
+                    capability=definition.ref,
                     capability_input={"text": "hello"},
                 )
             ],

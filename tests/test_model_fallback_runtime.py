@@ -3,10 +3,11 @@ from pathlib import Path
 import pytest
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.tools.base import Tool
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.agents import AgentRevision
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -91,7 +92,7 @@ async def test_agent_loop_uses_model_fallback_when_primary_errors(tmp_path: Path
         assert text == "ok:anthropic/claude-fallback"
         assert provider.calls[:2] == ["openai/gpt-primary", "anthropic/claude-fallback"]
     finally:
-        await loop.close_mcp()
+        await loop.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -117,7 +118,7 @@ async def test_agent_loop_skips_primary_while_in_cooldown(tmp_path: Path) -> Non
             "anthropic/claude-fallback",
         ]
     finally:
-        await loop.close_mcp()
+        await loop.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -151,7 +152,7 @@ async def test_exact_model_cache_reuses_response_and_keeps_provider_out_of_hot_p
         assert first == second == "ok:anthropic/claude-fallback"
         assert provider.calls == ["openai/gpt-primary", "anthropic/claude-fallback"]
     finally:
-        await loop.close_mcp()
+        await loop.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -164,7 +165,8 @@ async def test_agent_loop_streams_every_turn_and_correlates_tool_events(tmp_path
         max_iterations=3,
         session_manager=RuntimeSessionManager(PostgresTestStore(tmp_path / "runtime.db")),
     )
-    loop.capabilities.register_tool(_EchoTool())
+    tool = _EchoTool()
+    register_tool_fixture(loop.capabilities, tool)
     events: list[tuple[str, dict]] = []
 
     async def capture(kind: str, payload: dict) -> None:
@@ -185,4 +187,4 @@ async def test_agent_loop_streams_every_turn_and_correlates_tool_events(tmp_path
         assert tool_start["turn_id"] == tool_end["turn_id"]
         assert tool_end["ok"] is True
     finally:
-        await loop.close_mcp()
+        await loop.close_tool_connectors()

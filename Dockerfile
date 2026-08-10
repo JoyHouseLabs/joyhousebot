@@ -1,35 +1,29 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Install Node.js 20 for the WhatsApp bridge
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg git && \
-    mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get purge -y gnupg && \
-    apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Install Python dependencies first (cached layer)
 COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p joyhousebot bridges/whatsapp evals/suites && touch joyhousebot/__init__.py && \
+RUN mkdir -p joyhousebot evals/suites && touch joyhousebot/__init__.py && \
     uv pip install --system --no-cache '.[observability]' && \
-    rm -rf joyhousebot bridges
+    rm -rf joyhousebot
 
 # Copy the full source and install
 COPY joyhousebot/ joyhousebot/
-COPY bridges/whatsapp/ bridges/whatsapp/
 COPY evals/suites/ evals/suites/
 RUN uv pip install --system --no-cache '.[observability]'
 
-# Build the WhatsApp bridge
-WORKDIR /app/bridges/whatsapp
-RUN npm install && npm run build
-WORKDIR /app
+# Compose an explicit runtime image from independently installable extensions.
+# The default Docker image remains Core-only when the build arg is empty.
+ARG JOYHOUSEBOT_EXTENSIONS=""
+COPY extensions/ extensions/
+RUN set -eu; \
+    for extension_id in ${JOYHOUSEBOT_EXTENSIONS}; do \
+      case "${extension_id}" in *[!a-z0-9-]*|'') exit 2;; esac; \
+      test -f "extensions/${extension_id}/pyproject.toml"; \
+      uv pip install --system --no-cache "./extensions/${extension_id}"; \
+    done; \
+    rm -rf extensions
 
 # Run as a non-root user by default (api/scheduler/channel-worker roles).
 # NOTE: the agent worker role executes commands in Docker sandbox containers

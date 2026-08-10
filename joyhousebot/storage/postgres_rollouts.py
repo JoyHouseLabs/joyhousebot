@@ -91,6 +91,7 @@ class PostgresRolloutStoreMixin(PostgresRolloutPrimitiveStoreMixin):
         auto_rollback: bool = True,
         require_healthy_workers: bool = True,
         rollback_of_rollout_id: str | None = None,
+        target_worker_capability: str = "agent",
     ) -> str:
         if aggregate_type not in _ROLLOUT_TYPES:
             raise ValueError("unsupported configuration rollout type")
@@ -112,8 +113,9 @@ class PostgresRolloutStoreMixin(PostgresRolloutPrimitiveStoreMixin):
             """SELECT worker_id FROM runtime_workers
                WHERE status='online'
                  AND last_heartbeat > clock_timestamp()-interval '2 minutes'
-                 AND capabilities @> '{"agent": true}'::jsonb
-               ORDER BY worker_id"""
+                 AND capabilities @> %s
+               ORDER BY worker_id""",
+            (Jsonb({target_worker_capability: True}),),
         ).fetchall()
         if require_healthy_workers and not targets:
             raise ValueError("release requires at least one healthy Agent Worker")

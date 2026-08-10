@@ -5,15 +5,16 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
 from joyhousebot.capabilities.plugin_registry import CapabilityPluginRegistry
+from joyhousebot.capabilities.services import CapabilityServiceBroker
 from joyhousebot.capabilities.tool_adapter import (
     ToolCapabilityAdapter,
     ToolInvocationError,
     ToolOutput,
 )
 from joyhousebot.contracts import CapabilityContext, OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityRef,
@@ -28,10 +29,17 @@ from joyhousebot.utils.permissions import missing_permissions
 class _PluginTool(Tool):
     """Expose a framework-independent plugin handler to the native tool path."""
 
-    def __init__(self, definition: Any, handler: Any, runtime_settings: Any | None = None) -> None:
+    def __init__(
+        self,
+        definition: Any,
+        handler: Any,
+        runtime_settings: Any | None = None,
+        runtime_services: CapabilityServiceBroker | None = None,
+    ) -> None:
         self._definition = definition
         self._handler = handler
         self._runtime_settings = runtime_settings
+        self._runtime_services = runtime_services
 
     @property
     def name(self) -> str:
@@ -116,8 +124,7 @@ class _PluginTool(Tool):
             raise ValueError("plugin reconciliation requires tool context")
         return await reconcile(self._context(tool_context, self._settings()), operation)
 
-    @staticmethod
-    def _context(tool_context: Any, settings: dict[str, Any]) -> CapabilityContext:
+    def _context(self, tool_context: Any, settings: dict[str, Any]) -> CapabilityContext:
         metadata = dict(getattr(tool_context, "metadata", {}) or {})
         # Capability handlers receive the grants that were frozen in the
         # Agent execution snapshot.  They are useful for independently
@@ -136,6 +143,8 @@ class _PluginTool(Tool):
         # run-scoped, non-secret, and has already been validated by the
         # control plane against the capability's declared JSON Schema.
         metadata["capability_configuration"] = settings["configuration"]
+        metadata["channel"] = getattr(tool_context, "channel", "")
+        metadata["chat_id"] = getattr(tool_context, "chat_id", "")
         return CapabilityContext(
             user_id=tool_context.user_id,
             session_id=tool_context.session_id,
@@ -145,6 +154,10 @@ class _PluginTool(Tool):
             request_id=getattr(tool_context, "request_id", None),
             action_id=getattr(tool_context, "action_id", None),
             idempotency_key=getattr(tool_context, "idempotency_key", None),
+            memory_scope=getattr(tool_context, "memory_scope", None),
+            memory_policy=dict(getattr(tool_context, "memory_policy", {}) or {}),
+            root_run_id=getattr(tool_context, "root_run_id", None),
+            services=self._runtime_services,
             metadata=metadata,
         )
 
@@ -164,8 +177,11 @@ class CapabilityRegistry:
         *,
         store: Any | None = None,
         optional_allowlist: list[str] | None = None,
-        plugin_modules: list[str] | None = None,
-        discover_entry_points: bool = False,
+        enabled_plugins: set[str] | None = None,
+        scratch_root: Any | None = None,
+        outbound_sink: Any = None,
+        subagent_manager: Any = None,
+        schedule_service: Any = None,
     ) -> None:
         self._adapters: dict[str, ToolCapabilityAdapter] = {}
         # The model-facing catalog exposes one current adapter per name, but
@@ -178,12 +194,29 @@ class CapabilityRegistry:
             str(item).strip() for item in (optional_allowlist or []) if str(item).strip()
         }
         self._store = store
+        self._runtime_services = (
+            CapabilityServiceBroker(
+                store,
+                scratch_root=scratch_root,
+                outbound_sink=outbound_sink,
+                subagent_manager=subagent_manager,
+                schedule_service=schedule_service,
+            )
+            if any(
+                item is not None
+                for item in (
+                    store,
+                    scratch_root,
+                    outbound_sink,
+                    subagent_manager,
+                    schedule_service,
+                )
+            )
+            else None
+        )
         self.dispatcher = CapabilityDispatcher(store)
         self.plugins = CapabilityPluginRegistry()
-        if plugin_modules:
-            self.plugins.load_modules(plugin_modules)
-        if discover_entry_points:
-            self.plugins.load_entry_points()
+        self.plugins.load_entry_points(enabled=enabled_plugins)
         self._sync_registered_capabilities()
 
     def register_plugin(self, plugin: Any) -> None:
@@ -250,8 +283,12 @@ class CapabilityRegistry:
         self.plugins.register_capability(definition, handler)
         capability_id = str(definition.ref.capability_id)
         adapter = ToolCapabilityAdapter(
-            _PluginTool(definition, handler, self._runtime_settings),
-            version=str(definition.ref.version),
+            _PluginTool(
+                definition,
+                handler,
+                self._runtime_settings,
+                self._runtime_services,
+            ),
             definition=definition,
         )
         self._adapters[capability_id] = adapter
@@ -264,11 +301,10 @@ class CapabilityRegistry:
         self,
         tool: Tool,
         *,
+        definition: CapabilityDefinition,
         optional: bool = False,
-        version: str | None = None,
-        definition: CapabilityDefinition | None = None,
     ) -> None:
-        adapter = ToolCapabilityAdapter(tool, version=version, definition=definition)
+        adapter = ToolCapabilityAdapter(tool, definition=definition)
         self._adapters[tool.name] = adapter
         self._versioned_adapters[(tool.name, str(adapter.definition.ref.version))] = adapter
         if optional:
@@ -276,10 +312,7 @@ class CapabilityRegistry:
         else:
             self._optional.discard(tool.name)
         if self._store is not None:
-            if adapter.definition.ref.plugin_id == "joyhousebot.core":
-                self._store.bootstrap_core_capability(adapter.definition)
-            else:
-                self._store.discover_capability_release(adapter.definition)
+            self._store.discover_capability_release(adapter.definition)
 
     def get_tool(self, name: str, version: str | None = None) -> Tool | None:
         adapter = self._resolve_adapter(name, version)

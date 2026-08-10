@@ -3,9 +3,25 @@
 import pytest
 
 from joyhousebot.agent.context import ContextBuilder
-from joyhousebot.agent.memory import MemoryStore
 from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.services.memory.store import MemoryStore
 from tests.support.postgres_store import PostgresTestStore
+
+
+def _memory_revision() -> AgentRevision:
+    return AgentRevision(
+        revision_id="default:v1",
+        agent_id="default",
+        version=1,
+        model_policy={"primary": "test/model"},
+        memory_policy={
+            "enabled": True,
+            "mode": "personalized",
+            "read_mode": "auto",
+            "write_mode": "none",
+            "layers": {"long_term": {"read": True, "write": False}},
+        },
+    )
 
 
 @pytest.fixture
@@ -25,17 +41,21 @@ def test_memory_scope_isolates_content(durable_context) -> None:
 
 def test_system_prompt_includes_shared_memory(durable_context) -> None:
     scratch_root, store = durable_context
-    prompt = ContextBuilder(scratch_root, runtime_store=store).build_system_prompt(
-        scope_key=None
-    )
+    prompt = ContextBuilder(
+        scratch_root,
+        runtime_store=store,
+        agent_revision=_memory_revision(),
+    ).build_system_prompt(scope_key=None)
     assert "Shared memory fact" in prompt
 
 
 def test_system_prompt_includes_scoped_memory(durable_context) -> None:
     scratch_root, store = durable_context
-    prompt = ContextBuilder(scratch_root, runtime_store=store).build_system_prompt(
-        scope_key="session_1"
-    )
+    prompt = ContextBuilder(
+        scratch_root,
+        runtime_store=store,
+        agent_revision=_memory_revision(),
+    ).build_system_prompt(scope_key="session_1")
     assert "Session 1 only fact" in prompt
 
 

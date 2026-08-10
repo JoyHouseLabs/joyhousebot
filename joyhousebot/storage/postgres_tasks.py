@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.contracts.events import AgentEvent
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_event_writes import append_runtime_event_in_transaction
 from joyhousebot.storage.postgres_task_claiming import lock_claimable_task_run

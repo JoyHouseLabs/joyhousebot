@@ -1,4 +1,4 @@
-"""Business-neutral observability API for installed capability plugins."""
+"""Metadata-only control plane for installed extension releases."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from joyhousebot.api.dependencies import (
     PlatformAdminDep,
 )
 from joyhousebot.api.schemas import PluginPlaygroundInvocationRequest, RolloutPolicyRequest
-from joyhousebot.application.plugins import run_plugin_diagnostics
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import GraphTaskCommand
 from joyhousebot.domain.capabilities import CapabilityRef
@@ -156,29 +155,22 @@ async def plugin_health(plugin_id: str, principal: PlatformAdminDep, container: 
     ]
     healthy = [item for item in loaded if item.get("execution_eligible")]
     baseline_checks = [
-        {"name": "catalog", "status": "healthy" if components else "failed", "summary": f"{len(components)} registered components"},
+        {
+            "name": "release_catalog",
+            "status": "healthy",
+            "summary": f"immutable release metadata; {len(components)} registered components",
+        },
         {"name": "worker_release", "status": "healthy" if healthy else "degraded", "summary": f"{len(healthy)}/{len(loaded)} live plugin workers match this exact release"},
     ]
-    persisted = await asyncio.to_thread(container.store.list_plugin_check_results, plugin_id)
-    checks = persisted or baseline_checks
     return {
         "release": release,
-        "status": "healthy" if checks and all(item["status"] == "healthy" for item in checks) else "degraded",
-        "checks": checks,
-        "last_diagnostic_at": max((item.get("created_at") or "" for item in persisted), default=None),
+        "status": (
+            "healthy"
+            if all(item["status"] == "healthy" for item in baseline_checks)
+            else "degraded"
+        ),
+        "checks": baseline_checks,
     }
-
-
-@router.post("/{plugin_id}/diagnostics")
-async def plugin_diagnostics(plugin_id: str, principal: PlatformAdminDep, container: ContainerDep):
-    await _release(container, plugin_id)
-    try:
-        checks = await run_plugin_diagnostics(
-            config=container.config, store=container.store, plugin_id=plugin_id
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"items": checks}
 
 
 @router.post("/{plugin_id}/versions/{version}/publish", status_code=202)
@@ -189,7 +181,7 @@ async def publish_plugin_release(
     container: ContainerDep,
     body: RolloutPolicyRequest | None = None,
 ):
-    """Stage an installed plugin build and require every Agent Worker to load it."""
+    """Stage an installed extension build for its declared Worker role."""
     try:
         return await container.platform.publish_plugin_release(
             plugin_id,

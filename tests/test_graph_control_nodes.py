@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.api.app import create_app
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.capabilities import CapabilityRegistry
 from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,

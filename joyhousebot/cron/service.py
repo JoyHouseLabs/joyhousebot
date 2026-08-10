@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 from joyhousebot.cron.active_hours import is_within_active_hours, normalize_active_hours
-from joyhousebot.cron.types import (
+from joyhousebot.domain.schedules import (
     CronJob,
     CronJobState,
     CronPayload,
@@ -447,9 +447,14 @@ class CronService:
         preflight_mode: str = "always",
         context_mode: str = "full",
         active_hours: dict[str, str] | None = None,
+        job_id: str | None = None,
     ) -> CronJob:
         _validate_schedule_limits(schedule)
         existing = self.repository.list(user_id=user_id, include_disabled=True)
+        if job_id:
+            current = next((item for item in existing if item.id == job_id), None)
+            if current is not None:
+                return current
         if len(existing) >= MAX_JOBS_PER_USER:
             raise ValueError(f"user has reached the scheduled job limit ({MAX_JOBS_PER_USER})")
         now = self.repository.db_now_ms()
@@ -463,7 +468,7 @@ class CronService:
             resolved_policy.misfire_policy = "skip"
             resolved_policy.overlap_policy = "skip"
         job = CronJob(
-            id=uuid.uuid4().hex,
+            id=job_id or uuid.uuid4().hex,
             name=name,
             user_id=user_id,
             agent_id=agent_id,

@@ -12,7 +12,7 @@ from joyhousebot.agent.model_invoker import ModelInvokerMixin
 from joyhousebot.agent.turn_engine import TurnEngineMixin
 from joyhousebot.api.schemas import GraphTaskRequest, ScheduleSpec
 from joyhousebot.cron.service import CronService
-from joyhousebot.cron.types import CronSchedule
+from joyhousebot.domain.schedules import CronSchedule
 from joyhousebot.runtime import events as runtime_events
 from joyhousebot.runtime.coordinator import RuntimeCoordinatorMixin
 from joyhousebot.runtime.events import EventBroker

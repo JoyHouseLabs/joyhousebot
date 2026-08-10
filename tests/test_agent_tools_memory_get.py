@@ -1,13 +1,11 @@
-"""Tests for scoped durable memory_get access."""
-
-import json
+"""Tests for scoped durable memory_get capability handler."""
 
 import pytest
+from joyhousebot_capability_context_assets.plugin import MemoryGetHandler
 
-from joyhousebot.agent.memory import MemoryStore
-from joyhousebot.agent.tools.memory_get import MemoryGetTool
-from joyhousebot.capabilities.tool_adapter import ToolInvocationError
-from joyhousebot.runtime.context import ToolExecutionContext
+from joyhousebot.capabilities.services import CapabilityServiceBroker
+from joyhousebot.extension_sdk import CapabilityContext
+from joyhousebot.services.memory.store import MemoryStore
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -18,54 +16,74 @@ def durable_memory(tmp_path):
     memory = MemoryStore(store, scope)
     memory.write_long_term("User prefers Python.\nProject X.")
     memory.write_relative("2026-02-25.md", "line 1\nline 2\nline 3")
-    context = ToolExecutionContext(
+    context = CapabilityContext(
         run_id="run-a",
-        session_key="session-a",
-        channel="api",
-        chat_id="chat-a",
+        session_id="session-a",
         user_id="user-a",
+        agent_id="default",
         memory_scope=scope,
+        memory_policy={
+            "enabled": True,
+            "mode": "personalized",
+            "read_mode": "tools",
+            "write_mode": "none",
+            "layers": {"long_term": {"read": True}},
+        },
+        services=CapabilityServiceBroker(store),
     )
-    return MemoryGetTool(store), context
+    return MemoryGetHandler(), context
 
 
 @pytest.mark.asyncio
 async def test_memory_get_reads_document(durable_memory) -> None:
-    tool, context = durable_memory
-    data = json.loads(await tool.execute(path="memory/MEMORY.md", tool_context=context))
-    assert "User prefers Python" in data["text"]
+    handler, context = durable_memory
+    result = await handler.execute(context, {"path": "memory/MEMORY.md"})
+    assert result.success is True
+    assert "User prefers Python" in result.output["text"]
 
 
 @pytest.mark.asyncio
 async def test_memory_get_missing_document_is_empty(durable_memory) -> None:
-    tool, context = durable_memory
-    data = json.loads(await tool.execute(path="memory/missing.md", tool_context=context))
-    assert data["text"] == ""
+    handler, context = durable_memory
+    result = await handler.execute(context, {"path": "memory/missing.md"})
+    assert result.success is True
+    assert result.output["text"] == ""
 
 
 @pytest.mark.asyncio
 async def test_memory_get_rejects_traversal(durable_memory) -> None:
-    tool, context = durable_memory
-    with pytest.raises(ToolInvocationError, match="invalid memory path"):
-        await tool.execute(path="memory/../other.md", tool_context=context)
+    handler, context = durable_memory
+    result = await handler.execute(context, {"path": "memory/../other.md"})
+    assert result.success is False
+    assert result.error["code"] == "INVALID_PARAMETERS"
 
 
 @pytest.mark.asyncio
 async def test_memory_get_line_range(durable_memory) -> None:
-    tool, context = durable_memory
-    data = json.loads(
-        await tool.execute(
-            path="memory/2026-02-25.md",
-            start_line=2,
-            num_lines=2,
-            tool_context=context,
-        )
+    handler, context = durable_memory
+    result = await handler.execute(
+        context,
+        {
+            "path": "memory/2026-02-25.md",
+            "start_line": 2,
+            "num_lines": 2,
+        },
     )
-    assert data["text"] == "line 2\nline 3"
+    assert result.success is True
+    assert result.output["text"] == "line 2\nline 3"
 
 
 @pytest.mark.asyncio
 async def test_memory_get_requires_run_scope(durable_memory) -> None:
-    tool, _context = durable_memory
-    with pytest.raises(ToolInvocationError, match="run memory scope"):
-        await tool.execute(path="memory/MEMORY.md")
+    handler, context = durable_memory
+    context = CapabilityContext(
+        user_id=context.user_id,
+        session_id=context.session_id,
+        run_id=context.run_id,
+        agent_id=context.agent_id,
+        memory_policy=context.memory_policy,
+        services=context.services,
+    )
+    result = await handler.execute(context, {"path": "memory/MEMORY.md"})
+    assert result.success is False
+    assert result.error["code"] == "CONTEXT_REQUIRED"

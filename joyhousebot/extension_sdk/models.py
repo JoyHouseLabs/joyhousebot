@@ -1,0 +1,51 @@
+"""Stable model-provider extension API."""
+
+from joyhousebot.contracts.extensions import (
+    ModelProviderBuildRequest,
+    ModelProviderExtension,
+    ModelProviderSpec,
+)
+from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from joyhousebot.providers.observability import (
+    bind_model_observation,
+    model_cache_hit,
+    model_first_token,
+    model_request_failed,
+    model_request_finished,
+    model_request_started,
+)
+from joyhousebot.providers.provider_support import (
+    ProviderHTTPError,
+    classify_error,
+    error_metadata,
+    extract_status_code,
+    restore_tool_name,
+    safe_tool_name,
+    sanitize_messages,
+    sanitize_tools,
+    user_friendly_error,
+)
+
+__all__ = [
+    "LLMProvider",
+    "LLMResponse",
+    "ModelProviderBuildRequest",
+    "ModelProviderExtension",
+    "ModelProviderSpec",
+    "ProviderHTTPError",
+    "ToolCallRequest",
+    "bind_model_observation",
+    "classify_error",
+    "error_metadata",
+    "extract_status_code",
+    "model_cache_hit",
+    "model_first_token",
+    "model_request_failed",
+    "model_request_finished",
+    "model_request_started",
+    "restore_tool_name",
+    "safe_tool_name",
+    "sanitize_messages",
+    "sanitize_tools",
+    "user_friendly_error",
+]

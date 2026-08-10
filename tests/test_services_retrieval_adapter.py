@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.agent.memory import MemoryStore
+from joyhousebot.services.memory.store import MemoryStore
 from joyhousebot.services.retrieval.adapter import search_async
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore

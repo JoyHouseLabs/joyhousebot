@@ -1,5 +1,6 @@
 """Versioned platform Agent profile contracts."""
 
+from joyhousebot.domain.agents.defaults import default_agent_profiles
 from joyhousebot.domain.agents.models import (
     AgentDefinition,
     AgentExecutionSnapshot,
@@ -13,5 +14,6 @@ __all__ = [
     "AgentExecutionSnapshot",
     "AgentProfile",
     "AgentRevision",
+    "default_agent_profiles",
     "PluginReleaseRequirement",
 ]

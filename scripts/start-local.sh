@@ -8,7 +8,6 @@ CONFIG_PATH="${JOYHOUSEBOT_CONFIG_PATH:-${ROOT_DIR}/config.json}"
 if [[ -z "${JOYHOUSEBOT_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
   CONFIG_PATH="${ROOT_DIR}/config.dev.json"
 fi
-LEGACY_CONFIG_PATH="${JOYHOUSEBOT_LEGACY_CONFIG_PATH:-${HOME}/.joyhousebot/config.json}"
 API_HOST="${JOYHOUSEBOT_LOCAL_HOST:-127.0.0.1}"
 API_PORT="${JOYHOUSEBOT_LOCAL_PORT:-18790}"
 WORKER_COUNT="${JOYHOUSEBOT_LOCAL_WORKERS:-2}"
@@ -21,7 +20,7 @@ LOCAL_PG_PORT="${JOYHOUSEBOT_LOCAL_PG_PORT:-15432}"
 LOCAL_PG_USER="${JOYHOUSEBOT_LOCAL_PG_USER:-joyhousebot}"
 LOCAL_PG_PASSWORD="${JOYHOUSEBOT_LOCAL_PG_PASSWORD:-joyhousebot-dev}"
 LOCAL_PG_DATABASE="${JOYHOUSEBOT_LOCAL_PG_DATABASE:-joyhousebot}"
-LOCAL_PLUGIN_PACKAGES="${JOYHOUSEBOT_LOCAL_PLUGIN_PACKAGES:-}"
+LOCAL_EXTENSION_PACKAGES="${JOYHOUSEBOT_LOCAL_EXTENSION_PACKAGES:-}"
 
 CHILD_PIDS=()
 CHILD_NAMES=()
@@ -61,42 +60,6 @@ cleanup() {
 }
 
 trap cleanup INT TERM EXIT
-
-resolve_llm_credentials() {
-  local legacy_key=""
-  local referenced_variable=""
-
-  if [[ -n "${LLM_API_KEY:-}" ]]; then
-    export LLM_PROVIDER="${LLM_PROVIDER:-anthropic}"
-    info "LLM credentials: LLM_API_KEY environment (${LLM_PROVIDER})"
-    return
-  fi
-
-  if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-    export LLM_PROVIDER="${LLM_PROVIDER:-openrouter}"
-    export LLM_API_KEY="${OPENROUTER_API_KEY}"
-    info "LLM credentials: OPENROUTER_API_KEY environment (${LLM_PROVIDER})"
-    return
-  fi
-
-  if [[ -f "${LEGACY_CONFIG_PATH}" ]]; then
-    legacy_key="$(jq -er '.providers.openrouter.apiKey // .providers.openrouter.api_key // empty | strings | select(length > 0)' "${LEGACY_CONFIG_PATH}" 2>/dev/null || true)"
-  fi
-  [[ -n "${legacy_key}" ]] || fail "no LLM key found; export LLM_API_KEY or OPENROUTER_API_KEY"
-
-  if [[ "${legacy_key}" == env://* ]]; then
-    referenced_variable="${legacy_key#env://}"
-    [[ -n "${referenced_variable}" ]] || fail "empty env reference in ${LEGACY_CONFIG_PATH}"
-    legacy_key="${!referenced_variable:-}"
-    [[ -n "${legacy_key}" ]] || fail "${referenced_variable} referenced by legacy config is unset"
-  fi
-
-  export LLM_PROVIDER="${LLM_PROVIDER:-openrouter}"
-  export LLM_API_KEY="${legacy_key}"
-  chmod go-rwx "${LEGACY_CONFIG_PATH}" 2>/dev/null || true
-  legacy_key=""
-  info "LLM credentials: migrated in-memory from legacy OpenRouter config (${LLM_PROVIDER})"
-}
 
 prepare_database() {
   local database_exists=""
@@ -164,18 +127,30 @@ monitor_children() {
   done
 }
 
-install_local_plugins() {
-  local plugin_path
-  local plugin_paths=()
-  [[ -n "${LOCAL_PLUGIN_PACKAGES}" ]] || return 0
+install_local_extensions() {
+  local extension_id
+  local extension_path
+  local extension_paths=()
+  while IFS= read -r extension_id; do
+    [[ "${extension_id}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || \
+      fail "invalid extension id in ${CONFIG_PATH}: ${extension_id}"
+    extension_path="${ROOT_DIR}/extensions/${extension_id}"
+    [[ -f "${extension_path}/pyproject.toml" ]] || continue
+    extension_paths+=("${extension_path}")
+  done < <(jq -r '.extensions.enabled // [] | .[]' "${CONFIG_PATH}")
 
-  IFS=':' read -r -a plugin_paths <<< "${LOCAL_PLUGIN_PACKAGES}"
-  for plugin_path in "${plugin_paths[@]}"; do
-    [[ -n "${plugin_path}" ]] || continue
-    [[ -f "${plugin_path}/pyproject.toml" ]] || \
-      fail "plugin package is missing pyproject.toml: ${plugin_path}"
-    info "installing local capability plugin: ${plugin_path}"
-    uv pip install --python "${ROOT_DIR}/.venv/bin/python" -e "${plugin_path}" --quiet
+  if [[ -n "${LOCAL_EXTENSION_PACKAGES}" ]]; then
+    local supplied=()
+    IFS=':' read -r -a supplied <<< "${LOCAL_EXTENSION_PACKAGES}"
+    extension_paths+=("${supplied[@]}")
+  fi
+
+  for extension_path in "${extension_paths[@]}"; do
+    [[ -n "${extension_path}" ]] || continue
+    [[ -f "${extension_path}/pyproject.toml" ]] || \
+      fail "extension package is missing pyproject.toml: ${extension_path}"
+    info "installing local extension: ${extension_path}"
+    uv pip install --python "${ROOT_DIR}/.venv/bin/python" -e "${extension_path}" --quiet
   done
 }
 
@@ -203,7 +178,6 @@ main() {
     fail "TCP port ${API_PORT} is already in use"
   fi
 
-  resolve_llm_credentials
   prepare_database
   mkdir -p "${LOG_DIR}"
   chmod 600 "${CONFIG_PATH}" 2>/dev/null || true
@@ -213,7 +187,7 @@ main() {
   # prunes optional dev dependencies and can make a later `uv run pytest`
   # resolve to an unrelated system executable.
   uv sync --frozen --extra dev --quiet
-  install_local_plugins
+  install_local_extensions
   # Apply schema changes once before any runtime role starts. Starting every
   # role with auto-migration enabled can interleave DDL from a later process
   # with catalog bootstrap writes from an earlier one.

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+from joyhousebot.contracts.extensions import ExtensionManifest
 
 PLUGIN_COMPONENT_TYPES = frozenset(
     {
@@ -15,7 +16,6 @@ PLUGIN_COMPONENT_TYPES = frozenset(
         "event_trigger",
         "knowledge_provider",
         "mcp_server",
-        "projection",
         "scenario",
         "skill",
         "tool",
@@ -71,7 +71,7 @@ class PluginQuickstart:
     title: str
     description: str
     prompt: str
-    agent_id: str = "main-coordinator"
+    agent_id: str = "default"
     scenario_id: str | None = None
     scenario_inputs: dict[str, Any] = field(default_factory=dict)
     capability_ids: tuple[str, ...] = ()
@@ -106,9 +106,9 @@ class PluginManifest:
     plugin_id: str
     version: str
     name: str
+    build_digest: str
     description: str = ""
     distribution_name: str = ""
-    build_digest: str = ""
     runtime_contract_version: int = 1
     runtime_api_version: str = "v1"
     execution_isolation: str = "in_process"
@@ -124,6 +124,8 @@ class PluginManifest:
     def __post_init__(self) -> None:
         if not self.plugin_id.strip() or not self.version.strip() or not self.name.strip():
             raise ValueError("plugin manifest id, version and name are required")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.build_digest):
+            raise ValueError("plugin manifest build_digest must be a sha256 digest")
         if self.runtime_contract_version < 1:
             raise ValueError("plugin runtime_contract_version must be positive")
         if self.runtime_api_version != "v1":
@@ -152,41 +154,40 @@ class PluginManifest:
         value["dependencies"] = list(self.dependencies)
         value["required_permissions"] = list(self.required_permissions)
         value["quickstarts"] = [item.to_dict() for item in self.quickstarts]
+        value["extension_types"] = ["capability"]
+        value["sdk_version"] = "1"
         return value
 
+    def to_extension_manifest(self) -> ExtensionManifest:
+        """Project capability-specific metadata onto the common extension identity."""
+        return ExtensionManifest(
+            extension_id=self.plugin_id,
+            version=self.version,
+            name=self.name,
+            extension_types=("capability",),
+            build_digest=self.build_digest,
+            description=self.description,
+            distribution_name=self.distribution_name,
+            runtime_api_version=self.runtime_api_version,
+            execution_isolation=self.execution_isolation,
+            required_permissions=self.required_permissions,
+            dependencies=self.dependencies,
+        )
 
-@dataclass(frozen=True, slots=True)
-class PluginHealthResult:
-    """Safe result of a read-only plugin health check."""
+    def to_release_dict(self) -> dict[str, Any]:
+        return self.to_dict()
 
-    status: str
-    summary: str
-    details: dict[str, Any] = field(default_factory=dict)
+    @property
+    def extension_id(self) -> str:
+        return self.plugin_id
 
-    def __post_init__(self) -> None:
-        if self.status not in {"healthy", "degraded", "failed"}:
-            raise ValueError("plugin health status must be healthy, degraded, or failed")
+    @property
+    def extension_types(self) -> tuple[str, ...]:
+        return ("capability",)
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class PluginHealthCheck:
-    """A safe, explicitly triggered diagnostic supplied by a plugin."""
-
-    name: str
-    description: str
-    run: Callable[[Any], Awaitable[PluginHealthResult] | PluginHealthResult]
-
-
-@dataclass(frozen=True, slots=True)
-class PluginHealthContext:
-    """Opaque framework services exposed to a diagnostic implementation."""
-
-    store: Any
-    config: Any
-    worker_id: str | None = None
+    @property
+    def worker_capability(self) -> str:
+        return "agent"
 
 
 @runtime_checkable
@@ -194,16 +195,10 @@ class PluginRegistry(Protocol):
     def register_capability(self, definition: Any, handler: Any) -> None:
         """Register a versioned capability and its handler."""
 
-    def register_projection(self, provider: Any) -> None:
-        """Register a plugin-owned, business read-model provider."""
-
     def register_component(
         self, component: PluginComponent, provider: Any | None = None
     ) -> None:
         """Register Scenario/Workflow/Agent/MCP/etc. metadata and provider."""
-
-    def register_health_check(self, check: PluginHealthCheck) -> None:
-        """Register an explicitly invoked, read-only diagnostic."""
 
 
 @runtime_checkable
@@ -216,6 +211,3 @@ class Plugin(Protocol):
 
     def manifest(self) -> PluginManifest:
         """Return safe release metadata for the platform control plane."""
-
-    def health_checks(self) -> tuple[PluginHealthCheck, ...]:
-        """Return opt-in read-only diagnostics; never expose secrets."""

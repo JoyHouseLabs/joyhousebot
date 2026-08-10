@@ -1,0 +1,9 @@
+"""JoyhouseBot Anthropic model provider extension."""
+
+from joyhousebot_provider_anthropic.provider import (
+    ANTHROPIC_PROVIDER_EXTENSION,
+    AnthropicProvider,
+    create_extension,
+)
+
+__all__ = ["ANTHROPIC_PROVIDER_EXTENSION", "AnthropicProvider", "create_extension"]

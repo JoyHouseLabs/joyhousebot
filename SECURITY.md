@@ -21,4 +21,4 @@ If a secret may be compromised, revoke and rotate it immediately, inspect `runti
 
 ## Dependency checks
 
-Run Python and Node dependency auditing in CI, rebuild from the lockfiles, and update dependencies regularly. The WhatsApp bridge has its own lockfile under `bridges/whatsapp/`.
+Run Python and Node dependency auditing in CI, rebuild from the lockfiles, and update dependencies regularly. The optional WhatsApp extension keeps its Node sidecar lockfile under `extensions/channel-whatsapp/bridge/`.

@@ -1,5 +1,3 @@
-import sys
-import types
 from dataclasses import dataclass
 
 import pytest
@@ -8,18 +6,17 @@ from joyhousebot.capabilities import CapabilityPluginRegistry, CapabilityRegistr
 from joyhousebot.contracts import (
     CapabilityContext,
     CapabilityResult,
-    ProjectionContext,
     WriteReceipt,
 )
 from joyhousebot.contracts.plugins import (
     PluginComponent,
-    PluginHealthCheck,
-    PluginHealthResult,
     PluginManifest,
 )
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.runtime.context import ToolExecutionContext
 from tests.support.postgres_store import PostgresTestStore
+
+TEST_BUILD_DIGEST = f"sha256:{'0' * 64}"
 
 
 @dataclass(frozen=True)
@@ -41,6 +38,16 @@ class Handler:
         return CapabilityResult(success=True, output={"user": context.user_id, **input})
 
 
+def _plugin_manifest(plugin_id: str, version: str) -> PluginManifest:
+    return PluginManifest(
+        plugin_id=plugin_id,
+        version=version,
+        name=plugin_id,
+        build_digest=TEST_BUILD_DIGEST,
+        runtime_contract_version=2,
+    )
+
+
 class Plugin:
     plugin_id = "demo"
     version = "1.0.0"
@@ -51,7 +58,12 @@ class Plugin:
         )
 
     def manifest(self):
-        return PluginManifest(plugin_id=self.plugin_id, version=self.version, name="Demo")
+        return PluginManifest(
+            plugin_id=self.plugin_id,
+            version=self.version,
+            name="Demo",
+            build_digest=TEST_BUILD_DIGEST,
+        )
 
 
 @pytest.mark.asyncio
@@ -75,30 +87,7 @@ def test_plugin_registry_rejects_conflicting_capability():
         )
 
 
-def test_plugin_registry_owns_named_projection_providers():
-    class Provider:
-        view_id = "demo.search"
-        schema_version = 1
-
-        def build(self, context):
-            return {"view": self.view_id, "run": context.run}
-
-    class ProjectionPlugin:
-        plugin_id = "projection-demo"
-        version = "1.0.0"
-
-        def register(self, registry):
-            registry.register_projection(Provider())
-
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(ProjectionPlugin())
-    provider = registry.get_projection("demo.search")
-    assert provider is not None
-    assert provider.build(ProjectionContext(run={"run_id": "run-1"}))["run"]["run_id"] == "run-1"
-    assert registry.get_projection("dinq.search") is None
-
-
-def test_plugin_registry_standardizes_business_components_and_health_checks(tmp_path):
+def test_plugin_registry_standardizes_business_components(tmp_path):
     class Provider:
         pass
 
@@ -113,7 +102,7 @@ def test_plugin_registry_standardizes_business_components_and_health_checks(tmp_
                 plugin_id=self.plugin_id,
                 version=self.version,
                 name="Business Suite",
-                build_digest="sha256:business-suite-v2",
+                build_digest=TEST_BUILD_DIGEST,
                 runtime_contract_version=2,
             )
 
@@ -134,15 +123,6 @@ def test_plugin_registry_standardizes_business_components_and_health_checks(tmp_
                     ),
                     provider,
                 )
-            registry.register_health_check(
-                PluginHealthCheck(
-                    name="business-api",
-                    description="read-only dependency probe",
-                    run=lambda _context: PluginHealthResult(
-                        status="healthy", summary="reachable"
-                    ),
-                )
-            )
 
     store = PostgresTestStore(tmp_path / "plugin-components.db")
     registry = CapabilityRegistry(store=store)
@@ -158,9 +138,6 @@ def test_plugin_registry_standardizes_business_components_and_health_checks(tmp_
     assert registry.plugins.get_component_provider(
         "business-suite", "workflow:business.month_end"
     ) is provider
-    assert [item.name for item in registry.plugins.list_health_checks("business-suite")] == [
-        "business-api"
-    ]
     assert {item["component_type"] for item in store.list_plugin_components("business-suite")} == {
         "scenario",
         "workflow",
@@ -189,25 +166,13 @@ async def test_plugin_registry_enforces_declared_permissions():
     assert allowed.success is True
 
 
-def test_plugin_registry_loads_configured_module(monkeypatch):
-    module = types.ModuleType("test_capability_plugin_module")
-
-    def register(registry):
-        registry.register_capability(
-            Definition("demo.module", Ref("demo.module", "1.0.0")), Handler()
-        )
-
-    module.register = register
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    registry = CapabilityPluginRegistry()
-    with pytest.raises(ValueError, match="active plugin"):
-        registry.load_modules([module.__name__])
-
-
 def test_runtime_adapter_preserves_plugin_definition_metadata():
     class MetadataPlugin:
         plugin_id = "metadata"
         version = "1.0.0"
+
+        def manifest(self):
+            return _plugin_manifest(self.plugin_id, self.version)
 
         def register(self, registry):
             registry.register_capability(
@@ -251,6 +216,9 @@ async def test_plugin_runtime_settings_disable_tools_and_pass_validated_configur
     class SettingsPlugin:
         plugin_id = "settings"
         version = "1.0.0"
+
+        def manifest(self):
+            return _plugin_manifest(self.plugin_id, self.version)
 
         def register(self, registry):
             registry.register_capability(
@@ -309,6 +277,7 @@ async def test_plugin_receives_durable_action_and_idempotency_identity(tmp_path)
                 plugin_id=self.plugin_id,
                 version=self.version,
                 name="Identity",
+                build_digest=TEST_BUILD_DIGEST,
                 runtime_contract_version=2,
             )
 
@@ -396,6 +365,7 @@ async def test_plugin_write_receipt_must_echo_frozen_identity():
                 plugin_id=self.plugin_id,
                 version=self.version,
                 name="Bad receipt",
+                build_digest=TEST_BUILD_DIGEST,
                 runtime_contract_version=2,
             )
 
@@ -449,6 +419,9 @@ async def test_plugin_structured_error_survives_the_native_dispatcher():
         plugin_id = "error"
         version = "1.0.0"
 
+        def manifest(self):
+            return _plugin_manifest(self.plugin_id, self.version)
+
         def register(self, registry):
             registry.register_capability(
                 CapabilityDefinition(
@@ -485,6 +458,9 @@ async def test_native_runtime_enforces_plugin_capability_permissions():
     class ProtectedPlugin:
         plugin_id = "protected"
         version = "1.0.0"
+
+        def manifest(self):
+            return _plugin_manifest(self.plugin_id, self.version)
 
         def register(self, registry):
             registry.register_capability(

@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.contracts.events import AgentEvent
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_artifact_writes import (
     insert_runtime_artifact_in_transaction,
@@ -463,31 +463,6 @@ class PostgresRunStoreMixin:
                 )
                 self._notify(conn, run_id)
             return cur.rowcount == 1
-
-    def finish_runtime_run(
-        self,
-        run_id: str,
-        *,
-        status: str,
-        event: AgentEvent,
-        result: dict[str, Any] | None = None,
-        error: dict[str, Any] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
-        worker_id: str | None = None,
-        lease_version: int | None = None,
-    ) -> AgentEvent | None:
-        """Compatibility entry point returning the terminal event only."""
-        bundle = self.finish_runtime_run_bundle(
-            run_id,
-            status=status,
-            event=event,
-            result=result,
-            error=error,
-            artifacts=artifacts,
-            worker_id=worker_id,
-            lease_version=lease_version,
-        )
-        return bundle[1] if bundle is not None else None
 
     def finish_runtime_run_bundle(
         self,

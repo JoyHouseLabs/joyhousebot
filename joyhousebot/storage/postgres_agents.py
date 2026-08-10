@@ -119,23 +119,6 @@ class PostgresAgentStoreMixin:
                 ddl=ddl,
                 description="agent definitions, revisions, and execution snapshots",
             )
-            # Pre-release data correction: built-in revisions are seeded
-            # defaults, so migrate their previous Claude values in place.
-            # User-created revisions remain immutable and untouched.
-            conn.execute(
-                """UPDATE agent_revisions
-                   SET model_policy = model_policy || jsonb_build_object(
-                       'primary', 'openrouter/deepseek/deepseek-v4-flash',
-                       'max_tokens', 4096,
-                       'reasoning_effort', 'none',
-                       'thinking_budget_tokens', 0,
-                       'capture_reasoning', false
-                   )
-                   WHERE revision_id IN ('joy:v1','main-coordinator:v1')
-                     AND model_policy->>'primary' IN (
-                         'anthropic/claude-opus-4-5', 'anthropic/claude-opus-4.5'
-                     )"""
-            )
             conn.execute(
                 """ALTER TABLE agent_revisions ADD COLUMN IF NOT EXISTS
                        plugin_requirements JSONB NOT NULL DEFAULT '[]'::jsonb"""
@@ -189,7 +172,7 @@ class PostgresAgentStoreMixin:
         self._seed_default_agents()
 
     def _seed_default_agents(self) -> None:
-        from joyhousebot.bootstrap.default_agents import default_agent_profiles
+        from joyhousebot.domain.agents import default_agent_profiles
 
         # Defaults bootstrap a genuinely empty catalog only.  They must never
         # be re-created after an operator has published a replacement revision
@@ -202,7 +185,7 @@ class PostgresAgentStoreMixin:
             ).fetchone()
         if existing is not None:
             return
-        for definition, revision in default_agent_profiles():
+        for definition, revision in default_agent_profiles(self.bootstrap_model):
             self.save_agent_revision(definition, revision)
 
     def save_agent_revision(

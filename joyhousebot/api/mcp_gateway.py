@@ -43,8 +43,7 @@ def _signature_for_schema(schema: dict[str, Any]) -> inspect.Signature:
     parameters: list[inspect.Parameter] = []
     for name in properties:
         if not _SAFE_NAME.match(str(name)):
-            # Dotted or otherwise non-Python fields remain usable through the
-            # standard MCP envelope in a future compatibility adapter.
+            # FastMCP cannot expose dotted or otherwise non-Python argument names.
             continue
         default = inspect.Parameter.empty if name in required else None
         parameters.append(

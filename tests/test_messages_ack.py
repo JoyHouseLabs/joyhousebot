@@ -1,10 +1,6 @@
-"""Unit tests for channels.messages_ack: should_send_ack and ack_emoji_for_slack."""
+"""Unit tests for the provider-neutral acknowledgement scope policy."""
 
-from joyhousebot.channels.messages_ack import (
-    DEFAULT_ACK_REACTION,
-    ack_emoji_for_slack,
-    should_send_ack,
-)
+from joyhousebot.channels.messages_ack import should_send_ack
 
 # --- should_send_ack ---
 
@@ -50,27 +46,3 @@ def test_should_send_ack_group_mentions() -> None:
 def test_should_send_ack_unknown_scope_returns_false() -> None:
     assert should_send_ack("unknown", True, True) is False
     assert should_send_ack("group-only", False, True) is False
-
-
-# --- ack_emoji_for_slack ---
-
-
-def test_ack_emoji_for_slack_empty_defaults_to_eyes() -> None:
-    assert ack_emoji_for_slack(None) == "eyes"
-    assert ack_emoji_for_slack("") == "eyes"
-    assert ack_emoji_for_slack("   ") == "eyes"
-
-
-def test_ack_emoji_for_slack_unicode_aliases() -> None:
-    assert ack_emoji_for_slack(DEFAULT_ACK_REACTION) == "eyes"
-    assert ack_emoji_for_slack("\U0001f44d") == "+1"
-    assert ack_emoji_for_slack("\U0001f44e") == "-1"
-
-
-def test_ack_emoji_for_slack_whitespace_stripped() -> None:
-    assert ack_emoji_for_slack("  \U0001f440  ") == "eyes"
-
-
-def test_ack_emoji_for_slack_unknown_returns_as_is() -> None:
-    assert ack_emoji_for_slack("custom_emoji") == "custom_emoji"
-    assert ack_emoji_for_slack("thumbsup") == "thumbsup"

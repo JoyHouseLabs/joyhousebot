@@ -1,3 +1,8 @@
+x-runtime-build: &runtime_build
+  context: .
+  args:
+    JOYHOUSEBOT_EXTENSIONS: ${JOYHOUSEBOT_EXTENSIONS:-provider-openai-compatible}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -20,7 +25,7 @@ services:
   # Public data plane only: runs/sessions/schedules + MCP. Admin routes and
   # the console UI are served by the separate `control` service below.
   api:
-    build: .
+    build: *runtime_build
     command: ["api", "--surface", "public", "--host", "0.0.0.0", "--port", "18790"]
     environment: &runtime_env
       JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
@@ -35,14 +40,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_PROPAGATORS: tracecontext,baggage
-      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_API_BASE: ${LLM_API_BASE:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes: &runtime_config
-      - ${JOYHOUSEBOT_CONFIG_FILE:-./config.example.json}:/app/config.json:ro
+      - ${JOYHOUSEBOT_CONFIG_FILE:-./deploy/config.runtime.json}:/app/config.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,7 +54,7 @@ services:
   # Loopback only by default — do NOT publish this port to the public
   # internet; reach it via SSH tunnel or an internal network instead.
   control:
-    build: .
+    build: *runtime_build
     command: ["api", "--surface", "control", "--host", "0.0.0.0", "--port", "18790"]
     environment:
       <<: *runtime_env
@@ -75,9 +74,18 @@ services:
       - "127.0.0.1:${JOYHOUSEBOT_CONTROL_PORT:-18791}:18790"
 
   worker:
-    build: .
+    build: *runtime_build
     command: ["worker"]
-    environment: *runtime_env
+    environment:
+      <<: *runtime_env
+      # Only Agent Workers import provider extensions or receive model secrets.
+      LLM_PROVIDER: ${LLM_PROVIDER:?required}
+      LLM_MODEL: ${LLM_MODEL:?required}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_BASE: ${LLM_API_BASE:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes: *runtime_config
     depends_on:
       postgres:
@@ -88,7 +96,7 @@ services:
       replicas: 2
 
   scheduler:
-    build: .
+    build: *runtime_build
     command: ["scheduler"]
     environment: *runtime_env
     volumes: *runtime_config
@@ -99,7 +107,7 @@ services:
         condition: service_completed_successfully
 
   channel-worker:
-    build: .
+    build: *runtime_build
     command: ["channel-worker"]
     environment:
       # Channel worker only submits runs and never calls LLM providers, so it
@@ -121,13 +129,16 @@ services:
   # The only service allowed to apply core schema changes. It completes before
   # any long-running role starts and carries no provider or Channel secrets.
   migrate:
-    build: .
+    build: *runtime_build
     command: ["check"]
     environment:
       JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
       JOYHOUSEBOT_AUTO_MIGRATE: "true"
       JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+      # The one-shot migrator seeds an empty Agent catalog with this exact ID.
+      # It does not receive provider credentials or import provider code.
+      LLM_MODEL: ${LLM_MODEL:?required}
     volumes: *runtime_config
     depends_on:
       postgres:

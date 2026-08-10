@@ -8,9 +8,9 @@ from typing import Any
 import httpx
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.config.schema import MCPServerConfig
 from joyhousebot.providers.base import LLMProvider
 from joyhousebot.providers.factory import create_model_provider
+from joyhousebot.providers.registry import get_provider_registry
 from joyhousebot.session.runtime_manager import RuntimeSessionManager
 
 
@@ -43,11 +43,10 @@ def build_agent_executor(
     policy = revision.model_policy
     model = str(policy["primary"])
     provider = build_provider(config, model, client=client, model_policy=policy)
+    for manifest in get_provider_registry(config).manifests():
+        store.upsert_plugin_release(manifest.to_release_dict())
     scratch_root = Path(config.runtime.scratch_root).expanduser()
     scratch_root.mkdir(parents=True, exist_ok=True)
-    configured_mcp = dict(getattr(config.tools, "mcp_servers", {}) or {})
-    for item in store.list_mcp_servers():
-        configured_mcp[item["name"]] = MCPServerConfig(**{key: item[key] for key in ("enabled", "command", "args", "env", "url")})
     return NativeAgentExecutor(
         provider=provider,
         scratch_root=scratch_root / definition.agent_id,
@@ -63,12 +62,8 @@ def build_agent_executor(
             if policy.get("max_context_tokens") is not None
             else None
         ),
-        brave_api_key=config.tools.web.search.api_key or None,
-        exec_config=config.tools.exec,
         cron_service=cron_service,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=RuntimeSessionManager(store, namespace=definition.agent_id),
-        mcp_servers=configured_mcp,
         config=config,
         outbound_sink=outbound_sink,
     )

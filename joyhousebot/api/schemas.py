@@ -239,14 +239,6 @@ class RolloutPolicyRequest(BaseModel):
     require_healthy_workers: bool = True
 
 
-class SaveMCPServerRequest(BaseModel):
-    enabled: bool = True
-    command: str = ""
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
-    url: str = ""
-
-
 class BindAgentSkillRequest(BaseModel):
     skill_id: str = Field(pattern=_ID_PATTERN)
     skill_version: str = Field(min_length=1, max_length=64)
@@ -263,7 +255,7 @@ class CapabilityRefRequest(BaseModel):
     kind: Literal["tool", "agent", "workflow", "skill", "connector"]
     plugin_id: str = Field(min_length=1, pattern=_ID_PATTERN)
     plugin_version: str = Field(min_length=1, max_length=128)
-    plugin_build_digest: str = Field(min_length=1, max_length=256)
+    plugin_build_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class PublishCapabilityRequest(BaseModel):
@@ -273,9 +265,9 @@ class PublishCapabilityRequest(BaseModel):
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     output_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     adapter: str = Field(min_length=1)
-    plugin_id: str = Field(default="joyhousebot.core", min_length=1, pattern=_ID_PATTERN)
-    plugin_version: str = Field(default="0.1.2", min_length=1, max_length=128)
-    plugin_build_digest: str = Field(default="builtin", min_length=1, max_length=256)
+    plugin_id: str = Field(min_length=1, pattern=_ID_PATTERN)
+    plugin_version: str = Field(min_length=1, max_length=128)
+    plugin_build_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     tags: list[str] = Field(default_factory=list)
     execution_mode: str = "immediate"
     expected_duration_seconds: int = Field(default=10, ge=0)

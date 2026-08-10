@@ -1,9 +1,10 @@
 from typing import Any
 
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities import CapabilityRegistry
 from joyhousebot.capabilities.dispatcher import capability_result_prompt
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.runtime.context import ToolExecutionContext
+from tests.support.capabilities import register_tool_fixture
 
 
 class SampleTool(Tool):
@@ -85,7 +86,8 @@ def test_validate_params_ignores_unknown_fields() -> None:
 
 async def test_registry_returns_validation_error() -> None:
     reg = CapabilityRegistry()
-    reg.register_tool(SampleTool())
+    tool = SampleTool()
+    register_tool_fixture(reg, tool)
     result = await reg.invoke_tool(
         "sample",
         {"query": "hi"},

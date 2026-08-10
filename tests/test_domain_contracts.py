@@ -7,7 +7,6 @@ from joyhousebot.domain.capabilities import (
     CapabilityResult,
     InvocationStatus,
 )
-from joyhousebot.domain.planning import PlanSpec, PlanTask
 from joyhousebot.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
@@ -34,16 +33,6 @@ def test_capability_definition_and_result_are_structured() -> None:
 def test_failed_capability_result_requires_error() -> None:
     with pytest.raises(ValueError, match="requires an error"):
         CapabilityResult("inv_1", InvocationStatus.FAILED, "failed")
-
-
-def test_plan_rejects_cycles() -> None:
-    with pytest.raises(ValueError, match="cycle"):
-        PlanSpec(
-            tasks=(
-                PlanTask("a", "agent.a", "1", {}, dependencies=("b",)),
-                PlanTask("b", "agent.b", "1", {}, dependencies=("a",)),
-            )
-        )
 
 
 def test_scenario_rejects_invalid_clarification_graph() -> None:

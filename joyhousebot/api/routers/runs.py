@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import re
 
 from fastapi import APIRouter, Header, Query, Request, Response
@@ -31,7 +30,6 @@ from joyhousebot.application.loop_decisions import loop_decision_public_dict
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import CreateRunCommand, GraphTaskCommand
 from joyhousebot.application.verifications import verification_public_dict
-from joyhousebot.contracts import ProjectionContext, ScopedRunProjectionQueries
 from joyhousebot.runtime.narrative import public_event_dict
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -299,56 +297,6 @@ async def issue_graph_event_token(
 @router.get("/{run_id}/artifacts")
 async def list_artifacts(run_id: str, context: ContextDep, container: ContainerDep):
     return {"items": await container.runs.artifacts(context, run_id)}
-
-
-@router.get("/{run_id}/projection")
-async def get_run_projection(
-    run_id: str,
-    request: Request,
-    context: ContextDep,
-    container: ContainerDep,
-    view: str = Query(..., min_length=1, max_length=128),
-):
-    """Return a plugin-owned read model assembled from generic runtime records.
-
-    The endpoint is intentionally opt-in and view-named: generic clients keep
-    using the normal Run/Task/Event APIs, while a Dinq UI can render one stable
-    workspace without coupling to storage tables.
-    """
-    provider = container.plugins.get_projection(view)
-    if provider is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=400, detail=f"unsupported projection view: {view}")
-    run = await container.runs.get(context, run_id)
-    event_limit = max(1, min(int(getattr(provider, "event_limit", 1000) or 1000), 5000))
-    artifacts, events, invocations, scenario_state = await asyncio.gather(
-        container.runs.artifacts(context, run_id),
-        asyncio.to_thread(
-            container.store.list_runtime_events,
-            run_id,
-            user_id=context.user_id,
-            limit=event_limit,
-        ),
-        container.runs.invocations(context, run_id),
-        asyncio.to_thread(
-            container.store.get_run_scenario_state, run_id, expected_user_id=context.user_id
-        ),
-    )
-    projection_context = ProjectionContext(
-        run=run,
-        artifacts=tuple(artifacts),
-        events=tuple(events),
-        invocations=tuple(invocations),
-        scenario_state=scenario_state,
-        queries=ScopedRunProjectionQueries(container.store, run_id=run_id, user_id=context.user_id),
-        user_id=context.user_id,
-        parameters={key: value for key, value in request.query_params.items() if key != "view"},
-    )
-    if inspect.iscoroutinefunction(provider.build):
-        return await provider.build(projection_context)
-    result = await asyncio.to_thread(provider.build, projection_context)
-    return await result if inspect.isawaitable(result) else result
 
 
 @router.get("/{run_id}/invocations")

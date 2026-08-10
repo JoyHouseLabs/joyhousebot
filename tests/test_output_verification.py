@@ -84,7 +84,7 @@ async def test_schema_failure_is_repaired_in_a_new_durable_turn(tmp_path: Path) 
         "final_response",
     ]
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_repair_limit_fails_without_false_completion(tmp_path: Path) -> No
     ]
     assert store.list_runtime_artifacts(submitted.run_id) == []
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ async def test_verified_turn_replay_reuses_response_and_record(tmp_path: Path) -
     assert first == replayed == '{"answer": 42}'
     assert provider.calls == 1
     assert len(store.list_verification_records(run.run_id)) == 1
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 def test_verification_api_is_owner_scoped_and_omits_policy(tmp_path: Path) -> None:

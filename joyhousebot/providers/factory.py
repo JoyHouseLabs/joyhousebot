@@ -6,10 +6,10 @@ from typing import Any
 
 import httpx
 
-from joyhousebot.providers.anthropic import AnthropicProvider
+from joyhousebot.contracts.extensions import ModelProviderBuildRequest
 from joyhousebot.providers.base import LLMProvider
-from joyhousebot.providers.openai_compatible import OpenAICompatibleProvider
-from joyhousebot.providers.registry import find_by_name
+from joyhousebot.providers.registry import find_by_name, get_provider_registry
+from joyhousebot.providers.unconfigured import UnconfiguredModelProvider
 
 
 def _validate_ascii_api_key(provider_name: str, api_key: Any) -> str:
@@ -34,12 +34,14 @@ def create_model_provider(
     client: httpx.AsyncClient | None = None,
     model_policy: dict[str, Any] | None = None,
 ) -> LLMProvider:
+    if str(model).strip() == "unconfigured/model" and not str(provider_name or "").strip():
+        return UnconfiguredModelProvider()
     name = str(provider_name or config.get_provider_name(model) or "").strip()
     provider_config = config.get_provider(model)
     key = api_key if api_key is not None else (provider_config.api_key if provider_config else "")
     base = api_base or config.get_api_base(model)
     headers = dict(extra_headers or (provider_config.extra_headers if provider_config else {}) or {})
-    spec = find_by_name(name)
+    spec = find_by_name(config, name)
     if spec is None:
         raise RuntimeError(f"unsupported model provider for {model!r}")
     if not base:
@@ -47,21 +49,19 @@ def create_model_provider(
     if not key and not spec.is_local:
         raise RuntimeError(f"provider {name!r} requires an API key")
     normalized_key = _validate_ascii_api_key(name, key)
-    if spec.protocol == "anthropic":
-        return AnthropicProvider(
+    extension = get_provider_registry(config).extension_for(name)
+    if extension is None:
+        raise RuntimeError(
+            f"model provider extension for {name!r} is not installed or failed to load"
+        )
+    return extension.factory(
+        ModelProviderBuildRequest(
+            provider_name=name,
             api_key=normalized_key,
             api_base=base,
             default_model=model,
             extra_headers=headers,
-            reasoning_options=model_policy,
+            reasoning_options=dict(model_policy or {}),
             client=client,
         )
-    return OpenAICompatibleProvider(
-        api_key=normalized_key,
-        api_base=base,
-        default_model=model,
-        provider_name=name,
-        extra_headers=headers,
-        reasoning_options=model_policy,
-        client=client,
     )

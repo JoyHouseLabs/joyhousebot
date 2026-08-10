@@ -1,0 +1,529 @@
+"""Optional Anthropic Messages API model provider extension."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncGenerator
+from typing import Any
+
+import httpx
+import json_repair
+
+from joyhousebot.extension_sdk import ExtensionManifest
+from joyhousebot.extension_sdk.manifest import source_tree_digest
+from joyhousebot.extension_sdk.models import (
+    LLMProvider,
+    LLMResponse,
+    ModelProviderBuildRequest,
+    ModelProviderExtension,
+    ModelProviderSpec,
+    ProviderHTTPError,
+    ToolCallRequest,
+    error_metadata,
+    model_first_token,
+    model_request_failed,
+    model_request_finished,
+    model_request_started,
+    restore_tool_name,
+    sanitize_tools,
+    user_friendly_error,
+)
+
+ANTHROPIC_EXTENSION_MANIFEST = ExtensionManifest(
+    extension_id="provider-anthropic",
+    version="0.1.0",
+    name="JoyhouseBot Anthropic Provider",
+    extension_types=("model_provider",),
+    description="Anthropic Messages API, streaming, tools and native reasoning adapter.",
+    distribution_name="joyhousebot-provider-anthropic",
+    build_digest=source_tree_digest(__file__),
+    required_permissions=("model.invoke",),
+    dependencies=(
+        {"id": "anthropic-api", "kind": "service", "required": True},
+        {"id": "anthropic-api-key", "kind": "credential", "required": True},
+    ),
+    configuration_schema={
+        "type": "object",
+        "required": ["api_key"],
+        "properties": {
+            "api_key": {"type": "string", "writeOnly": True},
+            "api_base": {"type": "string"},
+            "extra_headers": {"type": "object"},
+        },
+    },
+)
+
+ANTHROPIC_PROVIDER_SPEC = ModelProviderSpec(
+    name="anthropic",
+    keywords=("anthropic", "claude"),
+    default_api_base="https://api.anthropic.com/v1",
+    env_key="ANTHROPIC_API_KEY",
+)
+
+_STOP_REASONS = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "tool_use": "tool_calls",
+    "max_tokens": "length",
+}
+
+
+class AnthropicProvider(LLMProvider):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        api_base: str,
+        default_model: str,
+        extra_headers: dict[str, str] | None = None,
+        reasoning_options: dict[str, Any] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(api_key, api_base)
+        self.default_model = default_model
+        self.extra_headers = dict(extra_headers or {})
+        self.reasoning_options = dict(reasoning_options or {})
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    def get_default_model(self) -> str:
+        return self.default_model
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        return self._client
+
+    def _model(self, model: str | None) -> str:
+        return str(model or self.default_model).removeprefix("anthropic/")
+
+    def _url(self) -> str:
+        return f"{str(self.api_base).rstrip('/')}/messages"
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "joyhousebot-cloud",
+            "anthropic-version": "2023-06-01",
+            "x-api-key": str(self.api_key or ""),
+        }
+        headers.update(self.extra_headers)
+        return headers
+
+    def _payload(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        model: str | None,
+        max_tokens: int,
+        temperature: float,
+        stream: bool,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        provider_tools, aliases = sanitize_tools(tools)
+        converted, system = self._convert_messages(messages, aliases)
+        payload: dict[str, Any] = {
+            "model": self._model(model),
+            "messages": converted,
+            "max_tokens": max(1, int(max_tokens)),
+            "temperature": temperature,
+            "stream": stream,
+        }
+        thinking_budget = int(self.reasoning_options.get("thinking_budget_tokens") or 0)
+        if thinking_budget > 0:
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": min(thinking_budget, max(1, int(max_tokens) - 1)),
+            }
+            payload["temperature"] = 1.0
+        if system:
+            payload["system"] = system
+        if provider_tools:
+            payload["tools"] = [
+                {
+                    "name": item["function"]["name"],
+                    "description": item["function"].get("description") or "",
+                    "input_schema": item["function"].get("parameters") or {"type": "object"},
+                }
+                for item in provider_tools
+            ]
+        return payload, aliases
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        payload, aliases = self._payload(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+        )
+        resolved_model = str(payload["model"])
+        request_id = await model_request_started(
+            model=resolved_model,
+            operation="messages.create",
+            message_count=len(messages),
+            tool_count=len(tools or []),
+            provider="anthropic",
+            request_payload=payload,
+            request_url=self._url(),
+        )
+        try:
+            response = await self._client.post(self._url(), headers=self._headers(), json=payload)
+            await self._raise_for_status(response)
+            raw_response = response.json()
+            parsed = self._parse_response(raw_response, aliases)
+            await model_request_finished(
+                request_id=request_id,
+                model=resolved_model,
+                operation="messages.create",
+                status=parsed.finish_reason,
+                usage=parsed.usage,
+                has_tool_calls=bool(parsed.tool_calls),
+                provider_request_id=response.headers.get("request-id")
+                or response.headers.get("x-request-id"),
+                response_payload=raw_response,
+                reasoning_content=parsed.reasoning_content,
+                reasoning_blocks=parsed.reasoning_blocks,
+                provider_block_type="thinking",
+            )
+            return parsed
+        except Exception as exc:
+            await model_request_failed(
+                request_id=request_id,
+                model=resolved_model,
+                operation="messages.create",
+                exc=exc,
+                provider_request_id=getattr(exc, "provider_request_id", None),
+                response_payload=getattr(exc, "raw_response", None),
+            )
+            return LLMResponse(
+                content=user_friendly_error(exc, model=self._model(model)),
+                finish_reason="error",
+                **error_metadata(exc),
+            )
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncGenerator[tuple[str, str | LLMResponse], None]:
+        payload, aliases = self._payload(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+        resolved_model = str(payload["model"])
+        request_id = await model_request_started(
+            model=resolved_model,
+            operation="messages.stream",
+            message_count=len(messages),
+            tool_count=len(tools or []),
+            provider="anthropic",
+            request_payload=payload,
+            request_url=self._url(),
+        )
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_blocks: dict[int, dict[str, Any]] = {}
+        tool_blocks: dict[int, dict[str, Any]] = {}
+        stop_reason = "end_turn"
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        raw_events: list[dict[str, Any]] = []
+        first_token_seen = False
+        try:
+            async with self._client.stream(
+                "POST", self._url(), headers=self._headers(), json=payload
+            ) as response:
+                await self._raise_for_status(response)
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw:
+                        continue
+                    event = json.loads(raw)
+                    raw_events.append(event)
+                    event_type = event.get("type")
+                    if event_type == "message_start":
+                        self._merge_usage(usage, (event.get("message") or {}).get("usage"))
+                    elif event_type == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            tool_blocks[int(event.get("index") or 0)] = {
+                                "id": str(block.get("id") or ""),
+                                "name": str(block.get("name") or ""),
+                                "arguments": json.dumps(block.get("input") or {}),
+                            }
+                        elif block.get("type") in {"thinking", "redacted_thinking"}:
+                            reasoning_blocks[int(event.get("index") or 0)] = dict(block)
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            text = str(delta.get("text") or "")
+                            if text:
+                                if not first_token_seen:
+                                    first_token_seen = True
+                                    await model_first_token(request_id)
+                                text_parts.append(text)
+                                yield "delta", text
+                        elif delta.get("type") == "thinking_delta":
+                            thinking = str(delta.get("thinking") or "")
+                            if thinking and not first_token_seen:
+                                first_token_seen = True
+                                await model_first_token(request_id)
+                            reasoning_parts.append(thinking)
+                            index = int(event.get("index") or 0)
+                            block = reasoning_blocks.setdefault(
+                                index, {"type": "thinking", "thinking": "", "signature": ""}
+                            )
+                            block["thinking"] = str(block.get("thinking") or "") + thinking
+                            if thinking:
+                                yield "reasoning_delta", thinking
+                        elif delta.get("type") == "signature_delta":
+                            index = int(event.get("index") or 0)
+                            block = reasoning_blocks.setdefault(
+                                index, {"type": "thinking", "thinking": "", "signature": ""}
+                            )
+                            block["signature"] = str(block.get("signature") or "") + str(
+                                delta.get("signature") or ""
+                            )
+                        elif delta.get("type") == "input_json_delta":
+                            index = int(event.get("index") or 0)
+                            block = tool_blocks.setdefault(
+                                index, {"id": "", "name": "", "arguments": ""}
+                            )
+                            existing = str(block["arguments"])
+                            if existing == "{}":
+                                existing = ""
+                            block["arguments"] = existing + str(delta.get("partial_json") or "")
+                    elif event_type == "message_delta":
+                        stop_reason = str(
+                            (event.get("delta") or {}).get("stop_reason") or stop_reason
+                        )
+                        self._merge_usage(usage, event.get("usage"))
+            final = LLMResponse(
+                content="".join(text_parts) or None,
+                tool_calls=self._stream_tool_calls(tool_blocks, aliases),
+                finish_reason=_STOP_REASONS.get(stop_reason, stop_reason),
+                usage=usage,
+                reasoning_content="".join(reasoning_parts) or None,
+                reasoning_blocks=[reasoning_blocks[index] for index in sorted(reasoning_blocks)],
+            )
+            await model_request_finished(
+                request_id=request_id,
+                model=resolved_model,
+                operation="messages.stream",
+                status=final.finish_reason,
+                usage=final.usage,
+                has_tool_calls=bool(final.tool_calls),
+                provider_request_id=response.headers.get("request-id")
+                or response.headers.get("x-request-id"),
+                response_payload={"stream_events": raw_events},
+                reasoning_content=final.reasoning_content,
+                reasoning_blocks=final.reasoning_blocks,
+                provider_block_type="thinking_delta",
+            )
+            yield "done", final
+        except Exception as exc:
+            await model_request_failed(
+                request_id=request_id,
+                model=resolved_model,
+                operation="messages.stream",
+                exc=exc,
+                provider_request_id=getattr(exc, "provider_request_id", None),
+                response_payload=getattr(exc, "raw_response", None),
+            )
+            yield (
+                "done",
+                LLMResponse(
+                    content=user_friendly_error(exc, model=self._model(model)),
+                    finish_reason="error",
+                    **error_metadata(exc),
+                ),
+            )
+
+    @staticmethod
+    def _convert_messages(
+        messages: list[dict[str, Any]], aliases: dict[str, str]
+    ) -> tuple[list[dict[str, Any]], str]:
+        original_to_alias = {original: alias for alias, original in aliases.items()}
+        system_parts: list[str] = []
+        result: list[dict[str, Any]] = []
+        for raw in messages:
+            role = str(raw.get("role") or "user")
+            content = raw.get("content")
+            if role == "system":
+                system_parts.append(str(content or ""))
+                continue
+            if role == "tool":
+                result.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": str(raw.get("tool_call_id") or ""),
+                                "content": str(content or ""),
+                            }
+                        ],
+                    }
+                )
+                continue
+            blocks: list[dict[str, Any]] = []
+            if role == "assistant":
+                blocks.extend(
+                    dict(item)
+                    for item in raw.get("reasoning_blocks") or []
+                    if isinstance(item, dict)
+                    and item.get("type") in {"thinking", "redacted_thinking"}
+                )
+            if isinstance(content, str) and content:
+                blocks.append({"type": "text", "text": content})
+            elif isinstance(content, list):
+                blocks.extend(item for item in content if isinstance(item, dict))
+            for call in raw.get("tool_calls") or []:
+                function = call.get("function") or {}
+                arguments = function.get("arguments") or {}
+                if isinstance(arguments, str):
+                    arguments = json_repair.loads(arguments)
+                name = str(function.get("name") or "")
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": str(call.get("id") or ""),
+                        "name": original_to_alias.get(name, name),
+                        "input": arguments if isinstance(arguments, dict) else {},
+                    }
+                )
+            result.append(
+                {
+                    "role": "assistant" if role == "assistant" else "user",
+                    "content": blocks or [{"type": "text", "text": ""}],
+                }
+            )
+        return result, "\n\n".join(part for part in system_parts if part)
+
+    @classmethod
+    def _parse_response(cls, value: dict[str, Any], aliases: dict[str, str]) -> LLMResponse:
+        text_parts = []
+        reasoning_parts = []
+        reasoning_blocks = []
+        calls = []
+        for block in value.get("content") or []:
+            if block.get("type") == "text":
+                text_parts.append(str(block.get("text") or ""))
+            elif block.get("type") == "thinking":
+                reasoning_parts.append(str(block.get("thinking") or ""))
+                reasoning_blocks.append(dict(block))
+            elif block.get("type") == "redacted_thinking":
+                reasoning_blocks.append(dict(block))
+            elif block.get("type") == "tool_use":
+                calls.append(
+                    ToolCallRequest(
+                        id=str(block.get("id") or ""),
+                        name=restore_tool_name(str(block.get("name") or ""), aliases),
+                        arguments=dict(block.get("input") or {}),
+                    )
+                )
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        cls._merge_usage(usage, value.get("usage"))
+        stop_reason = str(value.get("stop_reason") or "end_turn")
+        return LLMResponse(
+            content="".join(text_parts) or None,
+            tool_calls=calls,
+            finish_reason=_STOP_REASONS.get(stop_reason, stop_reason),
+            usage=usage,
+            reasoning_content="".join(reasoning_parts) or None,
+            reasoning_blocks=reasoning_blocks,
+        )
+
+    @staticmethod
+    def _stream_tool_calls(
+        values: dict[int, dict[str, Any]], aliases: dict[str, str]
+    ) -> list[ToolCallRequest]:
+        result = []
+        for index in sorted(values):
+            value = values[index]
+            arguments = json_repair.loads(str(value.get("arguments") or "{}"))
+            result.append(
+                ToolCallRequest(
+                    id=str(value.get("id") or ""),
+                    name=restore_tool_name(str(value.get("name") or ""), aliases),
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+        return result
+
+    @staticmethod
+    def _merge_usage(target: dict[str, int], value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        target["input_tokens"] += int(value.get("input_tokens") or 0)
+        target["output_tokens"] += int(value.get("output_tokens") or 0)
+        target["total_tokens"] = target["input_tokens"] + target["output_tokens"]
+
+    @staticmethod
+    async def _raise_for_status(response: httpx.Response) -> None:
+        if response.is_success:
+            return
+        body = await response.aread()
+        text = body.decode(errors="replace")
+        raw_response: Any = text
+        try:
+            value = json.loads(text)
+            raw_response = value
+            error = value.get("error") or value
+            message = str(error.get("message") or text)[:1200]
+            code = str(error.get("type") or "") or None
+        except (json.JSONDecodeError, AttributeError):
+            message, code = text[:1200], None
+        raise ProviderHTTPError(
+            response.status_code,
+            message,
+            code=code,
+            raw_response=raw_response,
+            provider_request_id=response.headers.get("request-id")
+            or response.headers.get("x-request-id"),
+        )
+
+    async def close(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+
+def _create_provider(request: ModelProviderBuildRequest) -> AnthropicProvider:
+    return AnthropicProvider(
+        api_key=request.api_key,
+        api_base=request.api_base,
+        default_model=request.default_model,
+        extra_headers=request.extra_headers,
+        reasoning_options=request.reasoning_options,
+        client=request.client,
+    )
+
+
+ANTHROPIC_PROVIDER_EXTENSION = ModelProviderExtension(
+    manifest=ANTHROPIC_EXTENSION_MANIFEST,
+    providers=(ANTHROPIC_PROVIDER_SPEC,),
+    factory=_create_provider,
+)
+
+
+def create_extension() -> ModelProviderExtension:
+    return ANTHROPIC_PROVIDER_EXTENSION

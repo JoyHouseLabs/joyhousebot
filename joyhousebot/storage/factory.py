@@ -38,4 +38,9 @@ def create_runtime_store(config: Any | None = None) -> RuntimeStore:
         min_pool_size=int(getattr(settings, "pool_min_size", 1)),
         max_pool_size=int(getattr(settings, "pool_max_size", 10)),
         auto_migrate=_auto_migrate(bool(getattr(settings, "auto_migrate", True))),
+        bootstrap_model=(
+            config.get_bootstrap_model()
+            if config is not None and callable(getattr(config, "get_bootstrap_model", None))
+            else "unconfigured/model"
+        ),
     )

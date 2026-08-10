@@ -6,13 +6,18 @@
 
 - 不引入 `tenant_id`。认证主体映射为 `user_id`，会话边界是 `user_id + agent_id + session_id`。
 - Agent、Skill、Tool、模型和子 Agent 是平台共享能力；用户状态绝不存放在这些共享对象上。
+- Core 不选择供应商或移动模型别名。空目录的初始 Agent 仅从
+  `runtime.bootstrapModel` / `LLM_MODEL` 冻结精确模型；既有 Revision 不由迁移脚本改写。
 - Capability 的可执行身份是不可变 `CapabilityRef`：`capability_id + version + kind + plugin_id + plugin_version + plugin_build_digest`；
   Scenario、显式 Graph、MCP 调用和 Run payload 都不允许用能力名称解析“最新版本”。
 - 公网协议只有版本化 HTTP 与 SSE；不存在公共 RPC 或 WebSocket 命令协议。
 - API 只认证、提交和查询；Agent Worker 执行模型与工具；Scheduler 和 Channel Worker 独立部署。
 - PostgreSQL 是所有环境的唯一事实源，不提供文件型存储回退。
 - Redis 不是必选组件；只能作为可拔插广播/缓存加速层，不能成为 Run/Task 事实源。
-- Shell、filesystem、MCP 和外部 URL 等高风险能力默认关闭，必须经过 Capability allowlist、权限、配额和审计。
+- Shell、filesystem、MCP 和外部 URL 等高风险能力均为显式扩展，默认不安装/不启用；启用后仍必须经过 Capability allowlist、权限、配额和审计。Shell 的容器隔离与 fail-closed 策略由 Core 强制。
+- 外部 MCP Client 由 `joyhousebot-connector-mcp-client` 提供；HTTP 连接经过 Core SSRF
+  校验与 DNS pinning，stdio 默认关闭。Core 只保留对外 `/mcp/` 协议网关和通用 Tool
+  Connector 生命周期。
 - 每类业务状态使用专用表，禁止恢复通用 JSON `shared_state`。
 - 普通用户接口只输出结构化进度摘要、事件、日志和产物；供应商实际返回的推理内容和完整请求/响应只进入受权限控制的诊断面。
 
@@ -62,6 +67,9 @@ Client ──HTTP/SSE──▶ API replicas ────────────
 ```
 
 - Agent Worker 使用数据库 lease、fencing version 和 `FOR UPDATE SKIP LOCKED` claim 工作。
+- API、Control、Scheduler 和 Migrator 不发现或 import Provider/Capability/Connector 扩展，也不接收
+  模型密钥。Agent Worker 加载 Provider/Capability/Connector；Channel Worker 只加载 Channel。
+  配置解析只保存通用部署别名，供应商协议识别延迟到 Agent Worker。
 - 所有 lease 比较统一使用数据库时钟（database time owns leases）：runtime_runs/tasks、schedules、
   channel lease/outbox 的 claim/续租/finish 都在 SQL 内以 `clock_timestamp()` 判定，不依赖各副本的
   客户端墙钟。心跳续期要求 lease 未过期，过期即失败并走 lease-lost 路径，zombie Worker 不能复活租约。
@@ -76,9 +84,14 @@ Client ──HTTP/SSE──▶ API replicas ────────────
 - 不完整 Run 的恢复顺序按用户轮转，避免单个用户占满恢复队列。
 - Schedule occurrence、Channel lease/outbox、Provider profile health、Memory 和 Knowledge 都是集群共享的规范化状态。
 - Channel 投递成功或失败会写 delivery audit；外部连接所有权由带续租的 channel lease 决定。
-- 当前 Channel 适配器仍随核心包内置，通过 `ChannelRegistry` 加载；`ChannelPlugin`、`RunAdapter` 和
-  `ChannelRuntimeBridge` 已经形成独立边界，但尚未拆成可单独安装的 `joyhousebot-channel-*` 包。
-  拆包属于后续扩展，不改变统一 Run/Task 契约。
+- Channel 的 PG Outbox、Lease、`RunAdapter` 和 `ChannelRuntimeBridge` 属于 Core；供应商协议属于扩展。
+  `ChannelRegistry` 默认为空，只发现 `joyhousebot.channels` entry point，并只启用
+  `extensions.enabled` 明确选择的扩展。Email 与其他供应商均为独立 distribution，Core 不保留旧
+  适配器、旧配置或任意模块加载入口。完整边界见 `CORE_AND_EXTENSIONS.md`。
+- Memory/Knowledge 的 PostgreSQL 事实源、权限策略和隔离服务属于 Core；模型可调用的
+  `retrieve`、`memory_get` 和 URL 入库属于可卸载的
+  `joyhousebot-capability-context-assets`。扩展只收到当前 Run 的窄服务，不能持有 Repository
+  或自行选择 `user_id/agent_id`。
 
 ### 定时任务闭环
 
@@ -148,7 +161,8 @@ Runtime 以 `user_id + agent_id` 的稳定散列对账一个 `managed_by=agent_r
 下一次 Run 时修复。托管 Schedule 不能从普通 Schedule API 修改或删除，应通过新 Agent revision 禁用或
 调整；`delivery=origin` 只记住真实外部 Channel 来源，API/CLI 来源不会变成投递目标。
 
-Agent 可以通过 Cron Tool 的 `monitor=true` 创建 Monitor，并选择 `session_mode=isolated|main` 与
+安装并授权 `joyhousebot-capability-runtime-control` 后，Agent 可以通过 `cron` Capability 的
+`monitor=true` 创建 Monitor，并选择 `session_mode=isolated|main` 与
 `preflight_mode=always|runtime_attention`、`context_mode=full|light` 和可选 active hours。内置预检刻意只覆盖 Runtime attention；业务数据变化应由
 版本化 Connector/Capability 提供，不允许定时脚本绕过权限层，也不允许 Scheduler 直接执行 Tool。
 
@@ -259,7 +273,7 @@ Catalog 按优先级竞争同一预算。超大的 Tool Result 可执行确定�
 `budget_exceeded` 失败。Admission 同时记录未发布、被禁用或不可用 Skill 的剔除原因。
 
 Agent 的长期记忆写入统一经过 `MemoryWriteController`。`write_mode=direct` 才能立即更新
-`memory_documents`；`write_mode=candidate` 下，`write_file`、`edit_file` 和会话归档只能写入
+`memory_documents`；`write_mode=candidate` 下，Memory 写入扩展和会话归档只能写入
 `memory_candidates`，不会修改 PROFILE/MEMORY/HISTORY/每日记录。候选冻结 owner、Agent、目标层、
 操作、正文 hash、来源 Run/Task/Turn/Action、策略快照、置信度、有效期、数据等级、证据引用和
 supersedes。接受候选时，候选状态转换与文档写入位于同一个数据库事务；append 并发接受至多应用一次，
@@ -289,14 +303,13 @@ Agent revision 可声明精确 `plugin_requirements`。保存时会校验 Postgr
 精确插件构建，Scenario 发布会校验其精确 Capability 依赖；三类配置使用同一 ACK、超时、取消、
 失败目标重试、人工批准和回滚状态机。回滚不是直接改 current pointer：控制面会创建一个指向旧版本的
 子 rollout，重新冻结目标 Worker、预热并收齐 ACK 后才切换；回滚预热失败时当前版本继续服务。
-插件注册阶段将每个 Capability 绑定到
-manifest 的 build digest；开发环境若 manifest 未提供 digest，框架只从已加载插件类源码导出 SHA-256，
-再将该不可变值写入控制面。
+插件注册阶段将每个 Capability 绑定到 Manifest 已声明的精确 build digest；缺少 digest 或 digest 与
+Entry Point 制品不一致时直接拒绝加载。
 
 Plugin Manifest 使用 `runtime_api_version=v1`，冻结包 URI、签名/SBOM 引用、执行隔离、最小权限、
 组件目录与 manifest SHA-256。发现插件只创建 `discovered` 发布单元；发布后依次进入 `staged → Worker
 loaded ACK → active`，同一插件只有一个 active 版本。Agent、Channel、Connector、Event Trigger、
-Knowledge Provider、MCP Server、Projection、Scenario、Skill、Tool 和 Workflow 都通过同一组件目录注册。
+Knowledge Provider、MCP Server、Scenario、Skill、Tool 和 Workflow 都通过同一组件目录注册。
 
 Capability Registry 同时维护两个索引：模型可见目录按 capability 名称取当前启用版本；已持久化的
 Task 和 MCP 调用则按 `capability_id + version` 从版本索引取得 Adapter。后者绝不回退到当前版本。
@@ -309,12 +322,6 @@ CapabilityDefinition 还声明 data classification、connection IDs、permission
 业务插件（例如 Dinq）不修改核心 Agent 默认配置。插件负责发布自己的 Capability、Scenario、Skill 和
 manifest；部署者创建或发布业务 Agent revision，显式写入该插件的 `plugin_requirements` 及最小
 `capability_policy.permissions`。因此通用平台可以不安装 Dinq，安装后也能以最小权限运行 Dinq Agent。
-
-插件还可以注册版本化 `ProjectionProvider`。公共路由只识别 `view`，从 Registry 解析 Provider，向其提供
-当前用户已经授权的 Run、Artifact、Event、Invocation 和 Scenario state；核心既不知道候选人等业务字段，
-也不维护业务专用 Router。运行中 Provider 可从通用执行证据生成增量视图；Run 终态提交成功后，Runtime
-调用 Provider 的幂等 `materialize()`，由插件写入自己的 PostgreSQL schema。后续查询可读取插件读模型，
-但 Projection 写入失败不会回滚已经完成的 Run，而会产生 `projection.failed` 日志并允许重放修复。
 
 已确认的 Scenario inputs 会复制到不可变 Run execution context，并传入每次 CapabilityContext metadata。
 这使业务能力可以确定性执行用户确认的约束，即使模型生成 Tool 参数时漏掉字段；插件不需要读取核心表，
@@ -365,18 +372,15 @@ Verification、Action/Invocation 与 evidence manifest。URI Artifact 没有内�
 - 平台权限：`platform_admins`、`platform_admin_events`、`api_access_tokens`、`api_access_token_events`。
 - 配置发布：`configuration_events`、`configuration_rollouts`、`configuration_rollout_targets`。
 
-插件业务表不属于核心 migration。例如 Dinq 在独立 `dinq` schema 保存搜索简报版本、Attempt、来源批次、
-候选人观察/命中和富化档案；这些表由插件迁移和维护，核心只保存完整执行证据及 Projection 生命周期日志。
-插件 DDL 必须与核心共用同一把 cluster-wide advisory lock：持有 RuntimeStore 的插件使用公开的
-`schema_migration_lock()` context manager，自建连接的插件（如 Dinq）直接对同一 lock ID
-（`storage/postgres_locks.py` 的 `SCHEMA_MIGRATION_LOCK_ID`）执行 `pg_advisory_xact_lock`；
-session 级与事务级 advisory lock 互相排斥，因此插件与核心 migration 绝不会交叉持锁。
+业务数据表不属于 Core migration。独立业务服务拥有自己的数据库、迁移历史和部署锁；Capability 或
+Connector 只能通过受治理的业务 API 访问它们，不能获得 RuntimeStore、Core 数据库连接或 Core migration
+lock。Core 只保存 Run/Task、不可变执行证据、Artifact/Work 和业务写入回执。
 
 每个领域的 migration 执行后都会向 `schema_migration_history` 表记录
 `(name, version, checksum, applied_at)`（checksum 为该领域 DDL 脚本的 SHA-256）；重复启动时
 checksum 一致则跳过记录，checksum 变化说明 DDL 在应用后被改动，会产生 warning 级日志提示
-schema 漂移。插件 migration 可通过 store 的 `record_plugin_migration()` 写入同一张表
-（命名约定 `plugin:<plugin_id>`）。
+schema 漂移。该表和 migration lock 只属于 Core schema；扩展与业务服务不得写入 Core migration
+历史，也不得借用 Core 数据库连接或锁。它们必须在自己的存储边界内独立迁移和部署。
 
 所有 PostgreSQL schema migration 使用同一个 cluster-wide advisory lock 串行执行，避免 API、
 Scheduler 与多个 Worker 并发启动时让不同领域的 DDL 交叉持锁。运行数据保留清理由 Scheduler
@@ -423,7 +427,9 @@ Invocation/Span，避免缓存把追踪链路截断。
 
 ## 工具与文件安全
 
-- shell 工具只允许经隔离容器执行，不存在主机执行或自动降级路径。
+- Core 默认不注册任何模型 Tool；Filesystem、Shell、Research、Context Assets 和 Runtime Control
+  均由独立扩展贡献，安装后仍需显式发布、授权并由 Worker ACK。
+- shell 扩展只允许经 Core 隔离容器执行，不存在主机执行或自动降级路径。
 - 容器不可用时命令执行失败关闭，绝不降级到宿主机。
 - 可变文件按 `user_id + agent_id + root_run_id` 映射到私有临时 scratch；不允许读取另一用户或平台工作目录。
 - 跨实例持久状态必须写 Memory、Knowledge、Artifact 或业务 Repository，不能把 Worker 本地文件当事实源。

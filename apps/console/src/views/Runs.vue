@@ -126,7 +126,7 @@
           <section v-else-if="activeTab === 'replays'" class="replay-view">
             <div class="replay-form">
               <label><span>回放模式</span><select v-model="replayMode"><option value="offline">Offline · 使用存档验证</option><option value="frozen">Frozen · 冻结结果复现</option><option value="branch">Branch · 从原 Run 分支</option><option value="live">Live · 重新执行</option></select></label>
-              <label><span>覆盖模型（可选）</span><input v-model="replayModel" placeholder="例如 anthropic/claude..." /></label>
+              <label><span>覆盖模型（可选）</span><input v-model="replayModel" placeholder="例如 provider/exact-model..." /></label>
               <label class="replay-prompt"><span>覆盖 Prompt（Branch/Live 可选）</span><textarea v-model="replayPrompt" rows="4" placeholder="留空使用原始输入" /></label>
               <button class="primary-button" type="button" :disabled="replaying" @click="createReplay">{{ replaying ? '创建中…' : '创建回放' }}</button>
             </div>

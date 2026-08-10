@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from joyhousebot.domain.graphs import GraphTaskSpec
 from joyhousebot.orchestration.aggregate_nodes import validate_aggregate_node
 from joyhousebot.orchestration.bounded_loop import validate_bounded_loop_configuration
 from joyhousebot.orchestration.branching import validate_branch_configuration
@@ -15,7 +16,6 @@ from joyhousebot.orchestration.control_nodes import (
 )
 from joyhousebot.orchestration.foreach import validate_foreach_configuration
 from joyhousebot.orchestration.wait_events import validate_wait_event_configuration
-from joyhousebot.runtime.models import GraphTaskSpec
 
 
 def validate_and_order_graph(tasks: list[GraphTaskSpec]) -> list[GraphTaskSpec]:

@@ -1,44 +1,52 @@
 <template>
   <div class="page channels-page">
     <header class="page-heading">
-      <div><span class="eyebrow">CHANNEL CONNECTORS</span><h1>Channels 配置</h1><p>管理外部消息连接器的启用状态与安全边界。连接凭据仍由服务器环境变量或密钥引用管理，不在浏览器回显。</p></div>
+      <div><span class="eyebrow">CHANNEL EXTENSIONS</span><h1>Channel 扩展</h1><p>Core 只负责 Run、Outbox、租约、重试与审计；外部消息协议由可独立安装的扩展提供。</p></div>
       <button class="secondary-button" type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新状态' }}</button>
     </header>
-    <div class="notice info-notice"><strong>当前配置来源</strong><span>连接器配置目前由 config.json / 环境变量加载，修改凭据后需要重启 Channel Worker。数据库化配置与热加载将在下一阶段接入。</span></div>
     <div v-if="error" class="notice error-notice">{{ error }}</div>
+    <div v-if="!loading && !channels.length" class="empty-state"><strong>没有安装 Channel 扩展</strong><span>安装独立扩展 wheel，并将其 ID 加入 extensions.enabled。</span></div>
     <section class="channel-grid">
       <article v-for="channel in channels" :key="channel.id" class="panel channel-card" :class="{ enabled: channel.enabled }">
-        <div class="channel-card-heading"><div><span class="channel-icon">{{ channel.icon }}</span><div><h2>{{ channel.name }}</h2><small>{{ channel.id }}</small></div></div><span class="status-badge" :class="channel.enabled ? 'completed' : 'cancelled'">{{ channel.enabled ? '已启用' : '未启用' }}</span></div>
-        <p>{{ channel.description }}</p>
-        <div class="channel-meta"><span><b>支持</b>{{ channel.capabilities }}</span><span><b>凭据</b>{{ channel.enabled ? '服务器已配置' : '未启用' }}</span></div>
-        <div class="channel-footer"><span>{{ channel.enabled ? '由 Channel Worker 通过 PG Lease 接管' : '启用后由 Channel Worker 按 Lease 启动' }}</span><code>{{ channel.secretHint }}</code></div>
+        <div class="channel-card-heading"><div><span class="channel-icon">{{ channel.icon }}</span><div><h2>{{ channel.name }}</h2><small>{{ channel.extensionId }}</small></div></div><span class="status-badge" :class="channel.enabled ? 'completed' : 'cancelled'">{{ channel.enabled ? '已启用' : '已安装' }}</span></div>
+        <p>{{ channel.distribution || '独立 Channel distribution' }} · {{ channel.version || '版本未知' }}</p>
+        <div class="channel-meta"><span><b>发现</b>仅读取 package metadata</span><span><b>加载</b>{{ channel.enabled ? '允许 Channel Worker 导入' : '未导入扩展代码' }}</span><span><b>配置</b>{{ channel.enabled ? 'extensions.settings' : '默认关闭' }}</span></div>
+        <div class="channel-footer"><span>{{ channel.enabled ? '由 Channel Worker 通过 PG Lease 接管' : '加入 extensions.enabled 后启动' }}</span><code>{{ channel.extensionId }}</code></div>
       </article>
     </section>
-    <section class="panel channel-boundary"><div class="panel-heading"><div><span class="eyebrow">RUNTIME BOUNDARY</span><h2>Channel 与 Agent Runtime 的关系</h2></div></div><div class="boundary-flow"><span>Channel Plugin</span><b>→</b><span>RunAdapter</span><b>→</b><span>PostgreSQL Run / Task</span><b>→</b><span>Coordinator / Worker</span></div><p>Channel 插件只负责收发消息和连接生命周期，不直接调用模型或维护执行队列。入站消息会生成带有 channel、sender_id、chat_id 的用户 Run，出站消息进入 PG Outbox，支持重试、审计和多进程接管。</p></section>
+    <section class="panel channel-boundary"><div class="panel-heading"><div><span class="eyebrow">RUNTIME BOUNDARY</span><h2>扩展不是第二套 Runtime</h2></div></div><div class="boundary-flow"><span>Channel Extension</span><b>→</b><span>RunAdapter</span><b>→</b><span>PostgreSQL Run / Task</span><b>→</b><span>Coordinator / Worker</span></div><p>扩展只负责外部协议转换，不直接调用模型或维护执行队列。入站生成用户 Run，出站进入 PG Outbox，沿用统一重试、审计和多进程接管。</p></section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { getAdminConfig } from '../api/admin'
 
 const loading = ref(false)
 const error = ref('')
-const configured = ref<Record<string, boolean>>({})
-const channels = [
-  { id: 'telegram', name: 'Telegram', icon: 'T', description: 'Telegram Bot 长轮询连接。', capabilities: '私聊、群聊、媒体、反应', secretHint: 'TELEGRAM_BOT_TOKEN' },
-  { id: 'feishu', name: '飞书', icon: '飞', description: '飞书/Lark WebSocket 长连接。', capabilities: '私聊、群聊、线程', secretHint: 'FEISHU_APP_SECRET' },
-  { id: 'dingtalk', name: '钉钉', icon: '钉', description: '钉钉 Stream 模式连接。', capabilities: '私聊、群聊', secretHint: 'DINGTALK_CLIENT_SECRET' },
-  { id: 'slack', name: 'Slack', icon: 'S', description: 'Slack Socket Mode 连接。', capabilities: '私聊、群组、线程', secretHint: 'SLACK_APP_TOKEN' },
-  { id: 'discord', name: 'Discord', icon: 'D', description: 'Discord Gateway 机器人连接。', capabilities: '私聊、群组、媒体', secretHint: 'DISCORD_BOT_TOKEN' },
-  { id: 'whatsapp', name: 'WhatsApp', icon: 'W', description: '通过 WhatsApp Bridge 连接。', capabilities: '私聊、媒体', secretHint: 'WHATSAPP_BRIDGE_TOKEN' },
-  { id: 'email', name: 'Email', icon: '@', description: 'IMAP 入站与 SMTP 出站。', capabilities: '邮件收发、重试', secretHint: 'IMAP / SMTP credentials' },
-  { id: 'qq', name: 'QQ', icon: 'Q', description: 'QQ Botpy 机器人连接。', capabilities: '私聊、群聊', secretHint: 'QQ_APP_SECRET' },
-].map((item) => ({ ...item, get enabled() { return Boolean(configured.value[item.id]) } }))
+const summary = ref<Record<string, unknown>>({})
+const channels = computed(() => {
+  const extensions = (summary.value.extensions || {}) as Record<string, unknown>
+  const installed = (extensions.installed || []) as Array<Record<string, unknown>>
+  const enabled = new Set((extensions.enabled || []) as string[])
+  return installed.filter((item) => item.extension_type === 'channel').map((item) => {
+    const extensionId = String(item.extension_id || '')
+    const transport = extensionId.replace(/^channel-/, '')
+    return {
+      id: transport,
+      extensionId,
+      name: transport.split('-').map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : '').join(' '),
+      icon: transport.slice(0, 1).toUpperCase() || 'C',
+      distribution: String(item.distribution_name || ''),
+      version: String(item.distribution_version || ''),
+      enabled: enabled.has(extensionId),
+    }
+  })
+})
 
 async function load() {
   loading.value = true; error.value = ''
-  try { const value = await getAdminConfig(); configured.value = (value.channels || {}) as Record<string, boolean> }
+  try { summary.value = await getAdminConfig() }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '读取 Channel 配置失败' }
   finally { loading.value = false }
 }

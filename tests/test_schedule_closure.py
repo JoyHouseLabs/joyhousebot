@@ -8,7 +8,7 @@ import pytest
 
 from joyhousebot.channels.repository import ChannelRepository
 from joyhousebot.cron.service import CronService
-from joyhousebot.cron.types import (
+from joyhousebot.domain.schedules import (
     CronPolicy,
     CronSchedule,
     schedule_run_prompt,

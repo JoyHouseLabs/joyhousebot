@@ -1,0 +1,357 @@
+"""Optional Slack channel extension using Socket Mode."""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from typing import Any
+
+from loguru import logger
+
+from joyhousebot.extension_sdk import ExtensionManifest
+from joyhousebot.extension_sdk.channels import (
+    BaseChannelPlugin,
+    ChannelCapabilities,
+    ChannelMeta,
+    ChatType,
+    OutboundMessage,
+    SendResult,
+)
+from joyhousebot.extension_sdk.manifest import source_tree_digest
+from joyhousebot.extension_sdk.messages import (
+    DEFAULT_ACK_REACTION,
+    should_send_ack,
+)
+
+SLACK_EMOJI_ALIASES = {
+    "\U0001f440": "eyes",
+    "\U0001f44d": "+1",
+    "\U0001f44e": "-1",
+}
+
+
+def ack_emoji_for_slack(emoji: str | None) -> str:
+    """Convert a Unicode reaction to the Slack API short-name form."""
+    value = str(emoji or "").strip()
+    if not value:
+        return "eyes"
+    return SLACK_EMOJI_ALIASES.get(value, value)
+
+SLACK_EXTENSION_MANIFEST = ExtensionManifest(
+    extension_id="channel-slack",
+    version="0.1.0",
+    name="JoyhouseBot Slack Channel",
+    extension_types=("channel",),
+    description="Optional Slack Socket Mode transport for JoyhouseBot.",
+    distribution_name="joyhousebot-channel-slack",
+    build_digest=source_tree_digest(__file__),
+    required_permissions=("channel.slack.read", "channel.slack.send"),
+    dependencies=(
+        {"id": "slack-api", "kind": "service", "required": True},
+        {"id": "slack-credentials", "kind": "credential", "required": True},
+    ),
+    configuration_schema={
+        "type": "object",
+        "required": ["bot_token", "app_token"],
+        "properties": {
+            "enabled": {"type": "boolean"},
+            "bot_token": {"type": "string", "writeOnly": True},
+            "app_token": {"type": "string", "writeOnly": True},
+            "mode": {"type": "string", "enum": ["socket"]},
+            "group_policy": {
+                "type": "string",
+                "enum": ["open", "mention", "allowlist"],
+            },
+        },
+    },
+)
+
+try:
+    from slack_sdk.socket_mode.request import SocketModeRequest
+    from slack_sdk.socket_mode.response import SocketModeResponse
+    from slack_sdk.socket_mode.websockets import SocketModeClient
+    from slack_sdk.web.async_client import AsyncWebClient
+
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+    SocketModeRequest = None
+    SocketModeResponse = None
+    SocketModeClient = None
+    AsyncWebClient = None
+
+
+class SlackChannelPlugin(BaseChannelPlugin):
+    """Slack channel using Socket Mode."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._web_client: AsyncWebClient | None = None
+        self._socket_client: SocketModeClient | None = None
+        self._bot_user_id: str | None = None
+        self._messages_config: Any = None
+
+    @property
+    def id(self) -> str:
+        return "slack"
+
+    @property
+    def extension_manifest(self) -> ExtensionManifest:
+        return SLACK_EXTENSION_MANIFEST
+
+    @property
+    def meta(self) -> ChannelMeta:
+        return ChannelMeta(
+            display_name="Slack",
+            description="Slack bot via Socket Mode",
+            icon="slack",
+            order=30,
+        )
+
+    @property
+    def capabilities(self) -> ChannelCapabilities:
+        return ChannelCapabilities(
+            chat_types=[ChatType.DIRECT, ChatType.GROUP, ChatType.THREAD],
+            supports_reactions=True,
+            supports_threads=True,
+            text_chunk_limit=4000,
+        )
+
+    def configure(self, config: dict[str, Any], run_adapter: Any) -> None:
+        super().configure(config, run_adapter)
+        self._messages_config = config.get("messages_config")
+
+    async def start(self) -> None:
+        if not SLACK_AVAILABLE:
+            self._log_error("Slack SDK not installed. Install joyhousebot-channel-slack")
+            return
+
+        bot_token = self._config.get("bot_token", "")
+        app_token = self._config.get("app_token", "")
+        mode = self._config.get("mode", "socket")
+
+        if not bot_token or not app_token:
+            self._log_error("Slack bot/app token not configured")
+            return
+        if mode != "socket":
+            self._log_error(f"Unsupported Slack mode: {mode}")
+            return
+
+        self._log_start()
+        self._set_running(True)
+
+        self._web_client = AsyncWebClient(token=bot_token)
+        self._socket_client = SocketModeClient(
+            app_token=app_token,
+            web_client=self._web_client,
+        )
+
+        self._socket_client.socket_mode_request_listeners.append(self._on_socket_request)
+
+        try:
+            auth = await self._web_client.auth_test()
+            self._bot_user_id = auth.get("user_id")
+            logger.info(f"[{self.id}] Bot connected as {self._bot_user_id}")
+            self._set_connected(True)
+        except Exception as e:
+            logger.warning(f"[{self.id}] auth_test failed: {e}")
+
+        logger.info(f"[{self.id}] Starting Socket Mode client...")
+        await self._socket_client.connect()
+
+        self._log_started()
+
+        while self._running:
+            await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        self._log_stop()
+        self._set_running(False)
+
+        if self._socket_client:
+            try:
+                await self._socket_client.close()
+            except Exception as e:
+                logger.warning(f"[{self.id}] Socket close failed: {e}")
+            self._socket_client = None
+
+        self._set_connected(False)
+        self._log_stopped()
+
+    async def send(self, msg: OutboundMessage) -> SendResult:
+        if not self._web_client:
+            return SendResult(success=False, error="Slack client not running")
+
+        try:
+            slack_meta = msg.metadata.get("slack", {}) if msg.metadata else {}
+            thread_ts = slack_meta.get("thread_ts")
+            channel_type = slack_meta.get("channel_type")
+            use_thread = thread_ts and channel_type != "im"
+
+            result = await self._web_client.chat_postMessage(
+                channel=msg.chat_id,
+                text=msg.content or "",
+                thread_ts=thread_ts if use_thread else None,
+            )
+
+            if (
+                self._messages_config
+                and getattr(self._messages_config, "remove_ack_after_reply", False)
+                and msg.reply_to
+            ):
+                emoji_name = ack_emoji_for_slack(
+                    (getattr(self._messages_config, "ack_reaction", "") or "").strip()
+                    or DEFAULT_ACK_REACTION
+                )
+                try:
+                    await self._web_client.reactions_remove(
+                        channel=msg.chat_id,
+                        name=emoji_name,
+                        timestamp=msg.reply_to,
+                    )
+                except Exception as e:
+                    logger.debug(f"[{self.id}] reactions_remove error: {e}")
+
+            return SendResult(
+                success=True, message_id=result.get("ts"), metadata={"channel": msg.chat_id}
+            )
+
+        except Exception as e:
+            self._log_error("Error sending message", e)
+            return SendResult(success=False, error=str(e))
+
+    async def _on_socket_request(
+        self,
+        client: SocketModeClient,
+        req: SocketModeRequest,
+    ) -> None:
+        if req.type != "events_api":
+            return
+
+        await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+
+        payload = req.payload or {}
+        event = payload.get("event") or {}
+        event_type = event.get("type")
+
+        if event_type not in ("message", "app_mention"):
+            return
+
+        sender_id = event.get("user")
+        chat_id = event.get("channel")
+
+        if event.get("subtype"):
+            return
+        if self._bot_user_id and sender_id == self._bot_user_id:
+            return
+
+        text = event.get("text") or ""
+        if event_type == "message" and self._bot_user_id and f"<@{self._bot_user_id}>" in text:
+            return
+
+        if not sender_id or not chat_id:
+            return
+
+        channel_type = event.get("channel_type") or ""
+
+        if not self._is_allowed(sender_id, chat_id, channel_type):
+            return
+
+        if channel_type != "im" and not self._should_respond_in_channel(event_type, text, chat_id):
+            return
+
+        text = self._strip_bot_mention(text)
+
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        ts = event.get("ts")
+        is_direct = channel_type == "im"
+        is_mention = (
+            is_direct
+            or (event_type == "app_mention")
+            or (bool(self._bot_user_id and f"<@{self._bot_user_id}>" in text))
+        )
+
+        if self._messages_config and self._messages_config.ack_reaction_scope:
+            if should_send_ack(self._messages_config.ack_reaction_scope, is_direct, is_mention):
+                emoji_name = ack_emoji_for_slack(
+                    (getattr(self._messages_config, "ack_reaction", "") or "").strip()
+                    or DEFAULT_ACK_REACTION
+                )
+                if emoji_name and self._web_client and ts:
+                    try:
+                        await self._web_client.reactions_add(
+                            channel=chat_id,
+                            name=emoji_name,
+                            timestamp=ts,
+                        )
+                    except Exception as e:
+                        logger.debug(f"[{self.id}] reactions_add error: {e}")
+
+        await self._publish_inbound(
+            sender_id=sender_id,
+            chat_id=chat_id,
+            content=text,
+            metadata={
+                "message_id": ts,
+                "slack": {
+                    "event": event,
+                    "thread_ts": thread_ts,
+                    "channel_type": channel_type,
+                },
+            },
+        )
+
+    def _is_allowed(self, sender_id: str, chat_id: str, channel_type: str) -> bool:
+        dm_config = self._config_value("dm")
+        group_policy = self._config_value("group_policy", "open")
+        group_allow_from = self._config_value("group_allow_from", []) or []
+
+        if channel_type == "im":
+            dm_enabled = (
+                dm_config.get("enabled", True)
+                if isinstance(dm_config, dict)
+                else getattr(dm_config, "enabled", True)
+            )
+            dm_policy = (
+                dm_config.get("policy", "open")
+                if isinstance(dm_config, dict)
+                else getattr(dm_config, "policy", "open")
+            )
+            dm_allow_from = (
+                dm_config.get("allow_from", [])
+                if isinstance(dm_config, dict)
+                else getattr(dm_config, "allow_from", [])
+            )
+            if dm_config and not dm_enabled:
+                return False
+            if dm_config and dm_policy == "allowlist":
+                return sender_id in (dm_allow_from or [])
+            return True
+
+        if group_policy == "allowlist":
+            return chat_id in group_allow_from
+        return True
+
+    def _should_respond_in_channel(self, event_type: str, text: str, chat_id: str) -> bool:
+        group_policy = self._config_value("group_policy", "open")
+        group_allow_from = self._config_value("group_allow_from", []) or []
+
+        if group_policy == "open":
+            return True
+        if group_policy == "mention":
+            if event_type == "app_mention":
+                return True
+            return self._bot_user_id is not None and f"<@{self._bot_user_id}>" in text
+        if group_policy == "allowlist":
+            return chat_id in group_allow_from
+        return False
+
+    def _strip_bot_mention(self, text: str) -> str:
+        if not text or not self._bot_user_id:
+            return text
+        return re.sub(rf"<@{re.escape(self._bot_user_id)}>\s*", "", text).strip()
+
+
+def create_plugin() -> SlackChannelPlugin:
+    """Factory function to create Slack channel plugin."""
+    return SlackChannelPlugin()

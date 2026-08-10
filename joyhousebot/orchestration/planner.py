@@ -6,9 +6,9 @@ import re
 from typing import Any
 
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.domain.graphs import GraphTaskSpec, TaskGraphSpec
 from joyhousebot.domain.scenarios import ScenarioVersion
 from joyhousebot.orchestration.task_graph import render_value
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
 
 
 class ScenarioPlanner:
@@ -243,7 +243,7 @@ def build_coordinator_graph(
         aggregation_policy={"mode": "llm_synthesis", "version": "v1"},
         request_id=request_id,
         metadata={
-            "source": "main-coordinator",
+            "source": "coordinator",
             "coordinator_plan": plan,
         },
     )

@@ -10,20 +10,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.api.app import create_app
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
 from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter, ToolOutput
 from joyhousebot.config.schema import Config
 from joyhousebot.contracts import OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import InvocationStatus
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.runtime.context import ActionOutcomeUnknownError, ToolExecutionContext
 from joyhousebot.runtime.models import AgentOptions
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_tool_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
+
+
+def _adapter(tool: Tool) -> ToolCapabilityAdapter:
+    return ToolCapabilityAdapter(tool, definition=tool_definition(tool))
 
 
 class _AsyncOperationTool(Tool):
@@ -170,7 +175,7 @@ async def test_accepted_operation_is_reconciled_without_reexecuting_tool(
     run, context = _claimed_context(store, "run-operation-resume")
     tool = _AsyncOperationTool()
     dispatcher = CapabilityDispatcher(store)
-    adapter = ToolCapabilityAdapter(tool)
+    adapter = _adapter(tool)
 
     with pytest.raises(ActionOutcomeUnknownError) as raised:
         await dispatcher.invoke_tool(adapter, {"value": "one"}, context=context)
@@ -215,7 +220,7 @@ async def test_runtime_automatically_resumes_due_operation(tmp_path: Path) -> No
         max_iterations=3,
         session_manager=RuntimeSessionManager(store),
     )
-    executor.capabilities.register_tool(tool)
+    register_tool_fixture(executor.capabilities, tool)
     runtime = NativeAgentRuntime(agent=executor, store=store)
     submitted = await runtime.submit_run(
         AgentOptions(
@@ -243,7 +248,7 @@ async def test_runtime_automatically_resumes_due_operation(tmp_path: Path) -> No
     assert tool.reconcile_calls == 2
     assert provider.calls == 2
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 @pytest.mark.asyncio
@@ -254,7 +259,7 @@ async def test_crash_gap_reconciles_by_idempotency_key_without_replay(
     _, context = _claimed_context(store, "run-operation-crash-gap")
     tool = _AsyncOperationTool(crash=True)
     dispatcher = CapabilityDispatcher(store)
-    adapter = ToolCapabilityAdapter(tool)
+    adapter = _adapter(tool)
 
     with pytest.raises(asyncio.CancelledError):
         await dispatcher.invoke_tool(adapter, {"value": "one"}, context=context)
@@ -274,7 +279,7 @@ async def test_reconciliation_claim_has_one_database_owner(tmp_path: Path) -> No
     store = PostgresTestStore(tmp_path / "operation-claim.db")
     _, context = _claimed_context(store, "run-operation-claim")
     dispatcher = CapabilityDispatcher(store)
-    adapter = ToolCapabilityAdapter(_AsyncOperationTool())
+    adapter = _adapter(_AsyncOperationTool())
     with pytest.raises(ActionOutcomeUnknownError) as raised:
         await dispatcher.invoke_tool(adapter, {"value": "one"}, context=context)
     record = store.get_action_reconciliation(raised.value.action_id)
@@ -297,7 +302,7 @@ async def test_manual_reconciliation_api_is_owner_scoped(tmp_path: Path) -> None
     store = PostgresTestStore(tmp_path / "operation-api.db")
     run, context = _claimed_context(store, "run-operation-api")
     dispatcher = CapabilityDispatcher(store)
-    adapter = ToolCapabilityAdapter(_OpaqueAsyncTool())
+    adapter = _adapter(_OpaqueAsyncTool())
     with pytest.raises(ActionOutcomeUnknownError) as raised:
         await dispatcher.invoke_tool(adapter, {}, context=context)
     record = store.get_action_reconciliation(raised.value.action_id)
@@ -344,7 +349,7 @@ async def test_manual_retry_preserves_frozen_action(tmp_path: Path) -> None:
     tool = _OpaqueAsyncTool()
     dispatcher = CapabilityDispatcher(store)
     with pytest.raises(ActionOutcomeUnknownError) as raised:
-        await dispatcher.invoke_tool(ToolCapabilityAdapter(tool), {}, context=context)
+        await dispatcher.invoke_tool(_adapter(tool), {}, context=context)
     record = store.get_action_reconciliation(raised.value.action_id)
     assert record is not None
     assert store.suspend_run_for_reconciliation(
@@ -371,7 +376,7 @@ async def test_manual_retry_preserves_frozen_action(tmp_path: Path) -> None:
     assert resumed is not None
     with pytest.raises(ActionOutcomeUnknownError):
         await dispatcher.invoke_tool(
-            ToolCapabilityAdapter(tool),
+            _adapter(tool),
             {},
             context=replace(context, worker_id="worker-two"),
         )
@@ -387,7 +392,7 @@ async def test_operator_reconciliation_requires_control_permission(
     dispatcher = CapabilityDispatcher(store)
     with pytest.raises(ActionOutcomeUnknownError) as raised:
         await dispatcher.invoke_tool(
-            ToolCapabilityAdapter(_OpaqueAsyncTool()), {}, context=context
+            _adapter(_OpaqueAsyncTool()), {}, context=context
         )
     record = store.get_action_reconciliation(raised.value.action_id)
     assert record is not None

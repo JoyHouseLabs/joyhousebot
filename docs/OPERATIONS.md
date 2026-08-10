@@ -65,12 +65,13 @@ Channel Worker；控制台的 Channels 页面当前提供安全状态查看，�
 export JOYHOUSEBOT_DATABASE_URL='postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot'
 export LLM_PROVIDER='anthropic'
 export LLM_API_KEY='your-key'
+export LLM_MODEL='anthropic/claude-sonnet-4-5'
 joyhousebot check --config ./config.json
 ```
 
-`LLM_PROVIDER` + `LLM_API_KEY` 是单供应商本地部署的统一入口，可选
-`LLM_API_BASE` 覆盖服务地址。`LLM_PROVIDER` 缺省为 `anthropic`；一旦显式设置，
-它也是模型请求的首选路由，所以 `openrouter` 可以承载 `anthropic/...`、`openai/...`
+`LLM_PROVIDER` + `LLM_API_KEY` 是单供应商本地部署的统一入口；`LLM_MODEL` 必须给出精确模型 ID，可选
+`LLM_API_BASE` 覆盖服务地址。`LLM_PROVIDER` 没有默认值，而且对应 Provider 扩展必须同时出现在
+`extensions.enabled`。一旦显式设置，它也是模型请求的首选路由，所以 `openrouter` 可以承载 `anthropic/...`、`openai/...`
 等模型 ID，不会被其他供应商环境变量抢占。需要在同一 Worker 按模型前缀直连多个
 供应商时，不设置统一变量，改用 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
 `OPENROUTER_API_KEY` 等专用变量。同一供应商的专用变量优先于 `LLM_API_KEY`。

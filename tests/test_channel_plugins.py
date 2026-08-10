@@ -1,8 +1,11 @@
-"""Tests for the channel plugin system."""
+"""Tests for the Core Channel extension contract and discovery seam."""
+
+from types import SimpleNamespace
 
 import pytest
 
 from joyhousebot.bus.events import OutboundMessage
+from joyhousebot.channels.manager import ChannelManager
 from joyhousebot.channels.plugins import (
     ChannelRegistry,
 )
@@ -13,6 +16,10 @@ from joyhousebot.channels.plugins.types import (
     ChatType,
     SendResult,
 )
+from joyhousebot.config.schema import Config, ExtensionsConfig
+from joyhousebot.contracts.extensions import ExtensionManifest
+
+TEST_BUILD_DIGEST = f"sha256:{'0' * 64}"
 
 
 class MockChannelPlugin(BaseChannelPlugin):
@@ -42,6 +49,16 @@ class MockChannelPlugin(BaseChannelPlugin):
             supports_media=False,
         )
 
+    @property
+    def extension_manifest(self) -> ExtensionManifest:
+        return ExtensionManifest(
+            extension_id=f"channel-{self.id}",
+            version="1.0.0",
+            name="Mock",
+            extension_types=("channel",),
+            build_digest=TEST_BUILD_DIGEST,
+        )
+
     async def start(self) -> None:
         self._set_running(True)
 
@@ -60,55 +77,70 @@ class MockRunAdapter:
         self.messages.append(message)
 
 
-def test_load_all_builtins():
-    """Test loading all built-in channel plugins."""
+def test_registry_is_empty_until_an_extension_is_discovered():
     registry = ChannelRegistry()
+    assert registry.list_channels() == []
 
-    loaded = registry.load_all_builtins()
 
-    expected_channels = [
-        "telegram",
-        "discord",
-        "slack",
-        "whatsapp",
-        "feishu",
-        "dingtalk",
-        "email",
-        "qq",
+def test_registry_registers_an_explicit_extension():
+    registry = ChannelRegistry()
+    plugin = MockChannelPlugin()
+    registry.register(plugin, source="test")
+    assert registry.get("mock") is plugin
+    assert registry.source_for("mock") == "test"
+
+
+def test_registry_discovers_entry_point(monkeypatch):
+    registry = ChannelRegistry()
+    plugin = MockChannelPlugin("mail-test")
+
+    class Entries(list):
+        def select(self, *, group):
+            assert group == "joyhousebot.channels"
+            return self
+
+    entry = SimpleNamespace(name="channel-mail-test", load=lambda: lambda: plugin)
+    monkeypatch.setattr(
+        "joyhousebot.extension_discovery.importlib_metadata.entry_points",
+        lambda: Entries([entry]),
+    )
+
+    assert registry.load_entry_points(enabled=["channel-mail-test"]) == [
+        "channel-mail-test"
     ]
-
-    for channel_id in expected_channels:
-        assert channel_id in loaded, f"Expected {channel_id} to be loaded"
-        plugin = registry.get(channel_id)
-        assert plugin is not None
-        assert plugin.id == channel_id
-        assert plugin.meta.display_name
-        assert plugin.capabilities
+    assert registry.get("mail-test") is plugin
 
 
-def test_builtin_plugins_have_consistent_interface():
-    """Test that all built-in plugins implement the required interface."""
-    registry = ChannelRegistry()
-    registry.load_all_builtins()
+def test_registry_validates_extension_manifest():
+    class InvalidManifestPlugin(MockChannelPlugin):
+        @property
+        def extension_manifest(self):
+            return ExtensionManifest(
+                extension_id="not-a-channel",
+                version="1.0.0",
+                name="Invalid",
+                extension_types=("capability",),
+                build_digest=TEST_BUILD_DIGEST,
+            )
 
-    for channel_id in registry.list_channels():
-        plugin = registry.get(channel_id)
+    plugin = InvalidManifestPlugin()
+    with pytest.raises(ValueError, match="does not declare channel"):
+        ChannelRegistry().register(plugin)
 
-        assert hasattr(plugin, "id")
-        assert hasattr(plugin, "meta")
-        assert hasattr(plugin, "capabilities")
-        assert hasattr(plugin, "configure")
-        assert hasattr(plugin, "start")
-        assert hasattr(plugin, "stop")
-        assert hasattr(plugin, "send")
 
-        meta = plugin.meta
-        assert meta.display_name
-        assert meta.icon
+def test_channel_manager_loads_enabled_email_extension_entry_point():
+    config = Config(
+        extensions=ExtensionsConfig(
+            enabled=["channel-email"],
+            discover_entry_points=True,
+            settings={"channel-email": {"consent_granted": True}},
+        )
+    )
 
-        caps = plugin.capabilities
-        assert isinstance(caps.chat_types, list)
-        assert len(caps.chat_types) > 0
+    manager = ChannelManager(config)
+
+    assert list(manager.plugins) == ["email"]
+    assert manager.registry.source_for("email") == "entry-point:channel-email"
 
 
 def test_base_plugin_configure():

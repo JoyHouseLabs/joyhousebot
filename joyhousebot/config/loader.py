@@ -13,7 +13,7 @@ from typing import Any
 
 from loguru import logger
 
-from joyhousebot.config.schema import Config
+from joyhousebot.config.schema import Config, ProviderConfig
 
 CONFIG_PATH_ENV = "JOYHOUSEBOT_CONFIG_PATH"
 
@@ -35,7 +35,7 @@ def load_config(config_path: Path | None = None) -> Config:
         if explicitly_selected:
             raise ValueError(f"Configured file does not exist: {path}")
         config = Config()
-        _fill_provider_api_keys_from_env(config)
+        _fill_provider_deployment_aliases(config)
         return config
 
     _warn_on_permissive_config_file(path)
@@ -53,8 +53,7 @@ def load_config(config_path: Path | None = None) -> Config:
             "start from config.example.json and select it with --config or "
             f"{CONFIG_PATH_ENV}."
         ) from exc
-    _apply_config_env_vars(config)
-    _fill_provider_api_keys_from_env(config)
+    _fill_provider_deployment_aliases(config)
     return config
 
 
@@ -74,54 +73,24 @@ def _warn_on_permissive_config_file(path: Path) -> None:
         )
 
 
-def _apply_config_env_vars(config: Config) -> None:
-    """Apply explicitly configured process variables without overwriting env.
-
-    Only JOYHOUSEBOT_-prefixed keys are honored; arbitrary keys are ignored
-    so a config file cannot inject unrelated process environment.
-    """
-    if not config.env or not config.env.vars:
-        return
-    for key, value in config.env.vars.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            continue
-        if not key.startswith("JOYHOUSEBOT_"):
-            logger.warning(
-                "ignoring env.vars entry {!r}: only JOYHOUSEBOT_-prefixed keys are applied",
-                key,
-            )
-            continue
-        os.environ.setdefault(key, value)
-
-
-def _fill_provider_api_keys_from_env(config: Config) -> None:
-    from joyhousebot.providers.registry import PROVIDERS, find_by_name
-
-    # Provider-native environment names remain the authoritative way to run
-    # several providers in one worker.  The generic variables are a convenient
-    # single-provider deployment alias; the provider still has to be explicit
-    # because Anthropic and OpenAI-compatible endpoints use different protocols.
-    for spec in PROVIDERS:
-        provider = getattr(config.providers, spec.name, None)
-        if provider is None or not spec.env_key or (provider.api_key or "").strip():
-            continue
-        value = (os.environ.get(spec.env_key) or "").strip()
-        if value:
-            provider.api_key = value
+def _fill_provider_deployment_aliases(config: Config) -> None:
+    """Capture provider-neutral deployment aliases without importing extensions."""
+    bootstrap_model = (os.environ.get("LLM_MODEL") or "").strip()
+    if bootstrap_model and not config.runtime.bootstrap_model.strip():
+        config.runtime.bootstrap_model = bootstrap_model
 
     generic_key = (os.environ.get("LLM_API_KEY") or "").strip()
     generic_base = (os.environ.get("LLM_API_BASE") or "").strip()
-    generic_name = (os.environ.get("LLM_PROVIDER") or "anthropic").strip().lower()
+    generic_name = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
     if not generic_key and not generic_base and "LLM_PROVIDER" not in os.environ:
         return
-    spec = find_by_name(generic_name)
-    if spec is None:
-        supported = ", ".join(item.name for item in PROVIDERS)
-        raise ValueError(
-            f"unsupported LLM_PROVIDER {generic_name!r}; expected one of: {supported}"
-        )
-    provider = getattr(config.providers, spec.name)
-    config.providers.default_provider = spec.name
+    if not generic_name:
+        raise ValueError("LLM_PROVIDER is required when LLM_API_KEY or LLM_API_BASE is set")
+    provider = config.providers.get_provider_config(generic_name)
+    if provider is None:
+        provider = ProviderConfig()
+        config.providers.settings[generic_name] = provider
+    config.providers.default_provider = generic_name
     if generic_key and not (provider.api_key or "").strip():
         provider.api_key = generic_key
     if generic_base and not (provider.api_base or "").strip():
@@ -137,20 +106,7 @@ def convert_keys(data: Any) -> Any:
     result: dict[str, Any] = {}
     for key, value in data.items():
         converted = camel_to_snake(key)
-        if converted == "env" and isinstance(value, dict):
-            result[converted] = _convert_env_block(value)
-        else:
-            result[converted] = convert_keys(value)
-    return result
-
-
-def _convert_env_block(data: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in data.items():
-        converted = camel_to_snake(key)
-        result[converted] = (
-            dict(value) if converted == "vars" and isinstance(value, dict) else value
-        )
+        result[converted] = convert_keys(value)
     return result
 
 
@@ -180,7 +136,11 @@ def _resolve_secret_references(value: Any, *, parent_key: str = "") -> Any:
     resolved: dict[str, Any] = {}
     for key, item in value.items():
         normalized = str(key).lower()
-        sensitive = normalized in _SECRET_KEYS or parent_key == "extra_headers"
+        sensitive = (
+            normalized in _SECRET_KEYS
+            or normalized.endswith(("_api_key", "_password", "_private_key", "_secret", "_token"))
+            or parent_key == "extra_headers"
+        )
         if sensitive and item not in (None, "", {}):
             if not isinstance(item, str) or not item.startswith("env://"):
                 raise ValueError(

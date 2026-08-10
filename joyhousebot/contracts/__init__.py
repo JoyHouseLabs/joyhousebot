@@ -14,24 +14,22 @@ from joyhousebot.contracts.capabilities import (
     OperationReconciliationResult,
     WriteReceipt,
 )
-from joyhousebot.contracts.events import DomainEvent
+from joyhousebot.contracts.extensions import (
+    EXTENSION_SDK_VERSION,
+    RUNTIME_API_VERSION,
+    ExtensionManifest,
+    ToolConnectorConnectRequest,
+    ToolConnectorExtension,
+)
 from joyhousebot.contracts.plugins import (
     PLUGIN_COMPONENT_TYPES,
     Plugin,
     PluginComponent,
-    PluginHealthCheck,
-    PluginHealthContext,
-    PluginHealthResult,
     PluginManifest,
     PluginQuickstart,
     PluginRegistry,
 )
-from joyhousebot.contracts.projections import (
-    ProjectionContext,
-    ProjectionProvider,
-    RunProjectionQueries,
-    ScopedRunProjectionQueries,
-)
+from joyhousebot.contracts.tools import Tool
 
 __all__ = [
     "Artifact",
@@ -41,18 +39,16 @@ __all__ = [
     "OperationReconciler",
     "OperationReconciliationResult",
     "WriteReceipt",
-    "DomainEvent",
+    "EXTENSION_SDK_VERSION",
+    "ExtensionManifest",
     "Plugin",
     "PLUGIN_COMPONENT_TYPES",
     "PluginComponent",
-    "PluginHealthCheck",
-    "PluginHealthContext",
-    "PluginHealthResult",
     "PluginManifest",
     "PluginQuickstart",
     "PluginRegistry",
-    "ProjectionContext",
-    "ProjectionProvider",
-    "RunProjectionQueries",
-    "ScopedRunProjectionQueries",
+    "RUNTIME_API_VERSION",
+    "ToolConnectorConnectRequest",
+    "ToolConnectorExtension",
+    "Tool",
 ]

@@ -18,20 +18,18 @@ from joyhousebot.agent.subagent import SubagentManager
 from joyhousebot.agent.tool_runtime import ToolRuntimeMixin
 from joyhousebot.agent.turn_engine import TurnEngineMixin
 from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.config.extensions import (
+    enabled_capability_ids,
+    enabled_connector_ids,
+    extension_settings,
+)
+from joyhousebot.connectors import ToolConnectorRegistry
 from joyhousebot.domain.agents import AgentRevision
 from joyhousebot.providers.base import LLMProvider
 from joyhousebot.session.protocol import SessionStore
 
 if TYPE_CHECKING:
-    from joyhousebot.config.schema import ExecToolConfig
     from joyhousebot.cron.service import CronService
-
-
-# Default user message sent after tool results when messages.after_tool_results_prompt is not set
-_default_after_tool_results_prompt = (
-    "Summarize the tool results briefly for the user (1-4 sentences). "
-    "If the task is done, give the outcome; if more steps are needed, state the next action only."
-)
 
 
 class NativeAgentExecutor(
@@ -64,18 +62,11 @@ class NativeAgentExecutor(
         max_tokens: int = 4096,
         memory_window: int = 50,
         max_context_tokens: int | None = None,
-        brave_api_key: str | None = None,
-        exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
-        restrict_to_workspace: bool = False,
         session_manager: SessionStore | None = None,
-        mcp_servers: dict | None = None,
         config: Any | None = None,
-        transcribe_provider: Any = None,
         outbound_sink: Any = None,
     ):
-        from joyhousebot.config.schema import ExecToolConfig
-
         self.outbound_sink = outbound_sink
         self.provider = provider
         self.agent_revision = agent_revision
@@ -93,12 +84,8 @@ class NativeAgentExecutor(
         self.max_tokens = max_tokens
         self.memory_window = memory_window
         self.max_context_tokens = max_context_tokens
-        self.brave_api_key = brave_api_key
-        self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
-        self.restrict_to_workspace = restrict_to_workspace
         self.config = config
-        self.transcribe_provider = transcribe_provider
         if session_manager is None:
             raise ValueError("session_manager is required; use the shared RuntimeSessionManager")
         self.sessions = session_manager
@@ -123,23 +110,39 @@ class NativeAgentExecutor(
             optional_allowlist = list(
                 getattr(getattr(self.config, "tools", None), "optional_allowlist", []) or []
             )
+        self.subagents = SubagentManager(model=self.model)
+        extensions_config = getattr(self.config, "extensions", None)
+        enabled_plugins = (
+            enabled_capability_ids(self.config)
+            if bool(getattr(extensions_config, "discover_entry_points", False))
+            else set()
+        )
         self.capabilities = CapabilityRegistry(
             store=self.runtime_store,
+            scratch_root=self.scratch_root,
+            outbound_sink=self.outbound_sink,
+            subagent_manager=self.subagents,
+            schedule_service=self.cron_service,
             optional_allowlist=optional_allowlist,
-            plugin_modules=list(
-                getattr(getattr(self.config, "tools", None), "capability_plugins", []) or []
-            ),
-            discover_entry_points=bool(
-                getattr(getattr(self.config, "tools", None), "discover_capability_plugins", False)
-            ),
+            enabled_plugins=enabled_plugins,
         )
-        self.subagents = SubagentManager(model=self.model)
 
         self._running = False
-        self._mcp_servers = mcp_servers or {}
-        self._mcp_stack: AsyncExitStack | None = None
-        self._mcp_connected = False
-        self._mcp_connect_lock = asyncio.Lock()
+        self.tool_connectors = ToolConnectorRegistry()
+        if bool(getattr(extensions_config, "discover_entry_points", False)):
+            self.tool_connectors.load_entry_points(enabled=enabled_connector_ids(self.config))
+        self._tool_connector_settings: dict[str, dict[str, Any]] = {}
+        for extension_id in getattr(extensions_config, "enabled", ()) or ():
+            normalized_id = str(extension_id).strip()
+            if normalized_id.startswith("connector-"):
+                self._tool_connector_settings[normalized_id] = extension_settings(
+                    self.config, normalized_id
+                )
+        for manifest in self.tool_connectors.manifests():
+            self.runtime_store.upsert_plugin_release(manifest.to_release_dict())
+        self._tool_connector_stack: AsyncExitStack | None = None
+        self._tool_connectors_connected = False
+        self._tool_connector_lock = asyncio.Lock()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_lock_users: dict[str, int] = {}
         configured_concurrency = (
@@ -152,4 +155,3 @@ class NativeAgentExecutor(
             if isinstance(configured_concurrency, int) and configured_concurrency > 0
             else None
         )
-        self._register_default_tools()

@@ -1,0 +1,30 @@
+{
+  "gateway": {
+    "allowInsecureAuth": false,
+    "maxConcurrentSessions": 8
+  },
+  "runtime": {
+    "scratchRoot": "/var/lib/joyhousebot/runtime-scratch",
+    "bootstrapModel": "",
+    "store": {
+      "databaseUrl": "env://JOYHOUSEBOT_DATABASE_URL",
+      "poolMinSize": 1,
+      "poolMaxSize": 20,
+      "autoMigrate": false,
+      "leaseSeconds": 60,
+      "pollIntervalSeconds": 0.2
+    }
+  },
+  "providers": {
+    "defaultProvider": "",
+    "settings": {}
+  },
+  "tools": {
+    "optionalAllowlist": []
+  },
+  "extensions": {
+    "enabled": ["provider-openai-compatible"],
+    "discoverEntryPoints": true,
+    "settings": {}
+  }
+}

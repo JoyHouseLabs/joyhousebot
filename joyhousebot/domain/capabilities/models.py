@@ -41,10 +41,8 @@ class CapabilityRef:
     capability_id: str
     version: str
     kind: CapabilityKind
-    # A capability version is only reproducible when its producing plugin
-    # release is pinned as well.  Core capabilities use the explicit
-    # ``joyhousebot.core`` release; third-party capabilities use their plugin
-    # manifest values.  Plugin registration is allowed to create an unbound
+    # A capability version is reproducible only when its producing extension
+    # release is pinned as well. Plugin registration may create an unbound
     # definition briefly, then must bind all three values before persistence.
     plugin_id: str = ""
     plugin_version: str = ""
@@ -182,20 +180,6 @@ class CapabilityDefinition:
             value.pop("compensation", None)
         else:
             value["compensation"] = self.compensation.to_dict()
-        # Preserve compatibility with already-published built-in capability
-        # versions. Plugin provenance is explicit when present, but an empty
-        # optional field must not mutate legacy immutable definitions.
-        if not value["origin"]:
-            value.pop("origin")
-        if not value["configuration_schema"]:
-            value.pop("configuration_schema")
-        # Adding the default contract must not make legacy, immutable
-        # definitions appear changed when a newer Worker starts up. Only an
-        # explicit non-default declaration is persisted.
-        if self.invocation_concurrency == "parallel_safe":
-            value.pop("invocation_concurrency", None)
-        if self.max_concurrent_invocations == 4:
-            value.pop("max_concurrent_invocations", None)
         return value
 
 

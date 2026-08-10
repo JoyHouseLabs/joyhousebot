@@ -27,8 +27,8 @@
           <div class="section-title"><div><span class="eyebrow">EVIDENCE RUN</span><h2>生成 Revision 证据</h2></div><span class="status-badge" :class="activeRun?.status || 'draft'">{{ activeRun?.status || 'new' }}</span></div>
           <div class="form-grid three">
             <label><span>目标类型</span><select v-model="runForm.target_type"><option value="agent">Agent</option><option value="scenario">Scenario</option><option value="capability">Capability</option></select></label>
-            <label><span>目标 ID</span><input v-model="runForm.target_id" placeholder="main-coordinator" /></label>
-            <label><span>Revision ID</span><input v-model="runForm.target_revision_id" placeholder="main-coordinator:v10" /></label>
+            <label><span>目标 ID</span><input v-model="runForm.target_id" placeholder="default" /></label>
+            <label><span>Revision ID</span><input v-model="runForm.target_revision_id" placeholder="default:v2" /></label>
             <label><span>评测集</span><input v-model="runForm.suite_id" placeholder="quality.basic" /></label>
             <label><span>版本</span><input v-model.number="runForm.suite_version" type="number" min="1" /></label>
             <button class="secondary-button align-end" :disabled="saving" @click="startRun">创建 Eval Run</button>

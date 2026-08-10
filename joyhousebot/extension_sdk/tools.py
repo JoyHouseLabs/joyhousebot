@@ -1,0 +1,17 @@
+"""Stable Tool and execution-context API for trusted capability extensions."""
+
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError, ToolOutput
+from joyhousebot.contracts.capabilities import OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.runtime.context import ToolExecutionContext
+from joyhousebot.utils.exceptions import ToolError, tool_error_handler
+
+__all__ = [
+    "OperationReconciliationResult",
+    "Tool",
+    "ToolExecutionContext",
+    "ToolError",
+    "ToolInvocationError",
+    "ToolOutput",
+    "tool_error_handler",
+]

@@ -5,11 +5,12 @@ from typing import Any
 import pytest
 
 from joyhousebot.agent.subagent import SubagentManager
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities import CapabilityRegistry
 from joyhousebot.capabilities.dispatcher import capability_result_prompt
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.providers.base import LLMProvider, LLMResponse
 from joyhousebot.runtime.context import ToolExecutionContext
+from tests.support.capabilities import register_tool_fixture
 
 
 class EchoTool(Tool):
@@ -24,7 +25,8 @@ class EchoTool(Tool):
 @pytest.mark.asyncio
 async def test_runtime_permission_policy_blocks_high_risk_and_allowlists() -> None:
     registry = CapabilityRegistry()
-    registry.register_tool(EchoTool())
+    tool = EchoTool()
+    register_tool_fixture(registry, tool)
 
     denied_result = await registry.invoke_tool(
         "exec",

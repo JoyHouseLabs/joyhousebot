@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from joyhousebot.bus.events import OutboundMessage
     from joyhousebot.channels.run_adapter import RunAdapter
+    from joyhousebot.contracts.extensions import ExtensionManifest
 
 
 class ChatType(str, Enum):
@@ -78,7 +79,7 @@ class ChannelPlugin(ABC):
     @property
     @abstractmethod
     def id(self) -> str:
-        """Unique channel identifier (e.g., 'telegram', 'discord')."""
+        """Unique transport identifier declared by the extension."""
         pass
 
     @property
@@ -91,6 +92,12 @@ class ChannelPlugin(ABC):
     @abstractmethod
     def capabilities(self) -> ChannelCapabilities:
         """Channel capabilities."""
+        pass
+
+    @property
+    @abstractmethod
+    def extension_manifest(self) -> "ExtensionManifest":
+        """Return immutable release metadata for this extension package."""
         pass
 
     def configure(self, config: dict[str, Any], run_adapter: "RunAdapter") -> None:

@@ -9,7 +9,6 @@ from jsonschema import Draft202012Validator, ValidationError
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityInvocation,
-    CapabilityRef,
 )
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.platform_records import CapabilityInvocationRecord
@@ -109,72 +108,6 @@ class PostgresCapabilityStoreMixin:
                 ddl=governance_ddl,
                 description="explicit active capability version for staged rollout and rollback",
             )
-        from joyhousebot.bootstrap.default_skills import seed_default_skills
-
-        seed_default_skills(self)
-
-    def publish_capability(
-        self, definition: CapabilityDefinition, *, actor_id: str = "system"
-    ) -> None:
-        """Compatibility bootstrap for trusted migrations and legacy tests.
-
-        Runtime/plugin discovery must use ``discover_capability_release`` and
-        the control plane must use ``stage_capability_release``. Keeping this
-        method avoids breaking existing database fixtures while removing it
-        from every worker startup path.
-        """
-        value = definition.to_dict()
-        with self._pool.connection() as conn, conn.transaction():
-            conn.execute(
-                """INSERT INTO capability_definitions
-                       (capability_id,kind,name,description)
-                   VALUES (%s,%s,%s,%s)
-                   ON CONFLICT(capability_id) DO UPDATE SET
-                       kind=excluded.kind,name=excluded.name,
-                       description=excluded.description,updated_at=clock_timestamp()""",
-                (
-                    definition.ref.capability_id,
-                    definition.ref.kind.value,
-                    definition.name,
-                    definition.description,
-                ),
-            )
-            existing = conn.execute(
-                """SELECT definition,status FROM capability_versions
-                   WHERE capability_id=%s AND version=%s""",
-                (definition.ref.capability_id, definition.ref.version),
-            ).fetchone()
-            if existing and _canonical_definition(dict(existing["definition"])) != _canonical_definition(value):
-                raise ValueError("published capability versions are immutable")
-            conn.execute(
-                """INSERT INTO capability_versions
-                       (capability_id,version,status,definition,published_at)
-                   VALUES (%s,%s,'published',%s,clock_timestamp())
-                   ON CONFLICT(capability_id,version) DO NOTHING""",
-                (definition.ref.capability_id, definition.ref.version, Jsonb(value)),
-            )
-            if existing is not None and str(existing["status"]) == "discovered":
-                conn.execute(
-                    """UPDATE capability_versions SET status='published',
-                           published_at=COALESCE(published_at,clock_timestamp())
-                       WHERE capability_id=%s AND version=%s""",
-                    (definition.ref.capability_id, definition.ref.version),
-                )
-            if existing is None or str(existing["status"]) == "discovered":
-                conn.execute(
-                    """UPDATE capability_definitions SET current_version=%s,
-                           updated_at=clock_timestamp()
-                       WHERE capability_id=%s""",
-                    (definition.ref.version, definition.ref.capability_id),
-                )
-                conn.execute(
-                    """INSERT INTO configuration_events
-                           (aggregate_type,aggregate_id,revision_id,event_type,actor_id)
-                       VALUES ('capability',%s,%s,'published',%s)""",
-                    (definition.ref.capability_id, definition.ref.version, actor_id),
-                )
-                self._notify(conn, f"config:capability:{definition.ref.capability_id}")
-
     def discover_capability_release(
         self, definition: CapabilityDefinition, *, actor_id: str = "system:worker-discovery"
     ) -> None:
@@ -200,9 +133,7 @@ class PostgresCapabilityStoreMixin:
                    WHERE capability_id=%s AND version=%s""",
                 (definition.ref.capability_id, definition.ref.version),
             ).fetchone()
-            if existing and _canonical_definition(
-                dict(existing["definition"])
-            ) != _canonical_definition(value):
+            if existing and dict(existing["definition"]) != value:
                 raise ValueError("discovered capability version conflicts with immutable catalog")
             inserted = conn.execute(
                 """INSERT INTO capability_versions
@@ -226,21 +157,6 @@ class PostgresCapabilityStoreMixin:
                         actor_id,
                     ),
                 )
-
-    def bootstrap_core_capability(self, definition: CapabilityDefinition) -> None:
-        """Activate a core capability only on first install; upgrades stay discovered."""
-        if definition.ref.plugin_id != "joyhousebot.core":
-            raise ValueError("only joyhousebot.core capabilities may use package bootstrap")
-        current = self.get_capability_definition(definition.ref.capability_id)
-        if current is None:
-            self.publish_capability(definition, actor_id="system:core-package-bootstrap")
-            return
-        current_ref = CapabilityRef.from_dict(dict(current["ref"]))
-        if current_ref.identity == definition.ref.identity:
-            return
-        self.discover_capability_release(
-            definition, actor_id="system:core-package-upgrade-discovery"
-        )
 
     def stage_capability_release(
         self,
@@ -273,7 +189,7 @@ class PostgresCapabilityStoreMixin:
                    WHERE capability_id=%s AND version=%s FOR UPDATE""",
                 (definition.ref.capability_id, definition.ref.version),
             ).fetchone()
-            if existing and _canonical_definition(dict(existing["definition"])) != _canonical_definition(value):
+            if existing and dict(existing["definition"]) != value:
                 raise ValueError("published capability versions are immutable")
             conn.execute(
                 """INSERT INTO capability_versions
@@ -553,13 +469,3 @@ def _reject_secret_configuration(value: Any, path: str = "") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_secret_configuration(child, f"{path}[{index}]")
-
-
-def _canonical_definition(value: dict[str, Any]) -> dict[str, Any]:
-    """Normalize backward-compatible optional fields before immutability checks."""
-    result = dict(value)
-    if not result.get("configuration_schema"):
-        result.pop("configuration_schema", None)
-    if not result.get("origin"):
-        result.pop("origin", None)
-    return result

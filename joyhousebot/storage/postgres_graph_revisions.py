@@ -194,7 +194,7 @@ class PostgresGraphRevisionStoreMixin:
         return revision_id
 
     @staticmethod
-    def _legacy_graph_revision(
+    def _freeze_graph_revision_from_rows(
         run_id: str,
         *,
         goal: str,
@@ -257,7 +257,7 @@ class PostgresGraphRevisionStoreMixin:
             "revision_id": f"graphrev_{sha256(revision_identity).hexdigest()}",
             "revision_number": 1,
             "parent_revision_id": None,
-            "source": "legacy_submission",
+            "source": "storage_submission",
             "spec_hash": spec_hash,
             "settings": settings,
             "nodes": nodes,

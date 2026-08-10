@@ -1,9 +1,9 @@
 from email.message import EmailMessage
 
 import pytest
+from joyhousebot_channel_email import EmailChannelPlugin
 
 from joyhousebot.bus.events import OutboundMessage
-from joyhousebot.channels.plugins.builtin.email import EmailChannelPlugin
 
 
 def _make_config() -> dict:
@@ -69,12 +69,16 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
             self.store_calls.append((imap_id, op, flags))
             return "OK", [b""]
 
+        def uid(self, command: str, uid: str, op: str, flags: str):
+            self.store_calls.append((uid.encode(), f"{command}:{op}", flags))
+            return "OK", [b""]
+
         def logout(self):
             return "BYE", [b""]
 
     fake = FakeIMAP()
     monkeypatch.setattr(
-        "joyhousebot.channels.plugins.builtin.email.imaplib.IMAP4_SSL",
+        "joyhousebot_channel_email.plugin.imaplib.IMAP4_SSL",
         lambda _h, _p: fake,
     )
 
@@ -85,10 +89,44 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
     assert items[0]["sender"] == "alice@example.com"
     assert items[0]["subject"] == "Invoice"
     assert "Please pay" in items[0]["content"]
-    assert fake.store_calls == [(b"1", "+FLAGS", "\\Seen")]
+    assert items[0]["metadata"]["message_id"] == "<m1@example.com>"
+    assert fake.store_calls == []
 
+    plugin._remember_uid("123")
     items_again = plugin._fetch_new_messages()
     assert items_again == []
+
+    plugin._mark_uid_seen("123")
+    assert fake.store_calls == [(b"123", "STORE:+FLAGS", "\\Seen")]
+
+
+def test_missing_message_id_uses_imap_uid_as_runtime_idempotency_key(monkeypatch) -> None:
+    raw = _make_raw_email().replace(b"Message-ID: <m1@example.com>\n", b"")
+
+    class FakeIMAP:
+        def login(self, *_args):
+            return "OK", []
+
+        def select(self, *_args):
+            return "OK", []
+
+        def search(self, *_args):
+            return "OK", [b"1"]
+
+        def fetch(self, *_args):
+            return "OK", [(b"1 (UID 456 BODY[] {200})", raw), b")"]
+
+        def logout(self):
+            return "BYE", []
+
+    monkeypatch.setattr(
+        "joyhousebot_channel_email.plugin.imaplib.IMAP4_SSL",
+        lambda *_args: FakeIMAP(),
+    )
+
+    item = _make_plugin()._fetch_new_messages()[0]
+    assert item["metadata"]["message_id"] == "imap:INBOX:456"
+    assert item["metadata"]["email_message_id"] == ""
 
 
 def test_extract_text_body_falls_back_to_html() -> None:
@@ -153,7 +191,7 @@ async def test_send_uses_smtp_and_reply_subject(monkeypatch) -> None:
         return instance
 
     monkeypatch.setattr(
-        "joyhousebot.channels.plugins.builtin.email.smtplib.SMTP",
+        "joyhousebot_channel_email.plugin.smtplib.SMTP",
         _smtp_factory,
     )
 
@@ -209,7 +247,7 @@ async def test_send_skips_when_auto_reply_disabled(monkeypatch) -> None:
         return instance
 
     monkeypatch.setattr(
-        "joyhousebot.channels.plugins.builtin.email.smtplib.SMTP",
+        "joyhousebot_channel_email.plugin.smtplib.SMTP",
         _smtp_factory,
     )
 
@@ -265,7 +303,7 @@ async def test_send_skips_when_consent_not_granted(monkeypatch) -> None:
         return FakeSMTP(host, port, timeout=timeout)
 
     monkeypatch.setattr(
-        "joyhousebot.channels.plugins.builtin.email.smtplib.SMTP",
+        "joyhousebot_channel_email.plugin.smtplib.SMTP",
         _smtp_factory,
     )
 

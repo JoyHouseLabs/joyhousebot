@@ -7,16 +7,17 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from joyhousebot_capability_filesystem.plugin import FilesystemCapabilityPlugin
+from joyhousebot_capability_shell.plugin import ShellCapabilityPlugin
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.tools.base import Tool
-from joyhousebot.agent.tools.filesystem import WriteFileTool
-from joyhousebot.agent.tools.shell import ExecTool
 from joyhousebot.api.app import create_app
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.capabilities.plugin_registry import CapabilityPluginRegistry
 from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter
 from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.runtime.action_identity import payload_hash
@@ -314,7 +315,7 @@ async def test_runtime_resumes_same_action_after_approval(tmp_path: Path) -> Non
     assert tool.calls == 1
     assert store.list_action_intents(submitted.run_id)[0].status == "observed"
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
 
 
 def test_approval_claim_is_single_consumer_and_action_is_immutable(tmp_path: Path) -> None:
@@ -462,9 +463,12 @@ def test_confidential_approval_preview_hides_values() -> None:
     assert preview == {"fields": ["email", "password"], "values": "[REDACTED]"}
 
 
-def test_builtin_side_effect_metadata_is_versioned_for_approval() -> None:
-    write = ToolCapabilityAdapter(WriteFileTool())
-    execute = ToolCapabilityAdapter(ExecTool())
-    assert (write.definition.side_effect, write.definition.ref.version) == ("write", "1.1.0")
-    assert execute.definition.side_effect == "external"
-    assert execute.definition.idempotent is False
+def test_extension_side_effect_metadata_is_versioned_for_approval() -> None:
+    registry = CapabilityPluginRegistry()
+    registry.register_plugin(FilesystemCapabilityPlugin())
+    registry.register_plugin(ShellCapabilityPlugin())
+    write, _ = registry.get("write_file", "1.0.0")
+    execute, _ = registry.get("exec", "1.0.0")
+    assert (write.side_effect, write.ref.version) == ("write", "1.0.0")
+    assert execute.side_effect == "external"
+    assert execute.idempotent is False

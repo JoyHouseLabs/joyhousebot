@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,

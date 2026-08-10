@@ -101,7 +101,7 @@
           <section class="form-section">
             <header><div><span>02</span><h3>模型策略</h3></div><p>Primary 模型、降级链和推理预算随版本冻结。</p></header>
             <div class="form-grid">
-              <label class="wide"><span>Primary Model</span><input v-model.trim="draft.primary_model" required placeholder="openrouter/deepseek/deepseek-v4-flash" /></label>
+              <label class="wide"><span>Primary Model</span><input v-model.trim="draft.primary_model" required placeholder="provider/exact-model-id" /></label>
               <label class="wide"><span>Fallback Models</span><input v-model.trim="draft.fallback_models" placeholder="每个模型用逗号分隔" /></label>
               <label><span>Temperature</span><input v-model.number="draft.temperature" type="number" min="0" max="2" step="0.1" /></label>
               <label><span>Max Tokens</span><input v-model.number="draft.max_tokens" type="number" min="1" /></label>
@@ -373,7 +373,7 @@ const blankDraft = () => ({
   agent_id: '', revision_id: '', version: 1, name: '', description: '',
   role: 'executor' as AgentRole, definition_status: 'active' as DefinitionStatus,
   tone: 'helpful', language: 'follow-user', instructions: '',
-  primary_model: 'openrouter/deepseek/deepseek-v4-flash', fallback_models: '', temperature: 0.3, max_tokens: 4096,
+  primary_model: '', fallback_models: '', temperature: 0.3, max_tokens: 4096,
   max_tool_iterations: 20, reasoning_effort: 'none', thinking_budget_tokens: 0,
   capture_reasoning: false, cache_enabled: true, cache_ttl_seconds: 300, capability_mode: 'catalog',
   allowed_capabilities: [] as string[], allow_subagents: true, max_steps: 32,

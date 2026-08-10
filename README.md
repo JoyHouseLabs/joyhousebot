@@ -2,7 +2,18 @@
 
 ## 个人数据与智能的云端/本地执行体
 
-Joyhousebot 帮助每个人可靠完成事情，把数据、经验、技能和成果沉淀为真正属于自己的长期资产。它不是单 Agent 聊天客户端，也不是模型供应商 SDK，而是 PostgreSQL-first 的智能执行底座：自然语言目标进入持久 Run/Task 链路，经过能力准入、长任务恢复、验证、人工反馈、审计和回放，最终形成可积累的 Artifact 与 Work。
+JoyhouseBot 是开源、可本地部署的长期任务执行引擎，为面向 OPC 与个人成长的 Joyhouse 提供可靠执行。
+它把自然语言目标转化为持久 Run/Task，经过能力准入、定时或事件唤醒、长任务恢复、人工确认、验证、
+审计和回放，最终形成可积累的 Artifact 与 Work。
+
+> OPC 是目标用户，长期持续任务是产品机制，成果与收入增长是用户价值，JoyhouseBot 是底层执行引擎。
+
+普通用户使用 Joyhouse 管理目标、持续任务、待确认事项和成果，不需要理解 Run、Graph、Agent 或
+Capability；扩展作者和自部署用户才直接使用 JoyhouseBot。完整产品定位见
+[Joyhouse OPC 产品定位](docs/PRODUCT_OPC.md)。
+
+Core 与供应商/业务扩展已经按独立制品拆分，完整边界和结果见
+[非 Core 功能拆分台账](docs/NON_CORE_MIGRATION.md)。
 
 同一套 Runtime 可以本地一体化运行，也可以部署为云端多用户并发服务。资源始终以 `user_id` 归属，不预设企业租户模型；个人数据默认私有，只有用户主动发布的 Skill、Agent、Workflow 或 Work 才能被其他人复用和派生。
 
@@ -16,9 +27,9 @@ joyhousebot/
 │   ├── console/              # 运行监控、Agent 配置、场景与回放控制台
 │   ├── website/              # joyhousebot.com 官网
 │   └── browser-extension/    # 浏览器智能外挂（独立仓库 submodule）
+├── extensions/               # 可独立安装、发现和启用的官方扩展
 ├── docs/                     # 架构、部署、CLI 与集成文档
 ├── deploy/                   # Runtime 与官网部署模板
-├── bridges/                  # 渠道桥接实现
 └── tests/                    # Runtime 契约与集成测试
 ```
 
@@ -55,7 +66,8 @@ PostgreSQL 事实源
 ### 能力与安全治理
 
 - Capability Registry 统一登记 Tool、Skill、Connector 和 MCP 能力，调用前执行 allowlist、权限、配额和参数校验。
-- Shell 只允许在隔离 Docker 容器中执行；容器不可用时失败关闭，不降级到宿主机。
+- Shell 是显式安装的官方扩展，只允许经 Core 隔离 Docker 容器执行；容器不可用时失败关闭，不降级到宿主机。
+- 外部 MCP Server 通过独立 MCP Client Connector 安装；HTTP 强制 SSRF 防护，stdio 默认关闭，远端 Tool 不冒充 Core 能力。
 - File、Memory、Knowledge、Artifact 按 `user_id + agent_id + root_run_id` 隔离；Worker 本地磁盘不是共享事实源。
 - Provider、数据库、Channel 和外部服务凭据只通过环境变量或 `env://VARIABLE` 引用，禁止明文进入配置和日志。
 
@@ -133,9 +145,9 @@ api / bootstrap / channel adapters
        dedicated PostgreSQL repositories
 ```
 
-业务项目（例如 Dinq Discover 与 Smart Study）应通过独立插件包注册 Scenario、Capability、Tool、Skill
-或 MCP Server，不把业务代码写入 `joyhousebot` 核心包。Smart Study 参考插件还演示了如何把 Runtime 的
-Durable Action 幂等键传入业务 API，并把复盘/个人成果返回为受治理 Artifact。
+业务项目（例如 Dinq Discover）应通过独立插件包注册 Scenario、Capability、Tool、Skill 或 MCP Server，
+不把业务代码写入 `joyhousebot` 核心包。Core 与扩展的判定、依赖方向和迁移规则见
+[Core 与扩展包边界设计](docs/CORE_AND_EXTENSIONS.md)。Smart Study 保持独立项目，不作为默认集成。
 
 ## 控制台示例
 
@@ -176,11 +188,21 @@ npm run dev
 cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
+export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
 export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot"
 ./scripts/start-local.sh
 ```
 
 `config.dev.json` 开启了 `allowInsecureAuth`（仅凭 `X-User-ID` 头即可认证），仅限本机开发，不要用于任何可对外访问的部署；`config.example.json` 是生产安全基线模板。
+
+Core 默认不安装或启动任何渠道。个人/OPC 推荐先安装 Email 官方扩展：
+
+```bash
+uv pip install -e extensions/channel-email
+```
+
+然后在 `extensions.enabled` 中加入 `channel-email`，并把 IMAP/SMTP 凭据配置为 `env://VARIABLE` 引用。
+其他渠道按需安装，不属于默认产品组合。
 
 打开 `http://127.0.0.1:18790/ui/`；OpenAPI 在 `/docs`，健康检查为 `/healthz` 和 `/readyz`。`config.json` 已被 Git 忽略，真实配置和密钥不要提交。
 
@@ -189,6 +211,7 @@ Docker Compose：
 ```bash
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
+export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
 export POSTGRES_PASSWORD="choose-a-strong-password"
 export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
 uv sync
@@ -205,7 +228,7 @@ Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`�
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
   -H 'X-User-ID: joyhousebot' \
-  -d '{"agent_id":"main-coordinator","session_id":"demo","input":{"content":"分析这个任务"}}'
+  -d '{"agent_id":"default","session_id":"demo","input":{"content":"分析这个任务"}}'
 ```
 
 生产请求应使用数据库签发的 Bearer Token。
@@ -214,7 +237,7 @@ curl -X POST http://127.0.0.1:18790/v1/runs \
 
 ```bash
 .venv/bin/python -m pytest
-.venv/bin/ruff check joyhousebot tests
+.venv/bin/ruff check joyhousebot tests extensions/*/src
 cd apps/console && npm run build
 ```
 

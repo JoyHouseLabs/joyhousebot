@@ -176,8 +176,8 @@ class AgentRuntimeCatalog:
             loop = self.resolve(item["revision_id"])
             if loop is None:
                 raise RuntimeError("published Agent revision is unavailable")
-            # resolve() acknowledges Agent revisions for backward-compatible
-            # callers; the generic acknowledgement below is idempotent.
+            # resolve() also ACKs normal on-demand loads; refresh_pending's
+            # generic acknowledgement below is intentionally idempotent.
             return
         if aggregate_type == "plugin":
             release = self.store.get_plugin_release(
@@ -290,7 +290,10 @@ class AgentRuntimeCatalog:
             self._shared_http_client = None
         for agent in agents:
             agent.stop()
-        await asyncio.gather(*(agent.close_mcp() for agent in agents), return_exceptions=True)
+        await asyncio.gather(
+            *(agent.close_tool_connectors() for agent in agents),
+            return_exceptions=True,
+        )
         # Revisions after the first share the first provider's HTTP client and
         # therefore do not own its lifecycle. Close it explicitly so hot-reload
         # and worker shutdown cannot leak sockets/file descriptors.

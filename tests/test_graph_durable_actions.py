@@ -9,10 +9,10 @@ from typing import Any
 import pytest
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.capabilities import CapabilityRegistry
 from joyhousebot.capabilities.tool_adapter import ToolOutput
 from joyhousebot.contracts import OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
@@ -23,6 +23,7 @@ from joyhousebot.providers.base import LLMProvider, LLMResponse
 from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -35,13 +36,7 @@ class _CapabilityAgent:
         definition: CapabilityDefinition | None = None,
     ) -> None:
         self.capabilities = CapabilityRegistry(store=store)
-        self.capabilities.register_tool(tool, definition=definition)
-        if definition is not None:
-            # Non-core registration is discovery-only. This fixture opts into
-            # the trusted compatibility activation path deliberately.
-            store.publish_capability(
-                definition, actor_id="test:trusted-graph-fixture"
-            )
+        register_tool_fixture(self.capabilities, tool, definition=definition)
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("direct Graph Capability Task must not call a model")
@@ -342,7 +337,7 @@ async def test_graph_agent_verification_is_task_fenced_and_repairs_once(
 
     completed = await _wait_for_status(store, submitted.run_id, {"completed"})
     await runtime.close()
-    await executor.close_mcp()
+    await executor.close_tool_connectors()
     assert completed.status == "completed"
     task = store.list_runtime_tasks(run_id=submitted.run_id)[0]
     assert task.status == "completed", task.error

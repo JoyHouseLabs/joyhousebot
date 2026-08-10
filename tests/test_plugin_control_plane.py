@@ -4,12 +4,26 @@ import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
-from joyhousebot.application.plugins import run_plugin_diagnostics
 from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config, ToolsConfig
+from joyhousebot.bootstrap.extension_rollouts import ExtensionRolloutWatcher
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.extensions import ExtensionManifest
 from joyhousebot.contracts.plugins import PluginComponent, PluginManifest, PluginQuickstart
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from tests.support.postgres_store import PostgresTestStore
+
+TEST_BUILD_DIGEST = f"sha256:{'a' * 64}"
+OTHER_BUILD_DIGEST = f"sha256:{'b' * 64}"
+
+
+def _extension_manifest(extension_id: str, extension_type: str) -> ExtensionManifest:
+    return ExtensionManifest(
+        extension_id=extension_id,
+        version="1.0.0",
+        name=extension_id,
+        extension_types=(extension_type,),
+        build_digest=TEST_BUILD_DIGEST,
+    )
 
 
 def _store(tmp_path: Path) -> PostgresTestStore:
@@ -19,7 +33,7 @@ def _store(tmp_path: Path) -> PostgresTestStore:
         version="1.0.0",
         name="Example Discover",
         distribution_name="example-plugin",
-        build_digest="sha256:test-example-discover",
+        build_digest=TEST_BUILD_DIGEST,
     )
     store.upsert_plugin_release(manifest.to_dict())
     store.sync_plugin_components(
@@ -65,11 +79,11 @@ def test_plugin_release_activates_only_after_exact_worker_load_ack(tmp_path: Pat
         worker_id="agent-plugin-a",
         capabilities={"agent": True},
         metadata={
-            "plugins": [
+            "extensions": [
                 {
                     "plugin_id": "example.discover",
                     "version": "1.0.0",
-                    "build_digest": "sha256:test-example-discover",
+                    "build_digest": TEST_BUILD_DIGEST,
                 }
             ]
         },
@@ -91,6 +105,70 @@ def test_plugin_release_activates_only_after_exact_worker_load_ack(tmp_path: Pat
     assert store.get_active_plugin_release("example.discover")["version"] == "1.0.0"
 
 
+@pytest.mark.asyncio
+async def test_channel_extension_rollout_targets_and_is_acked_by_channel_worker(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    manifest = _extension_manifest("channel-example", "channel")
+    release = manifest.to_release_dict()
+    store.upsert_plugin_release(release)
+    store.register_runtime_worker(
+        worker_id="channel-worker-a",
+        capabilities={"channels": True},
+        metadata={"extensions": [release]},
+    )
+    store.register_runtime_worker(
+        worker_id="agent-worker-a",
+        capabilities={"agent": True},
+        metadata={"extensions": []},
+    )
+
+    rollout_id = store.stage_plugin_release(
+        manifest.extension_id,
+        manifest.version,
+        actor_id="release-admin",
+    )
+    assert [
+        item["worker_id"]
+        for item in store.list_configuration_rollout_targets(rollout_id)
+    ] == ["channel-worker-a"]
+
+    runtime = type(
+        "Runtime",
+        (),
+        {"worker_id": "channel-worker-a", "plugin_releases": [release]},
+    )()
+    assert await ExtensionRolloutWatcher(store=store, runtime=runtime).refresh_pending() == 1
+    assert store.get_active_plugin_release(manifest.extension_id)["version"] == "1.0.0"
+
+
+def test_provider_extension_rollout_targets_agent_workers(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    manifest = _extension_manifest("provider-example", "model_provider")
+    store.upsert_plugin_release(manifest.to_release_dict())
+    store.register_runtime_worker(
+        worker_id="channel-worker-a",
+        capabilities={"channels": True},
+        metadata={"extensions": []},
+    )
+    store.register_runtime_worker(
+        worker_id="agent-worker-a",
+        capabilities={"agent": True},
+        metadata={"extensions": [manifest.to_release_dict()]},
+    )
+
+    rollout_id = store.stage_plugin_release(
+        manifest.extension_id,
+        manifest.version,
+        actor_id="release-admin",
+    )
+    assert [
+        item["worker_id"]
+        for item in store.list_configuration_rollout_targets(rollout_id)
+    ] == ["agent-worker-a"]
+
+
 def test_plugin_release_digest_cannot_be_overwritten(tmp_path: Path) -> None:
     store = _store(tmp_path)
     with pytest.raises(ValueError, match="immutable"):
@@ -99,7 +177,7 @@ def test_plugin_release_digest_cannot_be_overwritten(tmp_path: Path) -> None:
                 plugin_id="example.discover",
                 version="1.0.0",
                 name="Example Discover",
-                build_digest="sha256:different-build",
+                build_digest=OTHER_BUILD_DIGEST,
             ).to_dict()
         )
 
@@ -112,7 +190,7 @@ def test_plugin_manifest_and_component_catalog_are_immutable(tmp_path: Path) -> 
                 plugin_id="example.discover",
                 version="1.0.0",
                 name="Renamed release",
-                build_digest="sha256:test-example-discover",
+                build_digest=TEST_BUILD_DIGEST,
             ).to_dict()
         )
     with pytest.raises(ValueError, match="component is immutable"):
@@ -136,7 +214,7 @@ def test_plugin_manifest_projects_business_owned_quickstarts() -> None:
         plugin_id="example.discover",
         version="1.0.0",
         name="Example Discover",
-        build_digest="sha256:test-example-discover",
+        build_digest=TEST_BUILD_DIGEST,
         quickstarts=(
             PluginQuickstart(
                 quickstart_id="catalog-search",
@@ -157,7 +235,7 @@ def test_plugin_manifest_projects_business_owned_quickstarts() -> None:
             "title": "Search the catalog",
             "description": "Use the coordinator rather than calling a hidden tool.",
             "prompt": "Find reinforcement learning engineers.",
-            "agent_id": "main-coordinator",
+            "agent_id": "default",
             "scenario_id": "example.catalog.search",
             "scenario_inputs": {"query": "reinforcement learning"},
             "capability_ids": ["example.search"],
@@ -244,27 +322,3 @@ def test_plugin_playground_creates_a_direct_durable_tool_run(tmp_path: Path) -> 
     assert tasks[0].payload["capability"]["capability_id"] == "example.search"
     assert tasks[0].payload["capability_input"] == {"query": "Ada"}
     assert store.get_runtime_run(body["run_id"]).options["aggregate"] is False
-
-
-@pytest.mark.asyncio
-async def test_declared_plugin_diagnostics_are_persisted(tmp_path: Path) -> None:
-    pytest.importorskip(
-        "dinq_plugin.discover.plugin",
-        reason="external Dinq plugin package is not installed",
-    )
-    store = _store(tmp_path)
-    config = Config(tools=ToolsConfig(capability_plugins=["dinq_plugin.discover.plugin"]))
-    # The Dinq catalog is deliberately absent here: the diagnostic must report
-    # that fact as a safe failed result rather than raising or accessing a user.
-    results = await run_plugin_diagnostics(config=config, store=store, plugin_id="dinq.discover")
-    assert {item["name"] for item in results} == {
-        "catalog",
-        "worker_release",
-        "connections",
-    }
-    persisted = store.list_plugin_check_results("dinq.discover")
-    assert {item["name"] for item in persisted} == {
-        "catalog",
-        "worker_release",
-        "connections",
-    }

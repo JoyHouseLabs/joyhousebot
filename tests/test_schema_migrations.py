@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from collections.abc import Iterator
 from uuid import uuid4
 
@@ -37,7 +35,6 @@ _CORE_DOMAINS = {
     "clarifications",
     "rate_limits",
     "observability",
-    "mcp_servers",
     "user_workflows",
 }
 
@@ -216,39 +213,3 @@ def test_schema_migration_lock_blocks_other_sessions(
         ).fetchone()
         assert row[0] is True
         probe.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_MIGRATION_LOCK_ID,))
-
-
-def test_plugin_migration_serializes_with_core_lock(
-    store: PostgresRuntimeStore,
-) -> None:
-    applied: list[str] = []
-
-    def plugin_migration() -> None:
-        with store.schema_migration_lock():
-            applied.append("plugin")
-
-    worker = threading.Thread(target=plugin_migration)
-    with store.schema_migration_lock():
-        worker.start()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not applied:
-            time.sleep(0.01)
-        assert applied == []
-    worker.join(timeout=10)
-    assert applied == ["plugin"]
-
-
-def test_record_plugin_migration(store: PostgresRuntimeStore) -> None:
-    name = f"plugin:test-{uuid4().hex}"
-    ddl = "CREATE SCHEMA IF NOT EXISTS plugintest;"
-    store.record_plugin_migration(name=name, version=1, ddl=ddl, description="test plugin schema")
-    store.record_plugin_migration(name=name, version=1, ddl=ddl, description="test plugin schema")
-    row = _history_row(store, name, 1)
-    assert row is not None
-    assert row["checksum"] == migration_checksum(ddl)
-    assert row["description"] == "test plugin schema"
-
-
-def test_dinq_plugin_uses_cluster_lock_id() -> None:
-    dinq_store = pytest.importorskip("dinq_plugin.discover.postgres_store")
-    assert dinq_store._MIGRATION_LOCK == SCHEMA_MIGRATION_LOCK_ID

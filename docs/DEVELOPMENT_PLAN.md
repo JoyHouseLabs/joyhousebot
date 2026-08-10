@@ -318,7 +318,7 @@ Token/费用、P95 时延和用户采纳率。
 恢复时上下文漂移会失败而不是静默替换。全量 `priority_budget_v1` 已覆盖 System、Agent、Skill、
 Memory、历史、当前请求、Tool Schema 和后续 Tool/Assistant 消息；低优先来源会从真实请求中移除，
 Tool Result 可做保留原始 hash 的确定性首尾压缩，硬约束溢出在 Provider 调用前明确失败。Memory
-Candidate 纵切也已完成：`write_mode=candidate` 的文件工具与会话归档统一写入 PostgreSQL 候选箱，
+Candidate 纵切也已完成：`write_mode=candidate` 的 Memory 写入边界与会话归档统一写入 PostgreSQL 候选箱，
 候选冻结来源、策略、事实属性、正文/基线 hash 和过期时间；owner API 支持查看、接受、拒绝，接受与
 文档合并同事务，重复接受幂等，替换目标发生并发变化时进入冲突而不静默覆盖。Graph V2 第一条纵切
 也已完成：显式提交与协调器物化都会先冻结不可变 Graph revision，Run、节点、边和 Runtime Task 在
@@ -360,11 +360,9 @@ Capability release gate 及控制台工作台已经完成。成果层也已完�
 指针、private/unlisted/public、数据分级、协作者、固定版本分享、过期/撤销和访问审计。后续主要是增加
 领域回归集、rubric judge 的版本治理、基线对比报告和大规模线上反馈候选池。
 
-Smart Study 第一条生产边界已经实现：独立 `joyhousebot-smart-study` 插件声明六项个人成长 Connector，
-Smart Study API 提供 fail-closed 内部能力端点与 `joyhousebot_operations` 持久幂等账本，严格使用数字
-User.id 和 Durable Action operation ID；资料决策、打卡、日/周复盘复用现有业务服务，个人成果和复盘以
-confidential Artifact 返回，再进入 JoyhouseBot Work 的显式发布与分享治理。现有 Smart Study 旧 Agent
-功能可按领域逐项迁移，但不得绕开该 Capability 边界或一次性复制到核心。
+Smart Study 已决定保持独立，不再作为 JoyhouseBot 的默认插件、参考实现或迁移目标。该决定不改变
+JoyhouseBot 的通用 Capability、Durable Action 与 Artifact/Work 契约；后续业务接入必须独立评估，不能
+把 Smart Study 的数据模型、页面或流程复制进 Core。
 
 #### 阶段 A 实施进度（2026-08-08）
 
@@ -385,7 +383,7 @@ confidential Artifact 返回，再进入 JoyhouseBot Work 的显式发布与分�
 - 审批消费和 Action 执行权在同一数据库事务中抢占；两个 Worker 只能有一个取得执行权，撤销与执行
   抢占也由同一行锁排序，不会在撤销成功后继续调用。
 - 用户审批 API 已按 Run owner 隔离；高风险 Capability 可要求 operator，confidential/restricted 输入只
-  返回字段清单。内置写文件、编辑、Shell、消息、定时任务和知识入库已发布带版本的副作用声明，
+  返回字段清单。官方 Filesystem、Shell、Runtime Control 和 Context Assets 扩展已发布带版本的副作用声明，
   缺少可信副作用元数据的 MCP Tool 默认进入审批。
 - 已覆盖暂停前不执行、批准恢复同一 Action、双 Worker 单消费者、参数不可变、跨用户不可见、operator
   角色、批准后执行前撤销和审批过期回归。

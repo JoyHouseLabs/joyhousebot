@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 
 from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.bus.events import OutboundMessage
 from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.runtime.context import (
     CancellationToken,
@@ -15,6 +15,7 @@ from joyhousebot.runtime.context import (
     get_current_run_context,
 )
 from joyhousebot.session.models import Session
+from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -179,7 +180,8 @@ async def test_concurrent_sessions_keep_tool_routing_isolated(tmp_path: Path) ->
         max_iterations=2,
         outbound_sink=sink,
     )
-    loop.capabilities.register_tool(_RoutingProbeTool(sink))
+    tool = _RoutingProbeTool(sink)
+    register_tool_fixture(loop.capabilities, tool)
 
     await asyncio.gather(
         loop.process_direct("alpha", session_key="web:a", channel="web", chat_id="a"),

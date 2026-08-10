@@ -65,22 +65,6 @@ class PostgresScenarioStoreMixin:
         """
         with self._pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341909,))
-            # This product has not been released.  A legacy table stored only
-            # capability ids, which is incapable of replaying an approved
-            # scenario after a plugin release changes.  Replace it rather
-            # than carrying an ambiguous compatibility path indefinitely.
-            legacy = conn.execute(
-                """SELECT 1 FROM information_schema.tables t
-                   WHERE t.table_schema=current_schema() AND t.table_name='scenario_capabilities'
-                     AND NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns c
-                        WHERE c.table_schema=current_schema()
-                          AND c.table_name='scenario_capabilities'
-                          AND c.column_name='capability_version'
-                     )"""
-            ).fetchone()
-            if legacy:
-                conn.execute("DROP TABLE scenario_capabilities")
             conn.execute(ddl)
             self._record_migration(
                 conn,

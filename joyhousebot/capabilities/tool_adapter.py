@@ -5,12 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from joyhousebot.agent.tools.base import Tool
 from joyhousebot.contracts import OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
-    CapabilityRef,
     InvocationStatus,
 )
 
@@ -43,47 +42,16 @@ class ToolCapabilityAdapter:
         self,
         tool: Tool,
         *,
-        version: str | None = None,
-        definition: CapabilityDefinition | None = None,
+        definition: CapabilityDefinition,
     ) -> None:
         self.tool = tool
-        if definition is not None:
-            if (
-                definition.ref.kind not in {CapabilityKind.TOOL, CapabilityKind.CONNECTOR}
-                or definition.ref.capability_id != tool.name
-            ):
-                raise ValueError("tool capability definition does not match the adapted tool")
-            self.definition = definition
-        else:
-            safety_metadata_declared = any(
-                hasattr(tool, name)
-                for name in ("side_effect", "idempotent", "retryable", "data_classification")
-            )
-            resolved_version = version or (
-                "1.1.0" if safety_metadata_declared else "1.0.1"
-            )
-            self.definition = CapabilityDefinition(
-                ref=CapabilityRef(
-                    tool.name,
-                    resolved_version,
-                    CapabilityKind.TOOL,
-                    "joyhousebot.core",
-                    "0.1.2",
-                    "builtin",
-                ),
-                name=tool.name,
-                description=tool.description,
-                input_schema=tool.parameters,
-                output_schema={"type": "object"},
-                adapter=f"tool:{tool.__class__.__module__}.{tool.__class__.__name__}",
-                timeout_seconds=max(1, int(getattr(tool, "timeout", 60) or 60)),
-                idempotent=bool(getattr(tool, "idempotent", True)),
-                retryable=bool(getattr(tool, "retryable", True)),
-                side_effect=str(getattr(tool, "side_effect", "none") or "unknown"),
-                data_classification=str(
-                    getattr(tool, "data_classification", "internal") or "internal"
-                ),
-            )
+        if (
+            definition.ref.kind not in {CapabilityKind.TOOL, CapabilityKind.CONNECTOR}
+            or definition.ref.capability_id != tool.name
+        ):
+            raise ValueError("tool capability definition does not match the adapted tool")
+        definition.ref.require_bound()
+        self.definition = definition
 
     async def invoke(self, inputs: dict[str, Any], **kwargs: Any) -> ToolOutput:
         try:
