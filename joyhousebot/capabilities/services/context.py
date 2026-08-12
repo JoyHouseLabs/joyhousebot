@@ -148,9 +148,7 @@ class ContextPort:
             repository = KnowledgeRepository(store)
             store._knowledge_repository = repository
         resolved_source_id = source_id or source_url or title
-        doc_id = hashlib.sha256(
-            f"{context.user_id}:{source_system}:{resolved_source_id}".encode()
-        ).hexdigest()[:24]
+        doc_id = self._knowledge_doc_id(context.user_id, source_system, resolved_source_id)
         await asyncio.to_thread(
             self._index_knowledge_revision,
             repository,
@@ -177,6 +175,65 @@ class ContextPort:
         )
         return doc_id
 
+    async def fail_knowledge_index(
+        self,
+        context: CapabilityContext,
+        *,
+        source_type: str,
+        source_url: str,
+        title: str,
+        error_code: str,
+        error_message: str,
+        metadata: dict[str, Any] | None = None,
+        source_system: str = "runtime",
+        source_id: str | None = None,
+        source_version: str = "1",
+        source_generation: int = 1,
+        source_status: str = "active",
+        index_profile_id: str = "lexical-v1",
+        parser_id: str = "unresolved",
+        parser_version: str = "1",
+    ) -> str:
+        """Persist a failed immutable attempt without replacing the active index."""
+        store = self._require_store()
+        repository = getattr(store, "_knowledge_repository", None)
+        if repository is None:
+            repository = KnowledgeRepository(store)
+            store._knowledge_repository = repository
+        resolved_source_id = source_id or source_url or title
+        doc_id = self._knowledge_doc_id(context.user_id, source_system, resolved_source_id)
+        await asyncio.to_thread(
+            self._fail_knowledge_revision,
+            repository,
+            doc_id=doc_id,
+            user_id=context.user_id,
+            agent_id=context.agent_id,
+            source_type=source_type,
+            source_url=source_url,
+            title=title,
+            chunks=[],
+            metadata=metadata or {},
+            source_system=source_system,
+            source_id=resolved_source_id,
+            source_version=source_version,
+            source_generation=source_generation,
+            source_status=source_status,
+            index_profile_id=index_profile_id,
+            parser_id=parser_id,
+            parser_version=parser_version,
+            chunker_id="semantic-text-v1",
+            chunker_version="1",
+            run_id=context.run_id,
+            actor_id=f"worker:{context.agent_id or 'default'}",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        return doc_id
+
+    @staticmethod
+    def _knowledge_doc_id(user_id: str, source_system: str, source_id: str) -> str:
+        return hashlib.sha256(f"{user_id}:{source_system}:{source_id}".encode()).hexdigest()[:24]
+
     @staticmethod
     def _index_knowledge_revision(
         repository: KnowledgeRepository,
@@ -185,17 +242,47 @@ class ContextPort:
         **kwargs: Any,
     ) -> None:
         revision_id = repository.stage_index_revision(**kwargs)
-        repository.mark_index_revision_ready(
+        try:
+            repository.mark_index_revision_ready(
+                user_id=kwargs["user_id"],
+                doc_id=kwargs["doc_id"],
+                revision_id=revision_id,
+                actor_id=actor_id,
+            )
+            repository.activate_index_revision(
+                user_id=kwargs["user_id"],
+                doc_id=kwargs["doc_id"],
+                revision_id=revision_id,
+                actor_id=actor_id,
+            )
+        except Exception as exc:
+            repository.fail_index_revision(
+                user_id=kwargs["user_id"],
+                doc_id=kwargs["doc_id"],
+                revision_id=revision_id,
+                actor_id=actor_id,
+                error_code="INDEX_ACTIVATION_FAILED",
+                error_message=str(exc),
+            )
+            raise
+
+    @staticmethod
+    def _fail_knowledge_revision(
+        repository: KnowledgeRepository,
+        *,
+        actor_id: str,
+        error_code: str,
+        error_message: str,
+        **kwargs: Any,
+    ) -> None:
+        revision_id = repository.stage_index_revision(**kwargs)
+        repository.fail_index_revision(
             user_id=kwargs["user_id"],
             doc_id=kwargs["doc_id"],
             revision_id=revision_id,
             actor_id=actor_id,
-        )
-        repository.activate_index_revision(
-            user_id=kwargs["user_id"],
-            doc_id=kwargs["doc_id"],
-            revision_id=revision_id,
-            actor_id=actor_id,
+            error_code=error_code,
+            error_message=error_message,
         )
 
 

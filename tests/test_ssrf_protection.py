@@ -27,6 +27,7 @@ from joyhousebot.utils.ssrf import (
     TooManyRedirectsError,
     UnsupportedContentTypeError,
     fetch_url,
+    fetch_url_bytes,
     is_forbidden_ip,
     resolve_host,
     validate_url,
@@ -297,6 +298,35 @@ async def test_json_content_type_allowed(http_server, pin_to_localhost):
     ) as client:
         _, text = await fetch_url(client, f"http://example.test:{port}/j")
     assert json.loads(text) == {"a": 1}
+
+
+async def test_binary_fetch_requires_an_explicit_parser_content_type(
+    http_server, pin_to_localhost
+):
+    port = http_server.server_address[1]
+    _Handler.routes["/document.pdf"] = (
+        200,
+        {"Content-Type": "application/pdf"},
+        b"%PDF-safe-fixture",
+    )
+    async with httpx.AsyncClient(
+        transport=SsrfProtectedTransport(), follow_redirects=False
+    ) as client:
+        response, body = await fetch_url_bytes(
+            client,
+            f"http://example.test:{port}/document.pdf",
+            allowed_content_types=("application/pdf",),
+            max_bytes=1024,
+        )
+        assert response.status_code == 200
+        assert body == b"%PDF-safe-fixture"
+        with pytest.raises(UnsupportedContentTypeError):
+            await fetch_url_bytes(
+                client,
+                f"http://example.test:{port}/document.pdf",
+                allowed_content_types=("application/zip",),
+                max_bytes=1024,
+            )
 
 
 # --- WebFetchTool ------------------------------------------------------------

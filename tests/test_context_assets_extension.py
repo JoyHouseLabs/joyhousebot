@@ -13,6 +13,7 @@ class _FakeContextServices:
     def __init__(self) -> None:
         self.context = self
         self.indexed: dict | None = None
+        self.failed: dict | None = None
 
     async def search(self, context, **kwargs):  # noqa: ANN001
         return [{"content": "evidence", "user_id": context.user_id, **kwargs}]
@@ -23,6 +24,10 @@ class _FakeContextServices:
     async def index_knowledge(self, context, **kwargs):  # noqa: ANN001
         self.indexed = {"user_id": context.user_id, **kwargs}
         return "doc-1"
+
+    async def fail_knowledge_index(self, context, **kwargs):  # noqa: ANN001
+        self.failed = {"user_id": context.user_id, **kwargs}
+        return "doc-failed"
 
 
 def _context(**overrides):
@@ -97,6 +102,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
     assert services.indexed["source_version"] == "2"
     assert services.indexed["source_generation"] == 2
     assert services.indexed["metadata"]["collection_refs"] == ["collection-a"]
+    assert services.indexed["parser_id"] == "plain-text"
 
 
 @pytest.mark.asyncio
@@ -169,3 +175,40 @@ async def test_knowledge_write_requires_frozen_action_before_fetch(monkeypatch) 
     assert result.success is False
     assert result.error["code"] == "ACTION_IDENTITY_REQUIRED"
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_knowledge_index_records_parser_failure_on_the_runtime_port() -> None:
+    services = _FakeContextServices()
+    result = await context_assets.IndexKnowledgeHandler().execute(
+        _context(
+            services=services,
+            action_id="action-index",
+            idempotency_key="knowledge:source-file:3",
+        ),
+        {
+            "source_system": "joyhouse-product",
+            "source_id": "source-file",
+            "source_version": "3",
+            "source_generation": 3,
+            "source_status": "active",
+            "source_type": "file",
+            "title": "Private file",
+            "content": "",
+            "source_url": "",
+            "attachments": [
+                {
+                    "reference_kind": "local_vault",
+                    "uri": "joyhouse-local://vault/private.docx",
+                    "display_name": "private.docx",
+                }
+            ],
+            "content_sha256": "b" * 64,
+        },
+    )
+    assert result.success is False
+    assert result.error["code"] == "REFERENCE_RESOLVER_UNAVAILABLE"
+    assert services.indexed is None
+    assert services.failed["source_id"] == "source-file"
+    assert services.failed["source_generation"] == 3
+    assert services.failed["error_code"] == "REFERENCE_RESOLVER_UNAVAILABLE"

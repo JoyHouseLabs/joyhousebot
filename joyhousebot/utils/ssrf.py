@@ -250,3 +250,54 @@ async def fetch_url(
         encoding = response.charset_encoding or "utf-8"
         return response, body.decode(encoding, errors="replace")
     raise TooManyRedirectsError(f"Exceeded {max_redirects} redirects")
+
+
+async def fetch_url_bytes(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    allowed_content_types: tuple[str, ...],
+    headers: dict[str, str] | None = None,
+    max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> tuple[httpx.Response, bytes]:
+    """Fetch a bounded binary document through the same SSRF-safe boundary.
+
+    Callers must declare the MIME types they can parse. An absent content type is
+    accepted because many object stores omit it; the caller must still validate
+    file signatures before parsing the returned bytes.
+    """
+    if not allowed_content_types:
+        raise ValueError("allowed_content_types must not be empty")
+    normalized_types = tuple(item.strip().lower() for item in allowed_content_types if item.strip())
+    current = url
+    for _ in range(max_redirects + 1):
+        ok, err = validate_url(current)
+        if not ok:
+            raise SsrfBlockedError(f"URL validation failed: {err}")
+        async with client.stream("GET", current, headers=headers) as response:
+            if response.status_code in _REDIRECT_STATUSES and response.headers.get("location"):
+                current = urljoin(current, response.headers["location"])
+                continue
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            mime = content_type.split(";", 1)[0].strip().lower()
+            if mime and not any(
+                mime == allowed or (allowed.endswith("/") and mime.startswith(allowed))
+                for allowed in normalized_types
+            ):
+                raise UnsupportedContentTypeError(f"Unsupported content type: {mime}")
+            content_length = response.headers.get("content-length", "")
+            if content_length.isdigit() and int(content_length) > max_bytes:
+                raise ResponseTooLargeError(
+                    f"Response too large: {content_length} bytes (limit {max_bytes})"
+                )
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ResponseTooLargeError(f"Response exceeded the {max_bytes} bytes limit")
+                chunks.append(chunk)
+            return response, b"".join(chunks)
+    raise TooManyRedirectsError(f"Exceeded {max_redirects} redirects")

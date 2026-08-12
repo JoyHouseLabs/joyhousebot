@@ -228,10 +228,18 @@ class KnowledgeRevisionRepositoryMixin:
             if document is None:
                 raise PermissionError("knowledge document belongs to another user")
             connection.execute(
-                """UPDATE knowledge_documents
-                      SET index_status='indexing',updated_at_ms=%s
+                """UPDATE knowledge_documents AS document
+                      SET index_status='indexing',
+                          source_generation=GREATEST(source_generation,%s),
+                          updated_at_ms=%s
                     WHERE doc_id=%s AND user_id=%s AND source_generation<=%s""",
-                (now_ms, doc_id, user_id, resolved_generation),
+                (
+                    resolved_generation,
+                    now_ms,
+                    doc_id,
+                    user_id,
+                    resolved_generation,
+                ),
             )
             connection.execute(
                 """INSERT INTO knowledge_index_revisions
@@ -440,10 +448,29 @@ class KnowledgeRevisionRepositoryMixin:
             if row is None:
                 raise ValueError("knowledge revision cannot fail from its current state")
             connection.execute(
-                """UPDATE knowledge_documents
-                      SET index_status=CASE WHEN active_revision_id IS NULL THEN 'failed' ELSE 'ready' END
-                    WHERE user_id=%s AND doc_id=%s""",
-                (user_id, doc_id),
+                """UPDATE knowledge_documents AS document
+                      SET index_status=CASE WHEN active_revision_id IS NULL THEN 'failed' ELSE 'ready' END,
+                          source_type=CASE WHEN active_revision_id IS NULL
+                                           THEN revision.source_type ELSE document.source_type END,
+                          source_url=CASE WHEN active_revision_id IS NULL
+                                          THEN revision.source_url ELSE document.source_url END,
+                          title=CASE WHEN active_revision_id IS NULL
+                                     THEN revision.title ELSE document.title END,
+                          metadata=CASE WHEN active_revision_id IS NULL
+                                        THEN revision.document_metadata ELSE document.metadata END,
+                          source_version=CASE WHEN active_revision_id IS NULL
+                                              THEN revision.source_version
+                                              ELSE document.source_version END,
+                          source_status=CASE WHEN active_revision_id IS NULL
+                                             THEN revision.source_status
+                                             ELSE document.source_status END,
+                          updated_at_ms=%s
+                     FROM knowledge_index_revisions revision
+                    WHERE document.user_id=%s AND document.doc_id=%s
+                      AND revision.user_id=document.user_id
+                      AND revision.doc_id=document.doc_id
+                      AND revision.revision_id=%s""",
+                (now_ms, user_id, doc_id, revision_id),
             )
             self._record_revision_event(
                 connection,

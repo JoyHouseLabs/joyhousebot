@@ -16,6 +16,7 @@ from joyhousebot.extension_sdk import (
 from joyhousebot.extension_sdk.manifest import source_tree_digest
 from joyhousebot.extension_sdk.network import sanitize_error_message
 
+from .ingest.source_parsers import DEFAULT_SOURCE_PARSERS, SourceParseError
 from .ingest.url_ingest import fetch_and_ingest_url
 
 
@@ -151,65 +152,55 @@ class IndexKnowledgeHandler:
                 "knowledge writes require a frozen Runtime Action identity",
             )
         source_type = str(input.get("source_type") or "note")
-        content = str(input.get("content") or "")
         source_url = str(input.get("source_url") or "")
         try:
-            if source_type == "web" and source_url and not content.strip():
-                document = await fetch_and_ingest_url(source_url)
-                chunks = [
-                    {
-                        "text": item.text,
-                        "page": item.page,
-                        "char_start": item.start_offset,
-                        "char_end": item.end_offset,
-                        "section_path": list(item.meta.get("section_path") or []),
-                    }
-                    for item in document.chunks
-                ]
-                title = str(input.get("title") or document.title)
-                parser_id = "web-readability"
-                trace = document.trace
-            elif content.strip():
-                from .ingest.chunking import chunk_text
-
-                normalized = chunk_text(content, chunk_size=1200, overlap=200)
-                chunks = [
-                    {
-                        "text": item.text,
-                        "page": item.page,
-                        "char_start": item.start_offset,
-                        "char_end": item.end_offset,
-                    }
-                    for item in normalized
-                ]
-                title = str(input.get("title") or "Untitled knowledge source")
-                parser_id = "plain-text"
-                trace = {"content_length": len(content)}
-            else:
-                return _failure(
-                    "PARSER_UNAVAILABLE",
-                    f"no installed parser can index source_type={source_type}",
+            services = _services(context)
+        except RuntimeError as exc:
+            return _failure("CONTEXT_REQUIRED", str(exc))
+        try:
+            parsed = await DEFAULT_SOURCE_PARSERS.parse_snapshot(input)
+        except SourceParseError as exc:
+            try:
+                await services.fail_knowledge_index(
+                    context,
+                    source_type=source_type,
+                    source_url=source_url,
+                    title=str(input.get("title") or "Untitled knowledge source"),
+                    error_code=exc.code,
+                    error_message=str(exc),
+                    metadata=_index_metadata(input, {"parse_failure": exc.code}),
+                    source_system=str(input["source_system"]),
+                    source_id=str(input["source_id"]),
+                    source_version=str(input["source_version"]),
+                    source_generation=int(input["source_generation"]),
+                    source_status=str(input.get("source_status") or "active"),
+                    index_profile_id=str(input.get("index_profile_id") or "lexical-v1"),
+                    parser_id=exc.parser_id,
+                    parser_version=exc.parser_version,
                 )
-            doc_id = await _services(context).index_knowledge(
+            except Exception as failure_exc:
+                return _failure(
+                    "KNOWLEDGE_FAILURE_RECORD_FAILED",
+                    sanitize_error_message(str(failure_exc)),
+                    retryable=True,
+                )
+            return _failure(exc.code, str(exc), retryable=exc.retryable)
+        try:
+            doc_id = await services.index_knowledge(
                 context,
                 source_type=source_type,
                 source_url=source_url,
-                title=title,
-                chunks=chunks,
-                metadata={
-                    "trace": trace,
-                    "tags": list(input.get("tags") or []),
-                    "collection_refs": list(input.get("collection_refs") or []),
-                    "snapshot_content_sha256": input.get("content_sha256"),
-                },
+                title=str(input.get("title") or "Untitled knowledge source"),
+                chunks=parsed.chunks,
+                metadata=_index_metadata(input, parsed.trace),
                 source_system=str(input["source_system"]),
                 source_id=str(input["source_id"]),
                 source_version=str(input["source_version"]),
                 source_generation=int(input["source_generation"]),
                 source_status=str(input.get("source_status") or "active"),
                 index_profile_id=str(input.get("index_profile_id") or "lexical-v1"),
-                parser_id=parser_id,
-                parser_version="1",
+                parser_id=parsed.parser_id,
+                parser_version=parsed.parser_version,
                 chunker_id="semantic-text-v1",
                 chunker_version="1",
             )
@@ -223,13 +214,27 @@ class IndexKnowledgeHandler:
             )
         return CapabilityResult(
             success=True,
-            output={"doc_id": doc_id, "chunk_count": len(chunks), "source_version": input["source_version"]},
+            output={
+                "doc_id": doc_id,
+                "chunk_count": len(parsed.chunks),
+                "source_version": input["source_version"],
+                "parser_id": parsed.parser_id,
+            },
             write_receipt=WriteReceipt(
                 action_id=context.action_id,
                 idempotency_key=context.idempotency_key,
                 provider_operation_id=doc_id,
             ),
         )
+
+
+def _index_metadata(input: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "trace": trace,
+        "tags": list(input.get("tags") or []),
+        "collection_refs": list(input.get("collection_refs") or []),
+        "snapshot_content_sha256": input.get("content_sha256"),
+    }
 
 
 def _failure(
@@ -308,7 +313,27 @@ INDEX_KNOWLEDGE_SCHEMA = {
         "title": {"type": "string", "minLength": 1},
         "content": {"type": "string"},
         "source_url": {"type": "string"},
-        "attachments": {"type": "array"},
+        "attachments": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "required": ["reference_kind", "uri"],
+                "properties": {
+                    "reference_kind": {
+                        "type": "string",
+                        "enum": ["url", "local_vault", "cloud_vault"],
+                    },
+                    "uri": {"type": "string", "minLength": 1},
+                    "display_name": {"type": "string"},
+                    "media_type": {"type": "string"},
+                    "byte_size": {"type": ["integer", "null"], "minimum": 0},
+                    "sha256": {"type": "string"},
+                    "metadata": {"type": "object"},
+                },
+                "additionalProperties": False,
+            },
+        },
         "tags": {"type": "array", "items": {"type": "string"}},
         "collection_refs": {"type": "array", "items": {"type": "string"}},
         "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -319,7 +344,7 @@ INDEX_KNOWLEDGE_SCHEMA = {
 
 class ContextAssetsPlugin:
     plugin_id = "capability-context-assets"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def manifest(self) -> PluginManifest:
         return PluginManifest(

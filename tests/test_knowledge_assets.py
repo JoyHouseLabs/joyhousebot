@@ -11,8 +11,10 @@ from joyhousebot.api.app import create_app
 from joyhousebot.application.context import Principal, RequestContext
 from joyhousebot.application.knowledge_assets import KnowledgeAssetService
 from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.services.context import ContextPort
 from joyhousebot.config.schema import Config
 from joyhousebot.domain.capabilities.models import CapabilityKind, CapabilityRef
+from joyhousebot.extension_sdk import CapabilityContext
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
@@ -360,6 +362,89 @@ def test_knowledge_revision_activation_atomically_switches_search_projection(
     )
     assert repository.search(user_id="owner-a", query="old", top_k=10) == []
     assert repository.search(user_id="owner-a", query="new", top_k=10)
+
+
+@pytest.mark.asyncio
+async def test_context_port_failed_parse_attempt_preserves_active_projection(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "knowledge-context-failure.db")
+    repository = KnowledgeRepository(store)
+    port = ContextPort(store)
+    context = CapabilityContext(
+        user_id="owner-a",
+        session_id="session-index",
+        run_id="run-index-failed",
+        agent_id="default",
+    )
+    await port.index_knowledge(
+        context,
+        source_type="note",
+        source_url="",
+        title="Stable source",
+        chunks=[{"text": "stable searchable projection"}],
+        source_system="joyhouse-product",
+        source_id="source-failure",
+        source_version="1",
+        source_generation=1,
+    )
+    doc_id = await port.fail_knowledge_index(
+        context,
+        source_type="file",
+        source_url="joyhouse-local://vault/source-failure.pdf",
+        title="Broken replacement",
+        source_system="joyhouse-product",
+        source_id="source-failure",
+        source_version="2",
+        source_generation=2,
+        parser_id="pdf-pypdf",
+        error_code="PARSER_FAILED",
+        error_message="encrypted document cannot be parsed",
+    )
+
+    document = repository.get_document(user_id="owner-a", doc_id=doc_id)
+    revisions = repository.list_index_revisions(user_id="owner-a", doc_id=doc_id)
+    assert document["title"] == "Stable source"
+    assert document["source_generation"] == 2
+    assert document["index_status"] == "ready"
+    assert repository.search(user_id="owner-a", query="stable", top_k=5)
+    assert revisions[0]["status"] == "failed"
+    assert revisions[0]["source_version"] == "2"
+    assert revisions[0]["error_code"] == "PARSER_FAILED"
+    assert revisions[0]["run_id"] == "run-index-failed"
+
+
+@pytest.mark.asyncio
+async def test_context_port_first_failed_parse_remains_visible_for_retry(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "knowledge-first-failure.db")
+    repository = KnowledgeRepository(store)
+    port = ContextPort(store)
+    context = CapabilityContext(
+        user_id="owner-a",
+        session_id="session-index",
+        run_id="run-first-failure",
+        agent_id="default",
+    )
+    doc_id = await port.fail_knowledge_index(
+        context,
+        source_type="file",
+        source_url="joyhouse-cloud://vault/report.pdf",
+        title="Quarterly report",
+        source_system="joyhouse-product",
+        source_id="source-first-failure",
+        source_version="4",
+        source_generation=7,
+        error_code="REFERENCE_RESOLVER_UNAVAILABLE",
+        error_message="cloud vault resolver is not installed",
+    )
+    document = repository.get_document(user_id="owner-a", doc_id=doc_id)
+    assert document["title"] == "Quarterly report"
+    assert document["source_version"] == "4"
+    assert document["source_generation"] == 7
+    assert document["index_status"] == "failed"
+    assert document["active_revision_id"] is None
 
 
 class _KnowledgeSubmissionStore:

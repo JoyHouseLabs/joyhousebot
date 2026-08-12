@@ -20,14 +20,21 @@ vendor-specific embeddings and document parsers.
 The official `capability-context-assets` package publishes `knowledge.index`. A Worker invokes it with a frozen Action
 identity and immutable source snapshot. The extension:
 
-1. validates the snapshot and installed parser;
-2. fetches a public web source only when the snapshot intentionally contains a URL and no body;
+1. validates the snapshot and resolves an installed parser from the parser registry;
+2. fetches a public reference only through Core's DNS-pinned SSRF boundary, redirect checks, MIME allowlist and 10 MB
+   compressed-size cap;
 3. emits structured chunks and parser/chunker profile metadata;
 4. asks the narrow Runtime Context service to stage, verify and activate a revision;
 5. returns a write receipt tied to Runtime `action_id` and `idempotency_key`.
 
-Additional PDF/Office/OCR/transcription and embedding providers must be separate extension capabilities. Their network,
-filesystem, model, quota and data-classification permissions remain explicit in the Capability Registry.
+The official parser registry currently handles inline text, public HTML/text/JSON/XML, PDF, DOCX, PPTX and XLSX. Office
+archives have an additional 50 MB expanded-size cap and reject unsafe paths and XML entity declarations. PDF parsing uses
+the extension-local `pypdf` dependency. A source can combine inline text and multiple attachments; parser identity and
+version are frozen into the index revision.
+
+`local_vault` and `cloud_vault` references deliberately fail closed until a resolver is installed that can exchange a
+short-lived readable stream for the current Run. OCR, image understanding and transcription remain separate extension
+capabilities because they need explicit model, quota and data-classification permissions.
 
 ## Public snapshot contract
 
@@ -50,9 +57,23 @@ Run accepted
   → previous revision superseded
 ```
 
-A failed staging/ready revision records its error and leaves the previous active projection searchable. Archived sources
-remain auditable but are excluded from normal retrieval. Vector columns are intentionally deferred until an embedding
-profile, dimensions, cost policy and rebuild story are versioned; PostgreSQL full-text search is the zero-provider baseline.
+A parser or reference-resolution failure is also persisted as an immutable failed revision tied to the Run. It advances
+the observed source generation while leaving the previous active projection searchable. Archived sources remain auditable
+but are excluded from normal retrieval.
+
+## Vector readiness decision
+
+Vector indexing remains disabled by default. PostgreSQL full-text search is the zero-provider baseline and is already safe
+to rebuild from immutable chunks. Vector activation requires all of the following to be true first:
+
+- an enabled, deployment-allowed embedding Provider and exact model ID;
+- a versioned embedding profile containing model ID, dimensions, normalization and chunker version;
+- `pgvector` availability verified by the migrator, without letting an Extension inject DDL;
+- per-Run token/cost policy, retry and rate-limit handling;
+- dual-write staging and complete-vector-count verification before active revision promotion;
+- a rebuild path for model or dimension changes and retrieval Eval coverage.
+
+Until those gates exist, silently generating partial or provider-dependent embeddings would weaken revision consistency.
 
 The `retrieve` capability accepts an optional `collection_ref`. It filters the active projection by the frozen collection
 references so an App or Skill can request only the relevant branch of the user's library without reading Product tables.

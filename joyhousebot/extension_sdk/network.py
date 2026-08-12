@@ -10,6 +10,7 @@ from joyhousebot.utils.ssrf import (
     TooManyRedirectsError,
     UnsupportedContentTypeError,
     fetch_url,
+    fetch_url_bytes,
     validate_url,
     validate_url_with_dns,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "TrackedAsyncClient",
     "UnsupportedContentTypeError",
     "fetch_url",
+    "fetch_url_bytes",
     "sanitize_error_message",
     "validate_url",
     "validate_url_with_dns",
