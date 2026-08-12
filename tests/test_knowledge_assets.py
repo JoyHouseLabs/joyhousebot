@@ -253,6 +253,8 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
             headers=owner,
             params={"source_system": "runtime", "source_id": "doc-owner-a"},
         )
+        health = client.get("/v1/knowledge/health", headers=owner)
+        foreign_health = client.get("/v1/knowledge/health", headers=foreign)
         foreign_source_state = client.get(
             "/v1/knowledge/source-state",
             headers=foreign,
@@ -296,6 +298,26 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
     assert source_state.status_code == 200
     assert source_state.json()["document"]["doc_id"] == "doc-owner-a"
     assert source_state.json()["revisions"][0]["status"] == "active"
+    assert health.status_code == 200
+    assert health.json()["documents"] | {"last_ready_at_ms": None} == {
+        "total": 1,
+        "ready": 1,
+        "indexing": 0,
+        "failed": 0,
+        "archived": 0,
+        "last_ready_at_ms": None,
+    }
+    assert health.json()["documents"]["last_ready_at_ms"] is not None
+    assert health.json()["revisions"] == {
+        "total": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "queue_depth": 0,
+    }
+    assert health.json()["window"]["success_rate"] == 1.0
+    assert foreign_health.status_code == 200
+    assert foreign_health.json()["documents"]["total"] == 0
+    assert foreign_health.json()["revisions"]["total"] == 0
     assert foreign_source_state.status_code == 404
     assert foreign_revisions.status_code == 404
     assert foreign_detail.status_code == 404
@@ -462,12 +484,15 @@ def test_knowledge_revision_failure_preserves_previous_active_index(
     hits = repository.search(user_id="owner-a", query="stable", top_k=10)
     replacement_hits = repository.search(user_id="owner-a", query="replacement", top_k=10)
     revisions = repository.list_index_revisions(user_id="owner-a", doc_id="doc-versioned")
+    health = repository.index_health(user_id="owner-a", since_ms=0)
     assert document["active_revision_id"] == active_before
     assert document["index_status"] == "ready"
     assert [hit["doc_id"] for hit in hits] == ["doc-versioned"]
     assert replacement_hits == []
     assert revisions[0]["status"] == "failed"
     assert revisions[0]["run_id"] == "run-index-failed"
+    assert health["revisions"]["failed"] == 1
+    assert health["failure_codes"][0]["error_code"] == "PARSER_FAILED"
 
 
 def test_knowledge_revision_rejects_stale_generation_after_newer_activation(

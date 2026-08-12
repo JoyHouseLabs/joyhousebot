@@ -1,1 +1,0 @@
-import{O as e,N as a}from"./index-DZp8yhOH.js";async function r(){const t=await e("/v1/agents",{headers:a()});if(!t.ok)throw new Error(await t.text());return{ok:!0,agents:(await t.json()).items??[]}}export{r as g};

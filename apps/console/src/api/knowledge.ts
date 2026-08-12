@@ -71,6 +71,28 @@ export interface KnowledgeSummary {
   by_source: Record<string, number>
 }
 
+export interface KnowledgeIndexHealth {
+  since_ms: number
+  documents: {
+    total: number
+    ready: number
+    indexing: number
+    failed: number
+    archived: number
+    last_ready_at_ms?: number | null
+  }
+  revisions: { total: number; succeeded: number; failed: number; queue_depth: number }
+  window: {
+    total: number
+    succeeded: number
+    failed: number
+    success_rate?: number | null
+    avg_duration_ms?: number | null
+    p95_duration_ms?: number | null
+  }
+  failure_codes: Array<{ error_code: string; count: number; last_failed_at_ms: number }>
+}
+
 export interface KnowledgeBase {
   knowledge_base_id: string
   name: string
@@ -107,6 +129,10 @@ export function getKnowledgeDocuments(
 
 export function getKnowledgeDocument(docId: string) {
   return knowledgeFetch<KnowledgeDocument>(`/documents/${encodeURIComponent(docId)}`)
+}
+
+export function getKnowledgeIndexHealth(windowDays = 30) {
+  return knowledgeFetch<KnowledgeIndexHealth>(`/health?window_days=${windowDays}`)
 }
 
 export async function getKnowledgeDocumentRevisions(docId: string) {

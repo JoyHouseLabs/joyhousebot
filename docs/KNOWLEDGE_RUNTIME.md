@@ -12,6 +12,8 @@ third-party extension capability.
 - retrieval over the active projection only;
 - owner-scoped `GET /v1/knowledge/search` with document, revision, page, section and character-range evidence;
 - stable source lookup through `GET /v1/knowledge/source-state` for Product reconciliation and revision history;
+- owner-scoped `GET /v1/knowledge/health` aggregates document readiness, queue depth, success rate, completion latency
+  and bounded failure-code counts for a configurable 1–365 day window; it never returns titles or chunk content;
 - versioned Knowledge base membership and control-plane APIs.
 
 Core does not import Product models, read `product_*` tables, fetch remote files in HTTP request threads or implement

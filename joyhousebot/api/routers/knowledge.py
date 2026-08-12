@@ -142,6 +142,16 @@ async def get_knowledge_source_state(
     )
 
 
+@router.get("/health")
+async def get_knowledge_index_health(
+    context: ContextDep,
+    container: ContainerDep,
+    window_days: int = Query(default=30, ge=1, le=365),
+):
+    """Return owner-scoped index readiness, latency, and failure aggregates."""
+    return await container.knowledge_assets.health(context, window_days=window_days)
+
+
 @router.get("/documents")
 async def list_knowledge_documents(
     context: ContextDep,

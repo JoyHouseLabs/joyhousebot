@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -147,6 +148,14 @@ class KnowledgeAssetService:
         if document is None:
             raise NotFoundError("Knowledge document not found")
         return document
+
+    async def health(self, context: RequestContext, *, window_days: int) -> dict[str, Any]:
+        since_ms = int((time.time() - (window_days * 86400)) * 1000)
+        return await asyncio.to_thread(
+            self.repository.index_health,
+            user_id=context.user_id,
+            since_ms=since_ms,
+        )
 
     async def get_source_state(
         self, context: RequestContext, *, source_system: str, source_id: str

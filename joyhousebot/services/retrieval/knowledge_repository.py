@@ -11,6 +11,9 @@ from joyhousebot.services.retrieval.knowledge_base_repository import (
     KNOWLEDGE_BASE_DDL,
     KnowledgeBaseRepositoryMixin,
 )
+from joyhousebot.services.retrieval.knowledge_health_repository import (
+    KnowledgeHealthRepositoryMixin,
+)
 from joyhousebot.services.retrieval.knowledge_revision_repository import (
     KNOWLEDGE_REVISION_DDL,
     KnowledgeRevisionRepositoryMixin,
@@ -18,7 +21,11 @@ from joyhousebot.services.retrieval.knowledge_revision_repository import (
 from joyhousebot.storage.json_codec import Jsonb
 
 
-class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseRepositoryMixin):
+class KnowledgeRepository(
+    KnowledgeRevisionRepositoryMixin,
+    KnowledgeHealthRepositoryMixin,
+    KnowledgeBaseRepositoryMixin,
+):
     """Persist user-scoped knowledge; PostgreSQL provides indexed full-text search."""
 
     def __init__(self, store: Any) -> None:
