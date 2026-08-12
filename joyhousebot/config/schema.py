@@ -146,6 +146,8 @@ class RuntimeStoreConfig(BaseModel):
     pool_min_size: int = 1
     pool_max_size: int = 10
     auto_migrate: bool = True
+    blob_directory: str = ""
+    blob_inline_threshold_bytes: int = Field(default=65536, ge=0, le=16 * 1024 * 1024)
     lease_seconds: int = 60
     # PostgreSQL NOTIFY is the normal wake-up path.  This is only the durable
     # recovery cadence for listener reconnects and startup races.

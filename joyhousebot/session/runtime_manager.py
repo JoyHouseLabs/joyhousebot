@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from joyhousebot.domain.identity import canonical_json
 from joyhousebot.session.models import Session
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 # memory window, so 200 leaves ample headroom) — and last_consolidated is
 # shifted so it stays a valid index into the truncated list.
 SESSION_STATE_MAX_MESSAGES = 200
+SESSION_STATE_MAX_MESSAGE_BYTES = 256 * 1024
 
 
 class RuntimeSessionManager:
@@ -60,6 +62,14 @@ class RuntimeSessionManager:
         if dropped:
             messages = messages[dropped:]
             last_consolidated = max(0, last_consolidated - dropped)
+        # Count limits do not protect against one enormous tool/model message.
+        # Run/Event/Artifact history remains durable, so drop the oldest cache
+        # entries until the persisted tail also has a hard serialized-size cap.
+        while messages and len(canonical_json(messages).encode("utf-8")) > (
+            SESSION_STATE_MAX_MESSAGE_BYTES
+        ):
+            messages.pop(0)
+            last_consolidated = max(0, last_consolidated - 1)
         self.store.save_session_state(
             self._storage_key(session.key),
             session_key=session.key,

@@ -125,3 +125,45 @@ SCHEDULE_DDL = """
     CREATE INDEX IF NOT EXISTS ix_schedule_monitor_scratch_user
         ON schedule_monitor_scratch_revisions(user_id, schedule_id, revision DESC);
 """
+
+SCHEDULE_OCCURRENCE_RUNS_V2_DDL = """
+    CREATE TABLE IF NOT EXISTS schedule_occurrence_runs (
+        occurrence_id TEXT NOT NULL
+            REFERENCES schedule_occurrences(occurrence_id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        submitted_at_ms BIGINT NOT NULL,
+        PRIMARY KEY(occurrence_id, run_id),
+        UNIQUE(run_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_schedule_occurrence_runs_attempt
+        ON schedule_occurrence_runs(occurrence_id, attempt, submitted_at_ms, run_id);
+    INSERT INTO schedule_occurrence_runs(
+        occurrence_id,run_id,attempt,submitted_at_ms
+    )
+    SELECT occurrence.occurrence_id,linked.run_id,linked.position::integer,
+           occurrence.started_at_ms + linked.position::bigint
+    FROM schedule_occurrences occurrence
+    CROSS JOIN LATERAL jsonb_array_elements_text(occurrence.run_ids)
+        WITH ORDINALITY AS linked(run_id,position)
+    WHERE linked.run_id<>''
+    ON CONFLICT DO NOTHING;
+    INSERT INTO schedule_occurrence_runs(
+        occurrence_id,run_id,attempt,submitted_at_ms
+    )
+    SELECT occurrence_id,run_id,attempt,
+           COALESCE(finished_at_ms,started_at_ms)
+    FROM schedule_occurrences
+    WHERE run_id IS NOT NULL AND run_id<>''
+    ON CONFLICT DO NOTHING;
+"""
+
+SCHEDULE_DROP_RUN_IDS_V3_DDL = """
+    ALTER TABLE schedule_occurrences DROP COLUMN IF EXISTS run_ids;
+"""
+
+__all__ = [
+    "SCHEDULE_DDL",
+    "SCHEDULE_DROP_RUN_IDS_V3_DDL",
+    "SCHEDULE_OCCURRENCE_RUNS_V2_DDL",
+]

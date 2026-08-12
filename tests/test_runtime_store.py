@@ -14,6 +14,7 @@ from joyhousebot.runtime.models import AgentEvent, GraphTaskSpec, TaskGraphSpec
 from joyhousebot.runtime.narrative import redact_runtime_value
 from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.runtime.tracking import safe_trace_data
+from joyhousebot.storage.content_blobs import LocalContentBlobStore
 from joyhousebot.storage.factory import _auto_migrate, create_runtime_store
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
@@ -53,6 +54,78 @@ def test_runtime_artifacts_preserve_plain_text_jsonb_scalars(tmp_path: Path) -> 
     artifact = store.list_runtime_artifacts(run.run_id)[0]
     assert artifact["content"] == "A plain-text final answer"
     assert artifact["content_sha256"]
+
+
+def test_large_trace_and_artifact_content_use_content_addressed_blob_store(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "externalized-content.db")
+    store.blob_store = LocalContentBlobStore(tmp_path / "blobs")
+    store.blob_inline_threshold_bytes = 128
+    run = _create_run(store, "externalized-content")
+    content = {"content": "large-payload-" * 100}
+
+    trace = store.put_trace_blob(
+        run_id=run.run_id,
+        kind="model.request",
+        content=content,
+    )
+    store.add_runtime_artifact(
+        artifact_id="externalized-content:artifact",
+        run_id=run.run_id,
+        name="large-output",
+        media_type="application/json",
+        content=content,
+    )
+
+    with store._pool.connection() as conn:
+        trace_row = conn.execute(
+            "SELECT content,storage_uri FROM trace_blobs WHERE blob_id=%s",
+            (trace.blob_id,),
+        ).fetchone()
+        artifact_row = conn.execute(
+            """SELECT content,uri,object_version FROM runtime_artifacts
+               WHERE artifact_id='externalized-content:artifact'"""
+        ).fetchone()
+    assert trace_row["content"] is None
+    assert str(trace_row["storage_uri"]).startswith("joyhouse-blob://sha256/")
+    assert artifact_row["content"] is None
+    assert str(artifact_row["uri"]).startswith("joyhouse-blob://sha256/")
+    assert artifact_row["object_version"]
+    assert store.get_trace_blob(trace.blob_id).content == content
+    assert store.list_runtime_artifacts(run.run_id)[0]["content"] == content
+
+
+def test_caller_owned_trace_uri_does_not_create_an_unreachable_local_blob(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "caller-owned-trace-uri.db")
+    store.blob_store = LocalContentBlobStore(tmp_path / "blobs")
+    store.blob_inline_threshold_bytes = 1
+    run = _create_run(store, "caller-owned-trace-uri")
+    content = {"content": "stored-by-caller"}
+
+    trace = store.put_trace_blob(
+        run_id=run.run_id,
+        kind="external",
+        content=content,
+        storage_uri="s3://private-bucket/object.json",
+    )
+
+    assert trace.storage_uri == "s3://private-bucket/object.json"
+    assert trace.content == content
+    assert list((tmp_path / "blobs").glob("*/*/*.json")) == []
+
+
+def test_content_blob_store_rejects_a_digest_for_different_content(tmp_path: Path) -> None:
+    from joyhousebot.domain.identity import payload_hash
+
+    blob_store = LocalContentBlobStore(tmp_path / "digest-mismatch")
+    with pytest.raises(ValueError, match="requested SHA-256"):
+        blob_store.put_json(
+            {"value": "changed"},
+            sha256=payload_hash({"value": "original"}),
+        )
 
 
 def test_runtime_artifacts_are_immutable_and_plugin_outputs_are_materialized(

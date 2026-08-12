@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from joyhousebot.domain.identity import payload_hash
+from joyhousebot.domain.identity import canonical_json, payload_hash
+from joyhousebot.storage.content_blobs import (
+    ContentBlobStore,
+    externalize_json,
+    hydrate_json,
+)
 from joyhousebot.storage.json_codec import Jsonb
 
 
@@ -38,6 +43,8 @@ def insert_runtime_artifact_in_transaction(
     object_version: str = "",
     provenance: dict[str, Any] | None = None,
     evidence: dict[str, Any] | None = None,
+    blob_store: ContentBlobStore | None = None,
+    blob_inline_threshold_bytes: int = 65536,
 ) -> None:
     """Insert one Artifact using the caller's transaction and reject mutation."""
     if not artifact_id.strip() or not artifact_type.strip():
@@ -49,19 +56,32 @@ def insert_runtime_artifact_in_transaction(
     computed_hash = payload_hash(content) if content is not None else ""
     if content_sha256 and computed_hash and content_sha256 != computed_hash:
         raise ValueError("artifact content_sha256 does not match embedded content")
+    digest = content_sha256 or computed_hash
+    stored_content = content
+    stored_uri = uri
+    generated_uri: str | None = None
+    if content is not None and uri is None:
+        stored_content, generated_uri = externalize_json(
+            blob_store,
+            content,
+            sha256=digest,
+            size_bytes=len(canonical_json(content).encode("utf-8")),
+            inline_threshold_bytes=blob_inline_threshold_bytes,
+        )
+        stored_uri = generated_uri
     frozen = {
         "run_id": run_id,
         "task_id": task_id,
         "name": name,
         "media_type": media_type,
         "content": content,
-        "uri": uri,
+        "uri": stored_uri,
         "artifact_type": artifact_type,
         "operation": operation,
         "schema_version": int(schema_version),
         "metadata": dict(metadata or {}),
-        "content_sha256": content_sha256 or computed_hash,
-        "object_version": str(object_version or ""),
+        "content_sha256": digest,
+        "object_version": str(object_version or (digest if generated_uri else "")),
         "provenance": {
             **dict(provenance or {}),
             "run_id": run_id,
@@ -94,7 +114,7 @@ def insert_runtime_artifact_in_transaction(
             frozen["task_id"],
             frozen["name"],
             frozen["media_type"],
-            Jsonb(content) if content is not None else None,
+            Jsonb(stored_content) if stored_content is not None else None,
             frozen["uri"],
             frozen["artifact_type"],
             frozen["operation"],
@@ -117,7 +137,12 @@ def insert_runtime_artifact_in_transaction(
         "task_id": row["task_id"],
         "name": str(row["name"]),
         "media_type": str(row["media_type"]),
-        "content": _json(row["content"]),
+        "content": hydrate_json(
+            blob_store,
+            _json(row["content"]),
+            row["uri"],
+            sha256=str(row["content_sha256"]),
+        ),
         "uri": row["uri"],
         "artifact_type": str(row["artifact_type"]),
         "operation": str(row["operation"]),

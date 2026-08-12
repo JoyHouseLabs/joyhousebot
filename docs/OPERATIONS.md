@@ -30,6 +30,12 @@ Agent Worker，以及一个 Channel Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKER
 `JOYHOUSEBOT_DATABASE_URL` 仍会被本地脚本映射为共享连接。所有组件日志写入
 `~/.joyhousebot/logs/local/<timestamp>/`。
 
+`runtime.store.blobDirectory` 可把超过 `blobInlineThresholdBytes`（默认 64 KiB）的 Trace/Artifact 正文移出
+PostgreSQL 行。单机默认目录为 `~/.joyhousebot/runtime-blobs`；容器或多主机部署必须挂载持久化共享卷，且所有
+读取这些 Run/Work 的 API、Worker 与 Scheduler 使用同一路径。备份和恢复必须把 PostgreSQL 快照与 Blob 目录
+视为一个恢复点；只恢复数据库会保留 URI 但无法读取正文，只恢复目录则不会恢复运行状态。运行数据 purge 使用
+两阶段、24 小时宽限的未引用对象回收；不要绕过 PostgreSQL 直接删除目录内容。
+
 ## PostgreSQL 启动
 
 ```bash

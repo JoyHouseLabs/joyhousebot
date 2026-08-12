@@ -17,6 +17,7 @@ from typing import Any
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from joyhousebot.storage.content_blobs import LocalContentBlobStore
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_admins import PostgresAdminStoreMixin
 from joyhousebot.storage.postgres_agent_skills import PostgresAgentSkillStoreMixin
@@ -167,12 +168,18 @@ class PostgresRuntimeStore(
         application_name: str = "joyhousebot-runtime",
         auto_migrate: bool = True,
         bootstrap_model: str = "unconfigured/model",
+        blob_directory: str = "",
+        blob_inline_threshold_bytes: int = 65536,
     ) -> None:
         if not database_url.strip():
             raise ValueError("PostgreSQL database_url is required")
         self.database_url = database_url
         self.application_name = application_name
         self.bootstrap_model = str(bootstrap_model).strip() or "unconfigured/model"
+        self.blob_store = (
+            LocalContentBlobStore(blob_directory) if str(blob_directory).strip() else None
+        )
+        self.blob_inline_threshold_bytes = max(0, int(blob_inline_threshold_bytes))
         self._pool = ConnectionPool(
             conninfo=database_url,
             min_size=max(0, min_pool_size),

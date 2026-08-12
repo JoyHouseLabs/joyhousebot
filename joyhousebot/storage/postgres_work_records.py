@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from joyhousebot.domain.identity import payload_hash
+from joyhousebot.storage.content_blobs import hydrate_json
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_work_rows import content_hash
 
@@ -65,8 +66,7 @@ class PostgresWorkRecordStoreMixin:
             "version": self._version(version_row, include_content=include_content),
         }
 
-    @staticmethod
-    def _version(row: Any, *, include_content: bool) -> dict[str, Any] | None:
+    def _version(self, row: Any, *, include_content: bool) -> dict[str, Any] | None:
         if row is None:
             return None
         from joyhousebot.storage.postgres_store import _iso
@@ -77,7 +77,16 @@ class PostgresWorkRecordStoreMixin:
             "source_run_id": str(row["source_run_id"]),
             "source_artifact_id": str(row["source_artifact_id"]),
             "media_type": str(row["media_type"]),
-            "content": row["content"] if include_content else None,
+            "content": (
+                hydrate_json(
+                    self.blob_store,
+                    row["content"],
+                    row["uri"],
+                    sha256=str(row["content_sha256"]),
+                )
+                if include_content
+                else None
+            ),
             "uri": row["uri"] if include_content else None,
             "content_sha256": str(row["content_sha256"]),
             "source_artifact_sha256": str(row["source_artifact_sha256"]),

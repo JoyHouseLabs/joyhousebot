@@ -67,7 +67,7 @@ def test_core_migrations_are_recorded(store: PostgresRuntimeStore) -> None:
         ).fetchall()
     recorded = {row["name"]: row for row in rows}
     assert set(recorded) == _CORE_DOMAINS
-    assert recorded["runtime"]["version"] == 5
+    assert recorded["runtime"]["version"] == 7
     assert recorded["execution_loop"]["version"] == 2
     assert recorded["approvals"]["version"] == 2
     for row in recorded.values():
@@ -111,6 +111,134 @@ def test_runtime_reopens_when_product_tables_share_the_database(
         if not product_table_existed:
             with store._pool.connection() as conn, conn.transaction():
                 conn.execute("DROP TABLE product_schema_migrations")
+
+
+def test_runtime_query_projections_follow_json_snapshots(
+    store: PostgresRuntimeStore,
+) -> None:
+    run_id = f"migration-query-projection-{uuid4().hex}"
+    task_id = f"task-{uuid4().hex}"
+    with store._pool.connection() as conn, conn.transaction():
+        conn.execute(
+            """INSERT INTO runtime_runs(
+                   run_id,user_id,session_id,agent_id,status,prompt,options
+               ) VALUES (
+                   %s,'projection-user','projection-session','default','queued','sentinel',
+                   '{
+                     "max_concurrent": 7,
+                     "metadata": {
+                       "_runtime_initial_events_required": true,
+                       "_runtime_schedule_submission_ready": false,
+                       "app": {
+                         "installation_id": "appinst_projection",
+                         "entrypoint_id": "entry_projection"
+                       }
+                     }
+                   }'::jsonb
+               )""",
+            (run_id,),
+        )
+        conn.execute(
+            """INSERT INTO runtime_tasks(
+                   task_id,run_id,agent_id,name,status,payload,result
+               ) VALUES (
+                   %s,%s,'default','projection','queued',
+                   '{"node_type":"foreach","foreach_max_concurrent":3}'::jsonb,
+                   '{"stop_reason":"foreach_expanded"}'::jsonb
+               )""",
+            (task_id, run_id),
+        )
+        defaults = conn.execute(
+            """INSERT INTO runtime_runs(
+                   run_id,user_id,session_id,agent_id,status,prompt,options
+               ) VALUES (
+                   %s,'projection-user','projection-session','default','queued','defaults',
+                   '{}'::jsonb
+               ) RETURNING initial_events_required,submission_ready,max_concurrent""",
+            (f"{run_id}-defaults",),
+        ).fetchone()
+        run = conn.execute(
+            """SELECT max_concurrent,initial_events_required,submission_ready,
+                      app_installation_id,app_entrypoint_id
+               FROM runtime_runs WHERE run_id=%s""",
+            (run_id,),
+        ).fetchone()
+        task = conn.execute(
+            """SELECT wait_reason,node_type,child_concurrency_limit
+               FROM runtime_tasks WHERE task_id=%s""",
+            (task_id,),
+        ).fetchone()
+    try:
+        assert run == {
+            "max_concurrent": 7,
+            "initial_events_required": True,
+            "submission_ready": False,
+            "app_installation_id": "appinst_projection",
+            "app_entrypoint_id": "entry_projection",
+        }
+        assert task == {
+            "wait_reason": "foreach_expanded",
+            "node_type": "foreach",
+            "child_concurrency_limit": 3,
+        }
+        assert defaults == {
+            "initial_events_required": False,
+            "submission_ready": True,
+            "max_concurrent": 4,
+        }
+    finally:
+        with store._pool.connection() as conn, conn.transaction():
+            conn.execute("DELETE FROM runtime_runs WHERE run_id=%s", (run_id,))
+
+
+def test_recorded_generated_column_migration_is_not_reapplied(
+    store: PostgresRuntimeStore,
+) -> None:
+    with store._pool.connection() as conn:
+        before = conn.execute(
+            """SELECT attnum FROM pg_attribute
+               WHERE attrelid='runtime_runs'::regclass
+                 AND attname='initial_events_required' AND NOT attisdropped"""
+        ).fetchone()["attnum"]
+    reopened = PostgresRuntimeStore(
+        TEST_DATABASE_URL,
+        application_name="joyhousebot-test-generated-column-reopen",
+    )
+    try:
+        with reopened._pool.connection() as conn:
+            after = conn.execute(
+                """SELECT attnum FROM pg_attribute
+                   WHERE attrelid='runtime_runs'::regclass
+                     AND attname='initial_events_required' AND NOT attisdropped"""
+            ).fetchone()["attnum"]
+    finally:
+        reopened.close()
+    assert after == before
+
+
+def test_schedule_run_history_is_normalized_without_legacy_json_column(
+    store: PostgresRuntimeStore,
+) -> None:
+    from joyhousebot.scheduling.repository import ScheduleRepository
+
+    repository = ScheduleRepository(store)
+    with store._pool.connection() as conn:
+        legacy = conn.execute(
+            """SELECT 1 AS present FROM information_schema.columns
+               WHERE table_schema='public' AND table_name='schedule_occurrences'
+                 AND column_name='run_ids'"""
+        ).fetchone()
+        relation = conn.execute(
+            "SELECT to_regclass('public.schedule_occurrence_runs') AS name"
+        ).fetchone()["name"]
+        history = conn.execute(
+            """SELECT version FROM schema_migration_history
+               WHERE name='scheduling' ORDER BY version"""
+        ).fetchall()
+    assert repository is not None
+    assert legacy is None
+    assert relation == "schedule_occurrence_runs"
+    assert [row["version"] for row in history] == [1, 2, 3]
 
 
 def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(

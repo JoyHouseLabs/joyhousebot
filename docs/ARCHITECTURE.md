@@ -417,7 +417,7 @@ Verification、Action/Invocation 与 evidence manifest。URI Artifact 没有内�
   `model_response_cache`。
 - 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`、
   `knowledge_asset_events`、`knowledge_bases`、`knowledge_base_documents`、`knowledge_base_events`。
-- 调度：`schedules`、`schedule_occurrences`、`schedule_monitor_state`、
+- 调度：`schedules`、`schedule_occurrences`、`schedule_occurrence_runs`、`schedule_monitor_state`、
   `schedule_monitor_scratch_revisions`。
 - Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。
 - Provider：`provider_profile_health`。
@@ -431,8 +431,8 @@ lock。Core 只保存 Run/Task、不可变执行证据、Artifact/Work 和业务
 
 每个领域的 migration 执行后都会向 `schema_migration_history` 表记录
 `(name, version, checksum, applied_at)`（checksum 为该领域 DDL 脚本的 SHA-256）；重复启动时
-checksum 一致则跳过记录，checksum 变化说明 DDL 在应用后被改动，会产生 warning 级日志提示
-schema 漂移。该表和 migration lock 只属于 Core schema；扩展与业务服务不得写入 Core migration
+checksum 一致则跳过一次性回填，checksum 变化说明 DDL 在应用后被改动，启动会失败关闭而不是掩盖
+schema 漂移。无破坏性的 `ADD ... IF NOT EXISTS` 投影仍可自愈开发重置后缺失的列。该表和 migration lock 只属于 Core schema；扩展与业务服务不得写入 Core migration
 历史，也不得借用 Core 数据库连接或锁。它们必须在自己的存储边界内独立迁移和部署。
 
 所有 PostgreSQL schema migration 使用同一个 cluster-wide advisory lock 串行执行，避免 API、
@@ -447,11 +447,21 @@ SSE 回放命中 tombstone 时先产出 `run.history_purged` 事件向调用方�
 `JOYHOUSEBOT_DIAGNOSTICS_RETENTION_DAYS` 保留周期（缺省回退到全局 `JOYHOUSEBOT_RETENTION_DAYS`）；
 `trace_blobs.expires_at` 是生效字段，purge 优先删除已过期 Blob，读取侧过期即视为不存在。
 
+Trace Blob 和 Runtime Artifact 超过 `runtime.store.blobInlineThresholdBytes` 时，可把不可变正文写入
+`runtime.store.blobDirectory` 的内容寻址存储；PostgreSQL 仍保存身份、SHA-256、大小、URI、权限和生命周期，
+读取时必须校验摘要。单机可使用私有本地目录；多 Worker/多主机部署必须把该目录放在所有执行进程都能访问、
+可备份的共享文件系统，或实现同一 `ContentBlobStore` 契约的对象存储适配器。清理任务先删除过期数据库引用，
+再通过标记与 24 小时宽限期回收未引用对象，避免与未提交事务竞态。未配置目录时正文继续内联 JSONB。
+
 `JOYHOUSEBOT_DESTRUCTIVE_MIGRATE` 是仅限开发重置的逃生口：只有取值精确等于 `DROP_ALL_TABLES`
 才生效（`=1` 等真值不再触发），执行前会以 critical 级日志列出将删除的 runtime 表；生产环境
 绝不应设置该变量。
 
-JSONB 只保存单实体 payload/result/options；集合、队列、lease 和状态机必须是可索引行。生产迁移使用 advisory lock；状态提交必须校验 lease owner/version。
+JSONB 只保存有界的单实体 payload/result/options；集合、队列、lease、状态机和高频关系必须是可索引行。
+Run/Task 的常用 JSON 查询键使用生成列和索引；Schedule occurrence 到 Run 的一对多提交历史使用关系表，
+不再追加 JSON 数组。Agent/Graph 的单个 `output_schema` 序列化后不得超过 20,000 UTF-8 字节，超限会在创建
+Run 之前失败；大型业务结果应成为 Artifact，而不是继续扩大 Schema 或会话缓存。生产迁移使用 advisory
+lock；状态提交必须校验 lease owner/version。
 
 ## 全链路可解释性、诊断与回放
 
@@ -513,7 +523,7 @@ api / bootstrap / channel adapter
 - `scheduling/`、`channels/`、`services/retrieval/`：Schedule、Channel outbox/lease、Knowledge 的专用 Repository。
 - `bootstrap/`：分别组合 API、Agent Worker、Scheduler Worker 和 Channel Worker；AgentRuntimeCatalog 按不可变 revision 热加载，不共享进程内业务状态。
 
-一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。`conversation_sessions.state` 只是 consolidation 缓存：持久化副本只保留最新 200 条消息（`last_consolidated` 随截断平移），事实源始终是 Run 历史。
+一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。`conversation_sessions.state` 只是 consolidation 缓存：持久化副本最多保留最新 200 条且消息数组不超过 256 KiB（`last_consolidated` 随截断平移），事实源始终是 Run 历史。
 
 API 首先解析并冻结唯一执行模式。Agent 模式由所选 Agent 执行；Team 模式由冻结 Coordinator 生成结构化
 计划并把步骤绑定到成员 Revision；Scenario 模式只使用指定的已发布版本完成字段校验、追问或固定 DAG；

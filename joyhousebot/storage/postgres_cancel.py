@@ -104,7 +104,7 @@ class PostgresRunCancelMixin:
                            WHERE d.task_id=t.task_id
                        ) THEN 'blocked' ELSE 'queued' END,
                        result=CASE
-                           WHEN t.payload->>'node_type' IN ('foreach','bounded_loop')
+                           WHEN t.node_type IN ('foreach','bounded_loop')
                                 AND EXISTS(SELECT 1 FROM runtime_tasks child
                                     WHERE child.parent_task_id=t.task_id)
                            THEN t.result ELSE NULL END,

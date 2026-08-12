@@ -28,12 +28,12 @@ class PostgresAppUsageStoreMixin:
                 return None
             run_rows = conn.execute(
                 """SELECT status,
-                          COALESCE(options#>>'{metadata,app,entrypoint_id}','unknown')
+                          COALESCE(app_entrypoint_id,'unknown')
                             AS entrypoint_id,
                           COUNT(*) AS count
                    FROM runtime_runs
                    WHERE user_id=%s AND created_at>=%s AND created_at<%s
-                     AND options#>>'{metadata,app,installation_id}'=%s
+                     AND app_installation_id=%s
                    GROUP BY status,entrypoint_id
                    ORDER BY entrypoint_id,status""",
                 (user_id, since, until, installation_id),
@@ -42,7 +42,7 @@ class PostgresAppUsageStoreMixin:
                 """WITH app_roots AS (
                      SELECT run_id FROM runtime_runs
                      WHERE user_id=%s AND created_at>=%s AND created_at<%s
-                       AND options#>>'{metadata,app,installation_id}'=%s
+                       AND app_installation_id=%s
                    ), app_runs AS (
                      SELECT run_id FROM runtime_runs
                      WHERE root_run_id IN (SELECT run_id FROM app_roots)

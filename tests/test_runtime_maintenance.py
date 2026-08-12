@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.storage.content_blobs import LocalContentBlobStore
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -232,6 +233,36 @@ async def test_trace_blob_expires_at_is_enforced(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_content_blob_gc_is_two_phase_and_follows_database_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import joyhousebot.storage.postgres_maintenance as maintenance
+
+    monkeypatch.setattr(maintenance, "_CONTENT_BLOB_GC_GRACE_SECONDS", 0)
+    store = PostgresTestStore(tmp_path / "content-blob-gc.db")
+    store.blob_store = LocalContentBlobStore(tmp_path / "blobs")
+    store.blob_inline_threshold_bytes = 32
+    run = _create_run(store, "content-blob-gc")
+    trace = store.put_trace_blob(
+        run_id=run.run_id,
+        kind="request",
+        content={"payload": "externalized-" * 100},
+    )
+    path = store.blob_store._path(trace.sha256)
+    assert path.exists()
+
+    future_ms = int(time.time() * 1000) + 60_000
+    first = await store.purge_old_runtime_data(future_ms, future_ms)
+    assert first["trace_blobs"] == 1
+    assert first["content_blobs"] == 0
+    assert path.exists()
+
+    second = await store.purge_old_runtime_data(future_ms, future_ms)
+    assert second["content_blobs"] == 1
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
 async def test_events_purge_tombstone_reaches_sse_replay(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "tombstone.db")
     run = _create_run(store, "tombstone-run")
@@ -289,3 +320,34 @@ def test_session_state_message_tail_is_bounded() -> None:
     assert store.state["last_consolidated"] == 70
     # The live session object is not mutated by persistence.
     assert len(session.messages) == 250
+
+
+def test_session_state_message_tail_has_serialized_byte_limit() -> None:
+    from joyhousebot.domain.identity import canonical_json
+    from joyhousebot.session.models import Session
+    from joyhousebot.session.runtime_manager import (
+        SESSION_STATE_MAX_MESSAGE_BYTES,
+        RuntimeSessionManager,
+    )
+
+    class _Store:
+        state = None
+
+        def save_session_state(self, storage_key, *, session_key, namespace, state):
+            self.state = state
+
+    store = _Store()
+    manager = RuntimeSessionManager(store)
+    session = Session(key="large")
+    session.messages = [
+        {"role": "tool", "content": f"{index}:" + ("大" * 50_000)}
+        for index in range(6)
+    ]
+    session.last_consolidated = 5
+    manager.save(session)
+
+    persisted = canonical_json(store.state["messages"]).encode("utf-8")
+    assert len(persisted) <= SESSION_STATE_MAX_MESSAGE_BYTES
+    assert store.state["messages"][-1]["content"].startswith("5:")
+    assert store.state["last_consolidated"] < len(store.state["messages"])
+    assert len(session.messages) == 6

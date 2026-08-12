@@ -12,6 +12,7 @@ from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.runtime.context import (
     RunContext,
 )
+from joyhousebot.runtime.schema_limits import structured_contract_json
 from joyhousebot.services.memory.store import MemoryStore
 from joyhousebot.services.memory.writes import MemoryWriteController
 from joyhousebot.utils.exceptions import (
@@ -33,12 +34,22 @@ class MemoryLifecycleMixin:
         if run_context.output_schema:
             instructions.append(
                 "Return only JSON matching this JSON Schema:\n"
-                + json.dumps(run_context.output_schema, ensure_ascii=False)[:20000]
+                + str(
+                    structured_contract_json(
+                        run_context.output_schema,
+                        label="run output_schema",
+                    )
+                )
             )
         if (run_context.verification_policy or {}).get("verifiers"):
             instructions.append(
                 "Your final answer must pass this completion verification policy:\n"
-                + json.dumps(run_context.verification_policy, ensure_ascii=False)[:20000]
+                + str(
+                    structured_contract_json(
+                        run_context.verification_policy,
+                        label="run verification_policy",
+                    )
+                )
             )
         if not instructions:
             return None

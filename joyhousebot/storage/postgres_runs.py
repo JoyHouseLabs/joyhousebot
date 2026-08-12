@@ -195,20 +195,14 @@ class PostgresRunStoreMixin:
                              ((rec.status='pending' AND rec.next_attempt_at<=clock_timestamp())
                               OR (rec.status='checking' AND rec.lease_expires_at<clock_timestamp()))))
                     ) AND (
-                      COALESCE(
-                        (pending.options->'metadata'->>'_runtime_initial_events_required')::boolean,
-                        FALSE
-                      ) = FALSE
+                      pending.initial_events_required = FALSE
                       OR EXISTS (
                         SELECT 1 FROM runtime_events ready
                         WHERE ready.run_id=pending.run_id
                           AND ready.event_type='run.queued'
                       )
                     ) AND (
-                      COALESCE(
-                        pending.options->'metadata'->>'_runtime_schedule_submission_ready',
-                        'true'
-                      ) <> 'false'
+                      pending.submission_ready
                     ) AND (
                       pending.kind!='graph' OR NOT EXISTS (
                         SELECT 1 FROM runtime_tasks graph_task
@@ -401,7 +395,7 @@ class PostgresRunStoreMixin:
                             JOIN runtime_runs child ON child.parent_task_id=task.task_id
                             WHERE task.run_id=runtime_runs.run_id
                               AND task.status='waiting_external'
-                              AND task.payload->>'node_type'='subrun'
+                              AND task.node_type='subrun'
                               AND child.status IN
                                   ('completed','failed','cancelled','timed_out')))
                    ) AS fair_queue
@@ -509,6 +503,8 @@ class PostgresRunStoreMixin:
                 insert_runtime_artifact_in_transaction(
                     conn,
                     **{**artifact, "run_id": run_id},
+                    blob_store=self.blob_store,
+                    blob_inline_threshold_bytes=self.blob_inline_threshold_bytes,
                 )
             self._audit(
                 conn,

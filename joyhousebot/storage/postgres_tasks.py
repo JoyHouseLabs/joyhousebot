@@ -281,11 +281,11 @@ class PostgresTaskStoreMixin:
                                WHERE action.task_id=task.task_id
                                  AND action.status IN
                                      ('proposed','approval_pending','invoking','waiting_external','observed')
-                           ) OR task.payload->>'node_type' IN
+                           ) OR task.node_type IN
                                 ('branch','foreach','wait_event','approval','verify','compensation',
                                  'bounded_loop','aggregate','subrun')
                            THEN CASE
-                               WHEN task.result->>'stop_reason' IN
+                               WHEN task.wait_reason IN
                                     ('foreach_expanded','bounded_loop_waiting')
                                THEN task.result
                                ELSE COALESCE(task.result,'{}'::jsonb)
@@ -303,7 +303,7 @@ class PostgresTaskStoreMixin:
                                WHERE action.task_id=task.task_id
                                  AND action.status IN
                                      ('proposed','approval_pending','invoking','waiting_external','observed')
-                             ) OR task.payload->>'node_type' IN
+                             ) OR task.node_type IN
                                   ('branch','foreach','wait_event','approval','verify','compensation',
                                    'bounded_loop','aggregate','subrun'))"""
                 )
@@ -323,7 +323,7 @@ class PostgresTaskStoreMixin:
                              AND action.status IN
                                  ('proposed','approval_pending','invoking','waiting_external','observed')
                          )
-                         AND COALESCE(task.payload->>'node_type','agent') NOT IN
+                         AND task.node_type NOT IN
                              ('branch','foreach','wait_event','approval','verify','compensation',
                               'bounded_loop','aggregate','subrun')"""
                 )
@@ -350,7 +350,7 @@ class PostgresTaskStoreMixin:
                            )
                            OR (
                              t.status='waiting_external'
-                             AND t.payload->>'node_type'='subrun'
+                             AND t.node_type='subrun'
                              AND EXISTS (
                                SELECT 1 FROM runtime_runs child
                                WHERE child.parent_task_id=t.task_id
@@ -363,11 +363,11 @@ class PostgresTaskStoreMixin:
                          AND (
                            t.attempt<t.max_attempts
                            OR t.status='waiting_external'
-                           OR COALESCE(t.result->>'stop_reason','')='waiting_approval'
-                           OR COALESCE(t.result->>'stop_reason','')='durable_recovery'
-                           OR COALESCE(t.result->>'stop_reason','')='foreach_expanded'
-                           OR COALESCE(t.result->>'stop_reason','')='bounded_loop_waiting'
-                           OR COALESCE(t.result->>'stop_reason','')='subrun_waiting'
+                           OR COALESCE(t.wait_reason,'')='waiting_approval'
+                           OR COALESCE(t.wait_reason,'')='durable_recovery'
+                           OR COALESCE(t.wait_reason,'')='foreach_expanded'
+                           OR COALESCE(t.wait_reason,'')='bounded_loop_waiting'
+                           OR COALESCE(t.wait_reason,'')='subrun_waiting'
                          )
                          AND t.run_id=%s
                          AND (
@@ -394,10 +394,7 @@ class PostgresTaskStoreMixin:
                            )
                          )
                          AND (
-                           COALESCE(
-                             (r.options->'metadata'->>'_runtime_initial_events_required')::boolean,
-                             FALSE
-                           ) = FALSE
+                           r.initial_events_required = FALSE
                            OR EXISTS (
                              SELECT 1 FROM runtime_events ready
                              WHERE ready.run_id=r.run_id
@@ -406,13 +403,13 @@ class PostgresTaskStoreMixin:
                          )
                          AND (SELECT count(*) FROM runtime_tasks active
                               WHERE active.run_id=t.run_id AND active.status='running')
-                             < COALESCE((r.options->>'max_concurrent')::int, 4)
+                             < r.max_concurrent
                          AND (
                            t.parent_task_id IS NULL OR
                            (SELECT count(*) FROM runtime_tasks sibling
                             WHERE sibling.parent_task_id=t.parent_task_id
                               AND sibling.status='running')
-                           < COALESCE((t.payload->>'foreach_max_concurrent')::int, 1)
+                           < t.child_concurrency_limit
                          )
                        ORDER BY t.priority,t.created_at FOR UPDATE OF r,t SKIP LOCKED LIMIT 1
                    )
@@ -421,7 +418,7 @@ class PostgresTaskStoreMixin:
                        lease_version=t.lease_version+1,
                        attempt=t.attempt+CASE
                            WHEN t.status='waiting_external'
-                             OR COALESCE(t.result->>'stop_reason','') IN
+                             OR COALESCE(t.wait_reason,'') IN
                                 ('waiting_approval','durable_recovery','foreach_expanded',
                                  'bounded_loop_waiting','subrun_waiting')
                            THEN 0 ELSE 1 END,
@@ -495,7 +492,7 @@ class PostgresTaskStoreMixin:
                            SELECT 1 FROM runtime_task_dependencies d WHERE d.task_id=t.task_id
                        ) THEN 'blocked' ELSE 'queued' END,
                        result=CASE
-                           WHEN t.payload->>'node_type' IN ('foreach','bounded_loop','subrun') AND (
+                           WHEN t.node_type IN ('foreach','bounded_loop','subrun') AND (
                                EXISTS(SELECT 1 FROM runtime_tasks child
                                WHERE child.parent_task_id=t.task_id)
                                OR EXISTS(SELECT 1 FROM runtime_runs child_run
@@ -517,7 +514,7 @@ class PostgresTaskStoreMixin:
                 """UPDATE runtime_tasks parent SET status='queued',
                        updated_at=clock_timestamp()
                    WHERE parent.run_id=%s AND parent.status='blocked'
-                     AND parent.payload->>'node_type'='bounded_loop' AND EXISTS (
+                     AND parent.node_type='bounded_loop' AND EXISTS (
                        SELECT 1 FROM runtime_tasks child
                        WHERE child.parent_task_id=parent.task_id
                          AND child.status IN ('failed','cancelled','timed_out','skipped'))

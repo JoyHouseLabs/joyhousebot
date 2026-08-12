@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from joyhousebot.storage.content_blobs import externalize_json, hydrate_json
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.observability_records import (
     ExecutionSpanRecord,
@@ -190,6 +191,20 @@ class PostgresObservabilityStoreMixin:
     def put_trace_blob(self, *, run_id: str, kind: str, content: Any, **kwargs: Any) -> TraceBlobRecord:
         blob_id = str(kwargs.get("blob_id") or f"blob_{uuid4().hex}")
         _, digest, size = _payload(content)
+        storage_uri = kwargs.get("storage_uri")
+        if storage_uri:
+            # A caller-owned URI must never cause a second, unreachable local
+            # object to be written. Preserve the supplied content snapshot.
+            inline_content, generated_uri = content, None
+        else:
+            inline_content, generated_uri = externalize_json(
+                self.blob_store,
+                content,
+                sha256=digest,
+                size_bytes=size,
+                inline_threshold_bytes=self.blob_inline_threshold_bytes,
+            )
+            storage_uri = generated_uri
         with self._pool.connection() as conn:
             row = conn.execute(
                 """INSERT INTO trace_blobs
@@ -199,10 +214,11 @@ class PostgresObservabilityStoreMixin:
                            COALESCE(%s::timestamptz,clock_timestamp()),%s::timestamptz)
                    RETURNING *""",
                 (blob_id, run_id, kwargs.get("invocation_id"), kind,
-                 str(kwargs.get("content_type") or "application/json"), Jsonb(content),
-                 kwargs.get("storage_uri"), digest, size, kwargs.get("created_at"), kwargs.get("expires_at")),
+                 str(kwargs.get("content_type") or "application/json"),
+                 Jsonb(inline_content) if inline_content is not None else None,
+                 storage_uri, digest, size, kwargs.get("created_at"), kwargs.get("expires_at")),
             ).fetchone()
-        return self._obs_blob(row)
+        return self._obs_blob_with_content(row)
 
     def get_trace_blob(self, blob_id: str) -> TraceBlobRecord | None:
         with self._pool.connection() as conn:
@@ -211,7 +227,7 @@ class PostgresObservabilityStoreMixin:
                    AND (expires_at IS NULL OR expires_at > clock_timestamp())""",
                 (blob_id,),
             ).fetchone()
-        return self._obs_blob(row) if row else None
+        return self._obs_blob_with_content(row) if row else None
 
     def list_trace_blobs(self, run_id: str) -> list[TraceBlobRecord]:
         with self._pool.connection() as conn:
@@ -221,7 +237,17 @@ class PostgresObservabilityStoreMixin:
                    ORDER BY created_at""",
                 (run_id,),
             ).fetchall()
-        return [self._obs_blob(row) for row in rows]
+        return [self._obs_blob_with_content(row) for row in rows]
+
+    def _obs_blob_with_content(self, row: Any) -> TraceBlobRecord:
+        mapped = dict(row)
+        mapped["content"] = hydrate_json(
+            self.blob_store,
+            mapped.get("content"),
+            mapped.get("storage_uri"),
+            sha256=str(mapped["sha256"]),
+        )
+        return self._obs_blob(mapped)
 
     def start_execution_span(self, **kwargs: Any) -> ExecutionSpanRecord:
         span_id = str(kwargs.get("span_id") or f"span_{uuid4().hex}")

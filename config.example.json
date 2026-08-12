@@ -11,6 +11,8 @@
       "poolMinSize": 1,
       "poolMaxSize": 10,
       "autoMigrate": true,
+      "blobDirectory": "~/.joyhousebot/runtime-blobs",
+      "blobInlineThresholdBytes": 65536,
       "leaseSeconds": 60,
       "pollIntervalSeconds": 0.2
     }

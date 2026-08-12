@@ -81,7 +81,8 @@ PostgreSQL 事实源
 - 独立 Skill Registry 管理声明式方法资产、不可变版本、依赖和 Eval；Capability Registry 管理 Tool、Connector 和 MCP 动作，调用前执行 allowlist、权限、配额和参数校验。
 - Shell 是显式安装的官方扩展，只允许经 Core 隔离 Docker 容器执行；容器不可用时失败关闭，不降级到宿主机。
 - 外部 MCP Server 通过独立 MCP Client Connector 安装；HTTP 强制 SSRF 防护，stdio 默认关闭，远端 Tool 不冒充 Core 能力。
-- File、Memory、Knowledge、Artifact 按 `user_id + agent_id + root_run_id` 隔离；Worker 本地磁盘不是共享事实源。
+- File、Memory、Knowledge、Artifact 按 `user_id + agent_id + root_run_id` 隔离；Worker 临时磁盘不是共享事实源。
+  大型 Trace/Artifact 可使用由 PostgreSQL URI 与 SHA-256 管理的不可变 Blob 内容层；多 Worker 部署必须使用共享持久卷或对象存储适配器。
 - Provider、数据库、Channel 和外部服务凭据只通过环境变量或 `env://VARIABLE` 引用，禁止明文进入配置和日志。
 
 ### 可观测、审计与可解释性

@@ -15,24 +15,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from hashlib import sha256
 from typing import Any
 
 import psycopg
 
+from joyhousebot.storage.migration_history import migration_checksum as _migration_checksum
+from joyhousebot.storage.migration_history import migration_is_recorded, record_migration
 from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
 from joyhousebot.storage.runtime_store import destructive_migrate_enabled
 
 _logger = logging.getLogger(__name__)
-
-_HISTORY_DDL = """CREATE TABLE IF NOT EXISTS schema_migration_history (
-    name TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    checksum TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (name, version)
-)"""
 
 _RUNTIME_CLOSURE_V4_DDL = """
 CREATE TABLE IF NOT EXISTS channel_leases (
@@ -98,6 +90,63 @@ CREATE INDEX IF NOT EXISTS ix_runtime_artifacts_content_sha256
     ON runtime_artifacts(content_sha256) WHERE content_sha256<>'';
 """
 
+_RUNTIME_QUERY_PROJECTIONS_V6_DDL = """
+ALTER TABLE runtime_runs
+    ADD COLUMN IF NOT EXISTS max_concurrent INTEGER
+        GENERATED ALWAYS AS (
+            CASE
+                WHEN options->>'max_concurrent' ~ '^[1-9][0-9]*$'
+                THEN (options->>'max_concurrent')::integer
+                ELSE 4
+            END
+        ) STORED,
+    ADD COLUMN IF NOT EXISTS initial_events_required BOOLEAN
+        GENERATED ALWAYS AS (
+            options#>>'{metadata,_runtime_initial_events_required}' = 'true'
+        ) STORED,
+    ADD COLUMN IF NOT EXISTS submission_ready BOOLEAN
+        GENERATED ALWAYS AS (
+            options#>>'{metadata,_runtime_schedule_submission_ready}' IS DISTINCT FROM 'false'
+        ) STORED,
+    ADD COLUMN IF NOT EXISTS app_installation_id TEXT
+        GENERATED ALWAYS AS (options#>>'{metadata,app,installation_id}') STORED,
+    ADD COLUMN IF NOT EXISTS app_entrypoint_id TEXT
+        GENERATED ALWAYS AS (options#>>'{metadata,app,entrypoint_id}') STORED;
+ALTER TABLE runtime_tasks
+    ADD COLUMN IF NOT EXISTS wait_reason TEXT
+        GENERATED ALWAYS AS (result->>'stop_reason') STORED,
+    ADD COLUMN IF NOT EXISTS node_type TEXT
+        GENERATED ALWAYS AS (COALESCE(payload->>'node_type', 'agent')) STORED,
+    ADD COLUMN IF NOT EXISTS child_concurrency_limit INTEGER
+        GENERATED ALWAYS AS (
+            CASE
+                WHEN payload->>'foreach_max_concurrent' ~ '^[1-9][0-9]*$'
+                THEN (payload->>'foreach_max_concurrent')::integer
+                ELSE 1
+            END
+        ) STORED;
+CREATE INDEX IF NOT EXISTS ix_runtime_runs_app_usage
+    ON runtime_runs(user_id, app_installation_id, created_at)
+    WHERE app_installation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_runtime_tasks_wait_reason
+    ON runtime_tasks(run_id, wait_reason)
+    WHERE wait_reason IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_runtime_tasks_node_type
+    ON runtime_tasks(run_id, node_type, status);
+"""
+
+_RUNTIME_QUERY_PROJECTION_DEFAULTS_V7_DDL = """
+ALTER TABLE runtime_runs DROP COLUMN IF EXISTS initial_events_required;
+ALTER TABLE runtime_runs
+    ADD COLUMN initial_events_required BOOLEAN
+        GENERATED ALWAYS AS (
+            COALESCE(
+                options#>>'{metadata,_runtime_initial_events_required}' = 'true',
+                FALSE
+            )
+        ) STORED;
+"""
+
 # Development-only reset: runtime tables dropped when the destructive gate is
 # explicitly enabled, in dependency-safe order.
 _DESTRUCTIVE_DROP_TABLES = (
@@ -111,8 +160,8 @@ _DESTRUCTIVE_DROP_TABLES = (
 
 
 def migration_checksum(ddl: str) -> str:
-    """Stable checksum of one migration's DDL script."""
-    return sha256(ddl.encode("utf-8")).hexdigest()
+    """Backward-compatible public import for migration checksum tests/tools."""
+    return _migration_checksum(ddl)
 
 
 class PostgresMigrationMixin:
@@ -186,33 +235,31 @@ class PostgresMigrationMixin:
         ddl: str,
         description: str = "",
     ) -> None:
-        """Record one applied migration and fail closed when its checksum drifts.
+        record_migration(
+            conn, name=name, version=version, ddl=ddl, description=description
+        )
 
-        A recorded migration is immutable.  Updating the stored checksum would
-        erase the only durable evidence that shipped DDL was edited in place and
-        would let different Runtime builds claim the same schema version.  Schema
-        changes must therefore use a new migration version.
+    def _migration_is_recorded(
+        self,
+        conn: Any,
+        *,
+        name: str,
+        version: int,
+        ddl: str,
+        description: str = "",
+    ) -> bool:
+        """Return whether an immutable migration already exists, validating it.
+
+        Idempotent base DDL may still run on every startup to repair legacy
+        installations. Data migrations, generated-column replacements and
+        backfills must not: when recorded, they are validated and skipped.
         """
-        conn.execute(_HISTORY_DDL)
-        checksum = migration_checksum(ddl)
-        row = conn.execute(
-            "SELECT checksum FROM schema_migration_history WHERE name=%s AND version=%s",
-            (name, version),
-        ).fetchone()
-        if row is None:
-            conn.execute(
-                """INSERT INTO schema_migration_history(name,version,checksum,description)
-                   VALUES (%s,%s,%s,%s)""",
-                (name, version, checksum, description),
-            )
-            return
-        if str(row["checksum"]) == checksum:
-            return
-        raise RuntimeError(
-            "schema migration "
-            f"{name}@{version} checksum changed "
-            f"({str(row['checksum'])[:12]} -> {checksum[:12]}): "
-            "recorded migrations are immutable; add a new migration version"
+        return migration_is_recorded(
+            conn,
+            name=name,
+            version=version,
+            ddl=ddl,
+            description=description,
         )
 
     def migrate(self) -> None:
@@ -457,6 +504,61 @@ class PostgresMigrationMixin:
                 conn.execute(ddl)
                 conn.execute(_RUNTIME_CLOSURE_V4_DDL)
                 conn.execute(_RUNTIME_ARTIFACT_V5_DDL)
+                projection_description = (
+                    "indexed Runtime query projections for scheduling and App usage"
+                )
+                projections_recorded = self._migration_is_recorded(
+                    conn,
+                    name="runtime",
+                    version=6,
+                    ddl=_RUNTIME_QUERY_PROJECTIONS_V6_DDL,
+                    description=projection_description,
+                )
+                defaults_description = (
+                    "total boolean default for initial-event claim projection"
+                )
+                defaults_recorded = self._migration_is_recorded(
+                    conn,
+                    name="runtime",
+                    version=7,
+                    ddl=_RUNTIME_QUERY_PROJECTION_DEFAULTS_V7_DDL,
+                    description=defaults_description,
+                )
+                projection_columns_ready = conn.execute(
+                    """SELECT count(*)::integer AS count
+                       FROM pg_attribute
+                       WHERE attrelid IN ('runtime_runs'::regclass,'runtime_tasks'::regclass)
+                         AND attname=ANY(%s) AND NOT attisdropped""",
+                    ([
+                        "max_concurrent",
+                        "initial_events_required",
+                        "submission_ready",
+                        "app_installation_id",
+                        "app_entrypoint_id",
+                        "wait_reason",
+                        "node_type",
+                        "child_concurrency_limit",
+                    ],),
+                ).fetchone()["count"] == 8
+                # Only re-run the additive IF NOT EXISTS migration when a
+                # development reset recreated tables but preserved history.
+                if not projections_recorded or not projection_columns_ready:
+                    conn.execute(_RUNTIME_QUERY_PROJECTIONS_V6_DDL)
+                initial_projection = conn.execute(
+                    """SELECT pg_get_expr(def.adbin,def.adrelid) AS expression
+                       FROM pg_attribute attr
+                       JOIN pg_attrdef def
+                         ON def.adrelid=attr.attrelid AND def.adnum=attr.attnum
+                       WHERE attr.attrelid='runtime_runs'::regclass
+                         AND attr.attname='initial_events_required'
+                         AND NOT attr.attisdropped"""
+                ).fetchone()
+                projection_expression = str(
+                    (initial_projection or {}).get("expression") or ""
+                ).upper()
+                defaults_ready = "COALESCE" in projection_expression
+                if not defaults_recorded or not defaults_ready:
+                    conn.execute(_RUNTIME_QUERY_PROJECTION_DEFAULTS_V7_DDL)
                 conn.execute(
                     """INSERT INTO runtime_schema_migrations(version,description)
                        VALUES (3,'observable multi-agent event envelope and projections')
@@ -482,6 +584,20 @@ class PostgresMigrationMixin:
                     version=5,
                     ddl=_RUNTIME_ARTIFACT_V5_DDL,
                     description="immutable content-addressed Runtime Artifacts with evidence",
+                )
+                self._record_migration(
+                    conn,
+                    name="runtime",
+                    version=6,
+                    ddl=_RUNTIME_QUERY_PROJECTIONS_V6_DDL,
+                    description=projection_description,
+                )
+                self._record_migration(
+                    conn,
+                    name="runtime",
+                    version=7,
+                    ddl=_RUNTIME_QUERY_PROJECTION_DEFAULTS_V7_DDL,
+                    description=defaults_description,
                 )
 
     def _migrate_runtime_columns(self, conn: Any) -> None:

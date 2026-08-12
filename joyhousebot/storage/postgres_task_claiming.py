@@ -46,7 +46,7 @@ def lock_claimable_task_run(conn: Any, run_id: str | None) -> str | None:
                    )
                    OR (
                      task.status='waiting_external'
-                     AND task.payload->>'node_type'='subrun'
+                     AND task.node_type='subrun'
                      AND r.status IN ('running','waiting_external')
                      AND EXISTS (
                        SELECT 1 FROM runtime_runs child
@@ -59,7 +59,7 @@ def lock_claimable_task_run(conn: Any, run_id: str | None) -> str | None:
                  AND (
                    task.attempt<task.max_attempts
                    OR task.status='waiting_external'
-                   OR COALESCE(task.result->>'stop_reason','') IN
+                   OR COALESCE(task.wait_reason,'') IN
                       ('waiting_approval','durable_recovery','foreach_expanded',
                        'bounded_loop_waiting','subrun_waiting')
                  )
@@ -82,10 +82,7 @@ def lock_claimable_task_run(conn: Any, run_id: str | None) -> str | None:
                )
              )
              AND (
-               COALESCE(
-                 (r.options->'metadata'->>'_runtime_initial_events_required')::boolean,
-                 FALSE
-               ) = FALSE
+               r.initial_events_required = FALSE
                OR EXISTS (
                  SELECT 1 FROM runtime_events ready
                  WHERE ready.run_id=r.run_id AND ready.event_type='run.queued'
@@ -93,7 +90,7 @@ def lock_claimable_task_run(conn: Any, run_id: str | None) -> str | None:
              )
              AND (SELECT count(*) FROM runtime_tasks active
                   WHERE active.run_id=r.run_id AND active.status='running')
-                 < COALESCE((r.options->>'max_concurrent')::int, 4)
+                 < r.max_concurrent
            ORDER BY r.created_at,r.run_id
            """
         + lock_clause

@@ -24,7 +24,7 @@ class PostgresGraphSubrunStoreMixin:
                    FROM runtime_runs AS parent,runtime_runs AS child
                    WHERE task.task_id=%s AND task.run_id=%s AND task.status='running'
                      AND task.lease_owner=%s AND task.lease_version=%s
-                     AND task.payload->>'node_type'='subrun'
+                     AND task.node_type='subrun'
                      AND parent.run_id=task.run_id AND parent.kind='graph'
                      AND child.run_id=%s AND child.user_id=parent.user_id
                      AND child.root_run_id=parent.root_run_id

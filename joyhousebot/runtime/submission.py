@@ -29,6 +29,7 @@ from joyhousebot.runtime.models import (
     RunStatus,
     TaskGraphSpec,
 )
+from joyhousebot.runtime.schema_limits import validate_execution_contracts
 from joyhousebot.runtime.submission_authority import resolve_graph_agent_authority
 from joyhousebot.runtime.submission_limits import positive_env_int, timestamp_seconds
 from joyhousebot.runtime.tracking import (
@@ -76,6 +77,10 @@ class SubmissionMixin(GraphMaterializationMixin):
             options = replace(options, agent_id=self.default_agent_id)
         if not options.prompt.strip():
             raise ValueError("prompt is required")
+        validate_execution_contracts(
+            output_schema=options.output_schema,
+            verification_policy=options.verification_policy,
+        )
         for name, value in (
             ("user_id", options.user_id),
             ("session_id", options.session_id),
@@ -331,6 +336,12 @@ class SubmissionMixin(GraphMaterializationMixin):
             top_level=top_level,
         )
         ordered = validate_and_order_graph(spec.tasks)
+        for task in ordered:
+            validate_execution_contracts(
+                output_schema=task.output_schema,
+                verification_policy=task.verification_policy,
+                prefix=f"graph task {task.id}",
+            )
         catalog = await asyncio.to_thread(self.store.list_capability_definitions)
         validate_compensation_declarations(ordered, catalog)
         validate_saga_declarations(

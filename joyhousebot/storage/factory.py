@@ -42,6 +42,10 @@ def create_runtime_store(config: Any | None = None) -> RuntimeStore:
         min_pool_size=int(getattr(settings, "pool_min_size", 1)),
         max_pool_size=int(getattr(settings, "pool_max_size", 10)),
         auto_migrate=_auto_migrate(bool(getattr(settings, "auto_migrate", True))),
+        blob_directory=str(getattr(settings, "blob_directory", "") or ""),
+        blob_inline_threshold_bytes=int(
+            getattr(settings, "blob_inline_threshold_bytes", 65536)
+        ),
         bootstrap_model=(
             config.get_bootstrap_model()
             if config is not None and callable(getattr(config, "get_bootstrap_model", None))

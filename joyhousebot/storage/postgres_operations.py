@@ -10,6 +10,7 @@ from uuid import uuid4
 from psycopg import sql
 from psycopg.rows import dict_row
 
+from joyhousebot.storage.content_blobs import hydrate_json
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_artifact_writes import (
     insert_runtime_artifact_in_transaction,
@@ -163,6 +164,8 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 object_version=object_version,
                 provenance=provenance,
                 evidence=evidence,
+                blob_store=self.blob_store,
+                blob_inline_threshold_bytes=self.blob_inline_threshold_bytes,
             )
 
     def list_runtime_artifacts(
@@ -186,7 +189,12 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 "task_id": r["task_id"],
                 "name": str(r["name"]),
                 "media_type": str(r["media_type"]),
-                "content": _json(r["content"]),
+                "content": hydrate_json(
+                    self.blob_store,
+                    _json(r["content"]),
+                    r["uri"],
+                    sha256=str(r["content_sha256"]),
+                ),
                 "uri": r["uri"],
                 "artifact_type": str(r["artifact_type"]),
                 "operation": str(r["operation"]),

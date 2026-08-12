@@ -28,6 +28,7 @@ _TELEMETRY_TABLES = (
     ("runtime_logs", "created_at"),
     ("request_trace_events", "created_at"),
 )
+_CONTENT_BLOB_GC_GRACE_SECONDS = 24 * 60 * 60
 
 
 class PostgresMaintenanceStoreMixin:
@@ -51,6 +52,7 @@ class PostgresMaintenanceStoreMixin:
         for attempt in range(3):
             try:
                 counts: dict[str, int] = {}
+                referenced_blob_uris: set[str] = set()
                 with self._pool.connection() as conn, conn.transaction():
                     migration_lock = conn.execute(
                         "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
@@ -157,6 +159,26 @@ class PostgresMaintenanceStoreMixin:
                         counts["schedule_occurrences"] = max(0, cursor.rowcount)
                     else:
                         counts["schedule_occurrences"] = 0
+                    if getattr(self, "blob_store", None) is not None:
+                        for query in (
+                            "SELECT storage_uri AS uri FROM trace_blobs "
+                            "WHERE storage_uri LIKE 'joyhouse-blob://sha256/%'",
+                            "SELECT uri FROM runtime_artifacts "
+                            "WHERE uri LIKE 'joyhouse-blob://sha256/%'",
+                            "SELECT uri FROM work_versions "
+                            "WHERE uri LIKE 'joyhouse-blob://sha256/%'",
+                        ):
+                            referenced_blob_uris.update(
+                                str(row["uri"])
+                                for row in conn.execute(query).fetchall()
+                                if row["uri"]
+                            )
+                blob_store = getattr(self, "blob_store", None)
+                if blob_store is not None and hasattr(blob_store, "prune_unreferenced"):
+                    counts["content_blobs"] = blob_store.prune_unreferenced(
+                        referenced_blob_uris,
+                        min_unreferenced_seconds=_CONTENT_BLOB_GC_GRACE_SECONDS,
+                    )
                 return counts
             except (DeadlockDetected, LockNotAvailable):
                 if attempt == 2:

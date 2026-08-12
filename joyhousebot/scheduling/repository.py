@@ -12,7 +12,11 @@ from joyhousebot.scheduling.row_mapper import (
     occurrence_job_from_row,
     schedule_job_from_row,
 )
-from joyhousebot.scheduling.schema import SCHEDULE_DDL
+from joyhousebot.scheduling.schema import (
+    SCHEDULE_DDL,
+    SCHEDULE_DROP_RUN_IDS_V3_DDL,
+    SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
+)
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_schedule_callbacks import (
     enqueue_schedule_delivery,
@@ -44,7 +48,71 @@ class ScheduleRepository:
         with self.store._pool.connection() as connection:
             with connection.transaction():
                 connection.execute("SELECT pg_advisory_xact_lock(%s)", (872341911,))
-                connection.execute(SCHEDULE_DDL)
+                schedule_description = (
+                    "durable schedules, occurrences, monitor state, and delivery"
+                )
+                schedule_recorded = self.store._migration_is_recorded(
+                    connection,
+                    name="scheduling",
+                    version=1,
+                    ddl=SCHEDULE_DDL,
+                    description=schedule_description,
+                )
+                schedule_table = connection.execute(
+                    "SELECT to_regclass('public.schedule_occurrences') AS name"
+                ).fetchone()
+                if not schedule_recorded or not (schedule_table and schedule_table["name"]):
+                    connection.execute(SCHEDULE_DDL)
+                self.store._record_migration(
+                    connection,
+                    name="scheduling",
+                    version=1,
+                    ddl=SCHEDULE_DDL,
+                    description=schedule_description,
+                )
+                relation_description = "normalized occurrence-to-Run submission history"
+                relation_recorded = self.store._migration_is_recorded(
+                    connection,
+                    name="scheduling",
+                    version=2,
+                    ddl=SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
+                    description=relation_description,
+                )
+                relation_table = connection.execute(
+                    "SELECT to_regclass('public.schedule_occurrence_runs') AS name"
+                ).fetchone()
+                if not relation_recorded or not (relation_table and relation_table["name"]):
+                    connection.execute(SCHEDULE_OCCURRENCE_RUNS_V2_DDL)
+                self.store._record_migration(
+                    connection,
+                    name="scheduling",
+                    version=2,
+                    ddl=SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
+                    description=relation_description,
+                )
+                drop_description = "remove legacy JSON occurrence-to-Run history"
+                drop_recorded = self.store._migration_is_recorded(
+                    connection,
+                    name="scheduling",
+                    version=3,
+                    ddl=SCHEDULE_DROP_RUN_IDS_V3_DDL,
+                    description=drop_description,
+                )
+                legacy_column = connection.execute(
+                    """SELECT 1 AS present FROM information_schema.columns
+                       WHERE table_schema='public'
+                         AND table_name='schedule_occurrences'
+                         AND column_name='run_ids'"""
+                ).fetchone()
+                if not drop_recorded or legacy_column:
+                    connection.execute(SCHEDULE_DROP_RUN_IDS_V3_DDL)
+                self.store._record_migration(
+                    connection,
+                    name="scheduling",
+                    version=3,
+                    ddl=SCHEDULE_DROP_RUN_IDS_V3_DDL,
+                    description=drop_description,
+                )
 
     def create(self, job: CronJob) -> CronJob:
         schedule = vars(job.schedule)
@@ -430,8 +498,6 @@ class ScheduleRepository:
                 )
             row = connection.execute(
                 """UPDATE schedule_occurrences SET status=%s,run_id=COALESCE(%s,run_id),
-                   run_ids=CASE WHEN %s::text IS NULL OR run_ids ? %s::text THEN run_ids
-                                ELSE run_ids || jsonb_build_array(%s::text) END,
                    error=%s,next_attempt_at_ms=%s,
                    finished_at_ms=CASE WHEN %s THEN %s ELSE NULL END,
                    delivery_status=COALESCE(%s,delivery_status),
@@ -442,9 +508,6 @@ class ScheduleRepository:
                    RETURNING occurrence_id""",
                 (
                     status,
-                    run_id,
-                    run_id,
-                    run_id,
                     run_id,
                     error,
                     next_attempt_at_ms,
@@ -460,6 +523,14 @@ class ScheduleRepository:
             ).fetchone()
             if row is None:
                 return False
+            if run_id:
+                connection.execute(
+                    f"""INSERT INTO schedule_occurrence_runs(
+                           occurrence_id,run_id,attempt,submitted_at_ms
+                       ) VALUES (%s,%s,%s,{_DB_NOW_MS})
+                       ON CONFLICT(occurrence_id,run_id) DO NOTHING""",
+                    (job.state.occurrence_id, run_id, job.state.attempt),
+                )
             if status == "submitted" and run_id:
                 runtime_run = connection.execute(
                     """UPDATE runtime_runs SET options=jsonb_set(
@@ -498,12 +569,20 @@ class ScheduleRepository:
         self, *, user_id: str, schedule_id: str | None, limit: int
     ) -> list[dict[str, Any]]:
         p = "%s"
-        query = f"SELECT * FROM schedule_occurrences WHERE user_id={p}"
+        query = f"""SELECT occurrence.*,
+                         COALESCE((
+                           SELECT array_agg(link.run_id ORDER BY
+                               link.attempt,link.submitted_at_ms,link.run_id)
+                           FROM schedule_occurrence_runs link
+                           WHERE link.occurrence_id=occurrence.occurrence_id
+                         ),ARRAY[]::text[]) AS linked_run_ids
+                     FROM schedule_occurrences occurrence
+                     WHERE occurrence.user_id={p}"""
         params: list[Any] = [user_id]
         if schedule_id:
-            query += f" AND schedule_id={p}"
+            query += f" AND occurrence.schedule_id={p}"
             params.append(schedule_id)
-        query += f" ORDER BY started_at_ms DESC LIMIT {p}"
+        query += f" ORDER BY occurrence.started_at_ms DESC LIMIT {p}"
         params.append(limit)
         with self._connection() as connection:
             rows = connection.execute(query, params).fetchall()
@@ -514,11 +593,7 @@ class ScheduleRepository:
                 "userId": row["user_id"],
                 "status": row["status"],
                 "runId": row["run_id"],
-                "runIds": (
-                    json.loads(row["run_ids"])
-                    if isinstance(row["run_ids"], str)
-                    else list(row["run_ids"] or [])
-                ),
+                "runIds": list(row["linked_run_ids"] or []),
                 "attempt": int(row["attempt"] or 1),
                 "submitAttempt": int(row["submit_attempt"] or 0),
                 "scheduledForMs": row["scheduled_for_ms"],

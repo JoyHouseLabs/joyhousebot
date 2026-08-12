@@ -16,6 +16,7 @@ from joyhousebot.orchestration.task_graph import validate_and_order_graph
 from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
 from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.runtime.schema_limits import MAX_STRUCTURED_CONTRACT_BYTES
 from tests.support.capabilities import register_tool_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
 
@@ -66,6 +67,31 @@ class FakeAgent:
             return answer
         finally:
             self.active -= 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_output_schema_fails_before_run_creation(
+    store: PostgresTestStore,
+) -> None:
+    runtime = NativeAgentRuntime(agent=FakeAgent(), store=store)
+    schema = {
+        "type": "object",
+        "description": "x" * MAX_STRUCTURED_CONTRACT_BYTES,
+    }
+    with pytest.raises(ValueError, match="output_schema.*maximum"):
+        await runtime.submit_run(
+            AgentOptions(
+                prompt="never queued",
+                user_id="schema-limit-user",
+                session_id="schema-limit-session",
+                output_schema=schema,
+            )
+        )
+    assert store.list_runtime_runs(
+        user_id="schema-limit-user",
+        session_id="schema-limit-session",
+    ) == []
+    await runtime.close()
 
 
 @pytest.mark.asyncio
