@@ -11,7 +11,7 @@ function headers(): Headers {
 async function pluginFetch<T>(path: string): Promise<T> {
   const response = await fetch(`/v1/admin/plugins${path}`, { headers: headers() })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload?.detail || '插件控制面请求失败')
+  if (!response.ok) throw new Error(payload?.detail || '扩展控制面请求失败')
   return payload as T
 }
 
@@ -23,7 +23,7 @@ async function pluginPost<T>(path: string, body?: unknown): Promise<T> {
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload?.detail || '插件诊断请求失败')
+  if (!response.ok) throw new Error(payload?.detail || '扩展诊断请求失败')
   return payload as T
 }
 
@@ -48,6 +48,16 @@ export interface PluginListItem {
   manifest: { dependencies?: Array<Record<string, unknown>>; quickstarts?: PluginQuickstart[] }
   created_at: string; updated_at: string
 }
+export interface ExtensionInventoryItem {
+  extension_id: string; name: string; description: string; source_version: string
+  extension_types: string[]; distribution_name: string; distribution_version: string
+  source_location: string; source_digest: string; source_available: boolean; installed: boolean
+  deployment_allowed: boolean; desired_active: boolean; effective_active: boolean
+  state: 'active' | 'activating' | 'installed' | 'available' | 'unavailable'
+  activation_blockers: string[]; metadata: Record<string, unknown>
+  release?: PluginListItem | null
+  worker_summary: { loaded: number; total: number }
+}
 export interface PluginOverview {
   release: { plugin_id: string; version: string; status: string; name: string; description: string; distribution_name: string; build_digest: string; manifest: { dependencies?: Array<Record<string, unknown>>; quickstarts?: PluginQuickstart[] } }
   releases: Array<{ plugin_id: string; version: string; status: string; build_digest: string; updated_at: string }>
@@ -59,6 +69,10 @@ export interface PluginHealth { status: string; checks: Array<{ name: string; st
 export interface PluginPlaygroundRun { run_id: string; user_id: string; status: string; session_id: string; agent_id: string; prompt: string }
 
 export const listPlugins = () => pluginFetch<{ items: PluginListItem[] }>('')
+export const listExtensionInventory = () => pluginFetch<{ console_activation_allowed: boolean; items: ExtensionInventoryItem[] }>('/inventory')
+export const scanExtensionInventory = () => pluginPost<{ items: ExtensionInventoryItem[] }>('/scan')
+export const activateExtension = (id: string) => pluginPost<ExtensionInventoryItem>(`/${encodeURIComponent(id)}/activate`)
+export const deactivateExtension = (id: string) => pluginPost<ExtensionInventoryItem>(`/${encodeURIComponent(id)}/deactivate`)
 export const getPlugin = (id: string) => pluginFetch<PluginOverview>(`/${encodeURIComponent(id)}`)
 export const getPluginTopology = (id: string) => pluginFetch<PluginTopology>(`/${encodeURIComponent(id)}/topology`)
 export const getPluginHealth = (id: string) => pluginFetch<PluginHealth>(`/${encodeURIComponent(id)}/health`)

@@ -239,8 +239,12 @@ class PostgresCapabilityStoreMixin:
         with self._pool.connection() as conn:
             if version:
                 row = conn.execute(
-                    """SELECT definition FROM capability_versions
-                       WHERE capability_id=%s AND version=%s AND status='published'""",
+                    """SELECT v.definition FROM capability_versions v
+                       LEFT JOIN extension_inventory inventory
+                         ON inventory.extension_id=v.definition->'ref'->>'plugin_id'
+                       WHERE v.capability_id=%s AND v.version=%s AND v.status='published'
+                         AND (inventory.extension_id IS NULL OR
+                              (inventory.deployment_allowed AND inventory.desired_active))""",
                     (capability_id, version),
                 ).fetchone()
             else:
@@ -248,7 +252,11 @@ class PostgresCapabilityStoreMixin:
                     """SELECT v.definition FROM capability_definitions d
                        JOIN capability_versions v ON v.capability_id=d.capability_id
                             AND v.version=d.current_version
-                       WHERE d.capability_id=%s AND v.status='published'""",
+                       LEFT JOIN extension_inventory inventory
+                         ON inventory.extension_id=v.definition->'ref'->>'plugin_id'
+                       WHERE d.capability_id=%s AND v.status='published'
+                         AND (inventory.extension_id IS NULL OR
+                              (inventory.deployment_allowed AND inventory.desired_active))""",
                     (capability_id,),
                 ).fetchone()
         return dict(row["definition"]) if row else None
@@ -259,9 +267,57 @@ class PostgresCapabilityStoreMixin:
                 """SELECT v.definition FROM capability_definitions d
                    JOIN capability_versions v ON v.capability_id=d.capability_id
                         AND v.version=d.current_version
-                   WHERE v.status='published' ORDER BY d.capability_id"""
+                   LEFT JOIN extension_inventory inventory
+                     ON inventory.extension_id=v.definition->'ref'->>'plugin_id'
+                   WHERE v.status='published'
+                     AND (inventory.extension_id IS NULL OR
+                          (inventory.deployment_allowed AND inventory.desired_active))
+                   ORDER BY d.capability_id"""
             ).fetchall()
         return [dict(row["definition"]) for row in rows]
+
+    def list_plugin_capability_components(
+        self, plugin_id: str, plugin_version: str
+    ) -> list[dict[str, Any]]:
+        """Project Worker-discovered Connector tools into the plugin control plane."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT status,definition FROM capability_versions
+                   WHERE definition->'ref'->>'plugin_id'=%s
+                     AND definition->'ref'->>'plugin_version'=%s
+                   ORDER BY definition->>'name',capability_id,version""",
+                (plugin_id, plugin_version),
+            ).fetchall()
+        output = []
+        for row in rows:
+            definition = dict(row["definition"])
+            reference = dict(definition.get("ref") or {})
+            kind = str(reference.get("kind") or "tool")
+            capability_id = str(reference.get("capability_id") or "")
+            version = str(reference.get("version") or "")
+            output.append(
+                {
+                    "component_id": f"{kind}:{capability_id}:{version}",
+                    "component_type": kind,
+                    "name": str(definition.get("name") or capability_id),
+                    "description": str(definition.get("description") or ""),
+                    "reference_id": capability_id,
+                    "reference_version": version,
+                    "metadata": {
+                        "adapter": str(definition.get("adapter") or ""),
+                        "input_schema": dict(definition.get("input_schema") or {}),
+                        "output_schema": dict(definition.get("output_schema") or {}),
+                        "permissions": list(definition.get("permissions") or ()),
+                        "connection_ids": list(definition.get("connection_ids") or ()),
+                        "side_effect": str(definition.get("side_effect") or "none"),
+                        "release_status": str(row["status"]),
+                        "origin": dict(definition.get("origin") or {}),
+                    },
+                    "plugin_id": plugin_id,
+                    "plugin_version": plugin_version,
+                }
+            )
+        return output
 
     def get_capability_runtime_settings(self, capability_id: str) -> dict[str, Any]:
         """Return the mutable operational overlay, never the immutable definition."""
@@ -290,8 +346,13 @@ class PostgresCapabilityStoreMixin:
         enabled: bool,
         configuration: dict[str, Any],
         actor_id: str,
+        capability_version: str | None = None,
     ) -> dict[str, Any]:
-        definition = self.get_capability_definition(capability_id)
+        definition = (
+            self.get_capability_release_definition(capability_id, capability_version)
+            if capability_version
+            else self.get_capability_definition(capability_id)
+        )
         if definition is None:
             raise ValueError("capability not found")
         if not isinstance(configuration, dict):

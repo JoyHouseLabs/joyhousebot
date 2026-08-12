@@ -314,6 +314,40 @@ class CapabilityRegistry:
         if self._store is not None:
             self._store.discover_capability_release(adapter.definition)
 
+    def registered_tools_for_plugin(
+        self, plugin_id: str
+    ) -> list[tuple[Tool, CapabilityDefinition, bool]]:
+        """Expose connector-owned registrations for an atomic catalog swap."""
+        output: list[tuple[Tool, CapabilityDefinition, bool]] = []
+        for (name, _version), adapter in self._versioned_adapters.items():
+            if adapter.definition.ref.plugin_id != plugin_id:
+                continue
+            output.append((adapter.tool, adapter.definition, name in self._optional))
+        return output
+
+    def replace_tools_for_plugin(
+        self,
+        plugin_id: str,
+        entries: list[tuple[Tool, CapabilityDefinition, bool]],
+    ) -> None:
+        """Atomically replace one Tool connector generation after preflight succeeds."""
+        old_keys = {
+            key
+            for key, adapter in self._versioned_adapters.items()
+            if adapter.definition.ref.plugin_id == plugin_id
+        }
+        old_names = {name for name, _version in old_keys}
+        new_names = {tool.name for tool, _definition, _optional in entries}
+        for key in old_keys:
+            self._versioned_adapters.pop(key, None)
+        for name in old_names - new_names:
+            adapter = self._adapters.get(name)
+            if adapter is not None and adapter.definition.ref.plugin_id == plugin_id:
+                self._adapters.pop(name, None)
+            self._optional.discard(name)
+        for tool, definition, optional in entries:
+            self.register_tool(tool, definition=definition, optional=optional)
+
     def get_tool(self, name: str, version: str | None = None) -> Tool | None:
         adapter = self._resolve_adapter(name, version)
         return adapter.tool if adapter and self._enabled(name, version) else None
@@ -458,4 +492,16 @@ class CapabilityRegistry:
     def _runtime_settings(self, capability_id: str) -> dict[str, Any]:
         if self._store is None or not hasattr(self._store, "get_capability_runtime_settings"):
             return {"enabled": True, "configuration": {}}
-        return self._store.get_capability_runtime_settings(capability_id)
+        settings = self._store.get_capability_runtime_settings(capability_id)
+        plugin_enabled = getattr(self._store, "is_plugin_execution_enabled", None)
+        if callable(plugin_enabled):
+            definition = self._store.get_capability_definition(capability_id)
+            reference = dict((definition or {}).get("ref") or {})
+            plugin_id = str(reference.get("plugin_id") or "").strip()
+            if plugin_id and not plugin_enabled(plugin_id):
+                return {
+                    **settings,
+                    "enabled": False,
+                    "disabled_reason": "extension is inactive",
+                }
+        return settings

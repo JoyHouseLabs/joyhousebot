@@ -32,7 +32,7 @@ from joyhousebot.extension_sdk.models import (
 
 OPENAI_COMPATIBLE_EXTENSION_MANIFEST = ExtensionManifest(
     extension_id="provider-openai-compatible",
-    version="0.1.0",
+    version="0.1.1",
     name="JoyhouseBot OpenAI-compatible Provider",
     extension_types=("model_provider",),
     description="OpenAI-compatible chat completions, streaming, tools and reasoning adapter.",
@@ -117,6 +117,7 @@ class OpenAICompatibleProvider(LLMProvider):
         provider_name: str,
         extra_headers: dict[str, str] | None = None,
         reasoning_options: dict[str, Any] | None = None,
+        request_timeout_seconds: float = 120.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         super().__init__(api_key, api_base)
@@ -126,7 +127,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.reasoning_options = dict(reasoning_options or {})
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=10.0),
+            timeout=httpx.Timeout(float(request_timeout_seconds), connect=10.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
@@ -147,7 +148,7 @@ class OpenAICompatibleProvider(LLMProvider):
         return value
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "User-Agent": "joyhousebot-cloud"}
+        headers = {"Content-Type": "application/json", "User-Agent": "joyhousebot-runtime"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         headers.update(self.extra_headers)
@@ -472,6 +473,7 @@ def _create_provider(request: ModelProviderBuildRequest) -> OpenAICompatibleProv
         provider_name=request.provider_name,
         extra_headers=request.extra_headers,
         reasoning_options=request.reasoning_options,
+        request_timeout_seconds=request.request_timeout_seconds,
         client=request.client,
     )
 

@@ -7,11 +7,6 @@ from psycopg.types.json import Jsonb
 
 from joyhousebot.contracts.plugins import PluginManifest
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
-from joyhousebot.domain.capabilities import (
-    CapabilityDefinition,
-    CapabilityKind,
-    CapabilityRef,
-)
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 TEST_PLUGIN_DIGEST = f"sha256:{'d' * 64}"
@@ -70,6 +65,7 @@ def test_default_agents_are_seeded_from_database(tmp_path: Path) -> None:
     assert default is not None
     assert default.definition.agent_id == "default"
     assert default.definition.is_default
+    assert default.definition.role == "executor"
     assert default.revision.revision_id == "default:v1"
     assert {profile.definition.agent_id for profile in store.list_agent_profiles()} == {"default"}
 
@@ -170,15 +166,30 @@ def test_agent_skill_binding_requires_published_skill(tmp_path: Path) -> None:
             skill_version="1.0.0",
         )
 
-    store.publish_capability(
-        CapabilityDefinition(
-            ref=CapabilityRef("skill.research", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
-            name="Research",
-            description="Research instructions",
-            input_schema={"type": "object"},
-            output_schema={"type": "object"},
-            adapter="prompt-skill:research",
-        )
+    skill = store.save_skill_draft(
+        {
+            "skill_id": "skill.research",
+            "version": "1.0.0",
+            "name": "Research",
+            "description": "Research instructions",
+            "instruction_content": (
+                "Collect primary evidence, cite every source, and distinguish facts from inference."
+            ),
+            "eval_cases": [
+                {
+                    "name": "evidence",
+                    "input": "research",
+                    "expected_behavior": "cite sources",
+                }
+            ],
+        },
+        actor_id="test",
+    )
+    store.stage_skill_version(
+        "skill.research",
+        "1.0.0",
+        actor_id="test",
+        require_healthy_workers=False,
     )
     store.bind_agent_skill(
         agent_revision_id=revision.revision_id,
@@ -207,6 +218,7 @@ def test_agent_skill_binding_requires_published_skill(tmp_path: Path) -> None:
             "activation_mode": "always",
             "priority": 10,
             "configuration": {"depth": "high"},
+            "content_sha256": skill["content_sha256"],
         }
     ]
 

@@ -15,6 +15,7 @@ declare module 'vue' {
     NMessageProvider: typeof import('naive-ui')['NMessageProvider']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SchemaConfigurationForm: typeof import('./src/components/SchemaConfigurationForm.vue')['default']
     ShellLayout: typeof import('./src/components/ShellLayout.vue')['default']
   }
 }

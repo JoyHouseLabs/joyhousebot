@@ -7,19 +7,40 @@ from typing import Any
 from joyhousebot.extension_discovery import installed_extensions
 
 
-def enabled_extension_ids(config: Any, *, prefix: str | None = None) -> set[str]:
-    """Return exact explicitly enabled extension release ids."""
+def deployment_allowed_extension_ids(
+    config: Any, *, prefix: str | None = None
+) -> set[str]:
+    """Return extension ids that this deployment permits workers to import."""
     extensions = getattr(config, "extensions", None)
+    explicit = getattr(extensions, "allowed_ids", ()) or ()
+    legacy = getattr(extensions, "enabled", ()) or ()
     values = {
         str(item).strip()
-        for item in getattr(extensions, "enabled", ()) or ()
+        for item in (*explicit, *legacy)
         if str(item).strip()
     }
     return {item for item in values if item.startswith(prefix)} if prefix else values
 
 
+def initially_active_extension_ids(config: Any) -> set[str]:
+    """Return one-time activation seeds used only for new inventory rows."""
+    extensions = getattr(config, "extensions", None)
+    explicit = getattr(extensions, "initially_active", ()) or ()
+    legacy = getattr(extensions, "enabled", ()) or ()
+    return {
+        str(item).strip()
+        for item in (*explicit, *legacy)
+        if str(item).strip()
+    }
+
+
+def enabled_extension_ids(config: Any, *, prefix: str | None = None) -> set[str]:
+    """Compatibility alias for the deployment import allowlist."""
+    return deployment_allowed_extension_ids(config, prefix=prefix)
+
+
 def enabled_channel_ids(config: Any) -> set[str]:
-    """Return transport ids for explicitly enabled Channel extensions."""
+    """Return transport ids for deployment-allowed Channel extensions."""
     return {
         item.removeprefix("channel-")
         for item in enabled_extension_ids(config, prefix="channel-")
@@ -28,7 +49,7 @@ def enabled_channel_ids(config: Any) -> set[str]:
 
 
 def enabled_capability_ids(config: Any) -> set[str]:
-    """Return exact capability extension ids used as entry-point names."""
+    """Return deployment-allowed capability entry-point names."""
     return enabled_extension_ids(config, prefix="capability-")
 
 
@@ -61,6 +82,7 @@ def installed_channel_ids() -> list[str]:
 
 
 __all__ = [
+    "deployment_allowed_extension_ids",
     "enabled_capability_ids",
     "enabled_channel_extension_ids",
     "enabled_channel_ids",
@@ -68,5 +90,6 @@ __all__ = [
     "enabled_extension_ids",
     "enabled_provider_extension_ids",
     "extension_settings",
+    "initially_active_extension_ids",
     "installed_channel_ids",
 ]

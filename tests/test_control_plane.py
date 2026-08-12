@@ -204,6 +204,40 @@ def test_failed_worker_target_can_be_retried_without_reloading_successes(
     assert store.get_agent_profile("joy").revision.revision_id == "joy:v2"
 
 
+def test_failed_rollout_retry_retargets_replacement_workers(tmp_path: Path) -> None:
+    store = _agent_store(tmp_path / "rollout-worker-replacement.db")
+    current = store.get_agent_definition("joy")
+    assert current is not None
+    store.register_runtime_worker(worker_id="agent-old", capabilities={"agent": True})
+    store.save_agent_revision(current, _revision(2))
+    store.publish_agent_revision("joy", "joy:v2", actor_id="publisher")
+    rollout = store.list_configuration_rollouts()[0]
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-old",
+        agent_id="joy",
+        revision_id="joy:v2",
+        status="failed",
+        error={"message": "worker stopped after preheat failure"},
+    )
+    with store._pool.connection() as connection:  # noqa: SLF001 - worker replacement fixture
+        connection.execute(
+            "UPDATE runtime_workers SET status='offline' WHERE worker_id='agent-old'"
+        )
+    store.register_runtime_worker(worker_id="agent-new", capabilities={"agent": True})
+
+    assert store.retry_configuration_rollout(rollout.rollout_id, actor_id="operator")
+    targets = {
+        item["worker_id"]: item
+        for item in store.list_configuration_rollout_targets(rollout.rollout_id)
+    }
+    assert targets["agent-old"]["status"] == "superseded"
+    assert targets["agent-new"]["status"] == "pending"
+    assert store.acknowledge_agent_revision(
+        worker_id="agent-new", agent_id="joy", revision_id="joy:v2"
+    )
+    assert store.get_agent_profile("joy").revision.revision_id == "joy:v2"
+
+
 def test_rollout_timeout_is_reconciled_and_keeps_previous_revision(tmp_path: Path) -> None:
     store = _agent_store(tmp_path / "rollout-timeout.db")
     current = store.get_agent_definition("joy")

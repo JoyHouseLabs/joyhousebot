@@ -8,9 +8,10 @@ from typing import Any
 from uuid import uuid4
 
 from joyhousebot.application.context import RequestContext
-from joyhousebot.application.errors import NotFoundError, ValidationError
+from joyhousebot.application.errors import ConflictError, NotFoundError, ValidationError
 from joyhousebot.application.graph_validation import validate_graph_catalog
 from joyhousebot.application.run_commands import CreateRunCommand, GraphTaskCommand
+from joyhousebot.application.run_target_resolution import resolve_run_target
 from joyhousebot.orchestration import ClarificationEngine, ScenarioPlanner, ScenarioRouter
 from joyhousebot.orchestration.failure_policy import validate_saga_declarations
 from joyhousebot.orchestration.task_graph import validate_and_order_graph
@@ -35,72 +36,98 @@ class RunService:
         if not command.input.strip():
             raise ValidationError("input is required")
         session_id = command.session_id or self._new_session_id()
-        try:
-            decision, scenario = await asyncio.to_thread(
-                self.router.route,
-                command.input,
-                explicit_scenario_id=command.scenario_id,
-                supplied_inputs=command.scenario_inputs,
-            )
-        except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
+        resolved = await resolve_run_target(
+            self.store, self.router, command.execution, prompt=command.input
+        )
+        team = resolved.team
+        scenario = resolved.scenario
+        decision = resolved.decision
+        orchestration = resolved.orchestration
+        effective_agent_id = resolved.agent_id
         if scenario is not None:
             try:
                 self.clarifications.validate_inputs(scenario, decision.extracted_inputs)
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
         agent_definition = await asyncio.to_thread(
-            self.store.get_agent_definition, command.agent_id
+            self.store.get_agent_definition, effective_agent_id
         )
-        # A coordinator inspects ordinary routed requests before a Scenario
-        # runs: rule matches are merely candidate selection.  An *explicit*,
-        # fully populated fixed Scenario is different: it is an operator or
-        # plugin-owned contract (for example a control-plane quickstart), so
-        # it may dispatch its deterministic graph directly.  This preserves
-        # the coordinator for user intent recognition while making repeatable
-        # tests and integrations independent of model tool-call dialects.
+        # A fixed Scenario owns its graph and bypasses open Agent planning.
+        # Dynamic Scenarios may still use their selected Agent, but remain
+        # constrained by the one explicitly frozen Scenario revision.
         explicit_fixed_scenario = bool(
-            command.scenario_id and scenario is not None and scenario.planning_mode == "fixed"
+            scenario is not None and scenario.planning_mode == "fixed"
         )
         coordinator_required = not explicit_fixed_scenario and (
-            getattr(agent_definition, "role", None) == "coordinator"
+            team is not None
+            or getattr(agent_definition, "role", None) == "coordinator"
             or bool(command.metadata.get("coordinator_required"))
         )
         metadata = {
             **command.metadata,
+            "orchestration": orchestration,
             "routing_decision": decision.to_dict(),
             "scenario_inputs": decision.extracted_inputs,
-            "execution_mode": command.execution_mode,
-            "coordinator_required": coordinator_required or scenario is None,
+            "interaction_mode": command.interaction_mode,
+            # An explicit Agent execution is a direct execution boundary. Team,
+            # coordinator-role and caller-requested runs still plan first; a
+            # normal executor Agent must not pay for or depend on a second
+            # structured coordinator turn merely because no Scenario matched.
+            "coordinator_required": coordinator_required,
         }
-        allowed_tools = (
-            [
-                item.capability_id
-                for item in scenario.allowed_capabilities
-                if item.kind.value in {"tool", "connector"}
-            ]
+        if team is not None:
+            metadata.update(
+                {
+                    "team_ref": {
+                        "team_id": team.team_id,
+                        "revision_id": team.revision_id,
+                        "version": team.version,
+                        "coordinator_member_id": team.coordinator_member_id,
+                    },
+                    "team_members": [item.to_dict() for item in team.members],
+                    "team_member_id": team.coordinator_member_id,
+                    "team_context_policy": dict(team.context_policy),
+                    "team_budget_policy": dict(team.budget_policy),
+                    "team_approval_policy": dict(team.approval_policy),
+                }
+            )
+        scenario_tools = (
+            [item.capability_id for item in scenario.allowed_capabilities]
             if scenario
             else []
         )
+        if command.allowed_tools is not None and scenario is not None:
+            outside_scenario = sorted(set(command.allowed_tools) - set(scenario_tools))
+            if outside_scenario:
+                raise ValidationError(
+                    "caller tool allowlist exceeds the selected Scenario: "
+                    + ", ".join(outside_scenario)
+                )
+        allowed_tools = (
+            list(dict.fromkeys(command.allowed_tools))
+            if command.allowed_tools is not None
+            else scenario_tools
+        )
+        metadata["caller_tool_allowlist_enforced"] = command.allowed_tools is not None
         skill_names = (
-            [
-                item.capability_id.removeprefix("skill.")
-                for item in scenario.allowed_capabilities
-                if item.kind.value == "skill"
-            ]
+            [item.skill_id.removeprefix("skill.") for item in scenario.required_skills]
             if scenario
             else []
         )
         metadata["skill_names"] = skill_names
         metadata["skill_refs"] = [
             item.to_dict()
-            for item in (scenario.allowed_capabilities if scenario else ())
-            if item.kind.value == "skill"
+            for item in (scenario.required_skills if scenario else ())
         ]
         options = AgentOptions(
             prompt=command.input,
             user_id=context.user_id,
-            agent_id=command.agent_id,
+            agent_id=effective_agent_id,
+            agent_revision_id=(
+                team.coordinator.agent_revision_id
+                if team is not None
+                else resolved.agent_revision_id
+            ),
             session_id=session_id,
             model=command.model,
             system_prompt=command.system_prompt,
@@ -135,7 +162,7 @@ class RunService:
                         status="completed",
                         data={
                             "source": "runtime_decision",
-                            "kind": "scenario_routing",
+                            "kind": "execution_selected",
                             "decision": decision.to_dict(),
                         },
                     )
@@ -186,7 +213,11 @@ class RunService:
                     )
                 )
                 return await self.get(context, record.run_id)
-        if coordinator_required or scenario is None or decision.next_action == "plan":
+        # A run without a Scenario is submitted directly to the frozen Agent.
+        # This branch also owns coordinator and dynamic-Scenario planning, but
+        # only ``coordinator_required`` tells the Worker to perform that extra
+        # structured planning turn.
+        if scenario is None or coordinator_required or decision.next_action == "plan":
             graph = None
             if scenario is not None and not coordinator_required:
                 try:
@@ -197,7 +228,8 @@ class RunService:
                         inputs=decision.extracted_inputs,
                         user_id=context.user_id,
                         session_id=session_id,
-                        agent_id=command.agent_id,
+                        agent_id=effective_agent_id,
+                        agent_revision_id=resolved.agent_revision_id,
                         idempotency_key=context.idempotency_key,
                         request_id=context.request_id,
                         tracker_id=context.tracker_id,
@@ -206,6 +238,8 @@ class RunService:
                     )
                 except ValueError as exc:
                     raise ValidationError(str(exc)) from exc
+                if graph is not None:
+                    graph.metadata["orchestration"] = orchestration
             record = (
                 await self.runtime.submit_graph(graph)
                 if graph is not None
@@ -218,7 +252,7 @@ class RunService:
                     status="completed",
                     data={
                         "source": "runtime_decision",
-                        "kind": "scenario_routing",
+                        "kind": "execution_selected",
                         "decision": decision.to_dict(),
                     },
                 )
@@ -258,7 +292,7 @@ class RunService:
                 status="completed",
                 data={
                     "source": "runtime_decision",
-                    "kind": "scenario_routing",
+                    "kind": "execution_selected",
                     "decision": decision.to_dict(),
                 },
             )
@@ -516,6 +550,7 @@ class RunService:
                     compensation=item.compensation,
                     bounded_loop=item.bounded_loop,
                     aggregate=item.aggregate,
+                    subrun=item.subrun,
                 )
                 for item in tasks
             ],
@@ -530,7 +565,12 @@ class RunService:
             )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
-        return await self.runtime.submit_graph(spec)
+        try:
+            return await self.runtime.submit_graph(spec)
+        except ValueError as exc:
+            if "Graph Idempotency-Key" in str(exc):
+                raise ConflictError(str(exc)) from exc
+            raise
 
     async def get(self, context: RequestContext, run_id: str) -> Any:
         # SQL-level user isolation: the store filters by expected_user_id so a
@@ -539,6 +579,8 @@ class RunService:
             self.store.get_runtime_run, run_id, expected_user_id=context.user_id
         )
         if record is None:
+            raise NotFoundError("run not found")
+        if not self._visible_to_app_principal(context, record):
             raise NotFoundError("run not found")
         return record
 
@@ -551,7 +593,7 @@ class RunService:
         status: str | None = None,
         limit: int = 50,
     ) -> list[Any]:
-        return await asyncio.to_thread(
+        rows = await asyncio.to_thread(
             self.store.list_runtime_runs,
             user_id=context.user_id,
             session_id=session_id,
@@ -559,6 +601,16 @@ class RunService:
             status=status,
             limit=limit,
         )
+        return [row for row in rows if self._visible_to_app_principal(context, row)]
+
+    @staticmethod
+    def _visible_to_app_principal(context: RequestContext, record: Any) -> bool:
+        installation_id = context.principal.app_installation_id
+        if not installation_id:
+            return True
+        metadata = dict((record.options or {}).get("metadata") or {})
+        app = dict(metadata.get("app") or {})
+        return str(app.get("installation_id") or "") == installation_id
 
     async def cancel(self, context: RequestContext, run_id: str) -> Any:
         await self.get(context, run_id)

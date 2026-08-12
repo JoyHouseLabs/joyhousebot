@@ -24,12 +24,16 @@ def create_runtime_store(config: Any | None = None) -> RuntimeStore:
     runtime = getattr(config, "runtime", None)
     settings = getattr(runtime, "store", None)
     database_url = str(getattr(settings, "database_url", "") or "").strip()
-    database_url = os.environ.get("JOYHOUSEBOT_DATABASE_URL", "").strip() or database_url
+    database_url = (
+        os.environ.get("JOYHOUSE_DATABASE_URL", "").strip()
+        or os.environ.get("JOYHOUSEBOT_DATABASE_URL", "").strip()
+        or database_url
+    )
 
     if not database_url:
         raise ValueError(
             "PostgreSQL runtime store requires runtime.store.database_url "
-            "or JOYHOUSEBOT_DATABASE_URL"
+            "or JOYHOUSE_DATABASE_URL"
         )
     from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 

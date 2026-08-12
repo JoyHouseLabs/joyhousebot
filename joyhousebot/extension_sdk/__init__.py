@@ -4,6 +4,7 @@ from joyhousebot.contracts.artifacts import Artifact
 from joyhousebot.contracts.capabilities import (
     CapabilityContext,
     CapabilityResult,
+    OperationReconciliationResult,
     WriteReceipt,
 )
 from joyhousebot.contracts.extensions import (
@@ -24,6 +25,7 @@ from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
+    InvocationStatus,
 )
 
 __all__ = [
@@ -33,6 +35,8 @@ __all__ = [
     "CapabilityKind",
     "CapabilityRef",
     "CapabilityResult",
+    "InvocationStatus",
+    "OperationReconciliationResult",
     "EXTENSION_SDK_VERSION",
     "ExtensionManifest",
     "Plugin",

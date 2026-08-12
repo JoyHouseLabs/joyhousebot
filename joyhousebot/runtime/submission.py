@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from dataclasses import replace
 from typing import Any
@@ -30,20 +29,13 @@ from joyhousebot.runtime.models import (
     RunStatus,
     TaskGraphSpec,
 )
+from joyhousebot.runtime.submission_authority import resolve_graph_agent_authority
+from joyhousebot.runtime.submission_limits import positive_env_int, timestamp_seconds
 from joyhousebot.runtime.tracking import (
     append_trace_event_async,
     ensure_tracking_ids,
     get_request_tracking,
 )
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    try:
-        value = int(raw) if raw else default
-    except ValueError:
-        return default
-    return value if value > 0 else default
 
 
 class SubmissionMixin(GraphMaterializationMixin):
@@ -91,24 +83,64 @@ class SubmissionMixin(GraphMaterializationMixin):
         ):
             if not value.strip():
                 raise ValueError(f"{name} is required")
+        top_level = not (options.root_run_id or options.parent_run_id or options.parent_task_id)
         profile = None
         if options.agent_revision_id:
-            eval_run_id = str(options.metadata.get("eval_run_id") or "")
-            eval_run = await asyncio.to_thread(self.store.get_eval_run, eval_run_id)
             revision = await asyncio.to_thread(
                 self.store.get_agent_revision, options.agent_revision_id
             )
-            if (
-                eval_run is None
-                or eval_run["status"] != "running"
-                or eval_run["target_type"] != "agent"
-                or eval_run["target_id"] != options.agent_id
-                or eval_run["target_revision_id"] != options.agent_revision_id
-                or revision is None
-                or revision.agent_id != options.agent_id
-                or revision.status not in {"draft", "published"}
-            ):
-                raise ValueError("candidate Agent revisions require a matching active Eval run")
+            team_ref = options.metadata.get("team_ref")
+            if isinstance(team_ref, dict):
+                team = await asyncio.to_thread(
+                    self.store.get_agent_team_revision,
+                    str(team_ref.get("revision_id") or ""),
+                )
+                member = next(
+                    (
+                        item
+                        for item in (team.members if team is not None else ())
+                        if item.agent_id == options.agent_id
+                        and item.agent_revision_id == options.agent_revision_id
+                    ),
+                    None,
+                )
+                if (
+                    team is None
+                    or team.status not in (
+                        {"published"} if top_level else {"published", "retired"}
+                    )
+                    or team.team_id != str(team_ref.get("team_id") or "")
+                    or member is None
+                    or (top_level and member.member_id != team.coordinator_member_id)
+                    or revision is None
+                    or revision.agent_id != options.agent_id
+                    or revision.status not in (
+                        {"published"} if top_level else {"published", "retired"}
+                    )
+                ):
+                    raise ValueError("Agent revision is outside the published AgentTeam boundary")
+            else:
+                eval_run_id = str(options.metadata.get("eval_run_id") or "")
+                eval_run = await asyncio.to_thread(self.store.get_eval_run, eval_run_id)
+                published_revision = bool(
+                    top_level
+                    and revision is not None
+                    and revision.agent_id == options.agent_id
+                    and revision.status == "published"
+                )
+                if not published_revision and (
+                    eval_run is None
+                    or eval_run["status"] != "running"
+                    or eval_run["target_type"] != "agent"
+                    or eval_run["target_id"] != options.agent_id
+                    or eval_run["target_revision_id"] != options.agent_revision_id
+                    or revision is None
+                    or revision.agent_id != options.agent_id
+                    or revision.status not in {"draft", "published"}
+                ):
+                    raise ValueError(
+                        "Agent revision must be published or have a matching active Eval run"
+                    )
         else:
             profile = await asyncio.to_thread(self.store.get_agent_profile, options.agent_id)
             if profile is None:
@@ -119,7 +151,6 @@ class SubmissionMixin(GraphMaterializationMixin):
             raise ValueError("timeout_seconds must be greater than zero")
         # Child runs spawned by the runtime itself (subagents, graph tasks)
         # stay exempt: their fan-out is already bounded by the parent run.
-        top_level = not (options.root_run_id or options.parent_run_id or options.parent_task_id)
         for name, value in (
             ("max_turns", options.max_turns),
             ("max_input_tokens", options.max_input_tokens),
@@ -170,10 +201,12 @@ class SubmissionMixin(GraphMaterializationMixin):
             initial_status=initial_status,
             max_children_per_root=options.max_children_per_root,
             max_active_per_user=(
-                _env_int("JOYHOUSEBOT_MAX_RUNS_PER_USER", 4) if top_level else None
+                positive_env_int("JOYHOUSEBOT_MAX_RUNS_PER_USER", 4) if top_level else None
             ),
             max_submissions_per_minute=(
-                _env_int("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", 30) if top_level else None
+                positive_env_int("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", 30)
+                if top_level
+                else None
             ),
         )
         if created:
@@ -290,11 +323,13 @@ class SubmissionMixin(GraphMaterializationMixin):
         ):
             if not value.strip():
                 raise ValueError(f"{name} is required")
-        profile = await asyncio.to_thread(self.store.get_agent_profile, spec.agent_id)
-        if profile is None:
-            raise ValueError(f"active published Agent not found: {spec.agent_id}")
-        if spec.agent_id != profile.definition.agent_id:
-            spec = replace(spec, agent_id=profile.definition.agent_id)
+        top_level = not (spec.root_run_id or spec.parent_run_id or spec.parent_task_id)
+        spec, profile, pinned_revision = await asyncio.to_thread(
+            resolve_graph_agent_authority,
+            self.store,
+            spec,
+            top_level=top_level,
+        )
         ordered = validate_and_order_graph(spec.tasks)
         catalog = await asyncio.to_thread(self.store.list_capability_definitions)
         validate_compensation_declarations(ordered, catalog)
@@ -304,8 +339,29 @@ class SubmissionMixin(GraphMaterializationMixin):
             spec.failure_policy,
             max_concurrent=spec.max_concurrent,
         )
-        max_active_per_user = _env_int("JOYHOUSEBOT_MAX_RUNS_PER_USER", 4)
-        max_submissions_per_minute = _env_int("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", 30)
+        for field_name, referenced_run_id in (
+            ("root_run_id", spec.root_run_id),
+            ("parent_run_id", spec.parent_run_id),
+        ):
+            if not referenced_run_id:
+                continue
+            referenced = await asyncio.to_thread(self.store.get_runtime_run, referenced_run_id)
+            if referenced is None or referenced.user_id != spec.user_id:
+                raise ValueError(f"{field_name} does not belong to user_id")
+        if spec.parent_task_id:
+            parent_task = await asyncio.to_thread(
+                self.store.get_runtime_task, spec.parent_task_id
+            )
+            if parent_task is None or parent_task.run_id != spec.parent_run_id:
+                raise ValueError("parent_task_id does not belong to parent_run_id")
+        max_active_per_user = (
+            positive_env_int("JOYHOUSEBOT_MAX_RUNS_PER_USER", 4) if top_level else None
+        )
+        max_submissions_per_minute = (
+            positive_env_int("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", 30)
+            if top_level
+            else None
+        )
         run_id = run_id or uuid4().hex
         revision = freeze_graph_revision(run_id, spec, ordered, source="explicit_submission")
         options = graph_options({}, spec, revision, initial_events_required=True)
@@ -326,6 +382,10 @@ class SubmissionMixin(GraphMaterializationMixin):
                 idempotency_key=spec.idempotency_key,
                 max_active_per_user=max_active_per_user,
                 max_submissions_per_minute=max_submissions_per_minute,
+                root_run_id=spec.root_run_id,
+                parent_run_id=spec.parent_run_id,
+                parent_task_id=spec.parent_task_id,
+                max_children_per_root=spec.max_children_per_root,
             )
         else:
             record, created = await asyncio.to_thread(
@@ -339,6 +399,10 @@ class SubmissionMixin(GraphMaterializationMixin):
                 options=options,
                 idempotency_key=spec.idempotency_key,
                 total_task_count=len(graph_rows),
+                root_run_id=spec.root_run_id,
+                parent_run_id=spec.parent_run_id,
+                parent_task_id=spec.parent_task_id,
+                max_children_per_root=spec.max_children_per_root,
                 max_active_per_user=max_active_per_user,
                 max_submissions_per_minute=max_submissions_per_minute,
             )
@@ -347,8 +411,13 @@ class SubmissionMixin(GraphMaterializationMixin):
                 self.store.create_run_execution_snapshot,
                 record.run_id,
                 spec.agent_id,
+                revision_id=spec.agent_revision_id,
             )
-            if self.monitor_reconciler is not None:
+            if (
+                pinned_revision is None
+                and top_level
+                and self.monitor_reconciler is not None
+            ):
                 try:
                     await asyncio.to_thread(
                         self.monitor_reconciler,
@@ -485,7 +554,7 @@ class SubmissionMixin(GraphMaterializationMixin):
             )
             if record is None:
                 return None
-            created_at = _timestamp_seconds(record.created_at)
+            created_at = timestamp_seconds(record.created_at)
             self._run_claim_details[run_id] = {
                 "wake_source": wake_source,
                 "queue_wait_ms": (
@@ -569,14 +638,3 @@ class SubmissionMixin(GraphMaterializationMixin):
                 await asyncio.gather(heartbeat, return_exceptions=True)
 
         await self.supervisor.submit(run_id, _factory)
-
-
-def _timestamp_seconds(value: str | None) -> float | None:
-    if not value:
-        return None
-    from datetime import datetime
-
-    try:
-        return datetime.fromisoformat(value).timestamp()
-    except ValueError:
-        return None

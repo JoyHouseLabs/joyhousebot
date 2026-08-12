@@ -7,6 +7,7 @@ from typing import Any
 
 from joyhousebot.domain.aggregation import normalize_aggregation_policy
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.domain.skills import SkillRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +131,7 @@ class ScenarioVersion:
     nodes: tuple[ClarificationNode, ...]
     edges: tuple[ClarificationEdge, ...]
     allowed_capabilities: tuple[CapabilityRef, ...]
+    required_skills: tuple[SkillRef, ...] = ()
     planning_mode: str = "dynamic"
     execution_policy: dict[str, Any] = field(default_factory=dict)
     routing_rules: tuple[dict[str, Any], ...] = ()
@@ -145,9 +147,16 @@ class ScenarioVersion:
             raise ValueError("invalid scenario version status")
         if any(not isinstance(item, CapabilityRef) for item in self.allowed_capabilities):
             raise ValueError("scenario allowed_capabilities must contain pinned CapabilityRef values")
+        if any(item.kind.value not in {"tool", "connector"} for item in self.allowed_capabilities):
+            raise ValueError("scenario capabilities must be executable Tools or Connectors")
         identities = [item.identity for item in self.allowed_capabilities]
         if len(identities) != len(set(identities)):
             raise ValueError("scenario allowed capability references must be unique")
+        if any(not isinstance(item, SkillRef) for item in self.required_skills):
+            raise ValueError("scenario required_skills must contain pinned SkillRef values")
+        skill_identities = [item.identity for item in self.required_skills]
+        if len(skill_identities) != len(set(skill_identities)):
+            raise ValueError("scenario required Skill references must be unique")
         aggregation_policy = self.execution_policy.get("aggregation_policy")
         if aggregation_policy is not None:
             normalize_aggregation_policy(
@@ -202,6 +211,7 @@ class ScenarioVersion:
             "nodes": [item.to_dict() for item in self.nodes],
             "edges": [asdict(item) for item in self.edges],
             "allowed_capabilities": [item.to_dict() for item in self.allowed_capabilities],
+            "required_skills": [item.to_dict() for item in self.required_skills],
             "planning_mode": self.planning_mode,
             "execution_policy": self.execution_policy,
             "routing_rules": list(self.routing_rules),
@@ -274,6 +284,10 @@ class ScenarioVersion:
             allowed_capabilities=tuple(
                 CapabilityRef.from_dict(dict(item))
                 for item in value.get("allowed_capabilities") or ()
+            ),
+            required_skills=tuple(
+                SkillRef.from_dict(dict(item))
+                for item in value.get("required_skills") or ()
             ),
             planning_mode=str(value.get("planning_mode") or "dynamic"),
             execution_policy=dict(value.get("execution_policy") or {}),

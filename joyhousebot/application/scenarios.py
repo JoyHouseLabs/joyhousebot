@@ -54,6 +54,26 @@ class ScenarioStudioService:
             raise ConflictError(
                 f"scenario references unpublished capabilities: {sorted(unknown)}"
             )
+        skill_versions = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    self.store.get_published_skill,
+                    item.skill_id,
+                    item.version,
+                )
+                for item in draft.required_skills
+            )
+        )
+        unknown_skills = [
+            item.to_dict()
+            for item, version in zip(draft.required_skills, skill_versions, strict=True)
+            if version is None
+            or str(version.get("content_sha256") or "") != item.content_sha256
+        ]
+        if unknown_skills:
+            raise ConflictError(
+                f"scenario references unpublished Skills: {sorted(unknown_skills)}"
+            )
         try:
             await asyncio.to_thread(
                 self.store.stage_scenario_release,

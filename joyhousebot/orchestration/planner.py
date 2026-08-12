@@ -10,6 +10,29 @@ from joyhousebot.domain.graphs import GraphTaskSpec, TaskGraphSpec
 from joyhousebot.domain.scenarios import ScenarioVersion
 from joyhousebot.orchestration.task_graph import render_value
 
+_TEAM_REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["verdict", "issues", "required_changes", "evidence"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "revise", "reject"]},
+        "issues": {"type": "array", "items": {"type": "string"}},
+        "required_changes": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+_TEAM_CHECKPOINT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["decision", "summary", "unresolved_issues"],
+    "properties": {
+        "decision": {"type": "string", "enum": ["continue", "revise", "finish"]},
+        "summary": {"type": "string"},
+        "unresolved_issues": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 
 class ScenarioPlanner:
     def __init__(self, store: Any) -> None:
@@ -24,6 +47,7 @@ class ScenarioPlanner:
         user_id: str,
         session_id: str,
         agent_id: str,
+        agent_revision_id: str | None = None,
         idempotency_key: str | None,
         request_id: str,
         tracker_id: str | None = None,
@@ -56,13 +80,10 @@ class ScenarioPlanner:
         tool_capabilities = {
             ref.capability_id
             for identity, ref in allowed.items()
-            if definitions[identity].get("ref", {}).get("kind")
-            in {"tool", "connector"}
+            if definitions[identity].get("ref", {}).get("kind") in {"tool", "connector"}
         }
         skills = {
-            ref.capability_id.removeprefix("skill.")
-            for identity, ref in allowed.items()
-            if definitions[identity].get("ref", {}).get("kind") == "skill"
+            ref.skill_id.removeprefix("skill.") for ref in scenario.required_skills
         }
         # Render every declared field so a template never sends literal
         # ``${field}`` text to a tool.  Unset optional values are removed from
@@ -77,6 +98,11 @@ class ScenarioPlanner:
         }
         tasks: list[GraphTaskSpec] = []
         for position, raw in enumerate(templates):
+            task_agent_id = str(raw.get("agent_id") or agent_id)
+            if agent_revision_id and task_agent_id != agent_id:
+                raise ValueError(
+                    "revision-pinned Scenario tasks must use the Scenario Agent"
+                )
             capability = (
                 CapabilityRef.from_dict(dict(raw["capability"]))
                 if raw.get("capability")
@@ -100,7 +126,7 @@ class ScenarioPlanner:
                     id=str(raw.get("id") or f"step_{position + 1}"),
                     name=str(raw.get("name") or raw.get("id") or f"Step {position + 1}"),
                     prompt=str(render_value(raw.get("prompt") or goal, variables)),
-                    agent_id=str(raw.get("agent_id") or agent_id),
+                    agent_id=task_agent_id,
                     dependencies=[str(item) for item in raw.get("dependencies") or []],
                     timeout_seconds=float(raw.get("timeout_seconds") or 300),
                     max_attempts=int(raw.get("max_attempts") or 1),
@@ -135,10 +161,13 @@ class ScenarioPlanner:
                     metadata={
                         "scenario_id": scenario.scenario_id,
                         "scenario_version": scenario.version,
+                        **(
+                            {"agent_revision_id": agent_revision_id}
+                            if agent_revision_id
+                            else {}
+                        ),
                         "skill_refs": [
-                            item.to_dict()
-                            for item in scenario.allowed_capabilities
-                            if item.kind.value == "skill"
+                            item.to_dict() for item in scenario.required_skills
                         ],
                     },
                 )
@@ -149,6 +178,7 @@ class ScenarioPlanner:
             user_id=user_id,
             session_id=session_id,
             agent_id=agent_id,
+            agent_revision_id=agent_revision_id,
             max_concurrent=int(scenario.execution_policy.get("max_concurrent") or 4),
             fail_fast=bool(scenario.execution_policy.get("fail_fast", True)),
             failure_policy=dict(scenario.execution_policy.get("failure_policy") or {}),
@@ -190,11 +220,17 @@ def build_coordinator_graph(
     session_id: str,
     agent_id: str,
     request_id: str,
+    team: Any | None = None,
+    member_capabilities: dict[str, set[str]] | None = None,
+    member_skills: dict[str, set[str]] | None = None,
+    member_skill_refs: dict[str, list[dict[str, Any]]] | None = None,
+    shared_inputs: dict[str, Any] | None = None,
+    team_workspace_run_id: str | None = None,
 ) -> TaskGraphSpec | None:
     """Compile a multi-step coordinator plan into durable Agent tasks."""
 
     steps = list(plan.get("planned_steps") or [])
-    if len(steps) < 2:
+    if not steps or (team is None and len(steps) < 2):
         return None
     tasks: list[GraphTaskSpec] = []
     barrier: list[str] = []
@@ -202,9 +238,112 @@ def build_coordinator_graph(
     for index, step in enumerate(steps):
         raw_name = str(step.get("name") or f"step-{index + 1}")
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_name).strip("-.")[:80]
-        task_id = f"step-{index + 1}-{slug or 'task'}"
+        task_id = (
+            str(step.get("id"))
+            if team is not None
+            else f"step-{index + 1}-{slug or 'task'}"
+        )
         parallel = bool(step.get("can_run_in_parallel"))
-        dependencies = list(barrier if parallel else [*barrier, *parallel_since_barrier])
+        dependencies = (
+            [str(item) for item in step.get("depends_on") or ()]
+            if team is not None
+            else list(barrier if parallel else [*barrier, *parallel_since_barrier])
+        )
+        member = (
+            team.member(str(step.get("member_id") or team.coordinator_member_id))
+            if team is not None
+            else None
+        )
+        if team is not None and member is None:
+            raise ValueError("coordinator graph references an unknown AgentTeam member")
+        selected_tools = {
+            str(item.get("capability_id"))
+            for item in plan.get("selected_capabilities") or []
+            if isinstance(item, dict)
+        }
+        allowed_member_tools = (
+            set((member_capabilities or {}).get(member.member_id, set()))
+            if member is not None
+            else selected_tools
+        )
+        selected_skills = set(plan.get("selected_skills") or [])
+        allowed_member_skills = (
+            set((member_skills or {}).get(member.member_id, set()))
+            if member is not None
+            else selected_skills
+        )
+        step_contract = {
+            "step_id": task_id,
+            "phase": str(step.get("phase") or "execution"),
+            "kind": str(step.get("kind") or "produce"),
+            "acceptance_criteria": list(step.get("acceptance_criteria") or []),
+            "review_of": list(step.get("review_of") or []),
+            "revision_of": step.get("revision_of"),
+            "review_round": int(step.get("review_round") or 0),
+        }
+        task_metadata: dict[str, Any] = {
+            "coordinator_step": index + 1,
+            "team_step_contract": step_contract if team is not None else {},
+        }
+        if member is not None:
+            task_metadata.update(
+                {
+                    "team_ref": {
+                        "team_id": team.team_id,
+                        "revision_id": team.revision_id,
+                        "version": team.version,
+                        "coordinator_member_id": team.coordinator_member_id,
+                    },
+                    "team_member_id": member.member_id,
+                    "team_member": member.to_dict(),
+                    "agent_revision_id": member.agent_revision_id,
+                    "team_context_policy": dict(team.context_policy),
+                    "team_budget_policy": dict(team.budget_policy),
+                    "team_approval_policy": dict(team.approval_policy),
+                    "team_confirmed_inputs": dict(shared_inputs or {}),
+                    "team_workspace_run_id": team_workspace_run_id,
+                    "skill_refs": [
+                        item
+                        for item in (member_skill_refs or {}).get(member.member_id, [])
+                        if str(item.get("skill_id") or "").removeprefix("skill.")
+                        in selected_skills & allowed_member_skills
+                    ],
+                }
+            )
+        kind = str(step.get("kind") or "produce")
+        criteria = list(step.get("acceptance_criteria") or [])
+        review_instruction = ""
+        if kind == "review":
+            review_instruction = (
+                "\n\nIndependently review the declared review_of results. Return a verdict, "
+                "specific issues, required changes, and evidence. Do not silently rewrite "
+                "the source deliverable."
+            )
+        elif kind == "revise":
+            review_instruction = (
+                "\n\nRevise the declared revision_of deliverable using the review feedback in "
+                "the dependency context. Preserve accepted parts and explicitly resolve each "
+                "required change."
+            )
+        elif kind == "checkpoint":
+            review_instruction = (
+                "\n\nAssess the completed collaboration wave. Record whether the work can "
+                "continue, needs revision, or is ready to finish, plus unresolved issues."
+            )
+        elif kind == "synthesize":
+            review_instruction = (
+                "\n\nSynthesize the final Team decision. Preserve material disagreements, "
+                "state which recommendations were accepted, and cite the supporting artifacts."
+            )
+        output_schema = (
+            dict(step["output_schema"])
+            if isinstance(step.get("output_schema"), dict)
+            else dict(_TEAM_REVIEW_SCHEMA)
+            if kind == "review"
+            else dict(_TEAM_CHECKPOINT_SCHEMA)
+            if kind == "checkpoint"
+            else None
+        )
         tasks.append(
             GraphTaskSpec(
                 id=task_id,
@@ -212,39 +351,120 @@ def build_coordinator_graph(
                 prompt=(
                     f"Overall user request:\n{goal}\n\n"
                     f"Assigned objective:\n{str(step.get('objective') or raw_name)}\n\n"
+                    f"Phase: {step_contract['phase']}\n"
+                    f"Step kind: {kind}\n"
+                    f"Acceptance criteria: {criteria}\n"
                     "Complete only this objective and return a concise, evidence-backed result "
                     "for the final coordinating Agent."
+                    f"{review_instruction}"
                 ),
-                agent_id=agent_id,
+                agent_id=member.agent_id if member is not None else agent_id,
                 dependencies=dependencies,
-                allowed_tools=[
-                    str(item.get("capability_id"))
-                    for item in plan.get("selected_capabilities") or []
-                    if isinstance(item, dict)
-                ],
-                skill_names=list(plan.get("selected_skills") or []),
-                metadata={"coordinator_step": index + 1},
+                allowed_tools=sorted(selected_tools & allowed_member_tools),
+                skill_names=sorted(selected_skills & allowed_member_skills),
+                metadata=task_metadata,
+                output_schema=output_schema,
             )
         )
+        if team is not None:
+            continue
         if parallel:
             parallel_since_barrier.append(task_id)
         else:
             barrier = [task_id]
             parallel_since_barrier = []
+    if team is not None and bool(team.approval_policy.get("require_result_approval")):
+        if len(tasks) >= int(team.budget_policy["max_tasks"]):
+            raise ValueError("AgentTeam result approval exceeds the task budget")
+        depended_on = {
+            dependency for item in tasks for dependency in item.dependencies
+        }
+        terminal_tasks = [item.id for item in tasks if item.id not in depended_on]
+        if len(terminal_tasks) > 16:
+            raise ValueError("AgentTeam result approval supports at most 16 planned tasks")
+        coordinator = team.coordinator
+        tasks.append(
+            GraphTaskSpec(
+                id="team-result-approval",
+                name="Approve AgentTeam result",
+                prompt="Review and approve the completed AgentTeam results.",
+                agent_id=coordinator.agent_id,
+                dependencies=terminal_tasks,
+                node_type="approval",
+                approval={
+                    key: team.approval_policy[key]
+                    for key in (
+                        "title",
+                        "description",
+                        "required_role",
+                        "expires_in_seconds",
+                        "risk",
+                        "data_classification",
+                    )
+                },
+                metadata={
+                    "team_ref": {
+                        "team_id": team.team_id,
+                        "revision_id": team.revision_id,
+                        "version": team.version,
+                        "coordinator_member_id": team.coordinator_member_id,
+                    },
+                    "team_member_id": coordinator.member_id,
+                    "team_member": coordinator.to_dict(),
+                    "agent_revision_id": coordinator.agent_revision_id,
+                    "team_context_policy": dict(team.context_policy),
+                    "team_budget_policy": dict(team.budget_policy),
+                    "team_approval_policy": dict(team.approval_policy),
+                    "team_workspace_run_id": team_workspace_run_id,
+                },
+            )
+        )
     return TaskGraphSpec(
         goal=goal,
         tasks=tasks,
         user_id=user_id,
         session_id=session_id,
         agent_id=agent_id,
-        max_concurrent=min(8, len(tasks)),
+        agent_revision_id=(
+            team.coordinator.agent_revision_id if team is not None else None
+        ),
+        max_concurrent=min(
+            8,
+            len(tasks),
+            int(team.budget_policy["max_parallel_tasks"]) if team is not None else 8,
+        ),
         fail_fast=True,
         aggregate=True,
         aggregation_policy={"mode": "llm_synthesis", "version": "v1"},
         request_id=request_id,
+        max_input_tokens=(
+            team.budget_policy.get("max_input_tokens") if team is not None else None
+        ),
+        max_output_tokens=(
+            team.budget_policy.get("max_output_tokens") if team is not None else None
+        ),
+        max_cost_usd=(
+            team.budget_policy.get("max_cost_usd") if team is not None else None
+        ),
         metadata={
             "source": "coordinator",
             "coordinator_plan": plan,
+            **(
+                {
+                    "team_ref": {
+                        "team_id": team.team_id,
+                        "revision_id": team.revision_id,
+                        "version": team.version,
+                        "coordinator_member_id": team.coordinator_member_id,
+                    },
+                    "team_context_policy": dict(team.context_policy),
+                    "team_budget_policy": dict(team.budget_policy),
+                    "team_approval_policy": dict(team.approval_policy),
+                    "team_workspace_run_id": team_workspace_run_id,
+                }
+                if team is not None
+                else {}
+            ),
         },
     )
 

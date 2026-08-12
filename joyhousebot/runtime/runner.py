@@ -181,11 +181,29 @@ class NativeAgentRuntime(
             data=redact_runtime_value(data or {}),
         )
 
-    async def _resolve_execution_agent(self, run_id: str, agent_id: str) -> Any | None:
+    async def _resolve_execution_agent(
+        self,
+        run_id: str,
+        agent_id: str,
+        agent_revision_id: str | None = None,
+    ) -> Any | None:
         """Resolve the immutable Agent revision frozen when the Run was accepted."""
-        revision_key = agent_id
+        revision_key = agent_revision_id or agent_id
+        if agent_revision_id:
+            revision = await asyncio.to_thread(
+                self.store.get_agent_revision, agent_revision_id
+            )
+            if (
+                revision is None
+                or revision.agent_id != agent_id
+                or revision.status not in {"published", "retired"}
+            ):
+                raise ValueError(
+                    f"published Agent revision not found: {agent_id}@{agent_revision_id}"
+                )
+            self._assert_plugin_requirements(revision.plugin_requirements)
         snapshot_reader = getattr(self.store, "get_run_execution_snapshot", None)
-        if snapshot_reader is not None:
+        if not agent_revision_id and snapshot_reader is not None:
             snapshot = await asyncio.to_thread(snapshot_reader, run_id)
             if snapshot is not None and (
                 agent_id in {"default", snapshot.agent_id}
@@ -197,7 +215,12 @@ class NativeAgentRuntime(
             return self.agent
         return await asyncio.to_thread(self.agent_resolver, revision_key)
 
-    async def _execution_permissions(self, run_id: str, agent_id: str) -> frozenset[str]:
+    async def _execution_permissions(
+        self,
+        run_id: str,
+        agent_id: str,
+        agent_revision_id: str | None = None,
+    ) -> frozenset[str]:
         """Read the capability grants frozen with this Run's Agent revision.
 
         Permissions are not read from the mutable Agent catalog while work is
@@ -205,6 +228,20 @@ class NativeAgentRuntime(
         original attempt, even after an administrator publishes a new
         revision.
         """
+        if agent_revision_id:
+            revision = await asyncio.to_thread(
+                self.store.get_agent_revision, agent_revision_id
+            )
+            if (
+                revision is None
+                or revision.agent_id != agent_id
+                or revision.status not in {"published", "retired"}
+            ):
+                return frozenset()
+            value = revision.capability_policy.get("permissions", ())
+            if not isinstance(value, (list, tuple, set, frozenset)):
+                return frozenset()
+            return frozenset(str(item).strip() for item in value if str(item).strip())
         reader = getattr(self.store, "get_run_execution_snapshot", None)
         if reader is None:
             return frozenset()

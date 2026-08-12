@@ -5,13 +5,13 @@
       <button class="secondary-button" type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新状态' }}</button>
     </header>
     <div v-if="error" class="notice error-notice">{{ error }}</div>
-    <div v-if="!loading && !channels.length" class="empty-state"><strong>没有安装 Channel 扩展</strong><span>安装独立扩展 wheel，并将其 ID 加入 extensions.enabled。</span></div>
+    <div v-if="!loading && !channels.length" class="empty-state"><strong>没有安装 Channel 扩展</strong><span>安装独立扩展 wheel，将 ID 加入 extensions.allowedIds，再到扩展中心激活。</span></div>
     <section class="channel-grid">
       <article v-for="channel in channels" :key="channel.id" class="panel channel-card" :class="{ enabled: channel.enabled }">
-        <div class="channel-card-heading"><div><span class="channel-icon">{{ channel.icon }}</span><div><h2>{{ channel.name }}</h2><small>{{ channel.extensionId }}</small></div></div><span class="status-badge" :class="channel.enabled ? 'completed' : 'cancelled'">{{ channel.enabled ? '已启用' : '已安装' }}</span></div>
+        <div class="channel-card-heading"><div><span class="channel-icon">{{ channel.icon }}</span><div><h2>{{ channel.name }}</h2><small>{{ channel.extensionId }}</small></div></div><span class="status-badge" :class="channel.enabled ? 'completed' : channel.desired ? 'running' : 'cancelled'">{{ channel.enabled ? '已生效' : channel.desired ? '生效中' : '未启用' }}</span></div>
         <p>{{ channel.distribution || '独立 Channel distribution' }} · {{ channel.version || '版本未知' }}</p>
-        <div class="channel-meta"><span><b>发现</b>仅读取 package metadata</span><span><b>加载</b>{{ channel.enabled ? '允许 Channel Worker 导入' : '未导入扩展代码' }}</span><span><b>配置</b>{{ channel.enabled ? 'extensions.settings' : '默认关闭' }}</span></div>
-        <div class="channel-footer"><span>{{ channel.enabled ? '由 Channel Worker 通过 PG Lease 接管' : '加入 extensions.enabled 后启动' }}</span><code>{{ channel.extensionId }}</code></div>
+        <div class="channel-meta"><span><b>发现</b>仅读取 package metadata</span><span><b>部署准入</b>{{ channel.allowed ? '允许 Channel Worker 加载' : '不在 allowlist' }}</span><span><b>期望状态</b>{{ channel.desired ? 'active' : 'inactive' }}</span></div>
+        <div class="channel-footer"><span>{{ channel.enabled ? '由 Channel Worker 通过 PG Lease 接管' : '到扩展中心完成部署准入与激活' }}</span><code>{{ channel.extensionId }}</code></div>
       </article>
     </section>
     <section class="panel channel-boundary"><div class="panel-heading"><div><span class="eyebrow">RUNTIME BOUNDARY</span><h2>扩展不是第二套 Runtime</h2></div></div><div class="boundary-flow"><span>Channel Extension</span><b>→</b><span>RunAdapter</span><b>→</b><span>PostgreSQL Run / Task</span><b>→</b><span>Coordinator / Worker</span></div><p>扩展只负责外部协议转换，不直接调用模型或维护执行队列。入站生成用户 Run，出站进入 PG Outbox，沿用统一重试、审计和多进程接管。</p></section>
@@ -20,33 +20,32 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { getAdminConfig } from '../api/admin'
+import { listExtensionInventory, type ExtensionInventoryItem } from '../api/plugins'
 
 const loading = ref(false)
 const error = ref('')
-const summary = ref<Record<string, unknown>>({})
+const inventory = ref<ExtensionInventoryItem[]>([])
 const channels = computed(() => {
-  const extensions = (summary.value.extensions || {}) as Record<string, unknown>
-  const installed = (extensions.installed || []) as Array<Record<string, unknown>>
-  const enabled = new Set((extensions.enabled || []) as string[])
-  return installed.filter((item) => item.extension_type === 'channel').map((item) => {
-    const extensionId = String(item.extension_id || '')
+  return inventory.value.filter((item) => item.extension_types.includes('channel')).map((item) => {
+    const extensionId = item.extension_id
     const transport = extensionId.replace(/^channel-/, '')
     return {
       id: transport,
       extensionId,
       name: transport.split('-').map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : '').join(' '),
       icon: transport.slice(0, 1).toUpperCase() || 'C',
-      distribution: String(item.distribution_name || ''),
-      version: String(item.distribution_version || ''),
-      enabled: enabled.has(extensionId),
+      distribution: item.distribution_name,
+      version: item.distribution_version || item.source_version,
+      allowed: item.deployment_allowed,
+      desired: item.desired_active,
+      enabled: item.effective_active,
     }
   })
 })
 
 async function load() {
   loading.value = true; error.value = ''
-  try { summary.value = await getAdminConfig() }
+  try { inventory.value = (await listExtensionInventory()).items }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '读取 Channel 配置失败' }
   finally { loading.value = false }
 }

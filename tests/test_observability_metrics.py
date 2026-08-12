@@ -17,6 +17,8 @@ def test_prometheus_renderer_covers_governed_runtime_families() -> None:
             "graph_patch_proposals": {"approved": 1},
             "eval_runs": {"passed": 2},
             "work_shares": {"active": 2},
+            "app_callback_deliveries": {"dead": 1},
+            "app_callback_oldest_pending_seconds": 15,
             "verifications": [
                 {"status": "passed", "verifier_type": "schema", "count": 3}
             ],
@@ -35,6 +37,8 @@ def test_prometheus_renderer_covers_governed_runtime_families() -> None:
     assert 'event_type="lease.lost"' in text
     assert 'joyhousebot_api_tokens_total{token_type="service",status="active"} 2' in text
     assert 'joyhousebot_api_token_risks_total{risk="rotation_overdue"} 1' in text
+    assert 'joyhousebot_app_callback_deliveries_total{status="dead"} 1' in text
+    assert "joyhousebot_app_callback_oldest_pending_seconds 15.0" in text
 
 
 def test_telemetry_is_inert_until_explicitly_enabled(monkeypatch) -> None:

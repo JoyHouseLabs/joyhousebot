@@ -15,6 +15,9 @@ class Principal:
     permissions: tuple[str, ...] = ()
     token_scopes: tuple[str, ...] = ("*",)
     token_type: str = "session"
+    app_client_id: str | None = None
+    app_grant_id: str | None = None
+    app_installation_id: str | None = None
     # The authenticated administrator behind a user-scoped request.  This is
     # intentionally separate from ``user_id``: application services scope
     # personal data by ``user_id``, while audit records keep using ``subject``

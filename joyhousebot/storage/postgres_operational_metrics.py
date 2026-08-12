@@ -178,6 +178,15 @@ class PostgresOperationalMetricsStoreMixin:
                 ]
                 else []
             )
+            app_callback_deliveries = conn.execute(
+                """SELECT status,count(*) AS count FROM app_callback_outbox
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
+            app_callback_age = conn.execute(
+                """SELECT COALESCE(EXTRACT(EPOCH FROM
+                          (clock_timestamp()-min(created_at))),0) AS seconds
+                   FROM app_callback_outbox WHERE status IN ('pending','sending')"""
+            ).fetchone()
         metrics.update(
             {
                 "queue": {
@@ -254,6 +263,10 @@ class PostgresOperationalMetricsStoreMixin:
                     }
                     for row in outbox
                 ],
+                "app_callback_deliveries": _counts(app_callback_deliveries),
+                "app_callback_oldest_pending_seconds": float(
+                    app_callback_age["seconds"] or 0
+                ),
             }
         )
         metrics["providers"] = [

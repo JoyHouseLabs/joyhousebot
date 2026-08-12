@@ -39,7 +39,10 @@ class PermissionEngine:
     def evaluate(self, tool_name: str, context: ToolExecutionContext) -> PermissionDecision:
         if tool_name in context.disallowed_tools:
             return PermissionDecision(False, f"Tool '{tool_name}' is disallowed for this run")
-        if context.allowed_tools and tool_name not in context.allowed_tools:
+        allowlist_enforced = bool(
+            context.metadata.get("capability_allowlist_enforced")
+        )
+        if (context.allowed_tools or allowlist_enforced) and tool_name not in context.allowed_tools:
             return PermissionDecision(False, f"Tool '{tool_name}' is not in the run allowlist")
 
         mode = (context.permission_mode or "default").strip().lower()

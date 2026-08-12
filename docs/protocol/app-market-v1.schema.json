@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://joyhousebot.com/schemas/app-market-v1.schema.json",
+  "title": "Joyhouse App Market v1 signed payloads",
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "publisherId": {
+      "type": "string",
+      "pattern": "^pub_[A-Za-z0-9][A-Za-z0-9_-]{5,127}$"
+    },
+    "appId": {
+      "type": "string",
+      "pattern": "^app\\.[a-z0-9][a-z0-9._-]{0,122}$"
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_type", "digest", "size"],
+      "properties": {
+        "media_type": {"type": "string", "minLength": 1, "maxLength": 255},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 0, "maximum": 1000000000}
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "source", "version", "released_at", "app_manifest",
+        "components", "compatibility", "licenses", "evidence"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["market_id", "publisher_id", "app_id"],
+          "properties": {
+            "market_id": {"type": "string", "format": "uri", "pattern": "^https://"},
+            "publisher_id": {"$ref": "#/$defs/publisherId"},
+            "app_id": {"$ref": "#/$defs/appId"}
+          }
+        },
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "released_at": {"$ref": "#/$defs/timestamp"},
+        "app_manifest": {
+          "allOf": [
+            {"$ref": "#/$defs/descriptor"},
+            {"properties": {"media_type": {"const": "application/vnd.joyhouse.app.manifest.v2+json"}}}
+          ]
+        },
+        "components": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "logical_id", "version", "media_type", "digest", "size"],
+            "properties": {
+              "kind": {"enum": ["agent", "team", "skill", "workflow", "scenario", "extension", "document"]},
+              "logical_id": {"type": "string", "minLength": 1, "maxLength": 160},
+              "version": {"type": "string", "minLength": 1, "maxLength": 64},
+              "media_type": {"type": "string", "minLength": 1, "maxLength": 255},
+              "digest": {"$ref": "#/$defs/digest"},
+              "size": {"type": "integer", "minimum": 0, "maximum": 1000000000}
+            }
+          }
+        },
+        "compatibility": {
+          "type": "object",
+          "required": ["core", "platforms", "architectures"],
+          "properties": {
+            "core": {
+              "type": "object",
+              "required": ["min_version", "max_version"],
+              "properties": {
+                "min_version": {"type": "string"},
+                "max_version": {"type": "string"}
+              }
+            },
+            "platforms": {"type": "array", "items": {"type": "string"}},
+            "architectures": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "licenses": {"type": "object"},
+        "evidence": {"type": "object"}
+      }
+    },
+    "entitlement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "entitlement_id", "issuer", "subject", "app", "offer_id",
+        "features", "limits", "not_before", "expires_at", "offline_until",
+        "terms_digest", "status"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "entitlement_id": {"type": "string", "minLength": 3, "maxLength": 160},
+        "issuer": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["installation_key_thumbprint"],
+          "properties": {"installation_key_thumbprint": {"$ref": "#/$defs/digest"}}
+        },
+        "app": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["publisher_id", "app_id", "version_constraint"],
+          "properties": {
+            "publisher_id": {"$ref": "#/$defs/publisherId"},
+            "app_id": {"$ref": "#/$defs/appId"},
+            "version_constraint": {"type": "string", "maxLength": 256}
+          }
+        },
+        "offer_id": {"type": "string", "minLength": 3, "maxLength": 160},
+        "features": {"type": "array", "maxItems": 256, "items": {"type": "string"}},
+        "limits": {"type": "object", "additionalProperties": {"type": "string"}},
+        "not_before": {"$ref": "#/$defs/timestamp"},
+        "expires_at": {"$ref": "#/$defs/timestamp"},
+        "offline_until": {"$ref": "#/$defs/timestamp"},
+        "terms_digest": {"$ref": "#/$defs/digest"},
+        "status": {"enum": ["active", "expired", "suspended", "refunded", "chargeback", "revoked"]}
+      }
+    },
+    "usageReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "receipt_id", "entitlement_id", "installation_key_thumbprint",
+        "meter_id", "period", "quantity", "unit", "sequence", "source_event_digest", "created_at"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "receipt_id": {"type": "string", "minLength": 3, "maxLength": 160},
+        "entitlement_id": {"type": "string", "minLength": 3, "maxLength": 160},
+        "installation_key_thumbprint": {"$ref": "#/$defs/digest"},
+        "meter_id": {"type": "string", "minLength": 3, "maxLength": 160},
+        "period": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": {"$ref": "#/$defs/timestamp"},
+            "end": {"$ref": "#/$defs/timestamp"}
+          }
+        },
+        "quantity": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$", "maxLength": 80},
+        "unit": {"type": "string", "minLength": 1, "maxLength": 64},
+        "sequence": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "source_event_digest": {"$ref": "#/$defs/digest"},
+        "created_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "publisherKeyRotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "publisher_id", "old_key_id", "new_key"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "publisher_id": {"$ref": "#/$defs/publisherId"},
+        "old_key_id": {"type": "string", "pattern": "^ed25519:sha256:[0-9a-f]{64}$"},
+        "new_key": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key_id", "algorithm", "public_key"],
+          "properties": {
+            "key_id": {"type": "string", "pattern": "^ed25519:sha256:[0-9a-f]{64}$"},
+            "algorithm": {"const": "ed25519"},
+            "public_key": {"type": "string", "pattern": "^base64url:[A-Za-z0-9_-]{43}$"}
+          }
+        }
+      }
+    }
+  }
+}

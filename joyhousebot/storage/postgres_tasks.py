@@ -196,6 +196,7 @@ class PostgresTaskStoreMixin:
         worker_id: str | None = None,
         lease_version: int | None = None,
         event: AgentEvent | None = None,
+        workspace_entry: dict[str, Any] | None = None,
     ) -> bool:
         terminal = status in _TASK_TERMINAL
         delay = max(0.0, retry_delay_seconds or 0.0)
@@ -236,6 +237,13 @@ class PostgresTaskStoreMixin:
                            WHERE d.task_id=t.task_id AND dep.status!='completed')"""
                 )
             if row:
+                if workspace_entry is not None:
+                    append_workspace = getattr(
+                        self, "_append_team_workspace_entry_tx", None
+                    )
+                    if append_workspace is None:
+                        raise RuntimeError("AgentTeam Workspace storage is unavailable")
+                    append_workspace(conn, **workspace_entry)
                 if event is not None:
                     if event.run_id != str(row["run_id"]) or event.task_id != task_id:
                         raise ValueError("task transition event identity mismatch")
@@ -275,7 +283,7 @@ class PostgresTaskStoreMixin:
                                      ('proposed','approval_pending','invoking','waiting_external','observed')
                            ) OR task.payload->>'node_type' IN
                                 ('branch','foreach','wait_event','approval','verify','compensation',
-                                 'bounded_loop','aggregate')
+                                 'bounded_loop','aggregate','subrun')
                            THEN CASE
                                WHEN task.result->>'stop_reason' IN
                                     ('foreach_expanded','bounded_loop_waiting')
@@ -297,7 +305,7 @@ class PostgresTaskStoreMixin:
                                      ('proposed','approval_pending','invoking','waiting_external','observed')
                              ) OR task.payload->>'node_type' IN
                                   ('branch','foreach','wait_event','approval','verify','compensation',
-                                   'bounded_loop','aggregate'))"""
+                                   'bounded_loop','aggregate','subrun'))"""
                 )
                 conn.execute(
                     """UPDATE runtime_tasks task SET status='failed',lease_owner=NULL,lease_expires_at=NULL,
@@ -317,7 +325,7 @@ class PostgresTaskStoreMixin:
                          )
                          AND COALESCE(task.payload->>'node_type','agent') NOT IN
                              ('branch','foreach','wait_event','approval','verify','compensation',
-                              'bounded_loop','aggregate')"""
+                              'bounded_loop','aggregate','subrun')"""
                 )
             selected_run_id = lock_claimable_task_run(conn, run_id)
             if selected_run_id is None:
@@ -340,6 +348,17 @@ class PostgresTaskStoreMixin:
                                           AND rec.lease_expires_at<clock_timestamp()))
                              )
                            )
+                           OR (
+                             t.status='waiting_external'
+                             AND t.payload->>'node_type'='subrun'
+                             AND EXISTS (
+                               SELECT 1 FROM runtime_runs child
+                               WHERE child.parent_task_id=t.task_id
+                                 AND child.parent_run_id=r.run_id
+                                 AND child.status IN
+                                     ('completed','failed','cancelled','timed_out')
+                             )
+                           )
                          )
                          AND (
                            t.attempt<t.max_attempts
@@ -348,6 +367,7 @@ class PostgresTaskStoreMixin:
                            OR COALESCE(t.result->>'stop_reason','')='durable_recovery'
                            OR COALESCE(t.result->>'stop_reason','')='foreach_expanded'
                            OR COALESCE(t.result->>'stop_reason','')='bounded_loop_waiting'
+                           OR COALESCE(t.result->>'stop_reason','')='subrun_waiting'
                          )
                          AND t.run_id=%s
                          AND (
@@ -403,7 +423,7 @@ class PostgresTaskStoreMixin:
                            WHEN t.status='waiting_external'
                              OR COALESCE(t.result->>'stop_reason','') IN
                                 ('waiting_approval','durable_recovery','foreach_expanded',
-                                 'bounded_loop_waiting')
+                                 'bounded_loop_waiting','subrun_waiting')
                            THEN 0 ELSE 1 END,
                        started_at=COALESCE(t.started_at,clock_timestamp()),updated_at=clock_timestamp()
                    FROM candidate c WHERE t.task_id=c.task_id RETURNING t.*""",
@@ -475,9 +495,11 @@ class PostgresTaskStoreMixin:
                            SELECT 1 FROM runtime_task_dependencies d WHERE d.task_id=t.task_id
                        ) THEN 'blocked' ELSE 'queued' END,
                        result=CASE
-                           WHEN t.payload->>'node_type' IN ('foreach','bounded_loop') AND EXISTS(
-                               SELECT 1 FROM runtime_tasks child
-                               WHERE child.parent_task_id=t.task_id
+                           WHEN t.payload->>'node_type' IN ('foreach','bounded_loop','subrun') AND (
+                               EXISTS(SELECT 1 FROM runtime_tasks child
+                               WHERE child.parent_task_id=t.task_id)
+                               OR EXISTS(SELECT 1 FROM runtime_runs child_run
+                               WHERE child_run.parent_task_id=t.task_id)
                            ) THEN t.result ELSE NULL END,
                        error=NULL,attempt=0,available_at=clock_timestamp(),
                        lease_owner=NULL,lease_expires_at=NULL,started_at=NULL,finished_at=NULL,

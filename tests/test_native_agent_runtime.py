@@ -218,9 +218,14 @@ async def test_main_coordinator_can_select_scenario_pause_and_resume_same_run(
             prompt="Please make audio",
             user_id="user-a",
             session_id="session-a",
-            metadata={
-                "coordinator_required": True,
-                "routing_decision": {
+                metadata={
+                    "coordinator_required": True,
+                    "orchestration": {
+                        "mode": "scenario",
+                        "scenario_id": "speech",
+                        "version": 1,
+                    },
+                    "routing_decision": {
                     "scenario_id": "speech",
                     "scenario_version": 1,
                     "reason_code": "RULE_CONTAINS",

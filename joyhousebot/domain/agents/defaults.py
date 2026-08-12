@@ -16,7 +16,13 @@ def default_agent_profiles(
                 agent_id="default",
                 name="Default Agent",
                 description="Neutral execution entrypoint for an empty JoyhouseBot Runtime",
-                role="coordinator",
+                # The built-in profile is the direct execution boundary used
+                # by products before they install their own Agents. Team and
+                # Scenario execution already freeze their own coordinator, so
+                # making this neutral profile a coordinator would add an
+                # unrelated structured planning turn to every explicit Agent
+                # request.
+                role="executor",
                 is_default=True,
             ),
             AgentRevision(

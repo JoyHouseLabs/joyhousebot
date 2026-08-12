@@ -33,6 +33,7 @@ def create_model_provider(
     provider_name: str | None = None,
     client: httpx.AsyncClient | None = None,
     model_policy: dict[str, Any] | None = None,
+    request_timeout_seconds: float = 120.0,
 ) -> LLMProvider:
     if str(model).strip() == "unconfigured/model" and not str(provider_name or "").strip():
         return UnconfiguredModelProvider()
@@ -62,6 +63,7 @@ def create_model_provider(
             default_model=model,
             extra_headers=headers,
             reasoning_options=dict(model_policy or {}),
+            request_timeout_seconds=float(request_timeout_seconds),
             client=client,
         )
     )

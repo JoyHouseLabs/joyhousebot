@@ -30,14 +30,43 @@ class PostgresRunCancelMixin:
             ).fetchone()
             if row is None:
                 return None
+            descendants = conn.execute(
+                """WITH RECURSIVE child_runs AS (
+                       SELECT run_id FROM runtime_runs WHERE parent_run_id=%s
+                       UNION ALL
+                       SELECT child.run_id
+                       FROM runtime_runs AS child
+                       JOIN child_runs AS parent ON child.parent_run_id=parent.run_id
+                   )
+                   UPDATE runtime_runs AS child SET
+                       cancel_requested_at=COALESCE(
+                           child.cancel_requested_at,clock_timestamp()
+                       ),
+                       cancel_reason=COALESCE(child.cancel_reason,%s),
+                       updated_at=clock_timestamp()
+                   WHERE child.run_id IN (SELECT run_id FROM child_runs)
+                     AND child.status NOT IN (
+                         'completed','failed','cancelled','timed_out'
+                     )
+                   RETURNING child.run_id,child.status""",
+                (run_id, f"parent Run cancelled: {reason}"),
+            ).fetchall()
             self._audit(
                 conn,
                 run_id=run_id,
                 stage="store.run.cancel_requested",
                 message="Cancel requested",
-                data={"reason": reason, "status": row["status"]},
+                data={
+                    "reason": reason,
+                    "status": row["status"],
+                    "propagated_child_run_ids": [
+                        str(item["run_id"]) for item in descendants
+                    ],
+                },
             )
             self._notify(conn, run_id)
+            for child in descendants:
+                self._notify(conn, str(child["run_id"]))
         return {"status": str(row["status"]), "lease_alive": bool(row["lease_alive"])}
 
     def reset_runtime_run(self, run_id: str) -> bool:

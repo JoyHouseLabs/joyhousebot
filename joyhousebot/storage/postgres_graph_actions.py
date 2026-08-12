@@ -161,9 +161,14 @@ class PostgresGraphActionStoreMixin:
         waiting_on = (
             result.get("approval_id")
             if status == "waiting_approval"
-            else result.get("reconciliation_id") or result.get("wait_id")
+            else result.get("reconciliation_id")
+            or result.get("wait_id")
+            or result.get("child_run_id")
         )
         waits_for_event = status == "waiting_external" and bool(result.get("wait_id"))
+        waits_for_subrun = status == "waiting_external" and bool(
+            result.get("child_run_id")
+        )
         conn.execute(
             """UPDATE runtime_runs SET status=%s,result=%s,error=NULL,
                    current_phase='waiting',status_summary=%s,status_reason=%s,
@@ -179,11 +184,15 @@ class PostgresGraphActionStoreMixin:
                     if status == "waiting_approval"
                     else "等待外部事件"
                     if waits_for_event
+                    else "等待子 Run"
+                    if waits_for_subrun
                     else "等待外部操作确认"
                 ),
                 (
                     "graph Task is waiting for an external event"
                     if waits_for_event
+                    else "graph Task is waiting for a child Run"
+                    if waits_for_subrun
                     else "graph capability Action is suspended"
                 ),
                 (
@@ -191,6 +200,8 @@ class PostgresGraphActionStoreMixin:
                     if status == "waiting_approval"
                     else "deliver external event"
                     if waits_for_event
+                    else "wait for child Run completion"
+                    if waits_for_subrun
                     else "reconcile external operation"
                 ),
                 waiting_on,

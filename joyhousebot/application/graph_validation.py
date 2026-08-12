@@ -37,6 +37,11 @@ def validate_graph_catalog(store: Any, tasks: list[Any]) -> list[dict[str, Any]]
     latest_by_id = {
         CapabilityRef.from_dict(dict(item["ref"])).capability_id: item for item in latest
     }
+    published_skills = {
+        str(item["skill_id"]): dict(item.get("current") or {})
+        for item in store.list_skills(active_only=True)
+        if item.get("current")
+    }
     exact: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
     for task in tasks:
         pinned, tools, skills = task_executables(task)
@@ -67,8 +72,26 @@ def validate_graph_catalog(store: Any, tasks: list[Any]) -> list[dict[str, Any]]
                     )
         for skill_name in skills:
             capability_id = skill_name if skill_name.startswith("skill.") else f"skill.{skill_name}"
-            if (latest_by_id.get(capability_id) or {}).get("ref", {}).get("kind") != "skill":
+            if capability_id not in published_skills:
                 raise ValueError(f"graph task references unavailable skill: {skill_name}")
+            refs = {
+                str(item.get("skill_id") or ""): item
+                for item in dict(getattr(task, "metadata", {}) or {}).get("skill_refs") or []
+                if isinstance(item, dict)
+            }
+            requested = refs.get(capability_id)
+            if requested is not None:
+                published = store.get_published_skill(
+                    capability_id, str(requested.get("version") or "")
+                )
+                if published is None or (
+                    requested.get("content_sha256")
+                    and str(requested["content_sha256"])
+                    != str(published.get("content_sha256") or "")
+                ):
+                    raise ValueError(
+                        f"graph task references unavailable Skill version: {capability_id}"
+                    )
     catalog = list(
         {
             CapabilityRef.from_dict(dict(item["ref"])).identity: item

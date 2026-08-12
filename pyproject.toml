@@ -33,6 +33,9 @@ dependencies = [
     "uvicorn>=0.23.0",
     "psycopg[binary,pool]>=3.2.0",
     "jsonschema>=4.0.0",
+    "rfc8785>=0.1.4,<0.2",
+    "tuf>=6.0.0,<7",
+    "packaging>=23.0",
 ]
 
 [project.optional-dependencies]
@@ -56,7 +59,7 @@ Documentation = "https://github.com/JoyHouseLabs/joyhousebot/tree/main/docs"
 Issues = "https://github.com/JoyHouseLabs/joyhousebot/issues"
 
 [project.scripts]
-joyhousebot = "joyhousebot.cli.cloud:app"
+joyhousebot = "joyhousebot.cli.runtime:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -102,10 +105,12 @@ pythonpath = [
     "extensions/capability-context-assets/src",
     "extensions/capability-filesystem/src",
     "extensions/capability-groq-transcription/src",
+    "extensions/capability-media-generation/src",
     "extensions/capability-research/src",
     "extensions/capability-runtime-control/src",
     "extensions/capability-shell/src",
     "extensions/connector-mcp-client/src",
+    "extensions/connector-http-capability/src",
     "extensions/channel-discord/src",
     "extensions/channel-email/src",
     "extensions/channel-feishu/src",

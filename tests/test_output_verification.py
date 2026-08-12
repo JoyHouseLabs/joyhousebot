@@ -88,6 +88,40 @@ async def test_schema_failure_is_repaired_in_a_new_durable_turn(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_schema_repair_prompt_contains_private_field_level_diagnostics(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "verification-repair-diagnostics.db")
+    provider = _SequenceProvider(['{"answer": "wrong"}', '{"answer": 42}'])
+    executor = _executor(store, tmp_path, provider)
+    runtime = NativeAgentRuntime(agent=executor, store=store)
+
+    submitted = await runtime.submit_run(
+        AgentOptions(
+            prompt="return the answer",
+            user_id="user-verify",
+            session_id="repair-diagnostics",
+            output_schema=_SCHEMA,
+            max_repairs=1,
+            max_turns=2,
+        )
+    )
+    finished = await runtime.wait(submitted.run_id, timeout=3)
+
+    assert finished.status == "completed"
+    repair_prompt = provider.messages[1][-1]["content"]
+    assert "$.answer" in repair_prompt
+    assert "is not of type 'integer'" in repair_prompt
+    records = store.list_verification_records(submitted.run_id)
+    assert records[0].error == {
+        "code": "VERIFICATION_FAILED",
+        "message": "final output does not match the required JSON Schema",
+    }
+    await runtime.close()
+    await executor.close_tool_connectors()
+
+
+@pytest.mark.asyncio
 async def test_repair_limit_fails_without_false_completion(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "verification-exhausted.db")
     provider = _SequenceProvider(["invalid", "still invalid"])
@@ -346,7 +380,7 @@ def test_run_api_persists_verification_contract_for_worker(tmp_path: Path) -> No
             "/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
-                "agent_id": "default",
+                "execution": {"mode": "agent", "agent_id": "default"},
                 "input": {"type": "message", "content": "answer"},
                 "output_schema": _SCHEMA,
                 "verification_policy": policy,

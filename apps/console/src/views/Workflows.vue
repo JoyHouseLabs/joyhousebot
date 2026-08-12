@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">AI WORKFLOW STUDIO</span>
         <h1>让 Agent 生成可执行流程</h1>
-        <p>描述目标，自动形成 DAG；在这里审查、对话修改、试运行并发布，不靠拖拉拽搭建智能。</p>
+        <p>用自然语言组合 Agent、Team、Scenario 与质量控制节点；审查、试运行并发布为可恢复的执行 DAG。</p>
       </div>
       <div class="heading-actions">
         <button class="secondary-button" type="button" :disabled="loading" @click="loadDirectory">刷新</button>
@@ -13,7 +13,7 @@
     </header>
 
     <div class="workflow-contract">
-      <span>自然语言目标</span><b>→</b><span>Agent 生成 DAG</span><b>→</b><span>可视化审查与对话修改</span><b>→</b><span>版本发布</span><b>→</b><span>统一 Runtime 执行</span>
+      <span>自然语言目标</span><b>→</b><span>Agent / Team / Scenario</span><b>→</b><span>分支 · 验证 · 有界循环 · 审批</span><b>→</b><span>冻结版本</span><b>→</b><span>统一 Runtime 执行</span>
     </div>
     <div v-if="error" class="notice error-notice">{{ error }}</div>
     <div v-if="notice" class="notice success-notice">{{ notice }}</div>
@@ -60,8 +60,8 @@
             <span class="kickoff-icon">✦</span>
             <span class="eyebrow">DESCRIBE THE OUTCOME</span>
             <h3>你说清楚结果，Agent 负责组织流程</h3>
-            <p>系统会选择合适的 Agent、Skill 与 Tool，识别可并行步骤和必要的人工确认，然后生成一份可以真实执行的 DAG。</p>
-            <div class="principles"><span>不执行，只设计</span><span>不虚构能力 ID</span><span>默认最小流程</span><span>高风险加确认</span></div>
+            <p>系统会选择合适的 Agent、Team、固定 Scenario、Skill 与 Tool，并显式组织验证、分支、有界循环和人工确认。</p>
+            <div class="principles"><span>设计执行分离</span><span>引用冻结版本</span><span>子运行可恢复</span><span>高风险加确认</span></div>
           </div>
           <form class="kickoff-form" @submit.prevent="generateInitial">
             <label><span>想可靠完成什么？</span><textarea v-model.trim="goalInput" rows="8" maxlength="4000" required placeholder="例如：每天汇总项目进展和风险，形成一份可核验的简报，发布前由我确认。" /></label>
@@ -107,9 +107,9 @@
                   :style="{ left: `${position.x}px`, top: `${position.y}px` }"
                   @click="selectedNodeId = position.node.id"
                 >
-                  <span class="node-kind">{{ position.node.kind === 'approval' ? 'HUMAN GATE' : 'AGENT TASK' }}</span>
+                  <span class="node-kind">{{ nodeKind(position.node).label }}</span>
                   <strong>{{ position.node.name }}</strong>
-                  <small>{{ position.node.agent_id || '由当前用户确认' }}</small>
+                  <small>{{ nodeExecutor(position.node) }}</small>
                   <em>{{ position.node.dependencies.length ? `等待 ${position.node.dependencies.length} 个上游` : '起始节点' }}</em>
                 </button>
               </div>
@@ -126,15 +126,15 @@
             <section class="inspector-block">
               <div class="workspace-heading"><span class="eyebrow">NODE INSPECTOR</span><h3>节点检查</h3></div>
               <template v-if="selectedNode">
-                <div class="node-title"><span>{{ selectedNode.kind === 'approval' ? 'H' : 'A' }}</span><div><strong>{{ selectedNode.name }}</strong><small>{{ selectedNode.id }}</small></div></div>
+                <div class="node-title"><span>{{ nodeKind(selectedNode).mark }}</span><div><strong>{{ selectedNode.name }}</strong><small>{{ selectedNode.id }} · {{ nodeKind(selectedNode).label }}</small></div></div>
                 <dl>
                   <dt>执行目标</dt><dd>{{ selectedNode.objective }}</dd>
-                  <dt>执行者</dt><dd>{{ selectedNode.agent_id || '当前用户（人工确认）' }}</dd>
+                  <dt>执行者</dt><dd>{{ nodeExecutor(selectedNode) }}</dd>
                   <dt>依赖</dt><dd>{{ selectedNode.dependencies.join('、') || '无，可立即开始' }}</dd>
-                  <dt>重试</dt><dd>最多 {{ selectedNode.max_attempts }} 次</dd>
+                  <dt>策略</dt><dd>{{ nodePolicy(selectedNode) }}</dd>
                 </dl>
                 <div class="capability-tags"><span v-for="tool in selectedNode.allowed_tools" :key="tool">Tool · {{ tool }}</span><span v-for="skill in selectedNode.skills" :key="skill">Skill · {{ skill }}</span><small v-if="!selectedNode.allowed_tools.length && !selectedNode.skills.length">未绑定额外能力</small></div>
-                <p class="inspector-hint">节点结构由 Agent 生成。需要修改时，请在左侧用自然语言说明意图，系统会生成新的完整方案。</p>
+                <p class="inspector-hint">Team / Scenario 节点保存精确发布版本，执行时创建可独立追踪的子 Run；控制节点由 Runtime 确定性执行。</p>
               </template>
             </section>
             <section class="inspector-block revisions-block">
@@ -251,6 +251,30 @@ const edgePositions = computed(() => {
 function clearMessages() { error.value = ''; notice.value = '' }
 function errorText(cause: unknown, fallback: string) { return cause instanceof Error ? cause.message : fallback }
 function formatDate(value?: string | null) { return value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—' }
+const nodeKinds = {
+  agent: { label: 'AGENT TASK', mark: 'A' },
+  team: { label: 'TEAM SUBRUN', mark: 'T' },
+  scenario: { label: 'SCENARIO SUBRUN', mark: 'S' },
+  approval: { label: 'HUMAN GATE', mark: 'H' },
+  verify: { label: 'QUALITY GATE', mark: 'V' },
+  branch: { label: 'CONDITION BRANCH', mark: 'B' },
+  bounded_loop: { label: 'BOUNDED LOOP', mark: 'L' },
+} as const
+function nodeKind(node: WorkflowNode) { return nodeKinds[node.kind] }
+function nodeExecutor(node: WorkflowNode) {
+  if (node.kind === 'team') return `Team · ${node.subrun?.team_id || node.team_id || '冻结版本'}`
+  if (node.kind === 'scenario') return `Scenario · ${node.subrun?.scenario_id || node.scenario_id || '冻结版本'}${node.subrun?.scenario_version || node.scenario_version ? ` v${node.subrun?.scenario_version || node.scenario_version}` : ''}`
+  if (node.kind === 'agent') return node.agent_id || '默认 Agent'
+  if (node.kind === 'approval') return '当前用户（人工确认）'
+  return 'Runtime 控制面'
+}
+function nodePolicy(node: WorkflowNode) {
+  if (node.kind === 'agent') return `失败最多尝试 ${node.max_attempts} 次`
+  if (node.kind === 'bounded_loop') return `最多 ${Number(node.configuration?.max_iterations || 1)} 轮`
+  if (node.kind === 'team' || node.kind === 'scenario') return '子 Run 失败向父 Workflow 传播'
+  if (node.kind === 'approval') return '等待审批，不自动重试'
+  return '确定性执行，不自动重试'
+}
 function applyDraft(value: WorkflowDraft, options: { dirty: boolean; sourceRunId?: string | null }) {
   draft.value = structuredClone(value)
   goalInput.value = value.goal

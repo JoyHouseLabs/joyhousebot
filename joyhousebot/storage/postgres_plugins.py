@@ -129,6 +129,39 @@ class PostgresPluginStoreMixin:
                 ddl=runtime_health,
                 description="replace extension callbacks with runtime-derived health",
             )
+            inventory = """
+            CREATE TABLE IF NOT EXISTS extension_inventory (
+                extension_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                source_version TEXT NOT NULL DEFAULT '',
+                extension_types JSONB NOT NULL DEFAULT '[]'::jsonb,
+                distribution_name TEXT NOT NULL DEFAULT '',
+                distribution_version TEXT NOT NULL DEFAULT '',
+                source_location TEXT NOT NULL DEFAULT '',
+                source_digest TEXT NOT NULL DEFAULT '',
+                source_available BOOLEAN NOT NULL DEFAULT FALSE,
+                installed BOOLEAN NOT NULL DEFAULT FALSE,
+                deployment_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+                desired_active BOOLEAN NOT NULL DEFAULT FALSE,
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                desired_changed_by TEXT,
+                desired_changed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                observed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+            );
+            CREATE INDEX IF NOT EXISTS ix_extension_inventory_state
+                ON extension_inventory(deployment_allowed,desired_active,installed);
+            """
+            conn.execute(inventory)
+            self._record_migration(
+                conn,
+                name="plugins",
+                version=5,
+                ddl=inventory,
+                description="metadata-only extension inventory and durable desired activation",
+            )
 
     def upsert_plugin_release(self, manifest: dict[str, Any]) -> None:
         value = dict(manifest)
@@ -211,7 +244,7 @@ class PostgresPluginStoreMixin:
                 (plugin_id, version),
             ).fetchone()
             if release is None:
-                raise ValueError("plugin release has not been discovered by a Worker")
+                raise ValueError("plugin release has not been discovered from an enabled extension")
             if str(release["status"]) == "active":
                 raise ValueError("plugin release is already active")
             manifest = dict(_json(release["manifest"], {}))
@@ -387,7 +420,7 @@ class PostgresPluginStoreMixin:
                    ORDER BY component_type,name,component_id""",
                 (plugin_id, release["version"]),
             ).fetchall()
-        return [
+        values = [
             {"component_id": str(row["component_id"]), "component_type": str(row["component_type"]),
              "name": str(row["name"]), "description": str(row["description"]),
              "reference_id": str(row["reference_id"]), "reference_version": str(row["reference_version"]),
@@ -395,6 +428,25 @@ class PostgresPluginStoreMixin:
              "plugin_version": release["version"]}
             for row in rows
         ]
+        dynamic = self.list_plugin_capability_components(plugin_id, release["version"])
+        existing = {
+            (item["component_type"], item["reference_id"], item["reference_version"])
+            for item in values
+        }
+        values.extend(
+            item
+            for item in dynamic
+            if (item["component_type"], item["reference_id"], item["reference_version"])
+            not in existing
+        )
+        return sorted(
+            values,
+            key=lambda item: (
+                str(item["component_type"]),
+                str(item["name"]),
+                str(item["component_id"]),
+            ),
+        )
 
     def list_plugin_workers(self, plugin_id: str) -> list[dict[str, Any]]:
         release = self.get_active_plugin_release(plugin_id)
@@ -422,7 +474,11 @@ class PostgresPluginStoreMixin:
 
     def get_plugin_metrics(self, plugin_id: str, *, hours: int = 24) -> dict[str, Any]:
         components = self.list_plugin_components(plugin_id)
-        references = [item["reference_id"] for item in components if item["component_type"] == "tool"]
+        references = [
+            item["reference_id"]
+            for item in components
+            if item["component_type"] in {"tool", "connector"}
+        ]
         if not references:
             return {"hours": hours, "total": 0, "succeeded": 0, "failed": 0, "success_rate": 0.0,
                     "p50_duration_ms": None, "p95_duration_ms": None, "by_component": []}
@@ -464,7 +520,7 @@ class PostgresPluginStoreMixin:
 
     def list_plugin_recent_invocations(self, plugin_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
         references = [item["reference_id"] for item in self.list_plugin_components(plugin_id)
-                      if item["component_type"] == "tool"]
+                      if item["component_type"] in {"tool", "connector"}]
         if not references:
             return []
         with self._pool.connection() as conn:

@@ -6,6 +6,8 @@ Joyhousebot is not a single-agent chat client and not a model-vendor SDK. It gov
 
 It provides one PostgreSQL-first control plane and runtime for building, publishing, operating, and governing many Agent applications.
 
+Business Apps remain independently deployable products; Skills are versioned methods; Extensions are technical Runtime artifacts. JoyHouse Market is a separate private repository and deployment; its replaceable Registry uses author DSSE signatures, Market attestations, TUF metadata, local permission approval, and signed Entitlements. Core does not require the official Market, and Market never receives private Run, Prompt, Memory, or Artifact contents. The private JoyHouse Desktop, Web, Mobile, website, and browser extension live in the adjacent `../joyhouse` product repository. See the [App integration contract](docs/APP_INTEGRATION.md) and [App Market governance protocol](docs/APP_MARKET_GOVERNANCE.md).
+
 ## Governance model
 
 ```text
@@ -33,6 +35,7 @@ Governance is part of every execution: requests are authenticated, capabilities 
 - Draft → publish → Worker acknowledgement → activation is an explicit rollout state machine; failed rollouts retain the previous revision.
 - Scenarios support intent routing, field validation, clarification nodes and edges, capability bindings, and execution policies.
 - A main coordinator can route to a scenario, ask configured follow-ups, or create a parallel Task Graph without hard-coding a business application into the core runtime.
+- AgentTeams freeze member revisions and compile typed produce/review/revise/synthesis steps into the durable Task Graph. Workflow revisions can compose Agents, frozen Team or fixed-Scenario child Runs, verification, branches, bounded loops, and human approvals without introducing a second execution engine.
 
 ### Capability and security governance
 
@@ -92,7 +95,7 @@ api / bootstrap / channel adapters
                 ↓
        runtime + domain services
                 ↓
-       dedicated PostgreSQL repositories
+       module-owned PostgreSQL repositories
 ```
 
 Business applications such as Dinq Discover and Smart Study should register Scenarios, Capabilities, Tools, Skills, or MCP servers through an independent plugin package rather than adding business code to the `joyhousebot` core package. The Smart Study reference plugin also demonstrates forwarding the Runtime's Durable Action idempotency identity to a business API and returning reviews/outcomes as governed Artifacts.
@@ -105,7 +108,7 @@ PostgreSQL is required:
 cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
-export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:password@127.0.0.1:5432/joyhousebot"
+export JOYHOUSE_DATABASE_URL="postgresql://joyhouse:password@127.0.0.1:5432/joyhouse"
 ./scripts/start-local.sh
 ```
 
@@ -134,7 +137,7 @@ See [Architecture](docs/ARCHITECTURE.md) and [Operations](docs/OPERATIONS.md) fo
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
   -H 'X-User-ID: joyhousebot' \
-  -d '{"agent_id":"main-coordinator","session_id":"demo","input":{"content":"Analyze this task"}}'
+  -d '{"execution":{"mode":"agent","agent_id":"main-coordinator"},"session_id":"demo","input":{"content":"Analyze this task"}}'
 ```
 
 Use a database-issued Bearer Token in production.

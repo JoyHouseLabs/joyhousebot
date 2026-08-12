@@ -19,12 +19,14 @@ from joyhousebot.agent.tool_runtime import ToolRuntimeMixin
 from joyhousebot.agent.turn_engine import TurnEngineMixin
 from joyhousebot.capabilities import CapabilityRegistry
 from joyhousebot.config.extensions import (
+    deployment_allowed_extension_ids,
     enabled_capability_ids,
     enabled_connector_ids,
     extension_settings,
 )
 from joyhousebot.connectors import ToolConnectorRegistry
 from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.domain.remote_connections import materialize_remote_connection
 from joyhousebot.providers.base import LLMProvider
 from joyhousebot.session.protocol import SessionStore
 
@@ -131,16 +133,18 @@ class NativeAgentExecutor(
         self.tool_connectors = ToolConnectorRegistry()
         if bool(getattr(extensions_config, "discover_entry_points", False)):
             self.tool_connectors.load_entry_points(enabled=enabled_connector_ids(self.config))
-        self._tool_connector_settings: dict[str, dict[str, Any]] = {}
-        for extension_id in getattr(extensions_config, "enabled", ()) or ():
+        self._deployment_tool_connector_settings: dict[str, dict[str, Any]] = {}
+        for extension_id in deployment_allowed_extension_ids(self.config):
             normalized_id = str(extension_id).strip()
             if normalized_id.startswith("connector-"):
-                self._tool_connector_settings[normalized_id] = extension_settings(
+                self._deployment_tool_connector_settings[normalized_id] = extension_settings(
                     self.config, normalized_id
                 )
+        self._tool_connector_settings = self._effective_tool_connector_settings()
         for manifest in self.tool_connectors.manifests():
             self.runtime_store.upsert_plugin_release(manifest.to_release_dict())
         self._tool_connector_stack: AsyncExitStack | None = None
+        self._retired_tool_connector_stacks: list[AsyncExitStack] = []
         self._tool_connectors_connected = False
         self._tool_connector_lock = asyncio.Lock()
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -155,3 +159,23 @@ class NativeAgentExecutor(
             if isinstance(configured_concurrency, int) and configured_concurrency > 0
             else None
         )
+
+    def _effective_tool_connector_settings(self) -> dict[str, dict[str, Any]]:
+        settings = {
+            extension_id: dict(value)
+            for extension_id, value in self._deployment_tool_connector_settings.items()
+        }
+        connector_id = "connector-http-capability"
+        if connector_id not in settings:
+            return settings
+        configured = dict(settings.get(connector_id) or {})
+        services = dict(configured.get("services") or {})
+        reader = getattr(self.runtime_store, "list_active_remote_connection_configurations", None)
+        if callable(reader):
+            for connection_id, value in reader().items():
+                revision = dict(value)
+                revision.pop("_revision_id", None)
+                services[connection_id] = materialize_remote_connection(revision)
+        configured["services"] = services
+        settings[connector_id] = configured
+        return settings

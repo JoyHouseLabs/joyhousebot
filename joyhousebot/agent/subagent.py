@@ -51,6 +51,56 @@ class SubagentManager:
         parent = get_current_run_context()
         user_id = parent.user_id if parent else "system"
         selected_agent_id = str(agent_id or (parent.agent_id if parent else "default"))
+        selected_agent_revision_id = None
+        team_metadata: dict[str, Any] = {}
+        team_limit = self.max_spawns_per_run
+        team_ref = parent.metadata.get("team_ref") if parent else None
+        if isinstance(team_ref, dict):
+            team = await asyncio.to_thread(
+                self._runtime.store.get_agent_team_revision,
+                str(team_ref.get("revision_id") or ""),
+            )
+            current_member_id = str(parent.metadata.get("team_member_id") or "")
+            current_member = team.member(current_member_id) if team is not None else None
+            selected_member = next(
+                (
+                    item
+                    for item in (team.members if team is not None else ())
+                    if item.agent_id == selected_agent_id
+                ),
+                None,
+            )
+            if (
+                team is None
+                or team.status not in {"published", "retired"}
+                or team.team_id != str(team_ref.get("team_id") or "")
+                or current_member is None
+                or selected_member is None
+            ):
+                raise ToolInvocationError(
+                    "SUBAGENT_TEAM_BOUNDARY",
+                    "subagent target is outside the published AgentTeam",
+                )
+            if selected_member.member_id != current_member.member_id and (
+                not current_member.can_delegate
+                or selected_member.member_id not in current_member.allowed_handoffs
+            ):
+                raise ToolInvocationError(
+                    "SUBAGENT_HANDOFF_DENIED",
+                    "AgentTeam handoff policy denies this subagent target",
+                )
+            selected_agent_revision_id = selected_member.agent_revision_id
+            team_limit = min(
+                team_limit, int(team.budget_policy.get("max_handoffs") or team_limit)
+            )
+            team_metadata = {
+                "team_ref": dict(team_ref),
+                "team_members": [item.to_dict() for item in team.members],
+                "team_member_id": selected_member.member_id,
+                "team_context_policy": dict(team.context_policy),
+                "team_budget_policy": dict(team.budget_policy),
+                "team_approval_policy": dict(team.approval_policy),
+            }
         parent_run_id = parent.run_id if parent else None
         parent_task_id = parent.task_id if parent else None
         root_run_id = (parent.root_run_id or parent.run_id) if parent else None
@@ -67,6 +117,7 @@ class SubagentManager:
                     user_id=user_id,
                     session_id=f"{parent_session}:subagent:{task_id}",
                     agent_id=selected_agent_id,
+                    agent_revision_id=selected_agent_revision_id,
                     channel="subagent",
                     chat_id=task_id,
                     model=self.model,
@@ -79,11 +130,12 @@ class SubagentManager:
                         "origin_channel": origin_channel,
                         "origin_chat_id": origin_chat_id,
                         "parent_run_id": parent_run_id,
+                        **team_metadata,
                     },
                     root_run_id=root_run_id,
                     parent_run_id=parent_run_id,
                     parent_task_id=parent_task_id,
-                    max_children_per_root=self.max_spawns_per_run,
+                    max_children_per_root=team_limit,
                     idempotency_key=f"subagent:{operation_key}",
                 ),
                 run_id=child_run_id,
@@ -142,6 +194,40 @@ class SubagentManager:
                 status="unknown", summary="child Run was not found"
             )
         if record.status == "completed":
+            metadata = dict(dict(record.options or {}).get("metadata") or {})
+            team_ref = metadata.get("team_ref")
+            policy = dict(metadata.get("team_context_policy") or {})
+            if (
+                isinstance(team_ref, dict)
+                and metadata.get("team_member_id")
+                and bool(policy.get("workspace_enabled", True))
+            ):
+                result = dict(record.result or {})
+                content = str(result.get("content") or "")
+                max_chars = max(
+                    500,
+                    min(int(policy.get("max_entry_chars") or 6000), 100000),
+                )
+                await asyncio.to_thread(
+                    store.append_team_workspace_entry,
+                    entry_id=f"teamws:{record.run_id}:output",
+                    user_id=user_id,
+                    root_run_id=record.root_run_id or record.run_id,
+                    team_id=str(team_ref.get("team_id") or ""),
+                    team_revision_id=str(team_ref.get("revision_id") or ""),
+                    source_run_id=record.run_id,
+                    source_task_id=None,
+                    member_id=str(metadata["team_member_id"]),
+                    entry_type="subagent_result",
+                    summary=content[:2000],
+                    data={
+                        "content": content[:max_chars],
+                        "structured_output": result.get("structured_output"),
+                        "usage": result.get("usage"),
+                        "tools_used": result.get("tools_used"),
+                    },
+                    visibility=str(policy.get("default_visibility") or "team"),
+                )
             return OperationReconciliationResult(
                 status="succeeded",
                 summary="子 Agent 已完成",

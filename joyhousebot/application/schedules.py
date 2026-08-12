@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from dataclasses import asdict
 from typing import Any
@@ -109,6 +110,16 @@ class ScheduleService:
             if "overlap_policy" not in body.policy.model_fields_set:
                 policy_values["overlap_policy"] = "skip"
         policy = CronPolicy(**policy_values)
+        # Schedule creation participates in the same durable idempotency contract as
+        # Run submission.  Gateways can safely retry a request after losing the HTTP
+        # response without creating a second live schedule.  The request body is
+        # intentionally frozen by the first successful write for a given key.
+        job_id = None
+        if context.idempotency_key:
+            identity = (
+                f"schedule:{context.user_id}:{context.idempotency_key}".encode("utf-8")
+            )
+            job_id = f"idem-{hashlib.sha256(identity).hexdigest()}"
         row = await asyncio.to_thread(
             self.scheduler.add_job,
             name=body.name,
@@ -135,6 +146,7 @@ class ScheduleService:
             context_mode=payload.context_mode,
             active_hours=payload.active_hours,
             policy=policy,
+            job_id=job_id,
         )
         if not body.enabled:
             row = (

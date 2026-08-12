@@ -117,6 +117,15 @@ class ChannelRepository:
             )
             return cursor.rowcount
 
+    def release(self, channel: str, *, worker_id: str) -> bool:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """DELETE FROM channel_leases
+                   WHERE channel_id=%s AND owner_worker_id=%s""",
+                (channel, worker_id),
+            )
+            return cursor.rowcount == 1
+
     def list_leases(self) -> dict[str, dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute("SELECT * FROM channel_leases").fetchall()

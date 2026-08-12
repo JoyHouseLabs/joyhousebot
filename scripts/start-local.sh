@@ -63,8 +63,14 @@ trap cleanup INT TERM EXIT
 
 prepare_database() {
   local database_exists=""
+  if [[ -n "${JOYHOUSE_DATABASE_URL:-}" ]]; then
+    export JOYHOUSEBOT_DATABASE_URL="${JOYHOUSE_DATABASE_URL}"
+    info "PostgreSQL: using shared JOYHOUSE_DATABASE_URL"
+    return
+  fi
   if [[ -n "${JOYHOUSEBOT_DATABASE_URL:-}" ]]; then
-    info "PostgreSQL: using JOYHOUSEBOT_DATABASE_URL"
+    export JOYHOUSE_DATABASE_URL="${JOYHOUSEBOT_DATABASE_URL}"
+    info "PostgreSQL: using JOYHOUSEBOT_DATABASE_URL as shared connection"
     return
   fi
 
@@ -87,6 +93,7 @@ prepare_database() {
       "${LOCAL_PG_DATABASE}"
   fi
   export JOYHOUSEBOT_DATABASE_URL="postgresql://${LOCAL_PG_USER}:${LOCAL_PG_PASSWORD}@${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
+  export JOYHOUSE_DATABASE_URL="${JOYHOUSEBOT_DATABASE_URL}"
   unset PGPASSWORD
   info "PostgreSQL: ${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
 }
@@ -137,7 +144,7 @@ install_local_extensions() {
     extension_path="${ROOT_DIR}/extensions/${extension_id}"
     [[ -f "${extension_path}/pyproject.toml" ]] || continue
     extension_paths+=("${extension_path}")
-  done < <(jq -r '.extensions.enabled // [] | .[]' "${CONFIG_PATH}")
+  done < <(jq -r '(.extensions.allowedIds // .extensions.enabled // []) | .[]' "${CONFIG_PATH}")
 
   if [[ -n "${LOCAL_EXTENSION_PACKAGES}" ]]; then
     local supplied=()
@@ -173,7 +180,7 @@ main() {
   [[ "${LOCAL_PG_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_PORT must be a valid port"
   [[ "${LOCAL_PG_DATABASE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_DATABASE contains unsupported characters"
   [[ "${LOCAL_PG_USER}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_USER contains unsupported characters"
-  [[ "${LOCAL_PG_PASSWORD}" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "set JOYHOUSEBOT_DATABASE_URL when the local PostgreSQL password requires URL encoding"
+  [[ "${LOCAL_PG_PASSWORD}" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "set JOYHOUSE_DATABASE_URL when the local PostgreSQL password requires URL encoding"
   if lsof -nP -iTCP:"${API_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
     fail "TCP port ${API_PORT} is already in use"
   fi
@@ -192,6 +199,7 @@ main() {
   # role with auto-migration enabled can interleave DDL from a later process
   # with catalog bootstrap writes from an earlier one.
   JOYHOUSEBOT_AUTO_MIGRATE=true uv run joyhousebot check --config "${CONFIG_PATH}"
+  uv run joyhousebot discover-extensions --config "${CONFIG_PATH}"
   export JOYHOUSEBOT_AUTO_MIGRATE=false
 
   start_role api uv run joyhousebot api \

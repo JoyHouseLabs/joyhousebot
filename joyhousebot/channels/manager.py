@@ -44,11 +44,13 @@ class ChannelManager:
         self.registry = ChannelRegistry()
         self.plugins: dict[str, ChannelPlugin] = {}
         self._active_channels: set[str] = set()
+        self._allowed_channels: set[str] = set()
         self._plugin_tasks: dict[str, asyncio.Task[Any]] = {}
         self._outbound_queues: dict[str, list[asyncio.Queue[OutboundMessage]]] = {}
-        self._outbound_workers: list[asyncio.Task[Any]] = []
+        self._outbound_workers: dict[str, list[asyncio.Task[Any]]] = {}
         self._dispatch_task: asyncio.Task[Any] | None = None
         self._coordinator_task: asyncio.Task[Any] | None = None
+        self._activation_task: asyncio.Task[Any] | None = None
         self._init_channels()
 
     def _channel_config(self, channel_id: str, plugin: ChannelPlugin) -> Any:
@@ -66,19 +68,14 @@ class ChannelManager:
         if extensions.discover_entry_points:
             registry.load_entry_points(enabled=enabled_channel_extension_ids(self.config))
 
-        for channel_id in sorted(enabled_channel_ids(self.config)):
+        self._allowed_channels = set(enabled_channel_ids(self.config))
+        for channel_id in sorted(self._allowed_channels):
             plugin = registry.get(channel_id)
             if plugin is None:
                 raise RuntimeError(
                     f"channel {channel_id!r} is enabled but no installed extension provides it"
                 )
-            channel_config = self._channel_config(channel_id, plugin)
-            enabled = (
-                bool(channel_config.get("enabled"))
-                if isinstance(channel_config, dict)
-                else bool(getattr(channel_config, "enabled", False))
-            )
-            if enabled:
+            if self._extension_desired(channel_id):
                 self.plugins[channel_id] = plugin
 
         if self.repository is not None:
@@ -91,15 +88,31 @@ class ChannelManager:
     def set_run_adapter(self, adapter: RunAdapter) -> None:
         self.run_adapter = adapter
         for channel_id, plugin in self.plugins.items():
-            channel_config = self._channel_config(channel_id, plugin)
-            values = (
-                dict(channel_config)
-                if isinstance(channel_config, dict)
-                else channel_config.model_dump()
-            )
-            values["messages_config"] = self.config.messages
-            values["commands_config"] = self.config.commands
-            plugin.configure(values, adapter)
+            self._configure_plugin(channel_id, plugin)
+
+    def _configure_plugin(self, channel_id: str, plugin: ChannelPlugin) -> None:
+        if self.run_adapter is None:
+            return
+        channel_config = self._channel_config(channel_id, plugin)
+        values = (
+            dict(channel_config)
+            if isinstance(channel_config, dict)
+            else channel_config.model_dump()
+        )
+        values["messages_config"] = self.config.messages
+        values["commands_config"] = self.config.commands
+        plugin.configure(values, self.run_adapter)
+
+    def _extension_desired(self, channel_id: str) -> bool:
+        if self.repository is None:
+            return True
+        checker = getattr(self.repository.store, "is_plugin_execution_enabled", None)
+        return not callable(checker) or bool(checker(f"channel-{channel_id}"))
+
+    def _desired_channels(self) -> set[str]:
+        return {
+            name for name in self._allowed_channels if self._extension_desired(name)
+        }
 
     async def publish_outbound(self, message: OutboundMessage) -> None:
         """Persist or enqueue a terminal runtime reply for delivery."""
@@ -112,19 +125,18 @@ class ChannelManager:
         if self.plugins and self.run_adapter is None:
             raise RuntimeError("channel run adapter must be configured before start")
         if not self.plugins:
-            logger.warning("No channels enabled")
-            return
+            logger.warning("No channels currently active; waiting for control-plane activation")
         workers = max(1, min(32, self.config.gateway.channel_send_workers))
         for name, plugin in self.plugins.items():
             queues = [asyncio.Queue(maxsize=1000) for _ in range(workers)]
             self._outbound_queues[name] = queues
-            self._outbound_workers.extend(
+            self._outbound_workers[name] = [
                 asyncio.create_task(
                     self._send_loop(name, plugin, queue),
                     name=f"channel-send:{name}:{index}",
                 )
                 for index, queue in enumerate(queues)
-            )
+            ]
         self._dispatch_task = asyncio.create_task(
             self._outbox_loop(), name=f"channel-outbox:{self.worker_id}"
         )
@@ -138,6 +150,9 @@ class ChannelManager:
             self._coordinator_task = asyncio.create_task(
                 self._lease_loop(), name=f"channel-leases:{self.worker_id}"
             )
+        self._activation_task = asyncio.create_task(
+            self._activation_loop(), name=f"channel-activation:{self.worker_id}"
+        )
 
     async def stop_all(self) -> None:
         tasks = [
@@ -145,8 +160,9 @@ class ChannelManager:
             for task in (
                 self._dispatch_task,
                 self._coordinator_task,
+                self._activation_task,
                 *self._plugin_tasks.values(),
-                *self._outbound_workers,
+                *(task for values in self._outbound_workers.values() for task in values),
             )
             if task is not None
         ]
@@ -165,6 +181,63 @@ class ChannelManager:
         self._outbound_workers.clear()
         self._outbound_queues.clear()
 
+    async def _activation_loop(self) -> None:
+        """Reconcile PostgreSQL desired state without restarting Channel Worker."""
+        while True:
+            desired = await asyncio.to_thread(self._desired_channels)
+            for name in sorted(set(self.plugins) - desired):
+                await self._deactivate_channel(name)
+            for name in sorted(desired - set(self.plugins)):
+                await self._activate_channel(name)
+            await asyncio.sleep(1.0)
+
+    async def _activate_channel(self, name: str) -> None:
+        plugin = self.registry.get(name)
+        if plugin is None:
+            logger.error("Cannot activate unavailable Channel extension {}", name)
+            return
+        if self.run_adapter is None:
+            raise RuntimeError("channel run adapter must be configured before activation")
+        self._configure_plugin(name, plugin)
+        self.plugins[name] = plugin
+        workers = max(1, min(32, self.config.gateway.channel_send_workers))
+        queues = [asyncio.Queue(maxsize=1000) for _ in range(workers)]
+        self._outbound_queues[name] = queues
+        self._outbound_workers[name] = [
+            asyncio.create_task(
+                self._send_loop(name, plugin, queue),
+                name=f"channel-send:{name}:{index}",
+            )
+            for index, queue in enumerate(queues)
+        ]
+        if self.repository is None:
+            self._active_channels.add(name)
+            self._plugin_tasks[name] = asyncio.create_task(
+                self._run_plugin(name, plugin), name=f"channel:{name}"
+            )
+        logger.info("Activated Channel extension channel-{}", name)
+
+    async def _deactivate_channel(self, name: str) -> None:
+        plugin = self.plugins.pop(name, None)
+        if plugin is None:
+            return
+        self._active_channels.discard(name)
+        task = self._plugin_tasks.pop(name, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        workers = self._outbound_workers.pop(name, [])
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        self._outbound_queues.pop(name, None)
+        await plugin.stop()
+        if self.repository is not None:
+            await asyncio.to_thread(
+                self.repository.release, name, worker_id=self.worker_id
+            )
+        logger.info("Deactivated Channel extension channel-{}", name)
+
     async def _run_plugin(self, name: str, plugin: ChannelPlugin) -> None:
         try:
             await plugin.start()
@@ -181,7 +254,7 @@ class ChannelManager:
 
     async def _lease_loop(self) -> None:
         while True:
-            for name, plugin in self.plugins.items():
+            for name, plugin in list(self.plugins.items()):
                 owned = await asyncio.to_thread(self._acquire_channel_lease, name)
                 if owned and name not in self._active_channels:
                     self._active_channels.add(name)

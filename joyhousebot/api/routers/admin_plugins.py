@@ -16,7 +16,8 @@ from joyhousebot.api.dependencies import (
 from joyhousebot.api.schemas import PluginPlaygroundInvocationRequest, RolloutPolicyRequest
 from joyhousebot.application.presenters import record_dict
 from joyhousebot.application.runs import GraphTaskCommand
-from joyhousebot.domain.capabilities import CapabilityRef
+from joyhousebot.bootstrap.extension_catalog import synchronize_extension_inventory
+from joyhousebot.domain.capabilities import CapabilityRef, requires_explicit_grant
 
 router = APIRouter(prefix="/admin/plugins", tags=["plugin-control-plane"])
 
@@ -24,8 +25,72 @@ router = APIRouter(prefix="/admin/plugins", tags=["plugin-control-plane"])
 async def _release(container, plugin_id: str) -> dict:
     release = await asyncio.to_thread(container.store.get_plugin_release, plugin_id)
     if release is None:
-        raise HTTPException(status_code=404, detail="plugin release not found")
+        raise HTTPException(status_code=404, detail="extension release not found")
     return release
+
+
+async def _inventory_item(container, extension_id: str) -> dict:
+    item = await asyncio.to_thread(
+        container.store.get_extension_inventory, extension_id
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="extension is not present in catalog")
+    release, workers = await asyncio.gather(
+        asyncio.to_thread(container.store.get_plugin_release, extension_id),
+        asyncio.to_thread(container.store.list_plugin_workers, extension_id),
+    )
+    live_workers = [
+        worker
+        for worker in workers
+        if worker.get("healthy") and worker.get("plugin") is not None
+    ]
+    loaded = sum(1 for worker in live_workers if worker.get("execution_eligible"))
+    blockers = []
+    if not item["source_available"]:
+        blockers.append("扩展源码或安装包不可用")
+    if not item["installed"]:
+        blockers.append("扩展包尚未安装")
+    if not item["deployment_allowed"]:
+        blockers.append("扩展不在部署 allowlist")
+    if bool(item.get("metadata", {}).get("source_conflict")):
+        blockers.append("发现多个冲突的扩展源码")
+    if release is None:
+        blockers.append("尚未运行扩展发现命令")
+    elif release["status"] != "active":
+        blockers.append("扩展版本尚未发布生效")
+    if release is not None and not loaded:
+        blockers.append("没有健康 Worker 加载当前生效版本")
+    desired = bool(item["desired_active"])
+    effective = bool(
+        desired
+        and item["deployment_allowed"]
+        and release is not None
+        and release["status"] == "active"
+        and loaded
+    )
+    if effective:
+        state = "active"
+    elif desired:
+        state = "activating"
+    elif item["installed"]:
+        state = "installed"
+    elif item["source_available"]:
+        state = "available"
+    else:
+        state = "unavailable"
+    return {
+        **item,
+        "release": release,
+        "worker_summary": {"loaded": loaded, "total": len(live_workers)},
+        "effective_active": effective,
+        "state": state,
+        "activation_blockers": blockers,
+    }
+
+
+async def _inventory(container) -> list[dict]:
+    items = await asyncio.to_thread(container.store.list_extension_inventory)
+    return [await _inventory_item(container, item["extension_id"]) for item in items]
 
 
 @router.get("")
@@ -39,24 +104,99 @@ async def list_plugins(principal: PlatformAdminDep, container: ContainerDep):
     return {"items": values}
 
 
+@router.get("/inventory")
+async def extension_inventory(principal: PlatformAdminDep, container: ContainerDep):
+    return {
+        "console_activation_allowed": bool(
+            container.config.extensions.allow_console_activation
+        ),
+        "items": await _inventory(container),
+    }
+
+
+@router.post("/scan")
+async def scan_extensions(principal: PlatformAdminDep, container: ContainerDep):
+    await asyncio.to_thread(
+        synchronize_extension_inventory, container.config, store=container.store
+    )
+    return {"items": await _inventory(container)}
+
+
 @router.get("/{plugin_id}")
 async def plugin_overview(plugin_id: str, principal: PlatformAdminDep, container: ContainerDep):
     release = await _release(container, plugin_id)
-    components, workers, metrics, releases = await asyncio.gather(
+    components, workers, metrics, releases, inventory = await asyncio.gather(
         asyncio.to_thread(container.store.list_plugin_components, plugin_id),
         asyncio.to_thread(container.store.list_plugin_workers, plugin_id),
         asyncio.to_thread(container.store.get_plugin_metrics, plugin_id),
         asyncio.to_thread(container.store.list_plugin_release_versions, plugin_id),
+        asyncio.to_thread(container.store.get_extension_inventory, plugin_id),
     )
     active_loaded = [
         worker for worker in workers
         if worker.get("healthy") and worker.get("plugin") is not None
     ]
     loaded = sum(1 for worker in active_loaded if worker.get("execution_eligible"))
+    enriched_components = []
+    for component in components:
+        value = {**component, "metadata": dict(component.get("metadata") or {})}
+        if component.get("component_type") in {"tool", "connector", "skill"}:
+            capability_id = str(component.get("reference_id") or "")
+            capability_version = str(component.get("reference_version") or "")
+            definition = await asyncio.to_thread(
+                container.store.get_capability_definition,
+                capability_id,
+                capability_version,
+            )
+            exact_definition = await asyncio.to_thread(
+                container.store.get_capability_release_definition,
+                capability_id,
+                capability_version,
+            )
+            settings = await asyncio.to_thread(
+                container.store.get_capability_runtime_settings, capability_id
+            )
+            runtime_enabled = bool(settings.get("enabled", True))
+            blockers = []
+            extension_enabled = bool(
+                inventory is None
+                or (
+                    inventory.get("deployment_allowed")
+                    and inventory.get("desired_active")
+                )
+            )
+            if not extension_enabled:
+                blockers.append("扩展已在控制面停用")
+            if not runtime_enabled:
+                blockers.append("能力已被操作员停用")
+            if definition is None:
+                blockers.append("Capability 版本尚未发布")
+            if not loaded:
+                blockers.append("没有 Worker 加载当前扩展版本")
+            value["metadata"].update(
+                {
+                    "runtime_enabled": runtime_enabled,
+                    "worker_loaded": bool(loaded),
+                    "execution_ready": (
+                        extension_enabled
+                        and runtime_enabled
+                        and bool(loaded)
+                        and definition is not None
+                    ),
+                    "requires_explicit_grant": (
+                        requires_explicit_grant(exact_definition)
+                        if exact_definition is not None
+                        else False
+                    ),
+                    "execution_blockers": blockers,
+                }
+            )
+        enriched_components.append(value)
     return {
         "release": release,
+        "activation": inventory,
         "releases": releases,
-        "components": components,
+        "components": enriched_components,
         "metrics": metrics,
         "worker_summary": {
             # Only live execution processes that advertised this plugin are
@@ -73,6 +213,80 @@ async def plugin_overview(plugin_id: str, principal: PlatformAdminDep, container
             ),
         },
     }
+
+
+@router.post("/{plugin_id}/activate", status_code=202)
+async def activate_plugin(
+    plugin_id: str,
+    principal: CapabilitiesPublisherDep,
+    container: ContainerDep,
+):
+    """Request activation only inside the immutable deployment allowlist."""
+    if not bool(container.config.extensions.allow_console_activation):
+        raise HTTPException(
+            status_code=403,
+            detail="console extension activation is disabled by deployment policy",
+        )
+    item = await _inventory_item(container, plugin_id)
+    if not item["installed"] or not item["deployment_allowed"]:
+        raise HTTPException(
+            status_code=409,
+            detail="extension must be installed and deployment-allowed before activation",
+        )
+    if bool(item.get("metadata", {}).get("source_conflict")):
+        raise HTTPException(status_code=409, detail="extension catalog sources conflict")
+    release = item.get("release")
+    if release is None:
+        raise HTTPException(
+            status_code=409,
+            detail="extension release is not discovered; run joyhousebot discover-extensions",
+        )
+    try:
+        if release["status"] not in {"active", "staged"}:
+            await container.platform.publish_plugin_release(
+                plugin_id,
+                str(release["version"]),
+                actor_id=principal.subject,
+                rollout_policy={
+                    "activation_mode": "automatic",
+                    "timeout_seconds": 300,
+                    "auto_rollback": True,
+                    "require_healthy_workers": True,
+                },
+            )
+        await asyncio.to_thread(
+            container.store.set_extension_desired_active,
+            plugin_id,
+            True,
+            actor_id=principal.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return await _inventory_item(container, plugin_id)
+
+
+@router.post("/{plugin_id}/deactivate")
+async def deactivate_plugin(
+    plugin_id: str,
+    principal: CapabilitiesPublisherDep,
+    container: ContainerDep,
+):
+    """Block new extension executions immediately in the PostgreSQL control plane."""
+    if not bool(container.config.extensions.allow_console_activation):
+        raise HTTPException(
+            status_code=403,
+            detail="console extension activation is disabled by deployment policy",
+        )
+    try:
+        await asyncio.to_thread(
+            container.store.set_extension_desired_active,
+            plugin_id,
+            False,
+            actor_id=principal.subject,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return await _inventory_item(container, plugin_id)
 
 
 @router.get("/{plugin_id}/components")
@@ -162,6 +376,29 @@ async def plugin_health(plugin_id: str, principal: PlatformAdminDep, container: 
         },
         {"name": "worker_release", "status": "healthy" if healthy else "degraded", "summary": f"{len(healthy)}/{len(loaded)} live plugin workers match this exact release"},
     ]
+    provider_checks: dict[str, list[dict[str, str]]] = {}
+    for worker in healthy:
+        plugin = dict(worker.get("plugin") or {})
+        for check in plugin.get("health_checks") or ():
+            if not isinstance(check, dict) or not str(check.get("name") or "").strip():
+                continue
+            provider_checks.setdefault(str(check["name"]), []).append(check)
+    severity = {"healthy": 0, "degraded": 1, "failed": 2}
+    for name, values in sorted(provider_checks.items()):
+        status = max(
+            (str(item.get("status") or "degraded") for item in values),
+            key=lambda item: severity.get(item, 1),
+        )
+        summaries = list(
+            dict.fromkeys(str(item.get("summary") or "") for item in values)
+        )
+        baseline_checks.append(
+            {
+                "name": name,
+                "status": status,
+                "summary": "; ".join(item for item in summaries if item),
+            }
+        )
     return {
         "release": release,
         "status": (
@@ -218,7 +455,7 @@ async def create_plugin_playground_run(
         raise HTTPException(status_code=404, detail="capability not found")
     ref = CapabilityRef.from_dict(dict(definition.get("ref") or {}))
     if ref.plugin_id != release["plugin_id"]:
-        raise HTTPException(status_code=422, detail="capability is not owned by this plugin")
+        raise HTTPException(status_code=422, detail="capability is not owned by this extension")
     if ref.kind.value not in {"tool", "connector"}:
         raise HTTPException(status_code=422, detail="Playground only executes Tools or Connectors")
     if str(definition.get("side_effect") or "none") != "none":

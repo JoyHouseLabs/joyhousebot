@@ -287,6 +287,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
         user_id: str,
         session_id: str,
         agent_id: str,
+        agent_revision_id: str | None = None,
         channel: str,
         chat_id: str,
         model: str | None,
@@ -482,7 +483,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
             tracker_id=stored_options.get("tracker_id"),
         )
         execution_span_id = f"span_exec_{uuid4().hex}"
-        granted_permissions = await self._execution_permissions(run_id, agent_id)
+        granted_permissions = await self._execution_permissions(run_id, agent_id, agent_revision_id)
         scenario_state = await asyncio.to_thread(
             self.store.get_run_scenario_state,
             run_id,
@@ -573,7 +574,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 status="running",
                 data={"agent_id": agent_id, "channel": channel, "task_id": task_id},
             )
-            agent = await self._resolve_execution_agent(run_id, agent_id)
+            agent = await self._resolve_execution_agent(run_id, agent_id, agent_revision_id)
             if agent is None:
                 raise ValueError(f"agent not found: {agent_id}")
             revision = getattr(agent, "agent_revision", None)

@@ -1,6 +1,13 @@
 import { apiFetch } from './http'
 
-export type WorkflowNodeKind = 'agent' | 'approval'
+export type WorkflowNodeKind =
+  | 'agent'
+  | 'team'
+  | 'scenario'
+  | 'approval'
+  | 'verify'
+  | 'branch'
+  | 'bounded_loop'
 
 export interface WorkflowNode {
   id: string
@@ -8,10 +15,26 @@ export interface WorkflowNode {
   objective: string
   kind: WorkflowNodeKind
   agent_id: string | null
+  team_id?: string | null
+  scenario_id?: string | null
+  scenario_version?: number | null
+  scenario_inputs?: Record<string, unknown>
   dependencies: string[]
   allowed_tools: string[]
   skills: string[]
   max_attempts: number
+  configuration?: Record<string, unknown>
+  subrun?: {
+    mode: 'team' | 'scenario'
+    team_id?: string
+    team_revision_id?: string
+    team_version?: number
+    scenario_id?: string
+    scenario_version?: number
+    inputs?: Record<string, unknown>
+  }
+  output_schema?: Record<string, unknown> | null
+  verification_policy?: Record<string, unknown>
 }
 
 export interface WorkflowGraph {

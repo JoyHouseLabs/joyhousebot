@@ -20,7 +20,7 @@ class UnconfiguredModelProvider(LLMProvider):
     ) -> LLMResponse:
         del messages, tools, model, max_tokens, temperature
         raise RuntimeError(
-            "no model provider extension is enabled; configure extensions.enabled "
+            "no model provider extension is deployment-allowed; configure extensions.allowedIds "
             "and an exact runtime.bootstrapModel"
         )
 

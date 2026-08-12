@@ -34,6 +34,7 @@ from joyhousebot.runtime.graph_control_execution import (
 )
 from joyhousebot.runtime.graph_foreach_execution import execute_graph_foreach
 from joyhousebot.runtime.graph_reconciliation import reconcile_after_graph_task
+from joyhousebot.runtime.graph_subrun_execution import execute_graph_subrun
 from joyhousebot.runtime.graph_task_lifecycle import (
     graph_task_heartbeat,
     publish_task_started,
@@ -112,6 +113,20 @@ class GraphTaskExecutionMixin:
                 ) = await execute_graph_aggregate(
                     self, run, task, dependency_context, cancellation
                 )
+            elif node_type == "subrun":
+                subrun_result = await execute_graph_subrun(
+                    self, run, task, prompt, dependency_context
+                )
+                if subrun_result is None:
+                    suspended = True
+                else:
+                    (
+                        content,
+                        tools,
+                        usage,
+                        structured_output_override,
+                        result_metadata,
+                    ) = subrun_result
             elif capability is not None:
                 compensation_context = (
                     await prepare_graph_compensation(self, run, task)
@@ -160,6 +175,10 @@ class GraphTaskExecutionMixin:
                     user_id=run.user_id,
                     session_id=f"{run.session_id}:task:{spec_id}",
                     agent_id=task.agent_id,
+                    agent_revision_id=(
+                        str(dict(task.payload.get("metadata") or {}).get("agent_revision_id") or "")
+                        or None
+                    ),
                     channel="runtime",
                     chat_id=spec_id,
                     model=None,
@@ -202,7 +221,7 @@ class GraphTaskExecutionMixin:
                     ),
                     task_lease_version=task.lease_version,
                 )
-            if node_type not in {
+            if not suspended and node_type not in {
                 "branch",
                 "bounded_loop",
                 "foreach",
@@ -380,6 +399,53 @@ class GraphTaskExecutionMixin:
                 data=value,
             )
         )
+        task_metadata = dict(task.payload.get("metadata") or {})
+        team_ref = task_metadata.get("team_ref")
+        workspace_entry = None
+        context_policy = dict(task_metadata.get("team_context_policy") or {})
+        if (
+            isinstance(team_ref, dict)
+            and task_metadata.get("team_member_id")
+            and bool(context_policy.get("workspace_enabled", True))
+        ):
+            max_entry_chars = max(
+                500,
+                min(int(context_policy.get("max_entry_chars") or 6000), 100000),
+            )
+            workspace_structured = structured_output
+            if structured_output is not None:
+                encoded_structured = json.dumps(
+                    structured_output, ensure_ascii=False, default=str
+                )
+                if len(encoded_structured) > max_entry_chars:
+                    workspace_structured = {
+                        "truncated": True,
+                        "preview": encoded_structured[:max_entry_chars],
+                    }
+            workspace_entry = {
+                "entry_id": f"teamws:{task.task_id}:output",
+                "user_id": run.user_id,
+                "root_run_id": str(
+                    task_metadata.get("team_workspace_run_id") or run.run_id
+                ),
+                "team_id": str(team_ref.get("team_id") or ""),
+                "team_revision_id": str(team_ref.get("revision_id") or ""),
+                "source_run_id": run.run_id,
+                "source_task_id": task.task_id,
+                "member_id": str(task_metadata["team_member_id"]),
+                "entry_type": "task_result",
+                "summary": str(content or task.name)[:2000],
+                "data": {
+                    "content": str(content or "")[:max_entry_chars],
+                    "structured_output": workspace_structured,
+                    "tools_used": list(tools),
+                    "usage": usage.to_dict(),
+                    "artifact_id": f"{task.task_id}:output",
+                },
+                "visibility": str(
+                    context_policy.get("default_visibility") or "team"
+                ),
+            }
         saved = await asyncio.to_thread(
             self.store.update_runtime_task,
             task.task_id,
@@ -388,6 +454,7 @@ class GraphTaskExecutionMixin:
             worker_id=self.worker_id,
             lease_version=task.lease_version,
             event=completion_event,
+            workspace_entry=workspace_entry,
         )
         if not saved:
             raise asyncio.CancelledError("task completion fenced by a newer lease")

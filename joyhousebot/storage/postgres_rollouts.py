@@ -15,7 +15,15 @@ from joyhousebot.storage.postgres_rollout_primitives import (
 )
 
 _ACTIVE_ROLLOUT_STATUSES = ("rolling_out", "awaiting_approval")
-_ROLLOUT_TYPES = ("agent", "capability", "scenario", "plugin")
+_ROLLOUT_TYPES = (
+    "agent",
+    "skill",
+    "capability",
+    "scenario",
+    "plugin",
+    "model_provider",
+    "remote_connection",
+)
 
 
 class PostgresRolloutStoreMixin(PostgresRolloutPrimitiveStoreMixin):
@@ -347,31 +355,64 @@ class PostgresRolloutStoreMixin(PostgresRolloutPrimitiveStoreMixin):
                 return False
             if rollout["status"] not in {"failed", "timed_out"}:
                 raise ValueError("only failed or timed-out rollouts can be retried")
-            reset = conn.execute(
+            online = conn.execute(
+                """SELECT worker_id FROM runtime_workers
+                   WHERE status='online'
+                     AND last_heartbeat > clock_timestamp()-interval '2 minutes'
+                     AND capabilities @> %s
+                   ORDER BY worker_id""",
+                (Jsonb({"agent": True}),),
+            ).fetchall()
+            online_worker_ids = [str(row["worker_id"]) for row in online]
+            if not online_worker_ids:
+                raise ValueError("rollout retry requires at least one healthy Agent Worker")
+            conn.execute(
                 """UPDATE configuration_rollout_targets SET status='pending',error=NULL,
                        acknowledged_at=NULL,attempt_count=attempt_count+1
+                   WHERE rollout_id=%s AND status IN ('failed','timed_out')
+                     AND worker_id = ANY(%s)""",
+                (rollout_id, online_worker_ids),
+            )
+            conn.execute(
+                """UPDATE configuration_rollout_targets
+                   SET status='superseded',
+                       error=COALESCE(error,'{}'::jsonb) ||
+                           '{"code":"WORKER_REPLACED_BEFORE_RETRY"}'::jsonb,
+                       acknowledged_at=COALESCE(acknowledged_at,clock_timestamp())
                    WHERE rollout_id=%s AND status IN ('failed','timed_out')""",
                 (rollout_id,),
             )
-            if reset.rowcount < 1:
-                raise ValueError("rollout has no failed Worker targets to retry")
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """INSERT INTO configuration_rollout_targets
+                           (rollout_id,worker_id,status,attempt_count)
+                       VALUES (%s,%s,'pending',1)
+                       ON CONFLICT(rollout_id,worker_id) DO NOTHING""",
+                    [(rollout_id, worker_id) for worker_id in online_worker_ids],
+                )
             timeout = int(rollout["timeout_seconds"])
             conn.execute(
                 """UPDATE configuration_rollouts SET status='rolling_out',
                        failed_worker_count=0,
                        acknowledged_worker_count=(
                            SELECT count(*) FROM configuration_rollout_targets
-                           WHERE rollout_id=%s AND status='loaded'
+                           WHERE rollout_id=%s AND status<>'pending'
+                             AND status NOT IN ('failed','timed_out')
                        ),deadline_at=clock_timestamp()+(%s * interval '1 second'),
                        updated_at=clock_timestamp(),completed_at=NULL,
-                       rollback_revision_id=NULL
+                       rollback_revision_id=NULL,
+                       target_worker_count=(
+                           SELECT count(*) FROM configuration_rollout_targets
+                           WHERE rollout_id=%s
+                       )
                    WHERE rollout_id=%s""",
-                (rollout_id, timeout, rollout_id),
+                (rollout_id, timeout, rollout_id, rollout_id),
             )
             self._append_configuration_event_from_rollout(
                 conn, rollout, "rollout.retry_requested", actor_id
             )
             self._notify_configuration(conn, rollout)
+            self._refresh_rollout_state(conn, rollout_id)
         return True
 
     def rollback_configuration_rollout(self, rollout_id: str, *, actor_id: str) -> bool:

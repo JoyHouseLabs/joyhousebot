@@ -135,13 +135,31 @@ export interface AdminAgent {
 }
 
 export interface AdminCapability {
-  ref: { capability_id: string; version: string; kind: 'tool' | 'agent' | 'workflow' | 'skill' | 'connector' }
+  ref: {
+    capability_id: string
+    version: string
+    kind: 'tool' | 'connector'
+    plugin_id?: string
+    plugin_version?: string
+    plugin_build_digest?: string
+  }
   name: string
   description: string
   adapter: string
   tags: string[]
   permissions: string[]
+  side_effect?: string
+  input_schema?: Record<string, unknown>
+  output_schema?: Record<string, unknown>
+  data_classification?: string
+  origin?: Record<string, string>
+  cost_policy?: Record<string, unknown>
   configuration_schema?: Record<string, unknown>
+  runtime_enabled: boolean
+  worker_loaded: boolean
+  execution_ready: boolean
+  requires_explicit_grant: boolean
+  execution_blockers: string[]
 }
 
 export interface CapabilityRuntimeSettings {
@@ -160,6 +178,7 @@ export interface AgentSkillBinding {
   activation_mode: 'always' | 'coordinator_selected' | 'scenario_required'
   priority: number
   configuration: Record<string, unknown>
+  content_sha256: string
 }
 
 export interface RunDiagnostics {
@@ -270,10 +289,12 @@ export const getAdminWorkers = async () => (await adminFetch<{ items: RuntimeWor
 export const getAdminConfig = () => adminFetch<Record<string, unknown>>('/config')
 export const getAdminAgents = async () => (await adminFetch<{ items: AdminAgent[] }>('/agents')).items
 export const getAdminCapabilities = async () => (await adminFetch<{ items: AdminCapability[] }>('/capabilities')).items
-export const getCapabilityRuntimeSettings = (capabilityId: string) =>
-  adminFetch<CapabilityRuntimeSettings>(`/capabilities/${encodeURIComponent(capabilityId)}/runtime-settings`)
-export const saveCapabilityRuntimeSettings = (capabilityId: string, value: Pick<CapabilityRuntimeSettings, 'enabled' | 'configuration'>) =>
-  adminFetch<CapabilityRuntimeSettings>(`/capabilities/${encodeURIComponent(capabilityId)}/runtime-settings`, {
+const capabilitySettingsPath = (capabilityId: string, version?: string) =>
+  `/capabilities/${encodeURIComponent(capabilityId)}/runtime-settings${version ? `?version=${encodeURIComponent(version)}` : ''}`
+export const getCapabilityRuntimeSettings = (capabilityId: string, version?: string) =>
+  adminFetch<CapabilityRuntimeSettings>(capabilitySettingsPath(capabilityId, version))
+export const saveCapabilityRuntimeSettings = (capabilityId: string, value: Pick<CapabilityRuntimeSettings, 'enabled' | 'configuration'>, version?: string) =>
+  adminFetch<CapabilityRuntimeSettings>(capabilitySettingsPath(capabilityId, version), {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
   })
 export const getPlatformAdmins = async () => (await adminFetch<{ items: PlatformAdmin[] }>('/users')).items
@@ -308,10 +329,20 @@ export const getAgentSkillBindings = async (agentId: string, revisionId: string)
 export const bindAgentSkill = (
   agentId: string,
   revisionId: string,
-  value: Omit<AgentSkillBinding, 'agent_revision_id'>,
+  value: Omit<AgentSkillBinding, 'agent_revision_id' | 'content_sha256'>,
 ) => adminFetch<{ saved: boolean }>(
   `/agents/${encodeURIComponent(agentId)}/revisions/${encodeURIComponent(revisionId)}/skills`,
   { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) },
+)
+
+export const unbindAgentSkill = (
+  agentId: string,
+  revisionId: string,
+  skillId: string,
+  skillVersion: string,
+) => adminFetch<{ removed: boolean }>(
+  `/agents/${encodeURIComponent(agentId)}/revisions/${encodeURIComponent(revisionId)}/skills/${encodeURIComponent(skillId)}/${encodeURIComponent(skillVersion)}`,
+  { method: 'DELETE' },
 )
 
 export function saveAgentRevision(agentId: string, revisionId: string, value: Record<string, unknown>) {

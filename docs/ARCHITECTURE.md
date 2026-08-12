@@ -20,6 +20,9 @@
   Connector 生命周期。
 - 每类业务状态使用专用表，禁止恢复通用 JSON `shared_state`。
 - 普通用户接口只输出结构化进度摘要、事件、日志和产物；供应商实际返回的推理内容和完整请求/响应只进入受权限控制的诊断面。
+- App Market 是 Core 外的远程解决方案分发控制面。作者签名、Market 上架证明和本地权限批准是三层独立
+  信任；购买或下载不能自动授予 Capability、安装 Extension 或切换 active Release。协议见
+  [App Market 治理与跨实例分发协议](APP_MARKET_GOVERNANCE.md)。
 
 ## 运行模型
 
@@ -35,6 +38,25 @@ User
 
 聊天、定时任务、Channel 入站和多 Agent 工作流最终都提交 Run。父子关系由 `root_run_id / parent_run_id / parent_task_id` 表达；子 Agent 先持久化再返回 ID，不依赖进程内后台任务。
 
+公共 Run 提交可以携带显式 `allowed_tools` 作为调用方能力上限。字段缺省时沿用冻结 Agent/Scenario 策略；空
+数组表示本 Run 禁用全部工具；非空值必须是冻结能力的子集。该上限进入 execution snapshot，Worker 不得把空
+allowlist 解释为“使用默认全部工具”。
+
+### App 数据面与身份委托
+
+App Pack 通过声明式 Entry Point 把业务动作精确映射到已发布的 Agent、AgentTeam、Scenario 或
+Workflow；Entry Point 只做版本锁定、输入边界和产品命名，最终调用与普通请求共用同一个 Run submission
+service，不创建 App 专属状态机。
+
+独立 App 以 `App Client → owner-approved installation Grant → short-lived access token` 接入。委托 scope
+同时受 Client allowlist 和安装权限上限约束；Token 绑定一个 `user_id + installation_id`，只能通过对应
+Entry Point 启动 Run，并只能查询带同一 App metadata 的 Run。Grant 重新授权、缩权或撤销会事务性撤销
+既有 Token，防止旧权限继续存活。
+
+App 的终态回调由 Run 终态事务投影到 `app_callback_outbox`。Scheduler Worker 用 PostgreSQL lease、
+fencing 和指数退避投递 HMAC 签名事件；Callback Payload 不复制 Result/Artifact，消费者继续通过绑定
+Token 读取 Run。这样 App 获得可靠唤醒，但执行事实源仍唯一留在 Runtime。
+
 ### AI Workflow Studio
 
 Workflow 是用户拥有、可版本化的“执行定义”，不是另一套运行时。用户在独立 Studio 页面描述目标，
@@ -43,9 +65,11 @@ API 只提交一个 `workflow_design` Run；Agent Worker 在禁用 Tool 的设�
 产生不可变 `user_workflow_revision`，发布只切换该用户 Workflow 的已发布 revision。
 
 执行时，服务把选定 revision 确定性编译为已有 `TaskGraphSpec`，随后仍走统一的 Run、Task、Lease、
-Approval、Event、Artifact、审计和回放链路。当前 Studio 支持 Agent 节点与人工确认节点；节点不以
-拖拉拽作为主要创作方式，避免界面配置与自然语言目标形成两个事实源。草稿可显式试运行，正式复用默认
-只接受已发布 revision。
+Approval、Event、Artifact、审计和回放链路。Studio 支持三类工作节点：单 Agent、冻结 AgentTeam 子
+Run、冻结 fixed Scenario 子 Run；以及四类控制节点：verify、branch、bounded_loop、approval。Team 和
+Scenario 子节点先持久化精确子 Run，父 Task 以 `waiting_external` 暂停，子 Run 终态后由任一 Worker
+恢复。节点不以拖拉拽作为主要创作方式，避免界面配置与自然语言目标形成两个事实源。草稿可显式试运行，
+正式复用默认只接受已发布 revision。
 
 ```text
 自然语言目标 → design Run（无 Tool）→ 结构化 DAG → 可视化审查/对话修改
@@ -67,6 +91,8 @@ Client ──HTTP/SSE──▶ API replicas ────────────
 ```
 
 - Agent Worker 使用数据库 lease、fencing version 和 `FOR UPDATE SKIP LOCKED` claim 工作。
+- Scheduler Worker 除 Schedule/Eval/App Market 获取外，也投递 App Callback Outbox；回调请求受公网
+  HTTPS、SSRF/DNS pinning、禁止重定向、HMAC 和最大重试次数约束。
 - API、Control、Scheduler 和 Migrator 不发现或 import Provider/Capability/Connector 扩展，也不接收
   模型密钥。Agent Worker 加载 Provider/Capability/Connector；Channel Worker 只加载 Channel。
   配置解析只保存通用部署别名，供应商协议识别延迟到 Agent Worker。
@@ -86,7 +112,7 @@ Client ──HTTP/SSE──▶ API replicas ────────────
 - Channel 投递成功或失败会写 delivery audit；外部连接所有权由带续租的 channel lease 决定。
 - Channel 的 PG Outbox、Lease、`RunAdapter` 和 `ChannelRuntimeBridge` 属于 Core；供应商协议属于扩展。
   `ChannelRegistry` 默认为空，只发现 `joyhousebot.channels` entry point，并只启用
-  `extensions.enabled` 明确选择的扩展。Email 与其他供应商均为独立 distribution，Core 不保留旧
+  `extensions.allowedIds` 明确准入且 PostgreSQL desired state 已启用的扩展。Email 与其他供应商均为独立 distribution，Core 不保留旧
   适配器、旧配置或任意模块加载入口。完整边界见 `CORE_AND_EXTENSIONS.md`。
 - Memory/Knowledge 的 PostgreSQL 事实源、权限策略和隔离服务属于 Core；模型可调用的
   `retrieve`、`memory_get` 和 URL 入库属于可卸载的
@@ -204,11 +230,15 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
 
 公共接口位于 `/v1`：
 
-- `POST/GET /v1/runs`，以及 run 的 cancel、resume、events、tasks、artifacts、logs、
+- `POST/GET /v1/runs`；提交必须使用判别联合 `execution.mode=agent|team|scenario|workflow` 指定唯一顶层
+  编排权威，旧的顶层 `agent_id/team_id/scenario_id` 混合字段不再接受。其余接口包括 run 的
+  cancel、resume、events、tasks、artifacts、logs、
   invocations、verifications、decisions、context-manifest、approvals、operations、pending inputs 和 input resolve。提交可携带
   `output_schema`、由 schema/artifact/deterministic verifier 组成的 `verification_policy`，以及
   `max_repairs`、`max_replans`；所有 required verifier 通过后 Run 才能完成，协调器计划重试耗尽后
-  Run 以 `max_replans_exhausted` 明确失败。
+  Run 以 `max_replans_exhausted` 明确失败。可修复的 Schema 失败会在同一 Run 的有界修复轮次中向模型
+  提供字段路径和违反的约束；公开 Event、Verification API 与终态错误只保留脱敏摘要和 hash，避免把
+  私有输出或完整校验细节暴露给无权调用者。
 - `POST /v1/runs/graphs` 提交显式 DAG；每个 Task 可声明 `output_schema`、
   `verification_policy` 和 `max_repairs`，普通请求也可由主协调器自动提升为 Graph。Graph 在执行前冻结为
   不可变 revision；`GET /v1/runs/{run_id}/graph-revisions` 返回 owner 隔离的节点、边、定义 hash 和版本来源。
@@ -284,7 +314,7 @@ replace 使用提议时的文档 version/hash 做乐观检查，目标已变化�
 
 ## 配置发布状态机
 
-Agent、Capability 和 Scenario 发布都不会立即覆盖 current revision：
+Agent、Capability、Scenario 和远程 Capability 连接发布都不会立即覆盖 current revision：
 
 ```text
 draft → staged/immutable → rollout(target worker snapshot)
@@ -297,6 +327,8 @@ draft → staged/immutable → rollout(target worker snapshot)
 
 发布事务冻结当时健康且具备 `agent` 能力的目标 Worker。每个 Worker 的 revision-aware Runtime Catalog 主动拉取待加载版本并逐机 ACK；新请求仍按 Run snapshot 中的精确 revision 懒加载作为容错。只有全部目标成功后，PG 才原子更新 `agent_definitions.current_revision_id`。因此跨进程发布不要求重启，也不会把流量提前切给未加载版本。Agent 已发布 revision、Skill 绑定、Capability version 和 Scenario version 都不可原地修改。
 
+Skill 不再作为 `CapabilityKind.SKILL` 的运行时特例发布。独立 `skill_definitions / skill_versions` 保存方法内容、依赖、校验证据和 `content_sha256`；Agent / Workflow 使用 `skill_id + version + content_sha256` 精确引用。Skill 发布复用 configuration rollout，Worker 预热校验成功后才切换 current version。完整契约见 [SKILLS.md](SKILLS.md)。
+
 Agent revision 可声明精确 `plugin_requirements`。保存时会校验 PostgreSQL 存在同一
 `plugin_id + version + build_digest` 的活跃发布单元；Run snapshot 固化这些依赖，Worker 在执行前比对
 自身已加载插件清单，缺失时明确失败而不会换成同名新插件。Capability 发布会校验 JSON Schema 与
@@ -305,6 +337,20 @@ Agent revision 可声明精确 `plugin_requirements`。保存时会校验 Postgr
 子 rollout，重新冻结目标 Worker、预热并收齐 ACK 后才切换；回滚预热失败时当前版本继续服务。
 插件注册阶段将每个 Capability 绑定到 Manifest 已声明的精确 build digest；缺少 digest 或 digest 与
 Entry Point 制品不一致时直接拒绝加载。
+
+远程业务服务使用 `remote_connections` 和不可变 `remote_connection_revisions` 作为控制面事实源。
+数据库只保存固定 endpoint、Capability 精确定义和 `env://VARIABLE` 引用；只有 Agent Worker 在
+预热阶段解析密钥并构建 Connector。所有目标 Worker ACK 后才原子切换连接指针，再将发现的
+Capability 作为独立发布单元走完 Capability rollout。因此“连通服务”不会自动向任何 Agent
+授权，远程地址也不能由模型或 Run payload 动态选择。
+
+模型控制面使用 `model_providers` 和不可变 `model_provider_revisions`。Revision 固定 Provider 扩展、
+Endpoint、密钥/Header 的 `env://` 引用、请求超时和模型能力目录；密钥值只在 Agent Worker 中解析。
+发布预热会构造真实 Provider Adapter、校验精确扩展构建和模型路由，但不会发送模型请求产生费用。全部
+Worker ACK 后原子切换 Provider 配置；随后解析的执行使用新 Provider Runtime，切换瞬间已经发出的模型
+请求不会被强制关闭。Agent Revision 仍冻结精确模型 ID、降级链和生成参数，Provider 配置不会替代 Agent
+版本治理。Agent 发布必须引用生效目录中的 LLM，Provider 发布也会反向校验当前 Agent 依赖，避免一次
+目录调整静默破坏正在服务的 Agent。
 
 Plugin Manifest 使用 `runtime_api_version=v1`，冻结包 URI、签名/SBOM 引用、执行隔离、最小权限、
 组件目录与 manifest SHA-256。发现插件只创建 `discovered` 发布单元；发布后依次进入 `staged → Worker
@@ -318,6 +364,13 @@ CapabilityDefinition 还声明 data classification、connection IDs、permission
 能力授权集：它在提交 Run 后被固化到 execution snapshot，Worker 将其传给 Tool context；模型工具目录
 会过滤未授权能力，Dispatcher 在真正调用前再次拒绝未授权能力。支持精确权限、`namespace.*` 和 `*`，
 因此元数据声明绝不会只停留在控制台展示层。
+
+`capability_policy.mode=allowlist` 只解析 `allowed` 中的已发布能力；`mode=catalog` 也不是无限授权：
+普通能力可随当前目录解析，但声明外部副作用、计费/审批策略或 restricted 数据级别的能力仍必须出现在
+`allowed` 中。解析结果写入 Run snapshot 的 `resolved` 集合，Worker 对显式 Scenario、Skill 和 Tool 再做
+一次确定性校验；空白白名单表示不允许任何 Tool，而不是“无限制”。能力可见性与
+`capability_policy.permissions` 是两道独立门，二者都满足后才允许调用。Console 新建 Agent 默认使用
+严格白名单，并在发布前提示未就绪能力和缺失权限。
 
 业务插件（例如 Dinq）不修改核心 Agent 默认配置。插件负责发布自己的 Capability、Scenario、Skill 和
 manifest；部署者创建或发布业务 Agent revision，显式写入该插件的 `plugin_requirements` 及最小
@@ -462,10 +515,17 @@ api / bootstrap / channel adapter
 
 一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。`conversation_sessions.state` 只是 consolidation 缓存：持久化副本只保留最新 200 条消息（`last_consolidated` 随截断平移），事实源始终是 Run 历史。
 
-主协调路径是：确定性场景路由 → 结构化主协调器 → 字段校验/追问 DAG → Planner。
-单步骤交给主 Agent；固定场景或两步以上开放计划会在同一 Run 上原子生成 Task Graph。
-Task 可由不同 Worker/Agent 并行执行，最终协调 Agent聚合全部结果。所有模型输出使用 JSON Schema
-校验，所有 Tool/Connector 调用使用 CapabilityResult 和持久 Invocation。
+API 首先解析并冻结唯一执行模式。Agent 模式由所选 Agent 执行；Team 模式由冻结 Coordinator 生成结构化
+计划并把步骤绑定到成员 Revision；Scenario 模式只使用指定的已发布版本完成字段校验、追问或固定 DAG；
+Workflow 模式直接执行指定的已发布 DAG Revision。四种模式都物化到相同 Run/Task 链，Task 可由不同
+Worker/Agent 并行执行并由协调或聚合节点收敛。所有模型输出使用 JSON Schema 校验，所有
+Tool/Connector 调用使用 CapabilityResult 和持久 Invocation。
+
+Team 的开放协作和 Workflow 的确定性控制不建立两套运行时。Team Coordinator 产生带
+`produce / review / revise / synthesize / checkpoint` 类型的显式无环任务图；Workflow 决定 Team 在更大
+流程中的先后、并行、验证、分支、循环和人工门禁。每次嵌套 Team 子 Run 使用独立
+`team_workspace_run_id` 作为共享会议空间，而全局 `root_run_id` 只承担整棵执行树的隔离、追踪和审计。
+父 Workflow 的取消请求递归传播给所有未终态后代 Run。
 
 显式提交和协调器物化 Graph 时，节点、依赖边、执行设置与 pinned Agent/Capability 定义会先写入
 `graph_revisions`、`graph_revision_nodes` 和 `graph_revision_edges`；revision 与 Runtime Task 在同一事务中

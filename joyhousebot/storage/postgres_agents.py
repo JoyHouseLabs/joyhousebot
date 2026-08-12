@@ -11,6 +11,7 @@ from joyhousebot.domain.agents import (
     AgentRevision,
     PluginReleaseRequirement,
 )
+from joyhousebot.domain.capabilities import resolve_capability_policy
 from joyhousebot.storage.json_codec import Jsonb
 
 
@@ -168,6 +169,18 @@ class PostgresAgentStoreMixin:
                 version=3,
                 ddl=rollback_ddl,
                 description="rollback preheat rollout relationship",
+            )
+            skill_binding_ddl = """
+            ALTER TABLE agent_skill_bindings
+                ADD COLUMN IF NOT EXISTS skill_content_sha256 TEXT NOT NULL DEFAULT '';
+            """
+            conn.execute(skill_binding_ddl)
+            self._record_migration(
+                conn,
+                name="agents",
+                version=4,
+                ddl=skill_binding_ddl,
+                description="pin Agent Skill bindings to immutable content digests",
             )
         self._seed_default_agents()
 
@@ -426,9 +439,9 @@ class PostgresAgentStoreMixin:
         if revision_id:
             revision = self.get_agent_revision(revision_id)
             if revision is None or revision.agent_id != agent_id:
-                raise ValueError("evaluation Agent revision does not match agent_id")
-            if revision.status not in {"draft", "published"}:
-                raise ValueError("evaluation Agent revision is not executable")
+                raise ValueError("pinned Agent revision does not match agent_id")
+            if revision.status not in {"draft", "published", "retired"}:
+                raise ValueError("pinned Agent revision is not executable")
             resolved_agent_id = revision.agent_id
         else:
             profile = self.get_agent_profile(agent_id)
@@ -437,13 +450,17 @@ class PostgresAgentStoreMixin:
             revision = profile.revision
             resolved_agent_id = profile.definition.agent_id
         bindings = tuple(self.list_agent_skill_bindings(revision.revision_id))
+        capability_policy = resolve_capability_policy(
+            revision.capability_policy,
+            self.list_capability_definitions(),
+        )
         value = {
             "run_id": run_id,
             "agent_id": resolved_agent_id,
             "agent_revision_id": revision.revision_id,
             "model_policy": revision.model_policy,
             "planning_policy": revision.planning_policy,
-            "capability_policy": revision.capability_policy,
+            "capability_policy": capability_policy,
             "memory_policy": revision.memory_policy,
             "output_policy": revision.output_policy,
             "monitor_policy": revision.monitor_policy,
@@ -503,69 +520,6 @@ class PostgresAgentStoreMixin:
             skill_bindings=tuple(value.get("skill_bindings") or ()),
             created_at=value.get("created_at"),
         )
-
-    def bind_agent_skill(
-        self,
-        *,
-        agent_revision_id: str,
-        skill_id: str,
-        skill_version: str,
-        activation_mode: str = "coordinator_selected",
-        priority: int = 100,
-        configuration: dict[str, Any] | None = None,
-    ) -> None:
-        if activation_mode not in {"always", "coordinator_selected", "scenario_required"}:
-            raise ValueError("invalid Skill activation mode")
-        with self._pool.connection() as conn, conn.transaction():
-            revision = conn.execute(
-                "SELECT status FROM agent_revisions WHERE revision_id=%s", (agent_revision_id,)
-            ).fetchone()
-            capability = conn.execute(
-                """SELECT 1 FROM capability_versions v JOIN capability_definitions d
-                     ON d.capability_id=v.capability_id
-                   WHERE v.capability_id=%s AND v.version=%s AND v.status='published'
-                     AND d.kind='skill'""",
-                (skill_id, skill_version),
-            ).fetchone()
-            if revision is None or capability is None:
-                raise ValueError("Agent revision or published Skill version not found")
-            if revision["status"] != "draft":
-                raise ValueError("Skill bindings can only modify draft Agent revisions")
-            conn.execute(
-                """INSERT INTO agent_skill_bindings
-                       (agent_revision_id,skill_id,skill_version,activation_mode,priority,
-                        configuration) VALUES (%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT(agent_revision_id,skill_id,skill_version) DO UPDATE SET
-                       activation_mode=excluded.activation_mode,priority=excluded.priority,
-                       configuration=excluded.configuration""",
-                (
-                    agent_revision_id,
-                    skill_id,
-                    skill_version,
-                    activation_mode,
-                    priority,
-                    Jsonb(configuration or {}),
-                ),
-            )
-
-    def list_agent_skill_bindings(self, agent_revision_id: str) -> list[dict[str, Any]]:
-        with self._pool.connection() as conn:
-            rows = conn.execute(
-                """SELECT * FROM agent_skill_bindings WHERE agent_revision_id=%s
-                   ORDER BY priority,skill_id""",
-                (agent_revision_id,),
-            ).fetchall()
-        return [
-            {
-                "agent_revision_id": row["agent_revision_id"],
-                "skill_id": row["skill_id"],
-                "skill_version": row["skill_version"],
-                "activation_mode": row["activation_mode"],
-                "priority": int(row["priority"]),
-                "configuration": dict(row["configuration"]),
-            }
-            for row in rows
-        ]
 
     @staticmethod
     def _agent_revision(row: Any) -> AgentRevision:

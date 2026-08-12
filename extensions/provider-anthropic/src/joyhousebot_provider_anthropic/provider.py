@@ -77,6 +77,7 @@ class AnthropicProvider(LLMProvider):
         default_model: str,
         extra_headers: dict[str, str] | None = None,
         reasoning_options: dict[str, Any] | None = None,
+        request_timeout_seconds: float = 120.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         super().__init__(api_key, api_base)
@@ -85,7 +86,7 @@ class AnthropicProvider(LLMProvider):
         self.reasoning_options = dict(reasoning_options or {})
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=10.0),
+            timeout=httpx.Timeout(float(request_timeout_seconds), connect=10.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
@@ -105,7 +106,7 @@ class AnthropicProvider(LLMProvider):
     def _headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "joyhousebot-cloud",
+            "User-Agent": "joyhousebot-runtime",
             "anthropic-version": "2023-06-01",
             "x-api-key": str(self.api_key or ""),
         }
@@ -514,6 +515,7 @@ def _create_provider(request: ModelProviderBuildRequest) -> AnthropicProvider:
         default_model=request.default_model,
         extra_headers=request.extra_headers,
         reasoning_options=request.reasoning_options,
+        request_timeout_seconds=request.request_timeout_seconds,
         client=request.client,
     )
 

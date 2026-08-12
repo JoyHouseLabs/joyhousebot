@@ -10,15 +10,41 @@ from joyhousebot.domain.capabilities.models import CapabilityRef
 
 
 @dataclass(slots=True)
-class CreateRunCommand:
+class AgentRunTarget:
+    mode: str
     agent_id: str
+    revision_id: str | None = None
+
+
+@dataclass(slots=True)
+class TeamRunTarget:
+    mode: str
+    team_id: str
+    revision_id: str | None = None
+
+
+@dataclass(slots=True)
+class ScenarioRunTarget:
+    mode: str
+    scenario_id: str
+    version: int
+    agent_id: str
+    revision_id: str | None = None
+    inputs: dict[str, Any] = field(default_factory=dict)
+
+
+RunTarget = AgentRunTarget | TeamRunTarget | ScenarioRunTarget
+
+
+@dataclass(slots=True)
+class CreateRunCommand:
+    execution: RunTarget
     session_id: str | None
     input: str
-    scenario_id: str | None = None
-    scenario_inputs: dict[str, Any] = field(default_factory=dict)
-    execution_mode: str = "auto"
+    interaction_mode: str = "auto"
     model: str | None = None
     system_prompt: str | None = None
+    allowed_tools: list[str] | None = None
     output_schema: dict[str, Any] | None = None
     verification_policy: dict[str, Any] = field(default_factory=dict)
     timeout_seconds: float = 300.0
@@ -57,6 +83,7 @@ class GraphTaskCommand:
     compensation: dict[str, Any] = field(default_factory=dict)
     bounded_loop: dict[str, Any] = field(default_factory=dict)
     aggregate: dict[str, Any] = field(default_factory=dict)
+    subrun: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.capability, dict):
@@ -75,6 +102,7 @@ class GraphTaskCommand:
             "compensation",
             "bounded_loop",
             "aggregate",
+            "subrun",
         }:
             raise ValidationError("unsupported graph node type")
         if resolved_type == "agent" and not self.prompt.strip():
@@ -96,6 +124,7 @@ class GraphTaskCommand:
                 "verify",
                 "bounded_loop",
                 "aggregate",
+                "subrun",
             }
             and self.capability is not None
         ):

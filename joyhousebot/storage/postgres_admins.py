@@ -272,6 +272,9 @@ class PostgresAdminStoreMixin(PostgresAdminAuthStoreMixin):
         scopes: list[str] | tuple[str, ...] = ("*",),
         token_type: str = "user",
         token: str | None = None,
+        app_client_id: str | None = None,
+        delegation_grant_id: str | None = None,
+        app_installation_id: str | None = None,
     ) -> tuple[dict[str, Any], str]:
         token_type = str(token_type).strip().lower()
         if token_type not in _TOKEN_TYPES:
@@ -290,8 +293,9 @@ class PostgresAdminStoreMixin(PostgresAdminAuthStoreMixin):
             row = conn.execute(
                 """INSERT INTO api_access_tokens
                        (token_id,token_hash,user_id,label,expires_at,rotation_due_at,
-                        scopes,token_type,created_by)
-                   VALUES (%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s,%s)
+                        scopes,token_type,created_by,app_client_id,delegation_grant_id,
+                        app_installation_id)
+                   VALUES (%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s,%s,%s,%s,%s)
                    RETURNING *""",
                 (
                     token_id,
@@ -303,6 +307,9 @@ class PostgresAdminStoreMixin(PostgresAdminAuthStoreMixin):
                     Jsonb(normalized_scopes),
                     token_type,
                     actor_id,
+                    app_client_id,
+                    delegation_grant_id,
+                    app_installation_id,
                 ),
             ).fetchone()
             conn.execute(
@@ -319,6 +326,9 @@ class PostgresAdminStoreMixin(PostgresAdminAuthStoreMixin):
                         "token_type": token_type,
                         "expires_at": expires_at,
                         "rotation_due_at": rotation_due_at,
+                        "app_client_id": app_client_id,
+                        "delegation_grant_id": delegation_grant_id,
+                        "app_installation_id": app_installation_id,
                     }),
                 ),
             )
@@ -411,6 +421,9 @@ class PostgresAdminStoreMixin(PostgresAdminAuthStoreMixin):
             "created_by": str(row["created_by"]),
             "created_at": _iso(row["created_at"]),
             "last_used_at": _iso(row["last_used_at"]),
+            "app_client_id": row.get("app_client_id"),
+            "delegation_grant_id": row.get("delegation_grant_id"),
+            "app_installation_id": row.get("app_installation_id"),
         }
 
     @staticmethod

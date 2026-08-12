@@ -10,9 +10,6 @@ from uuid import uuid4
 
 class CapabilityKind(str, Enum):
     TOOL = "tool"
-    AGENT = "agent"
-    WORKFLOW = "workflow"
-    SKILL = "skill"
     CONNECTOR = "connector"
 
 

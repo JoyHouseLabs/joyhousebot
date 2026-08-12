@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.run_commands import AgentRunTarget, ScenarioRunTarget
 from joyhousebot.application.runs import CreateRunCommand, RunService
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
 from joyhousebot.domain.scenarios import (
@@ -13,6 +14,7 @@ from joyhousebot.domain.scenarios import (
     ScenarioField,
     ScenarioVersion,
 )
+from joyhousebot.domain.skills import SkillRef
 from joyhousebot.orchestration.planner import ScenarioPlanner
 from tests.support.postgres_store import PostgresTestStore
 
@@ -77,21 +79,13 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
             adapter="builtin.speech",
         )
     )
-    store.publish_capability(
-        CapabilityDefinition(
-            ref=CapabilityRef("skill.voice-style", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
-            name="Voice style",
-            description="Voice policy",
-            input_schema={"type": "object"},
-            output_schema={"type": "object"},
-            adapter="prompt-skill:voice-style",
-        )
-    )
     scenario = replace(
         _scenario(),
         allowed_capabilities=(
             CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
-            CapabilityRef("skill.voice-style", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
+        ),
+        required_skills=(
+            SkillRef("skill.voice-style", "1.0.0", f"sha256:{'a' * 64}"),
         ),
         execution_policy={
             "max_concurrent": 2,
@@ -172,6 +166,7 @@ async def test_explicit_fixed_scenario_bypasses_coordinator_and_submits_graph(tm
         fields=(ScenarioField("query", "string", required=True),), nodes=(), edges=(),
         allowed_capabilities=(tool.ref,), planning_mode="fixed",
         execution_policy={"tasks": [{"id": "echo", "capability": tool.ref.to_dict(), "input": {"query": "${query}"}}]},
+        routing_rules=({"contains_any": ["echo"], "priority": 100},),
     )
     backing.save_scenario_version(scenario, status="published")
 
@@ -204,8 +199,15 @@ async def test_explicit_fixed_scenario_bypasses_coordinator_and_submits_graph(tm
     result = await RunService(runtime, store).create(
         RequestContext(Principal("user-a", "user-a"), "request-a"),
         CreateRunCommand(
-            agent_id="main-coordinator", session_id="session-a", input="Run the echo quickstart",
-            scenario_id="explicit.echo", scenario_inputs={"query": "ready"},
+            execution=ScenarioRunTarget(
+                mode="scenario",
+                scenario_id="explicit.echo",
+                version=1,
+                agent_id="main-coordinator",
+                inputs={"query": "ready"},
+            ),
+            session_id="session-a",
+            input="Run the echo quickstart",
         ),
     )
 
@@ -213,3 +215,30 @@ async def test_explicit_fixed_scenario_bypasses_coordinator_and_submits_graph(tm
     assert runtime.graph is not None
     assert runtime.graph.tasks[0].capability_input == {"query": "ready"}
     assert store.saved_states[0]["scenario_id"] == "explicit.echo"
+
+    class AgentRuntime:
+        def __init__(self) -> None:
+            self.options = None
+            self.events = SimpleNamespace(publish=self._publish)
+
+        async def _publish(self, _event) -> None:
+            return None
+
+        async def submit_run(self, options, **_kwargs):
+            self.options = options
+            return SimpleNamespace(run_id="run-agent", status="queued")
+
+        async def submit_graph(self, _graph):
+            raise AssertionError("agent mode must not auto-select a Scenario")
+
+    agent_runtime = AgentRuntime()
+    await RunService(agent_runtime, store).create(
+        RequestContext(Principal("user-a", "user-a"), "request-b"),
+        CreateRunCommand(
+            execution=AgentRunTarget(mode="agent", agent_id="main-coordinator"),
+            session_id="session-b",
+            input="echo should remain an Agent request",
+        ),
+    )
+    assert agent_runtime.options.metadata["orchestration"]["mode"] == "agent"
+    assert agent_runtime.options.metadata["routing_decision"]["scenario_id"] is None

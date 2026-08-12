@@ -26,6 +26,7 @@ from joyhousebot.domain.scenarios import (
     ScenarioField,
     ScenarioVersion,
 )
+from joyhousebot.domain.skills import SkillRef
 
 router = APIRouter(prefix="/admin/scenarios", tags=["scenario-studio"])
 
@@ -34,6 +35,24 @@ router = APIRouter(prefix="/admin/scenarios", tags=["scenario-studio"])
 async def capability_catalog(principal: ScenarioReaderDep, container: ContainerDep):
     rows = await asyncio.to_thread(container.store.list_capability_definitions)
     return {"items": [public_capability_definition(row) for row in rows]}
+
+
+@router.get("/skill-catalog")
+async def skill_catalog(principal: ScenarioReaderDep, container: ContainerDep):
+    rows = await asyncio.to_thread(container.store.list_skills, active_only=True)
+    return {
+        "items": [
+            {
+                "skill_id": row["skill_id"],
+                "name": row["name"],
+                "description": row["description"],
+                "version": row["current"]["version"],
+                "content_sha256": row["current"]["content_sha256"],
+            }
+            for row in rows
+            if row.get("current")
+        ]
+    }
 
 
 @router.get("")
@@ -64,6 +83,10 @@ async def save_version(
         edges=tuple(ClarificationEdge(**item.model_dump()) for item in body.edges),
         allowed_capabilities=tuple(
             CapabilityRef.from_dict(item.model_dump()) for item in body.allowed_capabilities
+        ),
+        required_skills=tuple(
+            SkillRef.from_dict(item.model_dump())
+            for item in body.required_skills
         ),
         planning_mode=body.planning_mode,
         execution_policy=body.execution_policy,

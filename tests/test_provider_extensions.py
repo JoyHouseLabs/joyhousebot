@@ -72,3 +72,22 @@ def test_factory_builds_openai_compatible_through_extension_registry() -> None:
         import asyncio
 
         asyncio.run(provider.close())
+
+
+def test_factory_routes_credential_free_local_provider_without_default_alias() -> None:
+    config = Config(
+        extensions=ExtensionsConfig(enabled=["provider-openai-compatible"])
+    )
+    config.providers.settings["vllm"] = ProviderConfig(
+        api_base="http://127.0.0.1:11434/v1"
+    )
+
+    provider = create_model_provider(config=config, model="vllm/qwen3:1.7b")
+    try:
+        assert isinstance(provider, OpenAICompatibleProvider)
+        assert provider.provider_name == "vllm"
+        assert provider.api_key == ""
+    finally:
+        import asyncio
+
+        asyncio.run(provider.close())

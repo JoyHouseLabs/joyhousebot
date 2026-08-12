@@ -47,7 +47,13 @@ async def execute_graph_capability(
     )
     if turn.request_hash != expected_hash:
         raise RuntimeError(f"durable Graph Task input conflict: {task.task_id}")
-    agent = await runtime._resolve_execution_agent(run.run_id, task.agent_id)
+    agent_revision_id = (
+        str(dict(task.payload.get("metadata") or {}).get("agent_revision_id") or "")
+        or None
+    )
+    agent = await runtime._resolve_execution_agent(
+        run.run_id, task.agent_id, agent_revision_id
+    )
     registry = getattr(agent, "capabilities", None)
     if registry is None:
         raise RuntimeError(f"agent has no capability registry: {task.agent_id}")
@@ -91,7 +97,7 @@ async def execute_graph_capability(
             agent_id=task.agent_id,
             allowed_tools=frozenset({capability.capability_id}),
             granted_permissions=await runtime._execution_permissions(
-                run.run_id, task.agent_id
+                run.run_id, task.agent_id, agent_revision_id
             ),
             cancellation=cancellation,
             worker_id=runtime.worker_id,

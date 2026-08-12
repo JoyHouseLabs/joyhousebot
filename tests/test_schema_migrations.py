@@ -74,6 +74,45 @@ def test_core_migrations_are_recorded(store: PostgresRuntimeStore) -> None:
         assert len(row["checksum"]) == 64
 
 
+def test_runtime_reopens_when_product_tables_share_the_database(
+    store: PostgresRuntimeStore,
+) -> None:
+    with store._pool.connection() as conn:
+        product_table_existed = bool(
+            conn.execute(
+                "SELECT to_regclass('public.product_schema_migrations') AS name"
+            ).fetchone()["name"]
+        )
+    if not product_table_existed:
+        with store._pool.connection() as conn, conn.transaction():
+            conn.execute(
+                """CREATE TABLE product_schema_migrations (
+                       version INTEGER PRIMARY KEY,
+                       description TEXT NOT NULL,
+                       applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+                   )"""
+            )
+    try:
+        reopened = PostgresRuntimeStore(
+            TEST_DATABASE_URL,
+            application_name="joyhousebot-test-shared-product-database",
+        )
+        try:
+            with reopened._pool.connection() as conn:
+                row = conn.execute(
+                    """SELECT to_regclass('public.product_schema_migrations') AS product,
+                              to_regclass('public.runtime_schema_migrations') AS runtime"""
+                ).fetchone()
+            assert row["product"] == "product_schema_migrations"
+            assert row["runtime"] == "runtime_schema_migrations"
+        finally:
+            reopened.close()
+    finally:
+        if not product_table_existed:
+            with store._pool.connection() as conn, conn.transaction():
+                conn.execute("DROP TABLE product_schema_migrations")
+
+
 def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(
     store: PostgresRuntimeStore,
 ) -> None:
@@ -121,20 +160,20 @@ def test_record_migration_is_idempotent(store: PostgresRuntimeStore) -> None:
     assert row["checksum"] == migration_checksum(ddl)
 
 
-def test_checksum_drift_logs_warning(
-    store: PostgresRuntimeStore, caplog: pytest.LogCaptureFixture
+def test_checksum_drift_fails_closed_and_preserves_history(
+    store: PostgresRuntimeStore,
 ) -> None:
     name = f"test:{uuid4().hex}"
     ddl_v1 = "CREATE TABLE IF NOT EXISTS t_drift (id TEXT PRIMARY KEY);"
     ddl_v2 = "CREATE TABLE IF NOT EXISTS t_drift (id TEXT PRIMARY KEY, extra TEXT);"
     with store._pool.connection() as conn, conn.transaction():
         store._record_migration(conn, name=name, version=1, ddl=ddl_v1)
-        with caplog.at_level("WARNING", logger="joyhousebot.storage.postgres_migrations"):
+    with store._pool.connection() as conn:
+        with pytest.raises(RuntimeError, match="recorded migrations are immutable"):
             store._record_migration(conn, name=name, version=1, ddl=ddl_v2)
-    assert any("checksum changed" in record.message for record in caplog.records)
     row = _history_row(store, name, 1)
     assert row is not None
-    assert row["checksum"] == migration_checksum(ddl_v2)
+    assert row["checksum"] == migration_checksum(ddl_v1)
 
 
 def test_destructive_gate_requires_exact_phrase(monkeypatch: pytest.MonkeyPatch) -> None:

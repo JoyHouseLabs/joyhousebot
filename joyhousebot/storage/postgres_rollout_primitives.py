@@ -86,6 +86,11 @@ class PostgresRolloutPrimitiveStoreMixin:
                 "SELECT current_revision_id AS revision FROM agent_definitions WHERE agent_id=%s",
                 (aggregate_id,),
             ).fetchone()
+        elif aggregate_type == "skill":
+            row = conn.execute(
+                "SELECT current_version AS revision FROM skill_definitions WHERE skill_id=%s",
+                (aggregate_id,),
+            ).fetchone()
         elif aggregate_type == "capability":
             row = conn.execute(
                 "SELECT current_version AS revision FROM capability_definitions WHERE capability_id=%s",
@@ -102,6 +107,18 @@ class PostgresRolloutPrimitiveStoreMixin:
                    WHERE plugin_id=%s AND status='active'""",
                 (aggregate_id,),
             ).fetchone()
+        elif aggregate_type == "remote_connection":
+            row = conn.execute(
+                """SELECT current_revision_id AS revision FROM remote_connections
+                   WHERE connection_id=%s""",
+                (aggregate_id,),
+            ).fetchone()
+        elif aggregate_type == "model_provider":
+            row = conn.execute(
+                """SELECT current_revision_id AS revision FROM model_providers
+                   WHERE provider_id=%s""",
+                (aggregate_id,),
+            ).fetchone()
         else:
             raise ValueError("unsupported configuration rollout type")
         return str(row["revision"]) if row and row["revision"] is not None else None
@@ -116,6 +133,34 @@ class PostgresRolloutPrimitiveStoreMixin:
                        updated_at=clock_timestamp() WHERE agent_id=%s""",
                 (revision_id, aggregate_id),
             ).rowcount
+        elif aggregate_type == "skill":
+            target = conn.execute(
+                """SELECT 1 FROM skill_versions
+                   WHERE skill_id=%s AND version=%s""",
+                (aggregate_id, revision_id),
+            ).fetchone()
+            if target is None:
+                changed = 0
+            else:
+                conn.execute(
+                    """UPDATE skill_versions SET status='retired',
+                           updated_at=clock_timestamp()
+                       WHERE skill_id=%s AND status='published' AND version<>%s""",
+                    (aggregate_id, revision_id),
+                )
+                changed = conn.execute(
+                    """UPDATE skill_versions SET status='published',
+                           published_at=COALESCE(published_at,clock_timestamp()),
+                           updated_at=clock_timestamp()
+                       WHERE skill_id=%s AND version=%s""",
+                    (aggregate_id, revision_id),
+                ).rowcount
+                if changed:
+                    conn.execute(
+                        """UPDATE skill_definitions SET current_version=%s,
+                               updated_at=clock_timestamp() WHERE skill_id=%s""",
+                        (revision_id, aggregate_id),
+                    )
         elif aggregate_type == "capability":
             changed = conn.execute(
                 """UPDATE capability_versions SET status='published',
@@ -162,6 +207,60 @@ class PostgresRolloutPrimitiveStoreMixin:
                        WHERE plugin_id=%s AND version=%s""",
                     (aggregate_id, revision_id),
                 ).rowcount
+        elif aggregate_type == "remote_connection":
+            target = conn.execute(
+                """SELECT 1 FROM remote_connection_revisions
+                   WHERE connection_id=%s AND revision_id=%s""",
+                (aggregate_id, revision_id),
+            ).fetchone()
+            if target is None:
+                changed = 0
+            else:
+                conn.execute(
+                    """UPDATE remote_connection_revisions SET status='retired'
+                       WHERE connection_id=%s AND status='published'
+                         AND revision_id<>%s""",
+                    (aggregate_id, revision_id),
+                )
+                changed = conn.execute(
+                    """UPDATE remote_connection_revisions SET status='published',
+                           published_at=COALESCE(published_at,clock_timestamp())
+                       WHERE connection_id=%s AND revision_id=%s""",
+                    (aggregate_id, revision_id),
+                ).rowcount
+                if changed:
+                    conn.execute(
+                        """UPDATE remote_connections SET current_revision_id=%s,
+                               updated_at=clock_timestamp() WHERE connection_id=%s""",
+                        (revision_id, aggregate_id),
+                    )
+        elif aggregate_type == "model_provider":
+            target = conn.execute(
+                """SELECT 1 FROM model_provider_revisions
+                   WHERE provider_id=%s AND revision_id=%s""",
+                (aggregate_id, revision_id),
+            ).fetchone()
+            if target is None:
+                changed = 0
+            else:
+                conn.execute(
+                    """UPDATE model_provider_revisions SET status='retired'
+                       WHERE provider_id=%s AND status='published'
+                         AND revision_id<>%s""",
+                    (aggregate_id, revision_id),
+                )
+                changed = conn.execute(
+                    """UPDATE model_provider_revisions SET status='published',
+                           published_at=COALESCE(published_at,clock_timestamp())
+                       WHERE provider_id=%s AND revision_id=%s""",
+                    (aggregate_id, revision_id),
+                ).rowcount
+                if changed:
+                    conn.execute(
+                        """UPDATE model_providers SET current_revision_id=%s,
+                               updated_at=clock_timestamp() WHERE provider_id=%s""",
+                        (revision_id, aggregate_id),
+                    )
         else:
             raise ValueError("unsupported configuration rollout type")
         if changed != 1:

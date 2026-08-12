@@ -334,6 +334,44 @@ def test_postgres_serializes_top_level_session_but_allows_child_agents(tmp_path:
     assert store.claim_runtime_run(second.run_id, worker_id="worker-b", lease_seconds=30)
 
 
+def test_parent_cancel_request_propagates_to_all_nonterminal_child_runs(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "cancel-child-runs.db")
+    parent = _create_run(store, "parent")
+    child = store.create_runtime_run(
+        run_id="child",
+        user_id=parent.user_id,
+        session_id=f"{parent.session_id}:child",
+        agent_id="default",
+        kind="agent",
+        prompt="child",
+        options={},
+        root_run_id=parent.run_id,
+        parent_run_id=parent.run_id,
+    )[0]
+    grandchild = store.create_runtime_run(
+        run_id="grandchild",
+        user_id=parent.user_id,
+        session_id=f"{parent.session_id}:grandchild",
+        agent_id="default",
+        kind="agent",
+        prompt="grandchild",
+        options={},
+        root_run_id=parent.run_id,
+        parent_run_id=child.run_id,
+    )[0]
+
+    requested = store.request_runtime_cancel(parent.run_id, reason="owner stopped workflow")
+
+    assert requested is not None
+    assert store.get_runtime_run(parent.run_id).cancel_requested_at is not None
+    for run_id in (child.run_id, grandchild.run_id):
+        run = store.get_runtime_run(run_id)
+        assert run is not None and run.cancel_requested_at is not None
+        assert run.cancel_reason == "parent Run cancelled: owner stopped workflow"
+
+
 def test_postgres_atomically_commits_terminal_state_and_event(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "atomic-finish.db")
     run = _create_run(store, "atomic")
@@ -633,11 +671,37 @@ def test_reset_runtime_run_clears_cancel_request(tmp_path: Path) -> None:
 def test_runtime_store_factory_requires_postgres_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("JOYHOUSE_DATABASE_URL", raising=False)
     monkeypatch.delenv("JOYHOUSEBOT_DATABASE_URL", raising=False)
     config = Config()
     config.runtime.store.database_url = ""
     with pytest.raises(ValueError, match="database_url"):
         create_runtime_store(config)
+
+
+def test_runtime_store_factory_prefers_shared_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from joyhousebot.storage import postgres_store
+
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def build_store(database_url: str, **kwargs: object) -> object:
+        captured["database_url"] = database_url
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(postgres_store, "PostgresRuntimeStore", build_store)
+    monkeypatch.setenv("JOYHOUSE_DATABASE_URL", "postgresql://shared.example/joyhouse")
+    monkeypatch.setenv(
+        "JOYHOUSEBOT_DATABASE_URL", "postgresql://legacy.example/joyhousebot"
+    )
+    config = Config()
+    config.runtime.store.database_url = "postgresql://config.example/runtime"
+
+    assert create_runtime_store(config) is sentinel
+    assert captured["database_url"] == "postgresql://shared.example/joyhouse"
 
 
 def test_runtime_store_factory_supports_single_migrator_mode(
@@ -988,6 +1052,8 @@ async def test_postgres_purge_old_runtime_data(tmp_path: Path) -> None:
         "model_invocations": 0,
         "execution_spans": 0,
         "trace_blobs": 0,
+        "app_callback_delivery_events": 0,
+        "app_callback_outbox": 0,
         "replay_runs": 0,
         "runtime_artifacts": 0,
         "runtime_events": 1,
@@ -1013,6 +1079,8 @@ async def test_postgres_purge_old_runtime_data(tmp_path: Path) -> None:
         "model_invocations": 0,
         "execution_spans": 0,
         "trace_blobs": 0,
+        "app_callback_delivery_events": 0,
+        "app_callback_outbox": 0,
         "replay_runs": 0,
         "runtime_artifacts": 0,
         "runtime_events": 0,

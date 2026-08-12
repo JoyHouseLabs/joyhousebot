@@ -102,6 +102,14 @@ async def run_coordinator_planning(
             scenarios=scenarios,
             capabilities=capabilities,
             routing_decision=routing_decision,
+            team={
+                "team_ref": dict(options.metadata.get("team_ref") or {}),
+                "members": list(options.metadata.get("team_members") or []),
+                "budget_policy": dict(options.metadata.get("team_budget_policy") or {}),
+                "approval_policy": dict(options.metadata.get("team_approval_policy") or {}),
+            }
+            if options.metadata.get("team_ref")
+            else None,
         )
         try:
             content, _, _ = await runtime._call_agent(

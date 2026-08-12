@@ -6,7 +6,7 @@
 ## 1. 决策
 
 JoyhouseBot 聚焦个人与 OPC 的长期智能执行基座。Core 负责把目标可靠地变成可追踪、可恢复、可验证的
-执行；外部产品、供应商协议、垂直业务和模型可调用的具体能力全部通过独立扩展包接入。
+执行；独立业务 App 通过公共协议协作，供应商协议和模型可调用的具体技术能力通过 Extension 接入。
 
 首个推荐组合是：
 
@@ -17,6 +17,8 @@ joyhousebot core + model provider extension + email channel extension
 项目尚未发布，不保留旧 Channel、Provider、Tool、MCP Client 的导入路径、配置字段或运行时翻译层。
 旧配置会校验失败，部署必须从当前 `config.example.json` 开始。
 
+可售卖业务组合使用 [App Pack 安装协议](APP_PACKS.md)，不再借用 Extension/Plugin 表达业务 App。
+
 产品分工见 [Joyhouse OPC 产品定位](PRODUCT_OPC.md)，逐项拆分结果见
 [非 Core 功能拆分台账](NON_CORE_MIGRATION.md)。
 
@@ -24,7 +26,7 @@ joyhousebot core + model provider extension + email channel extension
 
 - `user_id + agent_id + root_run_id` 个人数据与执行隔离；
 - Run / Task / Event / Trace / Approval / Action 状态机与最终一致性；
-- Agent、Workflow、多 Agent DAG、人工反馈和长任务恢复；
+- Agent、AgentTeam Revision、共享 Workspace、Workflow、多 Agent DAG、人工反馈和长任务恢复；
 - Capability Registry、权限、配额、审批、幂等与写入回执；
 - PostgreSQL repositories、Outbox、Lease、Schedule、重试、对账与审计；
 - Artifact / Work 的版本、证据、发布、分享和撤销；
@@ -45,11 +47,14 @@ Core 不选择供应商或默认模型。空 Agent 目录只接受 `runtime.boot
 - Anthropic、OpenAI-compatible 等模型协议和供应商端点元数据；
 - Shell、Filesystem、Research、Context Assets、Runtime Control 等具体模型能力；
 - 外部 MCP Client、CRM、日历、GitHub、文档、表单、支付和内容平台连接；
-- 垂直业务的 Skill、Scenario、Workflow、外部读模型、Task Pack 和业务 UI；
+- 由技术制品提供的可复用 Skill、Scenario、Workflow 和 Capability；业务 App 与可售卖 Task Pack 不作为
+  Python Extension 加载；
 - 供应商配置 Schema、依赖、权限和运维文档。连通性检查必须作为 Worker 内的可审计 Run，不能由 API 临时加载扩展执行。
 
-独立业务产品保留自己的界面，只通过版本化 HTTP/SSE、MCP 或 Capability 进入统一 Run/Task 链路。
-业务路由、数据库模型和页面不得写入 Core。`smart-study` 保持独立。
+独立业务产品保留自己的界面、身份、权限、业务服务和业务表所有权，通过版本化 HTTP/SSE 提交 Run，并通过
+唯一的通用远程 Capability Connector 接受 Worker 的签名调用。业务代码不得作为 Python 扩展加载到
+Runtime；业务路由、数据库模型和页面不得写入 Core。`smart-study` 保持独立。完整协作边界见
+[独立 App 与 JoyhouseBot 协作契约](APP_INTEGRATION.md)。
 
 ## 4. 判定规则
 
@@ -75,7 +80,7 @@ Run/Task、重试或持久化状态机。
 
 - `ExtensionManifest`、`PluginManifest` 与版本化组件引用；
 - Channel envelope、`ChannelPlugin`、`RunAdapter`；
-- Capability definition/context/result 与 `WriteReceipt`；
+- Capability definition/context/result、`WriteReceipt` 与异步 `OperationReconciliationResult`；
 - `CapabilityServiceBroker` 及其 Context、Scratch、Sandbox、Runtime Control 窄端口；
 - `ToolConnectorExtension` 与生命周期契约。
 
@@ -93,10 +98,19 @@ capability-research = "joyhousebot_capability_research:create_plugin"
 provider-anthropic = "joyhousebot_provider_anthropic:create_extension"
 ```
 
-安装只表示代码可发现。所有扩展（包括 Provider）都必须以完整 extension ID 出现在
-`extensions.enabled`；Provider 的凭据和端点另外放在 `providers.settings`。Core 先按 entry point
-metadata 过滤，只有显式启用后才 import 扩展代码。Manifest ID、entry point 名、API/SDK 版本和
-不可变 build digest 任一不匹配时直接拒绝加载。
+安装只表示代码可发现。`catalogDirectories` 只扫描 `pyproject.toml` 和 distribution entry point
+metadata，不 import 扩展；`allowedIds` 是部署安全边界，Worker 只允许 import 其中的完整 ID；实际
+启停是 PostgreSQL 中的 desired state，通过 Console 操作。Worker 加载精确版本/build 并 ACK 后才是
+effective active。Provider 的凭据和端点另外放在 `providers.settings`。Manifest ID、entry point 名、
+API/SDK 版本和不可变 build digest 任一不匹配时直接拒绝加载。
+
+`connector-http-capability` 是一个例外清晰的两层配置：扩展启用属于不可变部署配置；具体远程服务属于
+PostgreSQL 控制面，通过 Console/API 创建连接 Revision。数据库只保存 `env://VARIABLE` 引用，Worker
+预热时才解析对应环境变量。远程服务不能借此把业务路由、表结构或事务代码写进 Core。
+
+Model Provider 同样使用两层配置：`provider-*` 扩展的安装/启用属于部署边界；具体 Provider Endpoint、
+密钥/Header 环境引用、超时和模型目录属于 PostgreSQL `model_provider` Revision。Console 不写入
+`config.json`，不接触密钥值；Worker 预热精确扩展构建并解析环境引用，全部 ACK 后才切换当前配置。
 
 ## 6. 唯一配置结构
 
@@ -109,12 +123,16 @@ metadata 过滤，只有显式启用后才 import 扩展代码。Manifest ID、e
     }
   },
   "extensions": {
-    "enabled": [
+    "catalogDirectories": ["./extensions"],
+    "allowedIds": [
       "provider-anthropic",
       "channel-email",
       "capability-research",
-      "capability-context-assets"
+      "capability-context-assets",
+      "capability-media-generation"
     ],
+    "initiallyActive": ["provider-anthropic", "channel-email"],
+    "allowConsoleActivation": true,
     "discoverEntryPoints": true,
     "settings": {
       "channel-email": {
@@ -140,14 +158,33 @@ Core 负责入站去重、Run 提交、PG Outbox、Lease、fencing、投递重�
 Email 是 OPC 第一阶段唯一推荐 Channel，但仍是可卸载扩展。其他 Channel 均为独立 distribution，
 Console 不把未安装扩展描述为内置能力。
 
+部署安装或启用扩展后，先执行 `joyhousebot discover-extensions --config config.json`。该命令只导入
+显式启用扩展的不可变目录元数据，使 Console 能在 Agent Worker 启动前完成非敏感参数配置；它不赋予
+执行资格。发布仍必须经过精确构建校验、目标 Worker 预热和 ACK，未加载扩展的 Worker 不能执行能力。
+
 ## 8. 高风险能力闭环
 
 - Shell 扩展只能调用 Core 的 fail-closed container sandbox，容器不可用时失败；
 - Filesystem 扩展只能访问当前 Run 的隔离 scratch，不能把 `memory/` 当宿主文件；
 - Context Assets 通过窄服务访问用户 Memory/Knowledge，写入必须携带冻结 Action 和回执；
 - Runtime Control 通过窄服务管理 Schedule、Outbox、Monitor scratch 和 child Run；
+- Media Generation 以 `image.generate`、`image.edit`、`video.generate` 提供稳定协议，Seedream、
+  Seedance、即梦等供应商只存在于独立适配器；有成本的生成请求进入审批、Action、Artifact 和对账链；
 - MCP Client 是 `connector-mcp-client`，HTTP 受 SSRF/DNS pinning 约束，stdio 默认关闭；
 - 所有副作用继续进入统一 Dispatcher、审批、Action、对账与审计链。
+
+媒体模型 ID、默认供应商和即梦 `req_key` 使用 Capability 的 `configuration_schema`，在 Console
+`集成中心 → Extensions → Media Generation → 组件 → 配置与启停` 中维护。API Key、AK/SK 仍只能存在于
+Worker 环境。供应商临时媒体 URL 只能形成私有 Artifact；长期保存必须再经对象存储扩展物化，公开分享
+必须进入 Work 版本链。
+
+Console“集成中心 → Models”是模型总入口，但不混淆两类执行语义：文本 LLM Provider 在 Models 页面
+进行版本化发布；图片/视频卡片跳转到 Media Generation Capability 配置。Agent 页面只引用已生效的精确
+模型 ID，并继续独立冻结生成参数和降级链。
+
+Console 的配置表单只写入经过 JSON Schema 校验的非敏感运行参数，并分别展示 Runtime 启用状态、精确
+插件版本的 Worker 加载状态和 Worker 凭据健康检查。Agent 侧还必须显式选择外部/计费能力并授予其声明的
+权限；配置、安装或发布其中任意一步都不会自动扩大 Agent 的执行边界。
 
 ## 9. 发布状态
 

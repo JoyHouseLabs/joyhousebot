@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from joyhousebot.agent.skills import SkillsLoader
-from joyhousebot.application.presenters import public_capability_definition
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityInvocation,
@@ -38,6 +37,37 @@ def _run(store: PostgresTestStore) -> None:
         kind="agent",
         prompt="search",
         options={},
+    )
+
+
+def _publish_skill(
+    store: PostgresTestStore,
+    skill_id: str,
+    version: str,
+    instruction: str,
+) -> None:
+    store.save_skill_draft(
+        {
+            "skill_id": skill_id,
+            "version": version,
+            "name": skill_id.removeprefix("skill."),
+            "description": "Versioned prompt policy",
+            "instruction_content": instruction,
+            "eval_cases": [
+                {
+                    "name": "basic",
+                    "input": "apply policy",
+                    "expected_behavior": "follow the complete policy",
+                }
+            ],
+        },
+        actor_id="test",
+    )
+    store.stage_skill_version(
+        skill_id,
+        version,
+        actor_id="test",
+        require_healthy_workers=False,
     )
 
 
@@ -92,87 +122,53 @@ def test_capability_invocation_is_idempotent_and_user_scoped(tmp_path: Path) -> 
 
 def test_published_skill_content_is_worker_shared_and_not_public(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "skills.db")
-    instruction = "---\ndescription: Evidence research\n---\nUse primary sources."
-    store.publish_capability(
-        CapabilityDefinition(
-            ref=CapabilityRef("skill.research", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
-            name="research",
-            description="Evidence research",
-            input_schema={"type": "object"},
-            output_schema={"type": "object"},
-            adapter="prompt-skill:research",
-            configuration={"instruction_content": instruction},
-        )
+    instruction = (
+        "---\ndescription: Evidence research\n---\n"
+        "Use primary sources, record citations, and separate facts from inference."
     )
+    _publish_skill(store, "skill.research", "1.0.0", instruction)
     worker_loader = SkillsLoader(store)
     assert worker_loader.load_skill("research") == instruction
     assert "research" in {item["name"] for item in worker_loader.list_skills()}
 
-    stored = store.get_capability_definition("skill.research")
+    stored = store.get_skill_version("skill.research", "1.0.0")
     assert stored is not None
-    assert "instruction_content" in stored["configuration"]
-    assert "configuration" not in public_capability_definition(stored)
+    assert stored["instruction_content"] == instruction
+    assert not any(
+        item["ref"]["capability_id"] == "skill.research"
+        for item in store.list_capability_definitions()
+    )
 
 
 def test_skill_loader_can_pin_an_immutable_skill_version(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "versioned-skills.db")
     for version, instruction in (("1.0.0", "legacy policy"), ("1.0.1", "current policy")):
-        store.publish_capability(
-            CapabilityDefinition(
-                ref=CapabilityRef(
-                    "skill.enrich", version, CapabilityKind.SKILL,
-                    "test.plugin", "1.0.0", "sha256:test",
-                ),
-                name="enrich",
-                description="Versioned enrich policy",
-                input_schema={"type": "object"},
-                output_schema={"type": "object"},
-                adapter="prompt-skill:enrich",
-                configuration={"instruction_content": instruction},
-            )
+        _publish_skill(
+            store,
+            "skill.enrich",
+            version,
+            instruction + " with enough detail to be safely applied in every execution context",
         )
     loader = SkillsLoader(store)
-    assert loader.load_skill("enrich") == "current policy"
-    assert loader.load_skill("enrich", "1.0.0") == "legacy policy"
+    assert loader.load_skill("enrich").startswith("current policy")
+    assert loader.load_skill("enrich", "1.0.0").startswith("legacy policy")
     assert loader.load_skills_for_context(["enrich"], versions={"enrich": "1.0.0"}) == (
-        "### Skill: enrich\n\nlegacy policy"
+        "### Skill: enrich\n\nlegacy policy with enough detail to be safely applied in every execution context"
     )
 
 
-def test_runtime_capability_settings_are_validated_audited_and_overlay_skill(tmp_path: Path) -> None:
+def test_skill_disable_is_an_emergency_stop_without_mutating_content(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "runtime-settings.db")
-    store.publish_capability(
-        CapabilityDefinition(
-            ref=CapabilityRef("skill.configurable", "1.0.0", CapabilityKind.SKILL, "test.plugin", "1.0.0", "sha256:test"),
-            name="configurable",
-            description="A configurable prompt skill",
-            input_schema={"type": "object"},
-            output_schema={"type": "object"},
-            adapter="prompt-skill:configurable",
-            configuration={"instruction_content": "original", "always": False},
-            configuration_schema={
-                "type": "object", "additionalProperties": False,
-                "properties": {"instruction_content": {"type": "string"}, "always": {"type": "boolean"}},
-            },
-        )
+    instruction = "Original immutable instructions that contain enough detail for safe execution."
+    _publish_skill(
+        store, "skill.configurable", "1.0.0", instruction
     )
-    saved = store.save_capability_runtime_settings(
-        "skill.configurable", enabled=True,
-        configuration={"instruction_content": "operator update", "always": True}, actor_id="admin-a",
-    )
-    assert saved["configuration"]["always"] is True
     loader = SkillsLoader(store)
-    assert loader.load_skill("configurable") == "operator update"
-    assert loader.get_always_skills() == ["configurable"]
-    store.save_capability_runtime_settings(
-        "skill.configurable", enabled=False, configuration={}, actor_id="admin-a"
+    assert loader.load_skill("configurable") == instruction
+    assert loader.get_always_skills() == []
+    assert store.set_skill_status(
+        "skill.configurable", status="disabled", actor_id="admin-a"
     )
     assert loader.load_skill("configurable") is None
-    with pytest.raises(ValueError, match="invalid"):
-        store.save_capability_runtime_settings(
-            "skill.configurable", enabled=True, configuration={"unknown": True}, actor_id="admin-a"
-        )
-    with pytest.raises(ValueError, match="must not contain secrets"):
-        store.save_capability_runtime_settings(
-            "skill.configurable", enabled=True, configuration={"api_key": "nope"}, actor_id="admin-a"
-        )
+    stored = store.get_skill_version("skill.configurable", "1.0.0")
+    assert stored and stored["instruction_content"] == instruction

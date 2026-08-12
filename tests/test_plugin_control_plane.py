@@ -5,11 +5,13 @@ from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
 from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.bootstrap.extension_catalog import discover_enabled_extensions
 from joyhousebot.bootstrap.extension_rollouts import ExtensionRolloutWatcher
-from joyhousebot.config.schema import Config
+from joyhousebot.config.schema import Config, ExtensionsConfig
 from joyhousebot.contracts.extensions import ExtensionManifest
 from joyhousebot.contracts.plugins import PluginComponent, PluginManifest, PluginQuickstart
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from joyhousebot.extension_discovery import scan_extension_catalog
 from tests.support.postgres_store import PostgresTestStore
 
 TEST_BUILD_DIGEST = f"sha256:{'a' * 64}"
@@ -59,6 +61,124 @@ def _store(tmp_path: Path) -> PostgresTestStore:
     return store
 
 
+def test_extension_directory_scan_reads_metadata_without_importing_code(
+    tmp_path: Path,
+) -> None:
+    extension = tmp_path / "extensions" / "capability-safe-scan"
+    extension.mkdir(parents=True)
+    (extension / "pyproject.toml").write_text(
+        """[project]
+name = "joyhousebot-capability-safe-scan"
+version = "2.1.0"
+description = "Metadata only"
+
+[project.entry-points."joyhousebot.capabilities"]
+capability-safe-scan = "module_that_must_never_import:create_plugin"
+""",
+        encoding="utf-8",
+    )
+
+    values = scan_extension_catalog([tmp_path / "extensions"], installed=[])
+
+    assert len(values) == 1
+    assert values[0].extension_id == "capability-safe-scan"
+    assert values[0].source_version == "2.1.0"
+    assert values[0].installed is False
+    assert values[0].metadata["entry_points"] == {
+        "joyhousebot.capabilities": "module_that_must_never_import:create_plugin"
+    }
+
+
+def test_extension_desired_state_survives_catalog_rescan_and_allowlist_closes_execution(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    candidate = {
+        "extension_id": "example.discover",
+        "name": "Example Discover",
+        "description": "",
+        "source_version": "1.0.0",
+        "extension_types": ["capability"],
+        "distribution_name": "example-plugin",
+        "distribution_version": "1.0.0",
+        "source_location": str(tmp_path / "extensions" / "example.discover"),
+        "source_digest": TEST_BUILD_DIGEST,
+        "source_available": True,
+        "installed": True,
+        "metadata": {},
+    }
+    store.sync_extension_inventory(
+        [candidate], allowed_ids={"example.discover"}, initially_active_ids=set()
+    )
+    assert store.is_plugin_execution_enabled("example.discover") is False
+
+    store.set_extension_desired_active(
+        "example.discover", True, actor_id="release-admin"
+    )
+    store.sync_extension_inventory(
+        [candidate], allowed_ids={"example.discover"}, initially_active_ids=set()
+    )
+    assert store.get_extension_inventory("example.discover")["desired_active"] is True
+    assert store.is_plugin_execution_enabled("example.discover") is True
+
+    store.sync_extension_inventory(
+        [candidate], allowed_ids=set(), initially_active_ids=set()
+    )
+    assert store.get_extension_inventory("example.discover")["desired_active"] is True
+    assert store.is_plugin_execution_enabled("example.discover") is False
+
+
+def test_deactivated_extension_is_removed_from_active_capability_catalog(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    definition = CapabilityDefinition(
+        ref=CapabilityRef(
+            "example.search",
+            "1.0.0",
+            CapabilityKind.TOOL,
+            "example.discover",
+            "1.0.0",
+            TEST_BUILD_DIGEST,
+        ),
+        name="Example search",
+        description="",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        adapter="example.search",
+    )
+    store.publish_capability(definition)
+    store.sync_extension_inventory(
+        [
+            {
+                "extension_id": "example.discover",
+                "name": "Example Discover",
+                "extension_types": ["capability"],
+                "source_available": True,
+                "installed": True,
+                "metadata": {},
+            }
+        ],
+        allowed_ids={"example.discover"},
+        initially_active_ids={"example.discover"},
+    )
+    assert store.get_capability_definition("example.search") is not None
+
+    store.set_extension_desired_active(
+        "example.discover", False, actor_id="release-admin"
+    )
+
+    assert store.get_capability_definition("example.search") is None
+    assert all(
+        item["ref"]["capability_id"] != "example.search"
+        for item in store.list_capability_definitions()
+    )
+    assert (
+        store.get_capability_release_definition("example.search", "1.0.0")
+        is not None
+    )
+
+
 def test_plugin_catalog_is_durable_and_metrics_are_empty_without_invocations(tmp_path: Path) -> None:
     store = _store(tmp_path)
     release = store.get_plugin_release("example.discover")
@@ -71,6 +191,29 @@ def test_plugin_catalog_is_durable_and_metrics_are_empty_without_invocations(tmp
     metrics = store.get_plugin_metrics("example.discover")
     assert metrics["total"] == 0
     assert metrics["by_component"] == []
+
+
+def test_enabled_extension_catalog_is_discovered_without_agent_worker(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    values = discover_enabled_extensions(
+        Config(
+            extensions=ExtensionsConfig(
+                enabled=["capability-media-generation"],
+                discover_entry_points=True,
+            )
+        ),
+        store=store,
+    )
+
+    assert values == [
+        {
+            "extension_id": "capability-media-generation",
+            "version": "1.0.0",
+            "type": "capability",
+        }
+    ]
+    assert store.get_plugin_release("capability-media-generation")["status"] == "discovered"
+    assert store.get_capability_release_definition("image.generate", "1.0.0") is not None
 
 
 def test_plugin_release_activates_only_after_exact_worker_load_ack(tmp_path: Path) -> None:
@@ -261,12 +404,132 @@ def test_plugin_control_plane_api_requires_admin_and_projects_safe_metadata(tmp_
             "/v1/admin/plugins/example.discover", headers={"Authorization": "Bearer plugin-token"}
         )
         assert detail.status_code == 200
-        assert detail.json()["components"][0]["metadata"] == {}
+        metadata = detail.json()["components"][0]["metadata"]
+        assert metadata["runtime_enabled"] is True
+        assert metadata["worker_loaded"] is False
+        assert metadata["execution_ready"] is False
+        assert metadata["execution_blockers"] == [
+            "Capability 版本尚未发布",
+            "没有 Worker 加载当前扩展版本",
+        ]
 
 
-def test_capability_runtime_settings_api_requires_publish_permission(tmp_path: Path) -> None:
+def test_console_activation_toggles_durable_desired_state_within_allowlist(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
-    store.publish_capability(
+    store.register_runtime_worker(
+        worker_id="agent-plugin-console",
+        capabilities={"agent": True},
+        metadata={
+            "extensions": [
+                {
+                    "plugin_id": "example.discover",
+                    "version": "1.0.0",
+                    "build_digest": TEST_BUILD_DIGEST,
+                }
+            ]
+        },
+    )
+    store.stage_plugin_release("example.discover", "1.0.0", actor_id="test")
+    store.acknowledge_configuration_revision(
+        worker_id="agent-plugin-console",
+        aggregate_type="plugin",
+        aggregate_id="example.discover",
+        revision_id="1.0.0",
+    )
+    store.create_api_access_token(
+        user_id="operator", actor_id="test", token="plugin-activation-token"
+    )
+    store.upsert_platform_admin(user_id="operator", permissions=["*"], actor_id="test")
+    config = Config(
+        extensions=ExtensionsConfig(
+            allowed_ids=["example.discover"], allow_console_activation=True
+        )
+    )
+    container = build_api_container(config=config, store=store)
+    store.sync_extension_inventory(
+        [
+            {
+                "extension_id": "example.discover",
+                "name": "Example Discover",
+                "extension_types": ["capability"],
+                "source_available": True,
+                "installed": True,
+                "metadata": {},
+            }
+        ],
+        allowed_ids={"example.discover"},
+        initially_active_ids=set(),
+    )
+    store.set_extension_desired_active("example.discover", False, actor_id="test")
+    headers = {"Authorization": "Bearer plugin-activation-token"}
+
+    with TestClient(create_app(container)) as client:
+        activated = client.post(
+            "/v1/admin/plugins/example.discover/activate", headers=headers
+        )
+        deactivated = client.post(
+            "/v1/admin/plugins/example.discover/deactivate", headers=headers
+        )
+
+    assert activated.status_code == 202
+    assert activated.json()["desired_active"] is True
+    assert activated.json()["effective_active"] is True
+    assert deactivated.status_code == 200
+    assert deactivated.json()["desired_active"] is False
+    assert deactivated.json()["effective_active"] is False
+
+
+def test_plugin_health_aggregates_worker_advertised_checks(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    release = {
+        "plugin_id": "example.discover",
+        "version": "1.0.0",
+        "build_digest": TEST_BUILD_DIGEST,
+        "health_checks": [
+            {
+                "name": "provider_credentials",
+                "status": "degraded",
+                "summary": "set the provider credential on this Worker",
+            }
+        ],
+    }
+    store.register_runtime_worker(
+        worker_id="agent-plugin-health",
+        capabilities={"agent": True},
+        metadata={"extensions": [release]},
+    )
+    store.stage_plugin_release("example.discover", "1.0.0", actor_id="test")
+    store.acknowledge_configuration_revision(
+        worker_id="agent-plugin-health",
+        aggregate_type="plugin",
+        aggregate_id="example.discover",
+        revision_id="1.0.0",
+    )
+    store.create_api_access_token(
+        user_id="operator", actor_id="test", token="plugin-health-token"
+    )
+    store.upsert_platform_admin(user_id="operator", permissions=["*"], actor_id="test")
+    container = build_api_container(config=Config(), store=store)
+    with TestClient(create_app(container)) as client:
+        response = client.get(
+            "/v1/admin/plugins/example.discover/health",
+            headers={"Authorization": "Bearer plugin-health-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["checks"][-1] == {
+        "name": "provider_credentials",
+        "status": "degraded",
+        "summary": "set the provider credential on this Worker",
+    }
+
+
+def test_capability_runtime_settings_support_prepublication_configuration(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.discover_capability_release(
         CapabilityDefinition(
             ref=CapabilityRef("example.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
             name="Example search", description="", input_schema={"type": "object"}, output_schema={"type": "object"}, adapter="example.search",
@@ -277,14 +540,16 @@ def test_capability_runtime_settings_api_requires_publish_permission(tmp_path: P
     container = build_api_container(config=Config(), store=store)
     client = TestClient(create_app(container))
     headers = {"Authorization": "Bearer runtime-settings-token"}
+    path = "/v1/admin/capabilities/example.search/runtime-settings?version=1.0.0"
     with client:
-        assert client.put("/v1/admin/capabilities/example.search/runtime-settings", headers=headers, json={"enabled": False, "configuration": {"limit": 5}}).status_code == 403
+        assert client.put(path, headers=headers, json={"enabled": False, "configuration": {"limit": 5}}).status_code == 403
         store.upsert_platform_admin(user_id="root-admin", permissions=["*"], actor_id="bootstrap")
         store.upsert_platform_admin(user_id="operator", permissions=["capabilities.read", "capabilities.publish"], actor_id="test")
-        response = client.put("/v1/admin/capabilities/example.search/runtime-settings", headers=headers, json={"enabled": False, "configuration": {"limit": 5}})
+        assert client.get(path, headers=headers).status_code == 200
+        response = client.put(path, headers=headers, json={"enabled": False, "configuration": {"limit": 5}})
         assert response.status_code == 200
         assert response.json()["enabled"] is False
-        invalid = client.put("/v1/admin/capabilities/example.search/runtime-settings", headers=headers, json={"enabled": True, "configuration": {"limit": "five"}})
+        invalid = client.put(path, headers=headers, json={"enabled": True, "configuration": {"limit": "five"}})
         assert invalid.status_code == 422
 
 

@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from joyhousebot.application.agent_teams import AgentTeamService
+from joyhousebot.application.app_callbacks import AppCallbackService
+from joyhousebot.application.app_delegation import AppDelegationService
+from joyhousebot.application.app_market import AppMarketService
+from joyhousebot.application.app_packs import AppPackService
 from joyhousebot.application.approvals import ApprovalService
 from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
@@ -17,16 +22,20 @@ from joyhousebot.application.graph_events import GraphEventService
 from joyhousebot.application.graph_patches import GraphPatchService
 from joyhousebot.application.knowledge_assets import KnowledgeAssetService
 from joyhousebot.application.memory_candidates import MemoryCandidateService
+from joyhousebot.application.model_providers import ModelProviderService
 from joyhousebot.application.platform import PlatformService
 from joyhousebot.application.reconciliations import ReconciliationService
+from joyhousebot.application.remote_connections import RemoteConnectionService
 from joyhousebot.application.replays import ReplayService
 from joyhousebot.application.runs import RunService
 from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.application.schedules import ScheduleService
 from joyhousebot.application.sessions import SessionService
+from joyhousebot.application.skills import SkillService
 from joyhousebot.application.workflows import WorkflowService
 from joyhousebot.application.works import WorkService
 from joyhousebot.bootstrap.agent_catalog import default_agent_id
+from joyhousebot.bootstrap.extension_catalog import synchronize_extension_inventory
 from joyhousebot.config.access import get_config
 from joyhousebot.cron.managed_monitor import (
     reconcile_agent_monitor,
@@ -69,6 +78,14 @@ class ApplicationContainer:
     scenarios: ScenarioStudioService
     works: WorkService
     workflows: WorkflowService
+    remote_connections: RemoteConnectionService
+    model_providers: ModelProviderService
+    skills: SkillService
+    app_packs: AppPackService
+    app_delegation: AppDelegationService
+    app_callbacks: AppCallbackService
+    app_market: AppMarketService
+    agent_teams: AgentTeamService
     owns_store: bool = True
 
     async def close(self) -> None:
@@ -83,6 +100,9 @@ def build_api_container(
     config = config or get_config()
     owns_store = store is None
     store = store or create_runtime_store(config)
+    # API startup performs metadata-only reconciliation. Extension modules are
+    # never imported in the HTTP process.
+    synchronize_extension_inventory(config, store=store)
     # Local development gets a documented password alongside the explicitly
     # insecure X-User-ID mode. Production has no source-code default: its one-time
     # bootstrap credential must be injected through paired environment vars.
@@ -193,6 +213,12 @@ def build_api_container(
     runs = RunService(runtime, store)
     evals = EvalService(store)
     scenarios = ScenarioStudioService(store)
+    platform = PlatformService(
+        store,
+        monitor_reconciler=partial(
+            reconcile_existing_agent_monitors, schedules.repository
+        ),
+    )
     return ApplicationContainer(
         config=config,
         store=store,
@@ -206,12 +232,7 @@ def build_api_container(
         graph_patches=GraphPatchService(runtime, runs, store),
         sessions=SessionService(store),
         schedules=ScheduleService(schedules, config=config),
-        platform=PlatformService(
-            store,
-            monitor_reconciler=partial(
-                reconcile_existing_agent_monitors, schedules.repository
-            ),
-        ),
+        platform=platform,
         replays=ReplayService(runtime, store),
         feedback=FeedbackService(runs, store),
         evals=evals,
@@ -233,5 +254,13 @@ def build_api_container(
             store,
             default_agent_id=default_agent_id(store),
         ),
+        remote_connections=RemoteConnectionService(store, platform),
+        model_providers=ModelProviderService(store),
+        skills=SkillService(store),
+        app_packs=AppPackService(store),
+        app_delegation=AppDelegationService(store),
+        app_callbacks=AppCallbackService(store),
+        app_market=AppMarketService(store),
+        agent_teams=AgentTeamService(store),
         owns_store=owns_store,
     )

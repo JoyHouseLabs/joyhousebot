@@ -3,8 +3,8 @@
 Every domain migration records ``(name, version, checksum, applied_at)`` in
 ``schema_migration_history`` after applying its DDL.  A checksum mismatch on
 an already-recorded migration means the DDL was edited after it shipped; that
-is drift, and it is surfaced as a warning instead of being silently absorbed
-by ``IF NOT EXISTS`` idempotency.
+is drift, and startup fails closed instead of silently absorbing it through
+``IF NOT EXISTS`` idempotency or rewriting the recorded checksum.
 
 Extensions never receive this lock or a RuntimeStore. Business services own
 their database, migration history, and deployment coordination independently.
@@ -146,9 +146,17 @@ class PostgresMigrationMixin:
             self.migrate_reconciliations()
             self.migrate_admins()
             self.migrate_agents()
+            self.migrate_agent_teams()
             self.migrate_capabilities()
+            self.migrate_skills()
             self.migrate_plugins()
+            self.migrate_model_providers()
+            self.migrate_remote_connections()
             self.migrate_scenarios()
+            self.migrate_app_packs()
+            self.migrate_app_delegation()
+            self.migrate_app_callbacks()
+            self.migrate_app_market()
             self.migrate_clarifications()
             self.migrate_rate_limits()
             self.migrate_observability()
@@ -178,7 +186,13 @@ class PostgresMigrationMixin:
         ddl: str,
         description: str = "",
     ) -> None:
-        """Record one applied migration; warn when its checksum drifts."""
+        """Record one applied migration and fail closed when its checksum drifts.
+
+        A recorded migration is immutable.  Updating the stored checksum would
+        erase the only durable evidence that shipped DDL was edited in place and
+        would let different Runtime builds claim the same schema version.  Schema
+        changes must therefore use a new migration version.
+        """
         conn.execute(_HISTORY_DDL)
         checksum = migration_checksum(ddl)
         row = conn.execute(
@@ -194,19 +208,11 @@ class PostgresMigrationMixin:
             return
         if str(row["checksum"]) == checksum:
             return
-        _logger.warning(
-            "schema migration %s@%s checksum changed (%s -> %s): the DDL was "
-            "modified after being applied; verify the drift is intentional",
-            name,
-            version,
-            str(row["checksum"])[:12],
-            checksum[:12],
-        )
-        conn.execute(
-            """UPDATE schema_migration_history
-               SET checksum=%s, description=%s, applied_at=clock_timestamp()
-               WHERE name=%s AND version=%s""",
-            (checksum, description, name, version),
+        raise RuntimeError(
+            "schema migration "
+            f"{name}@{version} checksum changed "
+            f"({str(row['checksum'])[:12]} -> {checksum[:12]}): "
+            "recorded migrations are immutable; add a new migration version"
         )
 
     def migrate(self) -> None:

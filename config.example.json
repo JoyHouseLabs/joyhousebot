@@ -19,7 +19,10 @@
     "optionalAllowlist": []
   },
   "extensions": {
-    "enabled": [],
+    "catalogDirectories": ["./extensions"],
+    "allowedIds": [],
+    "initiallyActive": [],
+    "allowConsoleActivation": true,
     "discoverEntryPoints": true,
     "settings": {}
   }

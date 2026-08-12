@@ -75,9 +75,9 @@ async def run_api_load_test(
             async with semaphore:
                 identity = f"{drill_id}:{index}"
                 payload = {
-                    "agent_id": options.agent_id,
+                    "execution": {"mode": "agent", "agent_id": options.agent_id},
                     "session_id": identity,
-                    "execution_mode": "background",
+                    "interaction_mode": "background",
                     "input": {
                         "content": (
                             "Load rehearsal probe. Return a concise acknowledgement "

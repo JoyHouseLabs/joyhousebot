@@ -44,13 +44,24 @@ def lock_claimable_task_run(conn: Any, run_id: str | None) -> str | None:
                                   AND rec.lease_expires_at<clock_timestamp()))
                      )
                    )
+                   OR (
+                     task.status='waiting_external'
+                     AND task.payload->>'node_type'='subrun'
+                     AND r.status IN ('running','waiting_external')
+                     AND EXISTS (
+                       SELECT 1 FROM runtime_runs child
+                       WHERE child.parent_task_id=task.task_id
+                         AND child.parent_run_id=r.run_id
+                         AND child.status IN ('completed','failed','cancelled','timed_out')
+                     )
+                   )
                  )
                  AND (
                    task.attempt<task.max_attempts
                    OR task.status='waiting_external'
                    OR COALESCE(task.result->>'stop_reason','') IN
                       ('waiting_approval','durable_recovery','foreach_expanded',
-                       'bounded_loop_waiting')
+                       'bounded_loop_waiting','subrun_waiting')
                  )
              )
              AND (

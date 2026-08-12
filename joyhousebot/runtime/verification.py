@@ -64,6 +64,7 @@ async def verify_output(
             )
         attempt = max((item.attempt for item in records), default=0) + 1
     failures: list[dict[str, Any]] = []
+    repair_failures: list[dict[str, Any]] = []
     structured_output: Any = None
     for spec in specs:
         verification_id = _verification_id(context, turn_id, attempt, spec.verifier_id)
@@ -77,8 +78,11 @@ async def verify_output(
             passed = record.status == "passed"
             evidence = dict(record.evidence)
             error = dict(record.error or {}) or None
+            repair_message = (
+                _repair_failure_message(spec, content) if not passed else None
+            )
         else:
-            passed, evidence, error, structured = await _evaluate(
+            passed, evidence, error, structured, repair_message = await _evaluate(
                 context, spec, content, input_hash
             )
             if structured is not None:
@@ -103,12 +107,17 @@ async def verify_output(
             },
         )
         if not passed and spec.required:
-            failures.append(
+            failure = {
+                "verifier_id": spec.verifier_id,
+                "type": spec.verifier_type,
+                "repairable": spec.repairable,
+                "message": str((error or {}).get("message") or "verification failed"),
+            }
+            failures.append(failure)
+            repair_failures.append(
                 {
-                    "verifier_id": spec.verifier_id,
-                    "type": spec.verifier_type,
-                    "repairable": spec.repairable,
-                    "message": str((error or {}).get("message") or "verification failed"),
+                    **failure,
+                    "message": repair_message or failure["message"],
                 }
             )
     if failures:
@@ -116,7 +125,7 @@ async def verify_output(
         return VerificationDecision(
             passed=False,
             repairable=repairable,
-            repair_prompt=_repair_prompt(failures),
+            repair_prompt=_repair_prompt(repair_failures),
             attempt=attempt,
             input_hash=input_hash,
             failures=tuple(failures),
@@ -136,7 +145,7 @@ async def _evaluate(
     spec: VerifierSpec,
     content: str | None,
     input_hash: str,
-) -> tuple[bool, dict[str, Any], dict[str, Any] | None, Any]:
+) -> tuple[bool, dict[str, Any], dict[str, Any] | None, Any, str | None]:
     evidence: dict[str, Any] = {
         "input_hash": input_hash,
         "content_length": len(content or ""),
@@ -150,14 +159,14 @@ async def _evaluate(
             evidence.update(
                 {"schema_hash": payload_hash(schema), "value_type": type(structured).__name__}
             )
-            return True, evidence, None, structured
+            return True, evidence, None, structured, None
         if spec.verifier_type == "artifact":
             artifact_evidence = await _verify_artifacts(context, spec.policy, content)
             evidence.update(artifact_evidence)
-            return True, evidence, None, None
+            return True, evidence, None, None, None
         _verify_deterministic(content, spec.policy)
         evidence["rule"] = str(spec.policy.get("rule") or "non_empty")
-        return True, evidence, None, None
+        return True, evidence, None, None, None
     except (StructuredOutputError, ValueError) as exc:
         evidence["failure_hash"] = payload_hash(str(exc))
         return (
@@ -168,7 +177,33 @@ async def _evaluate(
                 "message": _safe_failure_message(spec.verifier_type, str(exc)),
             },
             None,
+            _bounded_repair_message(str(exc)),
         )
+
+
+def _repair_failure_message(spec: VerifierSpec, content: str | None) -> str:
+    """Rebuild private repair guidance without exposing it in public evidence."""
+
+    try:
+        if spec.verifier_type == "schema":
+            schema = spec.policy.get("schema")
+            if not isinstance(schema, dict):
+                raise ValueError("schema verifier requires an object schema")
+            parse_structured_output(content, schema)
+        elif spec.verifier_type == "artifact":
+            return "required artifact evidence is missing or does not match policy"
+        else:
+            _verify_deterministic(content, spec.policy)
+    except (StructuredOutputError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return _bounded_repair_message(str(exc))
+    return "verification failed; return a complete replacement answer"
+
+
+def _bounded_repair_message(message: str, *, max_chars: int = 4_000) -> str:
+    detail = message.strip() or "verification failed"
+    if len(detail) <= max_chars:
+        return detail
+    return detail[: max_chars - 1].rstrip() + "…"
 
 
 async def _verify_artifacts(

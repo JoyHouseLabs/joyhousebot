@@ -7,13 +7,26 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExtensionsConfig(BaseModel):
-    """Installed extension discovery and explicitly enabled release settings."""
+    """Deployment boundaries for separately installed extension packages.
+
+    ``catalog_directories`` is metadata-only source discovery. ``allowed_ids``
+    is the deployment security boundary: workers may import only those entry
+    points. Runtime activation is durable PostgreSQL state and is intentionally
+    not represented by this immutable deployment file.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: list[str] = Field(default_factory=list)
+    catalog_directories: list[str] = Field(default_factory=list)
+    allowed_ids: list[str] = Field(default_factory=list)
+    initially_active: list[str] = Field(default_factory=list)
+    allow_console_activation: bool = False
     discover_entry_points: bool = True
     settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Transitional input for deployments created before the catalog/activation
+    # split. It is treated as both allowed and initially active, but new config
+    # files must use the explicit fields above.
+    enabled: list[str] = Field(default_factory=list)
 
 
 class ProviderConfig(BaseModel):
@@ -22,6 +35,7 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    request_timeout_seconds: float = Field(default=120.0, ge=1, le=3600)
 
 
 class ProvidersConfig(BaseModel):
@@ -183,13 +197,17 @@ class Config(BaseModel):
         # Match by keyword (order follows PROVIDERS registry)
         for spec in provider_specs(self):
             p = self._provider_config(spec)
-            if p and any(kw in model_lower for kw in spec.keywords) and p.api_key:
+            if (
+                p
+                and any(kw in model_lower for kw in spec.keywords)
+                and (p.api_key or spec.is_local)
+            ):
                 return p, spec.name
 
         # Fallback: gateways first, then others (follows registry order)
         for spec in provider_specs(self):
             p = self._provider_config(spec)
-            if p and p.api_key:
+            if p and (p.api_key or spec.is_local):
                 return p, spec.name
         return None, None
 

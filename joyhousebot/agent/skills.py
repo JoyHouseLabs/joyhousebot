@@ -1,4 +1,4 @@
-"""Database-only reader for published prompt Skill capabilities."""
+"""Database-only reader for published independent Skill assets."""
 
 from __future__ import annotations
 
@@ -20,31 +20,31 @@ class SkillsLoader:
         allowed_names: set[str] | None = None,
     ) -> list[dict[str, str]]:
         del filter_unavailable
-        skills = []
-        for definition in self.runtime_store.list_capability_definitions():
-            ref = dict(definition.get("ref") or {})
-            capability_id = str(ref.get("capability_id") or "")
-            if ref.get("kind") != "skill" or not capability_id.startswith("skill."):
+        skills: list[dict[str, str]] = []
+        for definition in self.runtime_store.list_skills(active_only=True):
+            current = dict(definition.get("current") or {})
+            skill_id = str(definition.get("skill_id") or "")
+            if not current or not skill_id.startswith("skill."):
                 continue
-            name = capability_id.removeprefix("skill.")
+            name = skill_id.removeprefix("skill.")
             if allowed_names is not None and name not in allowed_names:
-                continue
-            if not self._runtime_settings(capability_id)["enabled"]:
                 continue
             skills.append(
                 {
                     "name": name,
-                    "version": str(ref.get("version") or ""),
-                    "source": "catalog",
+                    "skill_id": skill_id,
+                    "version": str(current.get("version") or ""),
+                    "content_sha256": str(current.get("content_sha256") or ""),
+                    "source": "skill_catalog",
                 }
             )
         return sorted(skills, key=lambda item: item["name"])
 
     def load_skill(self, name: str, version: str | None = None) -> str | None:
-        definition = self.runtime_store.get_capability_definition(f"skill.{name}", version)
-        if definition is None or not self._runtime_settings(f"skill.{name}")["enabled"]:
+        definition = self.runtime_store.get_published_skill(f"skill.{name}", version)
+        if definition is None:
             return None
-        content = self._configuration(definition).get("instruction_content")
+        content = definition.get("instruction_content")
         return content if isinstance(content, str) and content.strip() else None
 
     def load_skills_for_context(
@@ -63,14 +63,15 @@ class SkillsLoader:
             return ""
         lines = ["<skills>"]
         for row in rows:
-            definition = self.runtime_store.get_capability_definition(
-                f"skill.{row['name']}", row["version"]
+            definition = self.runtime_store.get_published_skill(
+                row["skill_id"], row["version"]
             )
             description = str((definition or {}).get("description") or row["name"])
             lines.extend(
                 (
                     '  <skill available="true">',
                     f"    <name>{self._escape_xml(row['name'])}</name>",
+                    f"    <version>{self._escape_xml(row['version'])}</version>",
                     f"    <description>{self._escape_xml(description)}</description>",
                     "  </skill>",
                 )
@@ -79,38 +80,20 @@ class SkillsLoader:
         return "\n".join(lines)
 
     def get_always_skills(self, allowed_names: set[str] | None = None) -> list[str]:
-        result = []
-        for row in self.list_skills(allowed_names=allowed_names):
-            definition = self.runtime_store.get_capability_definition(
-                f"skill.{row['name']}", row["version"]
-            )
-            if definition is not None and bool(self._configuration(definition).get("always")):
-                result.append(row["name"])
-        return result
+        """Activation belongs to an Agent revision binding, not the Skill asset."""
+        del allowed_names
+        return []
 
     def get_skill_metadata(self, name: str) -> dict[str, str] | None:
-        definition = self.runtime_store.get_capability_definition(f"skill.{name}")
+        definition = self.runtime_store.get_published_skill(f"skill.{name}")
         if definition is None:
             return None
-        metadata = {
+        return {
             "name": str(definition.get("name") or name),
             "description": str(definition.get("description") or name),
+            "version": str(definition.get("version") or ""),
+            "content_sha256": str(definition.get("content_sha256") or ""),
         }
-        configuration = self._configuration(definition)
-        if "always" in configuration:
-            metadata["always"] = str(bool(configuration["always"])).lower()
-        return metadata
-
-    def _runtime_settings(self, capability_id: str) -> dict[str, Any]:
-        getter = getattr(self.runtime_store, "get_capability_runtime_settings", None)
-        value = getter(capability_id) if callable(getter) else {}
-        return {"enabled": bool(value.get("enabled", True)), "configuration": dict(value.get("configuration") or {})}
-
-    def _configuration(self, definition: dict[str, Any]) -> dict[str, Any]:
-        capability_id = str(dict(definition.get("ref") or {}).get("capability_id") or "")
-        # Settings only overlay supplied keys. This preserves immutable
-        # instruction content until an operator intentionally replaces it.
-        return {**dict(definition.get("configuration") or {}), **self._runtime_settings(capability_id)["configuration"]}
 
     @staticmethod
     def _strip_frontmatter(content: str) -> str:

@@ -200,12 +200,16 @@ async function readError(response: Response, fallback: string): Promise<Error> {
   }
 }
 
+export type RuntimeExecution =
+  | { mode: 'agent'; agent_id: string }
+  | { mode: 'team'; team_id: string }
+  | { mode: 'scenario'; scenario_id: string; version: number; agent_id?: string; inputs?: Record<string, unknown> }
+  | { mode: 'workflow'; workflow_id: string; revision_id: string }
+
 export async function submitRuntimeRun(input: {
   prompt: string
   sessionId: string
-  agentId: string
-  scenarioId?: string
-  scenarioInputs?: Record<string, unknown>
+  execution: RuntimeExecution
   channel?: string
   chatId?: string
   idempotencyKey?: string
@@ -220,9 +224,7 @@ export async function submitRuntimeRun(input: {
     body: JSON.stringify({
       input: { type: 'message', content: input.prompt },
       session_id: input.sessionId,
-      agent_id: input.agentId,
-      scenario_id: input.scenarioId,
-      scenario_inputs: input.scenarioInputs,
+      execution: input.execution,
       metadata: { channel: input.channel ?? 'web', chat_id: input.chatId ?? input.sessionId },
     }),
   })

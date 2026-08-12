@@ -4,7 +4,7 @@ Report vulnerabilities through a private GitHub security advisory or directly to
 
 ## Production baseline
 
-- Configure `JOYHOUSEBOT_DATABASE_URL` with a dedicated PostgreSQL role and TLS as appropriate. Production never falls back to SQLite.
+- Configure the shared `JOYHOUSE_DATABASE_URL` with a least-privilege PostgreSQL role and TLS as appropriate. The first integrated release uses one database for JoyHouse services; module repositories still restrict table ownership. Production never falls back to SQLite.
 - Issue database-backed API tokens or configure an external OIDC adapter. Only token hashes are stored. Do not enable `gateway.allowInsecureAuth` in production.
 - Treat operator tokens separately from user tokens. Operator impersonation must be explicit and audited.
 - Inject model, channel, and MCP credentials through a secret manager or environment; never commit them to configuration files.

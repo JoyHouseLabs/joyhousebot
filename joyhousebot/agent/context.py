@@ -195,11 +195,11 @@ class ContextBuilder:
         if enabled_skill_names is not None:
             selected = [name for name in selected if name in enabled_skill_names]
         pinned_skill_versions = {
-            str(item.get("capability_id") or "").removeprefix("skill."): str(
+            str(item.get("skill_id") or item.get("capability_id") or "").removeprefix("skill."): str(
                 item.get("version") or ""
             )
             for item in (skill_refs or [])
-            if str(item.get("capability_id") or "").startswith("skill.")
+            if str(item.get("skill_id") or item.get("capability_id") or "").startswith("skill.")
             and str(item.get("version") or "")
         }
         available = {item["name"] for item in self.skills.list_skills(filter_unavailable=True)}

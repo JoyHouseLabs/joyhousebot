@@ -99,10 +99,11 @@
 
         <div v-else-if="editorTab === 'model'" class="agent-form">
           <section class="form-section">
-            <header><div><span>02</span><h3>模型策略</h3></div><p>Primary 模型、降级链和推理预算随版本冻结。</p></header>
+            <header><div><span>02</span><h3>模型策略</h3></div><p>Primary 模型、降级链和推理预算随版本冻结。<router-link to="/models">管理模型目录 →</router-link></p></header>
             <div class="form-grid">
-              <label class="wide"><span>Primary Model</span><input v-model.trim="draft.primary_model" required placeholder="provider/exact-model-id" /></label>
-              <label class="wide"><span>Fallback Models</span><input v-model.trim="draft.fallback_models" placeholder="每个模型用逗号分隔" /></label>
+              <label class="wide"><span>Primary Model</span><input v-model.trim="draft.primary_model" required list="active-model-catalog" placeholder="provider/exact-model-id" /></label>
+              <datalist id="active-model-catalog"><option v-for="model in activeModels" :key="model.model_id" :value="model.model_id">{{ model.name }}</option></datalist>
+              <label class="wide"><span>Fallback Models</span><input v-model.trim="draft.fallback_models" list="active-model-catalog" placeholder="每个模型用逗号分隔" /></label>
               <label><span>Temperature</span><input v-model.number="draft.temperature" type="number" min="0" max="2" step="0.1" /></label>
               <label><span>Max Tokens</span><input v-model.number="draft.max_tokens" type="number" min="1" /></label>
               <label><span>工具迭代上限</span><input v-model.number="draft.max_tool_iterations" type="number" min="1" /></label>
@@ -117,26 +118,54 @@
 
         <div v-else-if="editorTab === 'abilities'" class="abilities-pane">
           <section class="form-section ability-section">
-            <header><div><span>03</span><h3>工具与能力</h3></div><p>选择此 Agent 可调用的 Tool、Connector、Workflow 或子 Agent。</p></header>
+            <header><div><span>03</span><h3>工具与能力</h3></div><p>Agent 只能调用本版本冻结且当前可运行的能力；外部、计费与受限能力必须显式授权。</p></header>
+            <div class="ability-toolbar">
+              <label><span>能力模式</span><select v-model="draft.capability_mode"><option value="allowlist">严格白名单（推荐）</option><option value="catalog">安全目录 + 显式授权</option></select></label>
+              <input v-model.trim="capabilitySearch" type="search" placeholder="筛选能力名称、ID 或说明" />
+            </div>
             <div v-if="draft.capability_mode === 'catalog'" class="catalog-summary">
-              <div><strong>使用整个已发布目录 · {{ effectiveCapabilityCount }} 项</strong><p>此 Agent 会随发布目录获得可用能力；无需逐项勾选。需要强边界时再切换为白名单。</p></div>
+              <div><strong>自动纳入 {{ safeCatalogCapabilities.length }} 项普通能力</strong><p>目录模式只会自动纳入无外部副作用、非计费且非受限的能力。下面的高风险能力即使已发布，也只有勾选后才会进入 Agent 版本。</p></div>
               <button class="secondary-button" type="button" @click="draft.capability_mode = 'allowlist'">改为白名单</button>
               <div class="catalog-groups"><span v-for="group in catalogGroups" :key="group.name"><b>{{ group.count }}</b>{{ group.name }}</span></div>
             </div>
-            <template v-else>
-            <div class="ability-toolbar">
-              <label><span>能力模式</span><select v-model="draft.capability_mode"><option value="catalog">整个已发布目录</option><option value="allowlist">仅允许已选择能力</option></select></label>
-              <input v-model.trim="capabilitySearch" type="search" placeholder="筛选能力" />
+            <div v-if="draft.capability_mode === 'catalog' && protectedCapabilities.length" class="explicit-grant-heading">
+              <div><strong>需要显式授权 · {{ protectedCapabilities.length }} 项</strong><small>选择代表你确认该 Agent 可以调用外部或可能产生费用的服务。</small></div>
+              <span>{{ selectedProtectedCapabilities.length }} 项已授权</span>
             </div>
             <div class="capability-grid">
-              <label v-for="item in filteredExecutableCapabilities" :key="item.ref.capability_id" class="capability-card" :class="{ selected: draft.allowed_capabilities.includes(item.ref.capability_id) }">
+              <label
+                v-for="item in filteredPolicyCapabilities"
+                :key="item.ref.capability_id"
+                class="capability-card"
+                :class="{ selected: draft.allowed_capabilities.includes(item.ref.capability_id), blocked: !item.execution_ready, protected: item.requires_explicit_grant }"
+              >
                 <input v-model="draft.allowed_capabilities" type="checkbox" :value="item.ref.capability_id" />
                 <span class="capability-icon">{{ kindIcon(item.ref.kind) }}</span>
-                <span><strong>{{ item.name }}</strong><small>{{ item.ref.capability_id }} · {{ item.ref.version }}</small><em>{{ kindLabel(item.ref.kind) }}</em></span>
+                <span class="capability-card-copy">
+                  <span class="capability-name"><strong>{{ item.name }}</strong><em>{{ kindLabel(item.ref.kind) }}</em></span>
+                  <small>{{ item.ref.capability_id }} · {{ item.ref.version }}</small>
+                  <span class="capability-states">
+                    <b :class="item.execution_ready ? 'ready' : 'blocked'">{{ item.execution_ready ? '可运行' : '未就绪' }}</b>
+                    <b v-if="item.requires_explicit_grant" class="explicit">显式授权</b>
+                  </span>
+                  <span v-if="item.execution_blockers.length" class="capability-blockers">{{ item.execution_blockers.join('；') }}</span>
+                </span>
               </label>
-              <div v-if="!filteredExecutableCapabilities.length" class="empty-state compact"><span>＋</span><strong>目录中暂无可执行能力</strong></div>
+              <div v-if="!filteredPolicyCapabilities.length" class="empty-state compact"><span>＋</span><strong>{{ draft.capability_mode === 'catalog' ? '没有需要显式授权的能力' : '目录中暂无匹配的可执行能力' }}</strong></div>
             </div>
-            </template>
+            <div v-if="selectedBlockedCapabilities.length" class="ability-warning">
+              <strong>当前版本包含 {{ selectedBlockedCapabilities.length }} 项未就绪能力</strong>
+              <span>可保存 Draft，但发布前应在扩展中心完成启用、Worker 加载或凭据配置。</span>
+            </div>
+            <div v-if="permissionEntries.length" class="permission-grants">
+              <header><div><strong>执行权限</strong><small>选择能力不会绕过权限边界；权限也会随 Agent Revision 与 Run 冻结。</small></div><span :class="missingCapabilityPermissions.length ? 'missing' : 'complete'">{{ missingCapabilityPermissions.length ? `${missingCapabilityPermissions.length} 项待授权` : '权限完整' }}</span></header>
+              <div>
+                <label v-for="entry in permissionEntries" :key="entry.permission" :class="{ unused: !entry.required }">
+                  <input v-model="draft.granted_permissions" type="checkbox" :value="entry.permission" />
+                  <span><code>{{ entry.permission }}</code><small>{{ entry.required ? `用于：${entry.capabilities.join('、')}` : '当前未被所选能力使用，可撤销' }}</small></span>
+                </label>
+              </div>
+            </div>
           </section>
         </div>
 
@@ -263,7 +292,7 @@
           <section class="form-section">
             <header><div><span>07</span><h3>Skill 绑定</h3></div><p v-if="draftSaved">Skill 绑定到已保存 Draft，发布后随 Agent 版本冻结。</p><p v-else-if="skillBindingsSourceRevision">当前展示 {{ skillBindingsSourceRevision }} 的冻结绑定；保存新的 Draft 后才能修改，已有绑定会自动继承。</p><p v-else>Skill 必须绑定到已保存的 Draft，发布后随 Agent 版本冻结。</p></header>
             <form class="skill-bind-form" @submit.prevent="addSkillBinding">
-              <label><span>Skill</span><select v-model="skillDraft.skill_id" required><option value="" disabled>选择已发布 Skill</option><option v-for="skill in skillCapabilities" :key="skill.ref.capability_id" :value="skill.ref.capability_id">{{ skill.name }} · {{ skill.ref.version }}</option></select></label>
+              <label><span>Skill</span><select v-model="skillDraft.skill_id" required><option value="" disabled>选择已发布 Skill</option><option v-for="skill in skillCapabilities" :key="skill.skill_id" :value="skill.skill_id">{{ skill.name }} · {{ skill.current?.version }}</option></select></label>
               <label><span>激活方式</span><select v-model="skillDraft.activation_mode"><option value="coordinator_selected">协调器选择</option><option value="always">始终启用</option><option value="scenario_required">场景要求</option></select></label>
               <label><span>优先级</span><input v-model.number="skillDraft.priority" type="number" min="0" max="10000" /></label>
               <button class="primary-button" type="submit" :disabled="!draftSaved || !skillDraft.skill_id">绑定 Skill</button>
@@ -271,8 +300,9 @@
             <div class="binding-list">
               <article v-for="binding in skillBindings" :key="`${binding.skill_id}:${binding.skill_version}`">
                 <span class="capability-icon">S</span>
-                <div><strong>{{ skillName(binding.skill_id) }}</strong><small>{{ binding.skill_id }} · {{ binding.skill_version }}</small></div>
+                <div><strong>{{ skillName(binding.skill_id) }}</strong><small>{{ binding.skill_id }} · {{ binding.skill_version }} · {{ shortDigest(binding.content_sha256) }}</small></div>
                 <span>{{ activationLabel(binding.activation_mode) }}</span><code>P{{ binding.priority }}</code>
+                <button v-if="draftSaved" class="text-button danger" type="button" @click="removeSkillBinding(binding)">移除</button>
               </article>
               <div v-if="!skillBindings.length" class="empty-state compact"><span>◇</span><strong>{{ draftSaved ? '此 Draft 尚未绑定 Skill' : '当前发布版本未绑定 Skill' }}</strong><p>目录中有 {{ skillCapabilities.length }} 个可选 Skill；先保存 Draft，再添加需要的 Skill。</p></div>
             </div>
@@ -288,7 +318,7 @@
                 <span class="revision-node" />
                 <div><strong>v{{ revision.version }} · {{ revision.revision_id }}</strong><small>{{ revision.model_policy.primary || '未配置模型' }} · {{ formatDate(revision.published_at || revision.created_at) }}</small></div>
                 <span class="status-badge" :class="revisionClass(revision.status)">{{ revision.status }}</span>
-                <button v-if="revision.status === 'draft'" class="primary-button" type="button" @click="publish(revision)">发布</button>
+                <button v-if="revision.status === 'draft'" class="primary-button" type="button" :disabled="releaseBlocked" :title="releaseBlocked ? '存在未就绪能力或缺少执行权限，请先完成配置' : ''" @click="publish(revision)">发布</button>
                 <span v-else-if="currentAgent?.current_revision_id === revision.revision_id" class="current-label">CURRENT</span>
               </article>
               <div v-if="!revisions.length" class="empty-state compact"><span>◷</span><strong>保存后生成第一个版本</strong></div>
@@ -311,11 +341,13 @@ import {
   getAgentSkillBindings,
   publishAgentRevision,
   saveAgentRevision,
+  unbindAgentSkill,
   type AdminAgent,
   type AdminCapability,
   type AgentRevision,
   type AgentSkillBinding,
 } from '../api/admin'
+import { listSkills, type SkillSummary } from '../api/skills'
 import {
   getMemoryCandidates,
   getMemoryDocument,
@@ -326,6 +358,7 @@ import {
   type MemoryDocumentSummary,
   type MemoryLayer,
 } from '../api/memory'
+import { listActiveModels, type ModelCatalogItem } from '../api/modelProviders'
 
 type EditorTab = 'profile' | 'model' | 'abilities' | 'planning' | 'monitor' | 'memory' | 'memoryData' | 'skills' | 'revisions'
 type AgentRole = AdminAgent['role']
@@ -344,6 +377,8 @@ const error = ref('')
 const unitTest = ref<{ ok: boolean; checks: string[] } | null>(null)
 const agents = ref<AdminAgent[]>([])
 const capabilities = ref<AdminCapability[]>([])
+const skills = ref<SkillSummary[]>([])
+const activeModels = ref<ModelCatalogItem[]>([])
 const revisions = ref<AgentRevision[]>([])
 const skillBindings = ref<AgentSkillBinding[]>([])
 const skillBindingsSourceRevision = ref('')
@@ -375,8 +410,8 @@ const blankDraft = () => ({
   tone: 'helpful', language: 'follow-user', instructions: '',
   primary_model: '', fallback_models: '', temperature: 0.3, max_tokens: 4096,
   max_tool_iterations: 20, reasoning_effort: 'none', thinking_budget_tokens: 0,
-  capture_reasoning: false, cache_enabled: true, cache_ttl_seconds: 300, capability_mode: 'catalog',
-  allowed_capabilities: [] as string[], allow_subagents: true, max_steps: 32,
+  capture_reasoning: false, cache_enabled: true, cache_ttl_seconds: 300, capability_mode: 'allowlist',
+  allowed_capabilities: [] as string[], granted_permissions: [] as string[], allow_subagents: true, max_steps: 32,
   max_replans: 2,
   max_fan_out: 10, tool_execution_mode: 'sequential', max_parallel_calls: 4, memory_enabled: false, memory_mode: 'task_only', memory_scope: 'user_agent',
   memory_episodic: false, memory_profile: false, memory_long_term: false, memory_agent: false,
@@ -400,13 +435,35 @@ const releasePolicy = reactive({ activation_mode: 'automatic' as 'automatic' | '
 const currentAgent = computed(() => agents.value.find((item) => item.agent_id === selectedAgentId.value))
 const activeRevision = computed(() => revisions.value.find((item) => item.revision_id === draft.revision_id))
 const filteredAgents = computed(() => { const term = search.value.toLowerCase(); return agents.value.filter((item) => !term || `${item.name} ${item.agent_id} ${item.description}`.toLowerCase().includes(term)) })
-const skillCapabilities = computed(() => capabilities.value.filter((item) => item.ref.kind === 'skill'))
-const executableCapabilities = computed(() => capabilities.value.filter((item) => item.ref.kind !== 'skill'))
-const effectiveCapabilityCount = computed(() => draft.capability_mode === 'catalog' ? executableCapabilities.value.length : draft.allowed_capabilities.length)
-const filteredExecutableCapabilities = computed(() => { const term = capabilitySearch.value.toLowerCase(); return executableCapabilities.value.filter((item) => !term || `${item.name} ${item.ref.capability_id} ${item.description}`.toLowerCase().includes(term)) })
+const skillCapabilities = computed(() => skills.value.filter((item) => item.status === 'active' && item.current))
+const executableCapabilities = computed(() => capabilities.value)
+const safeCatalogCapabilities = computed(() => executableCapabilities.value.filter((item) => !item.requires_explicit_grant))
+const protectedCapabilities = computed(() => executableCapabilities.value.filter((item) => item.requires_explicit_grant))
+const selectedProtectedCapabilities = computed(() => protectedCapabilities.value.filter((item) => draft.allowed_capabilities.includes(item.ref.capability_id)))
+const effectiveCapabilities = computed(() => draft.capability_mode === 'catalog'
+  ? [...safeCatalogCapabilities.value, ...selectedProtectedCapabilities.value]
+  : executableCapabilities.value.filter((item) => draft.allowed_capabilities.includes(item.ref.capability_id)))
+const effectiveCapabilityCount = computed(() => effectiveCapabilities.value.length)
+const filteredPolicyCapabilities = computed(() => {
+  const term = capabilitySearch.value.toLowerCase()
+  const source = draft.capability_mode === 'catalog' ? protectedCapabilities.value : executableCapabilities.value
+  return source.filter((item) => !term || `${item.name} ${item.ref.capability_id} ${item.description}`.toLowerCase().includes(term))
+})
+const selectedBlockedCapabilities = computed(() => effectiveCapabilities.value.filter((item) => !item.execution_ready))
+const requiredPermissionIds = computed(() => [...new Set(effectiveCapabilities.value.flatMap((item) => item.permissions || []))].sort())
+function permissionGranted(permission: string) {
+  return draft.granted_permissions.some((grant) => grant === '*' || grant === permission || (grant.endsWith('.*') && permission.startsWith(grant.slice(0, -1))))
+}
+const missingCapabilityPermissions = computed(() => requiredPermissionIds.value.filter((permission) => !permissionGranted(permission)))
+const permissionEntries = computed(() => [...new Set([...requiredPermissionIds.value, ...draft.granted_permissions])].sort().map((permission) => ({
+  permission,
+  required: requiredPermissionIds.value.includes(permission),
+  capabilities: effectiveCapabilities.value.filter((item) => (item.permissions || []).includes(permission)).map((item) => item.name),
+})))
+const releaseBlocked = computed(() => selectedBlockedCapabilities.value.length > 0 || missingCapabilityPermissions.value.length > 0)
 const catalogGroups = computed(() => {
   const values = new Map<string, number>()
-  for (const item of executableCapabilities.value) {
+  for (const item of safeCatalogCapabilities.value) {
     const name = kindLabel(item.ref.kind)
     values.set(name, (values.get(name) || 0) + 1)
   }
@@ -434,6 +491,14 @@ function runUnitTest() {
   if (!draft.instructions.trim()) { checks.push('Instructions 为空'); ok = false } else checks.push('Instructions 已配置')
   const unknown = draft.allowed_capabilities.filter((id) => !executableCapabilities.value.some((item) => item.ref.capability_id === id))
   if (unknown.length) { checks.push(`存在未发布能力：${unknown.join(', ')}`); ok = false } else checks.push('能力引用均来自已发布目录')
+  if (selectedBlockedCapabilities.value.length) {
+    checks.push(`存在未就绪能力：${selectedBlockedCapabilities.value.map((item) => item.ref.capability_id).join(', ')}`)
+    ok = false
+  } else checks.push('当前有效能力均已启用并由 Worker 加载')
+  if (missingCapabilityPermissions.value.length) {
+    checks.push(`缺少执行权限：${missingCapabilityPermissions.value.join(', ')}`)
+    ok = false
+  } else checks.push('能力声明的执行权限均已显式授予')
   unitTest.value = { ok, checks }
 }
 function splitList(value: string) { return value.split(',').map((item) => item.trim()).filter(Boolean) }
@@ -462,6 +527,7 @@ function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | unde
     thinking_budget_tokens: numberValue(model.thinking_budget_tokens, 0), capture_reasoning: boolValue(model.capture_reasoning, false),
     cache_enabled: boolValue(model.cache_enabled, true), cache_ttl_seconds: numberValue(model.cache_ttl_seconds, 300), capability_mode: String(ability.mode || 'catalog'),
     allowed_capabilities: Array.isArray(ability.allowed) ? ability.allowed.map(String) : [],
+    granted_permissions: Array.isArray(ability.permissions) ? ability.permissions.map(String) : [],
     allow_subagents: boolValue(planning.allow_subagents, true), max_steps: numberValue(planning.max_steps, 32),
     max_replans: numberValue(planning.max_replans, 2),
     max_fan_out: numberValue(planning.max_fan_out, 10),
@@ -495,8 +561,8 @@ function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | unde
 async function loadCatalog() {
   loading.value = true; error.value = ''
   try {
-    const [agentItems, capabilityItems] = await Promise.all([getAdminAgents(), getAdminCapabilities()])
-    agents.value = agentItems; capabilities.value = capabilityItems
+    const [agentItems, capabilityItems, skillItems, modelItems] = await Promise.all([getAdminAgents(), getAdminCapabilities(), listSkills(), listActiveModels().catch(() => [])])
+    agents.value = agentItems; capabilities.value = capabilityItems; skills.value = skillItems; activeModels.value = modelItems
     if (!selectedAgentId.value && agentItems.length) await selectAgent(agentItems[0].agent_id)
     else if (selectedAgentId.value) await selectAgent(selectedAgentId.value)
   } catch (value) { error.value = errorText(value) } finally { loading.value = false }
@@ -543,7 +609,7 @@ function payload() {
       },
     },
     planning_policy: { ...policyBase.planning, allow_subagents: draft.allow_subagents, max_steps: draft.max_steps, max_fan_out: draft.max_fan_out, max_replans: Math.max(0, Math.min(10, Number(draft.max_replans) || 0)) },
-    capability_policy: { ...policyBase.capability, mode: draft.capability_mode, allowed: draft.allowed_capabilities },
+    capability_policy: { ...policyBase.capability, mode: draft.capability_mode, allowed: draft.allowed_capabilities, permissions: draft.granted_permissions },
     memory_policy: {
       ...policyBase.memory,
       enabled: draft.memory_enabled,
@@ -601,15 +667,24 @@ async function saveDraft() {
 }
 
 async function addSkillBinding() {
-  const skill = skillCapabilities.value.find((item) => item.ref.capability_id === skillDraft.skill_id)
+  const skill = skillCapabilities.value.find((item) => item.skill_id === skillDraft.skill_id)
   if (!skill || !draftSaved.value) return
   try {
     await bindAgentSkill(draft.agent_id, draft.revision_id, {
-      skill_id: skill.ref.capability_id, skill_version: skill.ref.version,
+      skill_id: skill.skill_id, skill_version: String(skill.current?.version || ''),
       activation_mode: skillDraft.activation_mode, priority: skillDraft.priority, configuration: {},
     })
     skillBindings.value = await getAgentSkillBindings(draft.agent_id, draft.revision_id)
     skillDraft.skill_id = ''; message.success('Skill 已绑定到当前 Draft')
+  } catch (value) { message.error(errorText(value)) }
+}
+
+async function removeSkillBinding(binding: AgentSkillBinding) {
+  if (!draftSaved.value) return
+  try {
+    await unbindAgentSkill(draft.agent_id, draft.revision_id, binding.skill_id, binding.skill_version)
+    skillBindings.value = await getAgentSkillBindings(draft.agent_id, draft.revision_id)
+    message.success('Skill 绑定已移除')
   } catch (value) { message.error(errorText(value)) }
 }
 
@@ -674,7 +749,8 @@ function revisionClass(value: AgentRevision['status']) { return value === 'publi
 function kindIcon(value: string) { return ({ tool: 'T', connector: 'C', workflow: 'W', agent: 'A' } as Record<string, string>)[value] || '◇' }
 function kindLabel(value: string) { return ({ tool: '工具', connector: '连接器', workflow: '工作流', agent: '子 Agent' } as Record<string, string>)[value] || value }
 function activationLabel(value: AgentSkillBinding['activation_mode']) { return ({ always: '始终启用', coordinator_selected: '协调器选择', scenario_required: '场景要求' } as const)[value] }
-function skillName(id: string) { return skillCapabilities.value.find((item) => item.ref.capability_id === id)?.name || id }
+function skillName(id: string) { return skillCapabilities.value.find((item) => item.skill_id === id)?.name || id }
+function shortDigest(value: string) { return value ? `${value.slice(0, 14)}…${value.slice(-6)}` : 'no-digest' }
 function formatDate(value?: string | null) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
 function formatTimestamp(value?: number | null) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
 function formatBytes(value: number) { return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB` }
@@ -697,8 +773,8 @@ watch(editorTab, (tab) => { if (tab === 'memoryData') void loadMemoryData() })
 .editor-tabs { display: flex; overflow-x: auto; padding: 0 18px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.editor-tabs button { display: flex; align-items: center; gap: 6px; padding: 13px 12px 11px; color: var(--text-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; }.editor-tabs button.active { color: var(--text-strong); border-bottom-color: var(--accent); }.editor-tabs small { min-width: 17px; padding: 1px 4px; color: var(--accent); background: var(--accent-subtle); border-radius: 99px; font: 9px var(--font-mono); }
 .agent-form,.skills-pane,.revision-pane { padding: 22px; }.form-section { border: 1px solid var(--border); border-radius: 13px; overflow: hidden; }.form-section>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px 18px; background: var(--surface-raised); border-bottom: 1px solid var(--border); }.form-section>header>div { display: flex; align-items: center; gap: 9px; }.form-section>header span { color: var(--accent); font: 600 9px var(--font-mono); }.form-section h3 { margin: 0; color: var(--text-strong); font-size: 14px; }.form-section>header p { margin: 0; color: var(--text-muted); font-size: 10px; text-align: right; }
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; padding: 18px; }.form-grid label,.skill-bind-form label,.ability-toolbar label { display: grid; gap: 6px; color: var(--text-muted); font-size: 10px; }.form-grid label.wide { grid-column: 1/-1; }.form-grid input,.form-grid select,.form-grid textarea,.skill-bind-form input,.skill-bind-form select,.ability-toolbar select { width: 100%; padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border-strong); border-radius: 9px; outline: none; }.form-grid textarea { resize: vertical; line-height: 1.65; }.form-grid input:focus,.form-grid select:focus,.form-grid textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-subtle); }.switch-label { display: flex !important; flex-direction: row !important; align-items: center; gap: 10px !important; min-height: 54px; padding: 9px 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; }.switch-label input { width: auto; }.switch-label span { display: grid; gap: 2px; }.switch-label strong { color: var(--text); font-size: 11px; }.switch-label small { color: var(--text-muted); }
-.abilities-pane { padding: 22px; }.catalog-summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; padding:20px; }.catalog-summary strong{color:var(--text-strong);font-size:14px}.catalog-summary p{margin:6px 0 0;color:var(--text-muted);font-size:11px;line-height:1.6}.catalog-groups{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.catalog-groups span{display:flex;gap:6px;align-items:center;padding:7px 10px;color:var(--text-muted);background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;font-size:10px}.catalog-groups b{color:var(--accent);font:600 11px var(--font-mono)}.ability-toolbar { display: grid; grid-template-columns: minmax(190px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.capability-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: center; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card>span:last-child { min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; }.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { grid-column: 1/-1; color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }
-.skill-bind-form { display: grid; grid-template-columns: 1.3fr 1fr 110px auto; gap: 12px; align-items: end; padding: 18px; border-bottom: 1px solid var(--border); }.binding-list article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto auto; gap: 11px; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--border); }.binding-list article:last-child { border-bottom: 0; }.binding-list article>div { min-width: 0; display: grid; gap: 2px; }.binding-list strong { color: var(--text-strong); font-size: 11px; }.binding-list small,.binding-list article>span:nth-last-child(2),.binding-list code { color: var(--text-muted); font-size: 9px; }
+.abilities-pane { padding: 22px; }.catalog-summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; padding:18px 20px;border-bottom:1px solid var(--border) }.catalog-summary strong{color:var(--text-strong);font-size:14px}.catalog-summary p{margin:6px 0 0;color:var(--text-muted);font-size:11px;line-height:1.6}.catalog-groups{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.catalog-groups span{display:flex;gap:6px;align-items:center;padding:7px 10px;color:var(--text-muted);background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;font-size:10px}.catalog-groups b{color:var(--accent);font:600 11px var(--font-mono)}.ability-toolbar { display: grid; grid-template-columns: minmax(220px,.7fr) 1fr; gap: 12px; align-items: end; padding: 15px 18px; border-bottom: 1px solid var(--border); }.explicit-grant-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 18px 0}.explicit-grant-heading>div{display:grid;gap:3px}.explicit-grant-heading strong{color:var(--text-strong);font-size:11px}.explicit-grant-heading small{color:var(--text-muted);font-size:9px}.explicit-grant-heading>span{padding:4px 7px;color:var(--accent);background:var(--accent-subtle);border-radius:6px;font-size:9px}.capability-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; padding: 15px 18px 18px; }.capability-card { display: grid; grid-template-columns: auto 32px minmax(0,1fr); gap: 9px; align-items: start; padding: 11px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }.capability-card.selected { background: var(--accent-subtle); border-color: var(--accent-border); }.capability-card.blocked{border-color:color-mix(in srgb,var(--warning) 35%,var(--border))}.capability-card-copy{min-width:0;display:grid;gap:4px}.capability-name{display:flex;align-items:center;justify-content:space-between;gap:6px}.capability-card strong,.capability-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.capability-card strong { color: var(--text-strong); font-size: 11px; }.capability-card small { color: var(--text-muted); font: 8px var(--font-mono); }.capability-card em { color: var(--accent); font-size: 8px; font-style: normal; }.capability-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--accent); background: var(--accent-subtle); border-radius: 8px; font-weight: 700; }.capability-states{display:flex;gap:5px;flex-wrap:wrap}.capability-states b{padding:2px 5px;border-radius:4px;font-size:8px;font-weight:500}.capability-states .ready{color:var(--success);background:color-mix(in srgb,var(--success) 12%,transparent)}.capability-states .blocked{color:var(--warning);background:color-mix(in srgb,var(--warning) 12%,transparent)}.capability-states .explicit{color:var(--accent);background:var(--accent-subtle)}.capability-blockers{color:var(--warning);font-size:8px;line-height:1.45}.ability-warning{display:grid;gap:4px;margin:0 18px 18px;padding:11px 13px;color:var(--warning);background:color-mix(in srgb,var(--warning) 8%,transparent);border:1px solid color-mix(in srgb,var(--warning) 25%,var(--border));border-radius:9px}.ability-warning strong{font-size:10px}.ability-warning span{font-size:9px;line-height:1.5}.permission-grants{margin:0 18px 18px;overflow:hidden;border:1px solid var(--border);border-radius:10px}.permission-grants>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;background:var(--surface-raised);border-bottom:1px solid var(--border)}.permission-grants>header>div{display:grid;gap:3px}.permission-grants>header strong{color:var(--text-strong);font-size:10px}.permission-grants>header small{color:var(--text-muted);font-size:9px}.permission-grants>header>span{padding:3px 6px;border-radius:5px;font-size:8px}.permission-grants .complete{color:var(--success);background:color-mix(in srgb,var(--success) 12%,transparent)}.permission-grants .missing{color:var(--warning);background:color-mix(in srgb,var(--warning) 12%,transparent)}.permission-grants>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px;padding:5px 13px}.permission-grants label{display:flex;align-items:flex-start;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)}.permission-grants label.unused{opacity:.65}.permission-grants label>span{display:grid;gap:2px}.permission-grants code{color:var(--text-strong);font-size:9px}.permission-grants label small{color:var(--text-muted);font-size:8px;line-height:1.45}
+.skill-bind-form { display: grid; grid-template-columns: 1.3fr 1fr 110px auto; gap: 12px; align-items: end; padding: 18px; border-bottom: 1px solid var(--border); }.binding-list article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto auto auto; gap: 11px; align-items: center; padding: 13px 18px; border-bottom: 1px solid var(--border); }.binding-list article:last-child { border-bottom: 0; }.binding-list article>div { min-width: 0; display: grid; gap: 2px; }.binding-list strong { color: var(--text-strong); font-size: 11px; }.binding-list small,.binding-list article>span:nth-last-child(3),.binding-list code { color: var(--text-muted); font-size: 9px; }.text-button.danger{color:var(--danger)}
 .revision-list { padding: 4px 18px 18px; }.revision-list article { position: relative; display: grid; grid-template-columns: 12px minmax(0,1fr) auto auto; gap: 12px; align-items: center; min-height: 66px; padding: 11px 0; border-bottom: 1px solid var(--border); }.revision-list article.current { background: linear-gradient(90deg,var(--accent-subtle),transparent); }.revision-node { width: 9px; height: 9px; border: 2px solid var(--accent); border-radius: 50%; }.revision-list article>div { min-width: 0; display: grid; gap: 3px; }.revision-list strong { color: var(--text-strong); font-size: 11px; }.revision-list small { color: var(--text-muted); font: 9px var(--font-mono); }.current-label { color: var(--accent); font: 600 8px var(--font-mono); }
 .release-policy-row { display:grid;grid-template-columns:minmax(220px,1fr) 150px auto auto;gap:12px;align-items:end;padding:15px 18px;border-bottom:1px solid var(--border) }.release-policy-row label { display:grid;gap:6px;color:var(--text-muted);font-size:10px }.release-policy-row input,.release-policy-row select { width:100%;padding:9px 10px;color:var(--text);background:var(--input);border:1px solid var(--border-strong);border-radius:9px }.release-policy-row .release-check { display:flex;align-items:center;gap:7px;padding-bottom:10px;white-space:nowrap }.release-policy-row .release-check input { width:auto }
 .role-guide { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: -2px; }
@@ -713,5 +789,5 @@ watch(editorTab, (tab) => { if (tab === 'memoryData') void loadMemoryData() })
 .memory-candidate-list { display: grid; gap: 10px; padding: 16px 18px 18px; }.memory-candidate-list article { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }.memory-candidate-list article>header,.memory-candidate-list article>footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: var(--surface-raised); }.memory-candidate-list article>header>div { display: flex; align-items: center; gap: 8px; }.memory-candidate-list article>header strong { color: var(--text-strong); font: 600 10px var(--font-mono); }.memory-candidate-list pre { max-height: 240px; padding: 13px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.memory-candidate-list article>footer { color: var(--text-muted); font-size: 8px; }.memory-candidate-list article>footer code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1120px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 280px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.memory-browser { grid-template-columns: minmax(230px,.75fr) minmax(0,1.25fr); } }
 @media (max-width: 900px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 300px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.skill-bind-form { grid-template-columns: 1fr 1fr; }.memory-summary-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }.memory-browser { grid-template-columns: 1fr; }.memory-document-list { max-height: 300px; border-right: 0; border-bottom: 1px solid var(--border); } }
-@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide,.memory-summary-grid { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane,.memory-data-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; }.memory-data-toolbar { align-items: stretch; flex-direction: column; }.memory-candidate-list article>footer { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide,.memory-summary-grid,.permission-grants>div { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane,.memory-data-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; }.memory-data-toolbar { align-items: stretch; flex-direction: column; }.memory-candidate-list article>footer { align-items: flex-start; flex-direction: column; } }
 </style>

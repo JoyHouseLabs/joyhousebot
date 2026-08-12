@@ -7,7 +7,7 @@
     "scratchRoot": "/var/lib/joyhousebot/runtime-scratch",
     "bootstrapModel": "",
     "store": {
-      "databaseUrl": "env://JOYHOUSEBOT_DATABASE_URL",
+      "databaseUrl": "env://JOYHOUSE_DATABASE_URL",
       "poolMinSize": 1,
       "poolMaxSize": 20,
       "autoMigrate": false,
@@ -23,7 +23,10 @@
     "optionalAllowlist": []
   },
   "extensions": {
-    "enabled": ["provider-openai-compatible"],
+    "catalogDirectories": ["/opt/joyhousebot/extensions"],
+    "allowedIds": ["provider-openai-compatible"],
+    "initiallyActive": ["provider-openai-compatible"],
+    "allowConsoleActivation": true,
     "discoverEntryPoints": true,
     "settings": {}
   }

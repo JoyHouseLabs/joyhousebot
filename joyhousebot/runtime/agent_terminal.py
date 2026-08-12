@@ -91,32 +91,17 @@ class AgentTerminalMixin:
                 data=result,
             )
         )
-        bundle = await asyncio.to_thread(
-            self.store.finish_runtime_run_bundle,
-            run_id,
-            status=status.value,
-            event=event,
-            result=result,
-            error=error,
-            artifacts=artifacts,
-            events_before_terminal=artifact_events,
-            worker_id=worker_id,
-            lease_version=lease_version,
-        )
-        persisted = bundle[1] if bundle is not None else None
-        if bundle is not None:
-            for artifact_event in bundle[0]:
-                await self.events.fanout(artifact_event)
-            await self.events.fanout(persisted)
-            record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
-            if record is not None and record.parent_run_id:
-                child_event_type = (
-                    EventType.SUBAGENT_COMPLETED
-                    if status == RunStatus.COMPLETED
-                    else EventType.SUBAGENT_FAILED
-                )
-                content = str((result or {}).get("content") or "")
-                await self.events.publish(
+        record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        parent_events: list[AgentEvent] = []
+        if record is not None and record.parent_run_id:
+            child_event_type = (
+                EventType.SUBAGENT_COMPLETED
+                if status == RunStatus.COMPLETED
+                else EventType.SUBAGENT_FAILED
+            )
+            content = str((result or {}).get("content") or "")
+            parent_events.append(
+                await self.events.prepare(
                     AgentEvent(
                         run_id=record.parent_run_id,
                         task_id=record.parent_task_id,
@@ -131,6 +116,24 @@ class AgentTerminalMixin:
                         },
                     )
                 )
+            )
+        bundle = await asyncio.to_thread(
+            self.store.finish_runtime_run_bundle,
+            run_id,
+            status=status.value,
+            event=event,
+            result=result,
+            error=error,
+            artifacts=artifacts,
+            events_before_terminal=[*artifact_events, *parent_events],
+            worker_id=worker_id,
+            lease_version=lease_version,
+        )
+        persisted = bundle[1] if bundle is not None else None
+        if bundle is not None:
+            for prior_event in bundle[0]:
+                await self.events.fanout(prior_event)
+            await self.events.fanout(persisted)
         return persisted
 
     async def _ensure_run_owned(

@@ -114,6 +114,59 @@ class _RepairProvider(LLMProvider):
         return LLMResponse(content=content, finish_reason="stop")
 
 
+class _FrozenWorkReadTool(Tool):
+    name = "graph_frozen_work_read"
+    description = "Read a frozen Work version"
+    parameters = {
+        "type": "object",
+        "properties": {"work_ref": {"type": "string"}},
+        "required": ["work_ref"],
+    }
+
+    async def execute(self, work_ref: str, **_kwargs: Any) -> ToolOutput:
+        return ToolOutput(
+            content="frozen Work loaded",
+            data={
+                "output": {
+                    "work_ref": work_ref,
+                    "content": "# Versioned publication body",
+                }
+            },
+        )
+
+
+class _CapturePublicationTool(Tool):
+    name = "graph_capture_publication"
+    description = "Capture a rendered publication body"
+    parameters = {
+        "type": "object",
+        "properties": {"body": {"type": "string"}},
+        "required": ["body"],
+    }
+
+    def __init__(self) -> None:
+        self.bodies: list[str] = []
+
+    async def execute(self, body: str, **_kwargs: Any) -> str:
+        self.bodies.append(body)
+        return "published"
+
+
+class _ChainedCapabilityAgent:
+    def __init__(
+        self,
+        store: PostgresTestStore,
+        read: _FrozenWorkReadTool,
+        publish: _CapturePublicationTool,
+    ) -> None:
+        self.capabilities = CapabilityRegistry(store=store)
+        self.read_definition = register_tool_fixture(self.capabilities, read)
+        self.publish_definition = register_tool_fixture(self.capabilities, publish)
+
+    async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("direct Graph Capability Task must not call a model")
+
+
 def _approval_definition() -> CapabilityDefinition:
     return CapabilityDefinition(
         ref=CapabilityRef(
@@ -194,6 +247,52 @@ def test_graph_task_lease_takeover_recovers_same_durable_attempt(
     assert recovered.task_id == first.task_id
     assert recovered.attempt == first.attempt
     assert recovered.lease_version == first.lease_version + 1
+
+
+@pytest.mark.asyncio
+async def test_graph_capability_can_render_a_nested_dependency_result(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "graph-nested-capability-output.db")
+    read = _FrozenWorkReadTool()
+    publish = _CapturePublicationTool()
+    agent = _ChainedCapabilityAgent(store, read, publish)
+    runtime = NativeAgentRuntime(agent=agent, store=store)
+    try:
+        submitted = await runtime.submit_graph(
+            TaskGraphSpec(
+                goal="read then publish without copying the body into Product",
+                user_id="user-a",
+                session_id="graph-nested-output",
+                aggregate=False,
+                tasks=[
+                    GraphTaskSpec(
+                        id="read-work",
+                        prompt="read",
+                        capability=agent.read_definition.ref,
+                        capability_input={"work_ref": "work-001"},
+                    ),
+                    GraphTaskSpec(
+                        id="publish",
+                        prompt="publish",
+                        dependencies=["read-work"],
+                        capability=agent.publish_definition.ref,
+                        capability_input={
+                            "body": (
+                                "${tasks.read-work.capability_result.data."
+                                "output.content}"
+                            )
+                        },
+                    ),
+                ],
+            )
+        )
+        completed = await runtime.wait(submitted.run_id, timeout=5)
+    finally:
+        await runtime.close()
+
+    assert completed.status == "completed", completed.error
+    assert publish.bodies == ["# Versioned publication body"]
 
 
 @pytest.mark.asyncio

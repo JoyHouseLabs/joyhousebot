@@ -92,6 +92,24 @@ class PostgresScenarioStoreMixin:
                 ddl=governance_ddl,
                 description="explicit active scenario version for staged rollout and rollback",
             )
+            skills_ddl = """
+            CREATE TABLE IF NOT EXISTS scenario_skills (
+                scenario_id TEXT NOT NULL,version INTEGER NOT NULL,
+                skill_id TEXT NOT NULL,skill_version TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,position INTEGER NOT NULL,
+                PRIMARY KEY(scenario_id,version,skill_id,skill_version,content_sha256),
+                FOREIGN KEY(scenario_id,version)
+                    REFERENCES scenario_versions(scenario_id,version) ON DELETE CASCADE
+            );
+            """
+            conn.execute(skills_ddl)
+            self._record_migration(
+                conn,
+                name="scenarios",
+                version=3,
+                ddl=skills_ddl,
+                description="separate immutable Skill references from executable capabilities",
+            )
 
     def save_scenario_version(
         self, scenario: ScenarioVersion, *, status: str = "draft", actor_id: str = "system"
@@ -130,7 +148,7 @@ class PostgresScenarioStoreMixin:
             )
             for table in (
                 "scenario_fields", "scenario_clarification_nodes",
-                "scenario_clarification_edges", "scenario_capabilities",
+                "scenario_clarification_edges", "scenario_capabilities", "scenario_skills",
             ):
                 conn.execute(
                     f"DELETE FROM {table} WHERE scenario_id=%s AND version=%s",
@@ -169,6 +187,23 @@ class PostgresScenarioStoreMixin:
                       item.version, item.kind.value, item.plugin_id,
                       item.plugin_version, item.plugin_build_digest, index)
                      for index, item in enumerate(scenario.allowed_capabilities)],
+                )
+                cursor.executemany(
+                    """INSERT INTO scenario_skills
+                           (scenario_id,version,skill_id,skill_version,
+                            content_sha256,position)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    [
+                        (
+                            scenario.scenario_id,
+                            scenario.version,
+                            item.skill_id,
+                            item.version,
+                            item.content_sha256,
+                            index,
+                        )
+                        for index, item in enumerate(scenario.required_skills)
+                    ],
                 )
             conn.execute(
                 """INSERT INTO configuration_events
@@ -314,6 +349,11 @@ class PostgresScenarioStoreMixin:
                WHERE scenario_id=%s AND version=%s ORDER BY position""",
             (scenario_id, version),
         ).fetchall()
+        skills = conn.execute(
+            """SELECT skill_id,skill_version,content_sha256 FROM scenario_skills
+               WHERE scenario_id=%s AND version=%s ORDER BY position""",
+            (scenario_id, version),
+        ).fetchall()
         return ScenarioModel.from_dict({
             "scenario_id": scenario_id, "version": version, "name": base["name"],
             "description": base["description"],
@@ -335,6 +375,14 @@ class PostgresScenarioStoreMixin:
                     "plugin_build_digest": row["plugin_build_digest"],
                 }
                 for row in capabilities
+            ],
+            "required_skills": [
+                {
+                    "skill_id": row["skill_id"],
+                    "version": row["skill_version"],
+                    "content_sha256": row["content_sha256"],
+                }
+                for row in skills
             ],
             "planning_mode": base["planning_mode"],
             "execution_policy": dict(base["execution_policy"]),

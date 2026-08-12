@@ -48,6 +48,10 @@ def required_api_scope(request: Request) -> str:
     operation = "read" if request.method.upper() in _READ_METHODS else "write"
     if path.startswith("/v1/admin"):
         return f"admin.{operation}"
+    if path.startswith("/v1/apps/") and path.endswith("/runs") and operation == "write":
+        return "apps.launch"
+    if path == "/v1/apps" or path.startswith("/v1/apps/"):
+        return f"apps.{operation}"
     for namespace in ("runs", "memory", "sessions", "schedules", "works", "workflows"):
         if path == f"/v1/{namespace}" or path.startswith(f"/v1/{namespace}/"):
             return f"{namespace}.{operation}"
@@ -139,12 +143,18 @@ async def get_principal(
                 permissions=admin.permissions,
                 token_scopes=tuple(str(item) for item in access.get("scopes") or ()),
                 token_type=str(access.get("token_type") or "user"),
+                app_client_id=access.get("app_client_id"),
+                app_grant_id=access.get("delegation_grant_id"),
+                app_installation_id=access.get("app_installation_id"),
             )
         return Principal(
             subject=f"token:{access['token_id']}",
             user_id=resolved_user_id,
             token_scopes=tuple(str(item) for item in access.get("scopes") or ()),
             token_type=str(access.get("token_type") or "user"),
+            app_client_id=access.get("app_client_id"),
+            app_grant_id=access.get("delegation_grant_id"),
+            app_installation_id=access.get("app_installation_id"),
         )
 
     session = (
@@ -310,6 +320,39 @@ AgentsWriterDep = Annotated[
 ]
 AgentsPublisherDep = Annotated[
     Principal, Depends(_permission_dependency("agents.publish", "Agent publish permission required"))
+]
+SkillsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("skills.read", "Skill read permission required"))
+]
+SkillsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("skills.write", "Skill write permission required"))
+]
+SkillsPublisherDep = Annotated[
+    Principal, Depends(_permission_dependency("skills.publish", "Skill publish permission required"))
+]
+AppsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("apps.read", "App Pack read permission required"))
+]
+AppsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("apps.write", "App Pack write permission required"))
+]
+AppsPublisherDep = Annotated[
+    Principal,
+    Depends(_permission_dependency("apps.publish", "App Pack publish permission required")),
+]
+AppsInstallerDep = Annotated[
+    Principal,
+    Depends(_permission_dependency("apps.install", "App Pack install permission required")),
+]
+TeamsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("teams.read", "AgentTeam read permission required"))
+]
+TeamsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("teams.write", "AgentTeam write permission required"))
+]
+TeamsPublisherDep = Annotated[
+    Principal,
+    Depends(_permission_dependency("teams.publish", "AgentTeam publish permission required")),
 ]
 CapabilitiesReaderDep = Annotated[
     Principal,

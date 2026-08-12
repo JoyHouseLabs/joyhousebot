@@ -39,6 +39,7 @@ def _task_snapshot(task: GraphTaskSpec, default_agent_id: str) -> dict[str, Any]
         "compensation": dict(task.compensation),
         "bounded_loop": dict(task.bounded_loop),
         "aggregate": dict(task.aggregate),
+        "subrun": dict(task.subrun),
     }
 
 
@@ -65,6 +66,7 @@ def freeze_graph_revision(
     settings = {
         "goal": spec.goal,
         "agent_id": spec.agent_id,
+        "agent_revision_id": spec.agent_revision_id,
         "max_concurrent": max(1, spec.max_concurrent),
         "fail_fast": bool(spec.fail_fast),
         "failure_policy": failure_policy,
@@ -129,6 +131,7 @@ def freeze_graph_patch_revision(
     settings = {
         "goal": spec.goal,
         "agent_id": spec.agent_id,
+        "agent_revision_id": spec.agent_revision_id,
         "max_concurrent": max(1, spec.max_concurrent),
         "fail_fast": bool(spec.fail_fast),
         "failure_policy": failure_policy,
@@ -183,6 +186,7 @@ def graph_options(
         "user_id": spec.user_id,
         "session_id": spec.session_id,
         "agent_id": spec.agent_id,
+        "agent_revision_id": spec.agent_revision_id,
         "max_concurrent": max(1, spec.max_concurrent),
         "fail_fast": spec.fail_fast,
         "failure_policy": dict(revision["settings"]["failure_policy"]),
@@ -197,6 +201,10 @@ def graph_options(
         "parent_request_id": spec.parent_request_id,
         "traceparent": spec.traceparent,
         "tracestate": spec.tracestate,
+        "root_run_id": spec.root_run_id,
+        "parent_run_id": spec.parent_run_id,
+        "parent_task_id": spec.parent_task_id,
+        "max_children_per_root": spec.max_children_per_root,
         "metadata": metadata,
         "graph_revision_id": revision["revision_id"],
         "tasks": [dict(node) for node in revision["nodes"]],
@@ -239,6 +247,7 @@ def graph_task_rows(run_id: str, revision: dict[str, Any]) -> list[dict[str, Any
                     "compensation": node["compensation"],
                     "bounded_loop": node["bounded_loop"],
                     "aggregate": node["aggregate"],
+                    "subrun": node["subrun"],
                     "saga_managed": saga_managed,
                 },
                 "dependencies": [f"{run_id}:{item}" for item in node["dependencies"]],

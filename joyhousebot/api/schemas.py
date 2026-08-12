@@ -11,29 +11,6 @@ from pydantic import BaseModel, Field, model_validator
 _ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,128}$"
 
 
-class RunInput(BaseModel):
-    type: Literal["message"] = "message"
-    content: str = Field(min_length=1)
-
-
-class CreateRunRequest(BaseModel):
-    agent_id: str = Field(default="default", pattern=_ID_PATTERN)
-    session_id: str | None = Field(default=None, min_length=1, pattern=_ID_PATTERN)
-    scenario_id: str | None = Field(default=None, pattern=_ID_PATTERN)
-    scenario_inputs: dict[str, Any] = Field(default_factory=dict)
-    execution_mode: Literal["auto", "interactive", "background"] = "auto"
-    input: RunInput
-    model: str | None = None
-    system_prompt: str | None = None
-    output_schema: dict[str, Any] | None = None
-    verification_policy: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
-    max_turns: int | None = Field(default=None, gt=0)
-    max_repairs: int | None = Field(default=None, ge=0, le=10)
-    max_replans: int | None = Field(default=None, ge=0, le=10)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class GenerateWorkflowRequest(BaseModel):
     """Ask an Agent to design or revise an executable Workflow draft."""
 
@@ -239,6 +216,43 @@ class RolloutPolicyRequest(BaseModel):
     require_healthy_workers: bool = True
 
 
+class RemoteConnectionRevisionRequest(BaseModel):
+    connection_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    enabled: bool = True
+    base_url: str = Field(min_length=1, max_length=2048)
+    key_id: str = Field(min_length=1, max_length=128)
+    signing_secret_ref: str = Field(
+        pattern=r"^env://[A-Za-z_][A-Za-z0-9_]*$",
+        description="Environment-only signing secret reference; plaintext is forbidden.",
+    )
+    allow_insecure_http: bool = False
+    require_response_signature: bool = True
+    timeout_seconds: float = Field(default=60, ge=1, le=3600)
+    max_response_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=50 * 1024 * 1024,
+    )
+    capabilities: list[dict[str, Any]] = Field(min_length=1, max_length=500)
+
+
+class ModelProviderRevisionRequest(BaseModel):
+    provider_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    enabled: bool = True
+    extension_id: str = Field(pattern=r"^provider-[a-z0-9][a-z0-9-]{0,119}$")
+    api_base: str = Field(min_length=1, max_length=2048)
+    api_key_ref: str = Field(default="", max_length=256)
+    allow_insecure_http: bool = False
+    credential_mode: str = Field(default="api_key", pattern=r"^(api_key|none)$")
+    extra_header_refs: dict[str, str] = Field(default_factory=dict)
+    request_timeout_seconds: float = Field(default=120, ge=1, le=3600)
+    models: list[dict[str, Any]] = Field(min_length=1, max_length=1000)
+
+
 class BindAgentSkillRequest(BaseModel):
     skill_id: str = Field(pattern=_ID_PATTERN)
     skill_version: str = Field(min_length=1, max_length=64)
@@ -252,14 +266,20 @@ class BindAgentSkillRequest(BaseModel):
 class CapabilityRefRequest(BaseModel):
     capability_id: str = Field(min_length=1, pattern=_ID_PATTERN)
     version: str = Field(min_length=1, max_length=128)
-    kind: Literal["tool", "agent", "workflow", "skill", "connector"]
+    kind: Literal["tool", "connector"]
     plugin_id: str = Field(min_length=1, pattern=_ID_PATTERN)
     plugin_version: str = Field(min_length=1, max_length=128)
     plugin_build_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class SkillRefRequest(BaseModel):
+    skill_id: str = Field(pattern=r"^skill\.[A-Za-z0-9][A-Za-z0-9_.:-]{0,121}$")
+    version: str = Field(min_length=1, max_length=64)
+    content_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class PublishCapabilityRequest(BaseModel):
-    kind: Literal["tool", "agent", "workflow", "skill", "connector"]
+    kind: Literal["tool", "connector"]
     name: str = Field(min_length=1)
     description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
@@ -483,6 +503,7 @@ class SaveScenarioVersionRequest(BaseModel):
     nodes: list[ClarificationNodeRequest] = Field(default_factory=list)
     edges: list[ClarificationEdgeRequest] = Field(default_factory=list)
     allowed_capabilities: list[CapabilityRefRequest] = Field(default_factory=list)
+    required_skills: list[SkillRefRequest] = Field(default_factory=list)
     planning_mode: Literal["fixed", "dynamic"] = "dynamic"
     execution_policy: dict[str, Any] = Field(default_factory=dict)
     routing_rules: list[dict[str, Any]] = Field(default_factory=list)

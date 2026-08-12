@@ -8,6 +8,7 @@ from typing import Any
 
 from joyhousebot.contracts.events import AgentEvent
 from joyhousebot.storage.json_codec import Jsonb
+from joyhousebot.storage.postgres_app_callback_projection import project_app_run_terminal
 from joyhousebot.storage.postgres_artifact_writes import (
     insert_runtime_artifact_in_transaction,
 )
@@ -395,6 +396,14 @@ class PostgresRunStoreMixin:
                             WHERE event_wait.run_id=runtime_runs.run_id
                               AND event_wait.status='pending'
                               AND event_wait.deadline_at<=clock_timestamp()))
+                         OR (status='waiting_external' AND EXISTS (
+                            SELECT 1 FROM runtime_tasks task
+                            JOIN runtime_runs child ON child.parent_task_id=task.task_id
+                            WHERE task.run_id=runtime_runs.run_id
+                              AND task.status='waiting_external'
+                              AND task.payload->>'node_type'='subrun'
+                              AND child.status IN
+                                  ('completed','failed','cancelled','timed_out')))
                    ) AS fair_queue
                    ORDER BY user_queue_position, created_at, run_id LIMIT %s""",
                 (max(1, min(5000, limit)),),
@@ -552,7 +561,7 @@ class PostgresRunStoreMixin:
                       OR lease_expires_at < clock_timestamp()))
                   ))
                   AND (%s OR %s::bigint IS NULL OR lease_version=%s)
-                RETURNING run_id,user_id,options
+                RETURNING run_id,user_id,options,parent_run_id,parent_task_id
                 """,
                 (
                     status,
@@ -589,6 +598,16 @@ class PostgresRunStoreMixin:
             result=result,
             error=error,
         )
+        project_app_run_terminal(
+            conn,
+            run_id=run_id,
+            user_id=str(updated["user_id"]),
+            status=status,
+            options=updated["options"],
+            error=error,
+        )
+        if updated["parent_run_id"] and updated["parent_task_id"]:
+            self._notify(conn, str(updated["parent_run_id"]))
         for prior_event in events_before_terminal or []:
             prior = append_runtime_event_in_transaction(conn, prior_event)
             if persisted_events_before_terminal is not None:

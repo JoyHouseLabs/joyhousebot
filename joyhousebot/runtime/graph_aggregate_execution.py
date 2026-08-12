@@ -68,6 +68,10 @@ async def execute_graph_aggregate(
             user_id=run.user_id,
             session_id=f"{run.session_id}:aggregate:{task.payload.get('spec_id')}",
             agent_id=task.agent_id,
+            agent_revision_id=(
+                str(dict(task.payload.get("metadata") or {}).get("agent_revision_id") or "")
+                or None
+            ),
             channel="runtime",
             chat_id=str(task.payload.get("spec_id") or task.task_id),
             model=None,

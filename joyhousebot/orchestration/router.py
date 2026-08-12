@@ -16,12 +16,15 @@ class ScenarioRouter:
         prompt: str,
         *,
         explicit_scenario_id: str | None = None,
+        explicit_scenario_version: int | None = None,
         supplied_inputs: dict[str, Any] | None = None,
     ) -> tuple[RoutingDecision, ScenarioVersion | None]:
         inputs = dict(supplied_inputs or {})
         if explicit_scenario_id:
-            scenario = self.store.get_scenario_version(explicit_scenario_id)
-            if scenario is None:
+            scenario = self.store.get_scenario_version(
+                explicit_scenario_id, explicit_scenario_version
+            )
+            if scenario is None or scenario.status != "published":
                 raise ValueError(f"published scenario not found: {explicit_scenario_id}")
             return self.decision_for(scenario, inputs, 1.0, "EXPLICIT_SCENARIO"), scenario
 
@@ -45,20 +48,25 @@ class ScenarioRouter:
             _, _, scenario = max(matches, key=lambda item: (item[0], item[1]))
             return self.decision_for(scenario, inputs, 0.9, "RULE_CONTAINS"), scenario
 
-        return (
-            RoutingDecision(
-                scenario_id=None,
-                scenario_version=None,
-                confidence=1.0,
-                execution_class="interactive",
-                estimated_duration_seconds=60,
-                extracted_inputs=inputs,
-                missing_inputs=(),
-                candidate_capabilities=(),
-                next_action="plan",
-                reason_code="OPEN_AGENT_DEFAULT",
-            ),
-            None,
+        return self.open_decision(inputs), None
+
+    @staticmethod
+    def open_decision(
+        inputs: dict[str, Any] | None = None,
+        *,
+        reason_code: str = "EXPLICIT_AGENT_MODE",
+    ) -> RoutingDecision:
+        return RoutingDecision(
+            scenario_id=None,
+            scenario_version=None,
+            confidence=1.0,
+            execution_class="interactive",
+            estimated_duration_seconds=60,
+            extracted_inputs=dict(inputs or {}),
+            missing_inputs=(),
+            candidate_capabilities=(),
+            next_action="plan",
+            reason_code=reason_code,
         )
 
     @staticmethod

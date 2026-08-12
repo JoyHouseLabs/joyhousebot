@@ -38,6 +38,7 @@ class GraphTaskSpec:
     compensation: dict[str, Any] = field(default_factory=dict)
     bounded_loop: dict[str, Any] = field(default_factory=dict)
     aggregate: dict[str, Any] = field(default_factory=dict)
+    subrun: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.capability, dict):
@@ -61,6 +62,7 @@ class GraphTaskSpec:
             "compensation",
             "bounded_loop",
             "aggregate",
+            "subrun",
         }:
             raise ValueError("unsupported graph node type")
         if (
@@ -73,6 +75,7 @@ class GraphTaskSpec:
                 "verify",
                 "bounded_loop",
                 "aggregate",
+                "subrun",
             }
             and self.capability is not None
         ):
@@ -135,6 +138,7 @@ class GraphTaskSpec:
             compensation=dict(value.get("compensation") or {}),
             bounded_loop=dict(value.get("bounded_loop") or {}),
             aggregate=dict(value.get("aggregate") or {}),
+            subrun=dict(value.get("subrun") or {}),
         )
 
 
@@ -145,6 +149,10 @@ class TaskGraphSpec:
     user_id: str = "system"
     session_id: str = "main"
     agent_id: str = "default"
+    # Internal authorities (App/Workflow/Scenario/Team) may freeze the
+    # coordinating Agent revision. Public graph requests intentionally leave
+    # this unset and resolve the current published revision at submission.
+    agent_revision_id: str | None = None
     max_concurrent: int = 4
     fail_fast: bool = False
     failure_policy: dict[str, Any] = field(default_factory=dict)
@@ -159,6 +167,10 @@ class TaskGraphSpec:
     parent_request_id: str | None = None
     traceparent: str | None = None
     tracestate: str | None = None
+    root_run_id: str | None = None
+    parent_run_id: str | None = None
+    parent_task_id: str | None = None
+    max_children_per_root: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -60,7 +60,7 @@
         </article>
       </div>
       <div v-else class="empty-state compact"><strong>暂无健康 Worker 心跳</strong></div>
-      <p class="worker-summary-note">健康 {{ platform.healthy_workers }} · 历史 / 陈旧记录 {{ Math.max(0, platform.workers - platform.healthy_workers) }} · 角色和插件信息来自 Worker 心跳。</p>
+      <p class="worker-summary-note">健康 {{ platform.healthy_workers }} · 历史 / 陈旧记录 {{ Math.max(0, platform.workers - platform.healthy_workers) }} · 角色和扩展信息来自 Worker 心跳。</p>
     </section>
 
     <section class="monitor-grid ops-metrics-grid">

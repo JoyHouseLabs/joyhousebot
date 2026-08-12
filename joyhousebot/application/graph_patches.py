@@ -66,6 +66,7 @@ def _task_spec(command: GraphTaskCommand) -> GraphTaskSpec:
         compensation=dict(command.compensation),
         bounded_loop=dict(command.bounded_loop),
         aggregate=dict(command.aggregate),
+        subrun=dict(command.subrun),
     )
 
 
@@ -169,6 +170,11 @@ class GraphPatchService:
             user_id=context.user_id,
             session_id=run.session_id,
             agent_id=str(settings.get("agent_id") or run.agent_id),
+            agent_revision_id=(
+                str(settings["agent_revision_id"])
+                if settings.get("agent_revision_id")
+                else None
+            ),
             max_concurrent=max(1, int(settings.get("max_concurrent") or 1)),
             fail_fast=bool(settings.get("fail_fast", False)),
             failure_policy=dict(settings.get("failure_policy") or {}),

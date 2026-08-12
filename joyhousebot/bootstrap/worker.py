@@ -9,6 +9,8 @@ from typing import Any
 
 from loguru import logger
 
+from joyhousebot.application.app_callbacks import AppCallbackDispatcher
+from joyhousebot.application.app_market import AppMarketService
 from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
 from joyhousebot.application.scenarios import ScenarioStudioService
@@ -27,13 +29,54 @@ from joyhousebot.runtime.runner import NativeAgentRuntime
 from joyhousebot.storage.factory import create_runtime_store
 
 
+def _plugin_health_checks(plugin: Any) -> list[dict[str, str]]:
+    checks = getattr(plugin, "health_checks", None)
+    if not callable(checks):
+        return []
+    try:
+        values = checks() or ()
+    except Exception as exc:
+        return [
+            {
+                "name": "plugin_health",
+                "status": "failed",
+                "summary": f"health check failed: {type(exc).__name__}",
+            }
+        ]
+    output = []
+    for value in values:
+        item = value.to_dict() if hasattr(value, "to_dict") else value
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        status = str(item.get("status") or "degraded").strip().lower()
+        if not name or status not in {"healthy", "degraded", "failed"}:
+            continue
+        output.append(
+            {
+                "name": name[:128],
+                "status": status,
+                "summary": str(item.get("summary") or "")[:500],
+            }
+        )
+    return output
+
+
 def _extension_releases(agent: Any, config: Any) -> list[dict[str, Any]]:
     releases: dict[str, dict[str, Any]] = {}
     registry = getattr(getattr(agent, "capabilities", None), "plugins", None)
     manifests = getattr(registry, "manifests", None)
     if callable(manifests):
+        plugins = {
+            str(getattr(plugin, "plugin_id", "")): plugin
+            for plugin in getattr(registry, "plugins", ())
+        }
         for manifest in manifests():
-            releases[manifest.plugin_id] = manifest.to_release_dict()
+            release = manifest.to_release_dict()
+            release["health_checks"] = _plugin_health_checks(
+                plugins.get(manifest.plugin_id)
+            )
+            releases[manifest.plugin_id] = release
     from joyhousebot.providers.registry import get_provider_registry
 
     for manifest in get_provider_registry(config).manifests():
@@ -53,6 +96,7 @@ class ExecutionWorker:
     store: Any
 
     async def run(self) -> None:
+        await self.catalog.start()
         await self.runtime.start()
         catalog_task = asyncio.create_task(
             self.catalog.watch(), name="agent-runtime-catalog"
@@ -73,16 +117,31 @@ class SchedulerWorker:
     cron: CronService
     store: Any
     eval_execution: EvalExecutionService
+    app_market: AppMarketService
+    app_callbacks: AppCallbackDispatcher
 
     async def run(self) -> None:
         await self.runtime.start()
         await self.cron.start()
         eval_task = asyncio.create_task(self._eval_loop(), name="eval-execution-worker")
+        market_task = asyncio.create_task(
+            self._app_acquisition_loop(), name="app-acquisition-worker"
+        )
+        callback_task = asyncio.create_task(
+            self._app_callback_loop(), name="app-callback-worker"
+        )
         try:
             await asyncio.Event().wait()
         finally:
             eval_task.cancel()
-            await asyncio.gather(eval_task, return_exceptions=True)
+            market_task.cancel()
+            callback_task.cancel()
+            await asyncio.gather(
+                eval_task,
+                market_task,
+                callback_task,
+                return_exceptions=True,
+            )
             self.cron.stop()
             await self.cron.wait_stopped()
             await self.runtime.close()
@@ -159,6 +218,38 @@ class SchedulerWorker:
             )
             if not renewed:
                 raise RuntimeError("Eval execution lease was fenced")
+
+    async def _app_acquisition_loop(self) -> None:
+        while True:
+            try:
+                processed = await self.app_market.process_next(
+                    worker_id=self.runtime.worker_id
+                )
+                if not processed:
+                    processed = await self.app_market.process_update_next(
+                        worker_id=self.runtime.worker_id
+                    )
+                if not processed:
+                    await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("App acquisition worker loop failed; retrying")
+                await asyncio.sleep(1.0)
+
+    async def _app_callback_loop(self) -> None:
+        while True:
+            try:
+                processed = await self.app_callbacks.process_next(
+                    worker_id=self.runtime.worker_id
+                )
+                if not processed:
+                    await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("App callback worker loop failed; retrying")
+                await asyncio.sleep(1.0)
 
 
 @dataclass(slots=True)
@@ -242,7 +333,12 @@ def build_scheduler_worker(config: Any | None = None) -> SchedulerWorker:
         scheduler_enabled=True,
         maintenance_enabled=True,
         worker_name=config.runtime.worker_name or "scheduler",
-        capabilities={"scheduler": True, "maintenance": True},
+        capabilities={
+            "scheduler": True,
+            "maintenance": True,
+            "app_acquisition": True,
+            "app_callbacks": True,
+        },
         default_agent_id=resolved_default_id,
         poll_interval_seconds=config.runtime.store.poll_interval_seconds,
     )
@@ -310,6 +406,8 @@ def build_scheduler_worker(config: Any | None = None) -> SchedulerWorker:
             evals=evals,
             scenarios=ScenarioStudioService(store),
         ),
+        app_market=AppMarketService(store),
+        app_callbacks=AppCallbackDispatcher(store),
     )
 
 

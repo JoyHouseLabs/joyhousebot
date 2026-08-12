@@ -94,6 +94,21 @@ class PostgresMaintenanceStoreMixin:
                     )
                     counts["trace_blobs"] = expired_blobs + max(0, cursor.rowcount)
 
+                    # Completion callback payloads contain App/Run references and
+                    # must obey the same operational-data retention boundary. Never
+                    # purge rows that are still eligible for delivery.
+                    cursor = conn.execute(
+                        "DELETE FROM app_callback_delivery_events WHERE created_at < %s",
+                        (cutoff,),
+                    )
+                    counts["app_callback_delivery_events"] = max(0, cursor.rowcount)
+                    cursor = conn.execute(
+                        """DELETE FROM app_callback_outbox WHERE created_at < %s
+                           AND status IN ('sent','dead')""",
+                        (cutoff,),
+                    )
+                    counts["app_callback_outbox"] = max(0, cursor.rowcount)
+
                     # Tombstone runs before their events vanish so sequence
                     # replay can surface the retention gap explicitly.
                     # (jsonb_set only creates the final path step, so merge

@@ -14,6 +14,8 @@ joyhousebot channel-worker --config ./config.json
 生产启动前先由唯一迁移任务执行一次 `JOYHOUSEBOT_AUTO_MIGRATE=true joyhousebot check`；随后所有
 长运行角色设置 `JOYHOUSEBOT_AUTO_MIGRATE=false`。Compose 已用一次性 `migrate` 服务和
 `service_completed_successfully` 依赖固化这条顺序，避免多角色冷启动时 DDL 与目录初始化写入交叉。
+已经写入 `schema_migration_history` 的迁移不可原地修改；checksum 不一致会让迁移任务失败关闭。
+修复方式是恢复已发布 DDL 并新增 migration version，不能手工覆盖历史 checksum。
 
 - `api` 只接受 HTTP/SSE 请求，不运行模型。`--surface public|control|combined`
   可把公网数据面与私有管理面拆成独立进程；本地控制台试用使用 `combined`。
@@ -24,7 +26,8 @@ joyhousebot channel-worker --config ./config.json
 本地已有 PostgreSQL 时可直接运行 `./scripts/start-local.sh`。它会安全解析统一环境变量或旧
 OpenRouter 配置中的 Key，初始化数据库，启动一个 Combined API、一个 Scheduler 和默认两个
 Agent Worker，以及一个 Channel Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKERS`、`JOYHOUSEBOT_LOCAL_PORT`、
-`JOYHOUSEBOT_DATABASE_URL` 覆盖本地默认值；所有组件日志写入
+`JOYHOUSE_DATABASE_URL` 覆盖本地默认值；Product、Cloud/Market 和官方 App 使用相同连接。旧
+`JOYHOUSEBOT_DATABASE_URL` 仍会被本地脚本映射为共享连接。所有组件日志写入
 `~/.joyhousebot/logs/local/<timestamp>/`。
 
 ## PostgreSQL 启动
@@ -62,7 +65,7 @@ Channel Worker；控制台的 Channels 页面当前提供安全状态查看，�
 本地直接运行时设置（15432 端口仅绑定 127.0.0.1）：
 
 ```bash
-export JOYHOUSEBOT_DATABASE_URL='postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot'
+export JOYHOUSE_DATABASE_URL='postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot'
 export LLM_PROVIDER='anthropic'
 export LLM_API_KEY='your-key'
 export LLM_MODEL='anthropic/claude-sonnet-4-5'
@@ -71,12 +74,21 @@ joyhousebot check --config ./config.json
 
 `LLM_PROVIDER` + `LLM_API_KEY` 是单供应商本地部署的统一入口；`LLM_MODEL` 必须给出精确模型 ID，可选
 `LLM_API_BASE` 覆盖服务地址。`LLM_PROVIDER` 没有默认值，而且对应 Provider 扩展必须同时出现在
-`extensions.enabled`。一旦显式设置，它也是模型请求的首选路由，所以 `openrouter` 可以承载 `anthropic/...`、`openai/...`
+`extensions.allowedIds` 并在扩展中心处于启用状态。一旦显式设置，它也是模型请求的首选路由，所以 `openrouter` 可以承载 `anthropic/...`、`openai/...`
 等模型 ID，不会被其他供应商环境变量抢占。需要在同一 Worker 按模型前缀直连多个
 供应商时，不设置统一变量，改用 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
 `OPENROUTER_API_KEY` 等专用变量。同一供应商的专用变量优先于 `LLM_API_KEY`。
 
-所有环境必须配置 `JOYHOUSEBOT_DATABASE_URL`；本地测试也使用 PostgreSQL。
+全新数据库若未设置 `runtime.bootstrapModel`，会先生成使用 `unconfigured/model` 的惰性默认 Agent。
+该占位 Agent 不能调用模型；控制面允许首个 Provider 在保持它不可执行的前提下完成发布，随后必须从
+已生效模型目录为默认 Agent 发布一个新 Revision。`/healthz` 只表示 API 存活，产品在提交模型任务前还应
+确认 `/v1/agents` 中所选 Agent 的模型不是 `unconfigured/model`。
+该接口还返回 `execution_ready` 和 `execution_blockers`；产品应在提交 Run 前检查它们，而不是只依赖
+`/healthz`。内置 `default` Agent 是无业务偏好的直接执行器；需要开放规划时应显式发布 coordinator
+Agent，Team 则使用 Team Revision 中冻结的协调器。
+
+一体化部署统一配置 `JOYHOUSE_DATABASE_URL`。Runtime 仍接受旧 `JOYHOUSEBOT_DATABASE_URL` 作为过渡别名。
+本地测试使用显式专用 PostgreSQL 测试库，不能使用共享开发或生产连接。
 
 ## 健康检查
 
@@ -110,8 +122,10 @@ Worker 预热精确 revision 或插件依赖并提交 ACK。自动模式在全�
 - `POST /v1/admin/rollouts/{rollout_id}/retry`
 - `POST /v1/admin/rollouts/{rollout_id}/rollback`
 
-`timed_out` 表示 deadline 前未收齐 ACK；重试只重置失败/超时目标，不重复加载成功节点。发布失败或
-超时时旧 current pointer 始终保留。显式回滚只允许已完成且目标 revision 仍为 current 的 rollout；操作
+`timed_out` 表示 deadline 前未收齐 ACK。重试会保留已经成功的 ACK；仍在线的失败/超时 Worker 会重新
+进入 `pending`，已经离线的旧 Worker 目标标记为 `superseded`，并把当前健康的替代 Worker 纳入同一
+rollout。这样 Worker 重启或实例替换后不会把发布永久卡在已经消失的 worker_id 上。发布失败或超时时
+旧 current pointer 始终保留。显式回滚只允许已完成且目标 revision 仍为 current 的 rollout；操作
 会创建一个指向 frozen previous revision 的子 rollout，重新等待 Worker ACK，成功后才切换。回滚失败时
 当前版本不变。不要直接更新 definition 的 current pointer 或 rollout 表。
 
@@ -150,6 +164,43 @@ Agent Worker、Channel Worker 都在注册和续租，再依据 Occurrence 的 `
 - `processing` 表示请求已冻结但尚未完成 Run 提交；`submitted` 可以沿 `run_id` 进入运行中心；
   `failed` 会保留错误摘要，相同键和相同 Payload 可安全重试。
 - 投递表不保存原始业务 Payload。需要留存原始事件时，应由业务系统保留并使用稳定事件 ID 对账。
+
+## App Run 终态回调排障
+
+App 出站终态通知与上面的入站业务 Webhook 是两个方向、两套密钥。Owner 使用
+`POST /v1/apps/{installation_id}/callbacks` 登记公网 HTTPS 地址与 `env://VARIABLE`；该环境变量必须
+在所有 Scheduler Worker 上存在且至少 32 bytes，不能只配置在 API 进程。
+
+Scheduler 发送以下验证材料：
+
+- `Idempotency-Key` 与 `X-Joyhouse-Event-ID`：稳定事件 ID，消费者据此去重；
+- `X-Joyhouse-Timestamp`：签名时间戳；
+- `X-Joyhouse-Signature: v1=<hex>`：对 `timestamp + "." + canonical_json_body` 的
+  HMAC-SHA256；
+- `X-Joyhouse-Event-Type`：`run.completed/failed/cancelled/timed_out`。
+
+消费者应在恒定时间比较签名、限制时间戳偏差并持久化 event ID。Runtime 采用 at-least-once 投递；
+HTTP 2xx 才算成功，3xx 不跟随，其他状态或网络错误按指数退避，达到登记的 `max_attempts` 后进入
+`dead`。使用 `GET /v1/runs/{run_id}/app-callbacks` 查看单个 Run；Prometheus 中
+`joyhousebot_app_callback_deliveries_total{status=...}` 和
+`joyhousebot_app_callback_oldest_pending_seconds` 用于告警。Callback Payload 不含 Result/Artifact，
+App 应用短期委托 Token 读取 Location，避免私有成果落入通用 Webhook 日志。
+
+常见故障：
+
+- 一直 retry 且错误为 secret 环境变量缺失：补齐 Scheduler 环境并重启；
+- 地址被 SSRF policy 拒绝：必须使用公网 HTTPS，内网服务改走 Remote Capability/受控网络出口；
+- 2xx 后 App 仍重复处理：App 未按 Event ID 做持久幂等；
+- `dead` 持续增长：先修复接收端，再由 Owner 在 Console 的 App 治理页重放，或携带稳定
+  `Idempotency-Key` 调用
+  `POST /v1/runs/{run_id}/app-callbacks/{event_id}/replay`。重放创建新 Event，原记录保持 sent/dead；
+  禁止直接修改 Outbox 状态。
+
+App Client Secret 轮换属于控制面操作：调用
+`POST /v1/admin/apps/clients/{client_id}/rotate-secret` 后，新 Secret 仅显示一次，全部旧委托 Token 与旧
+Secret 立即失效，用户 Grant 保留。应先确保 App 后端可以原子更新秘密管理系统；若轮换后未保存响应，
+只能再次轮换，不能从数据库恢复明文。安装级 Run/模型成本可在 App 治理页或
+`GET /v1/apps/{installation_id}/usage` 对账；它是 Runtime 事实用量，不是支付账单。
 
 ### Agent Monitor
 
@@ -297,6 +348,52 @@ curl -X POST http://127.0.0.1:18790/v1/admin/access-tokens \
 第二个响应中的 `token` 只出现一次。保存后从部署环境移除 `JOYHOUSEBOT_CONTROL_TOKEN` 并滚动
 重启 API；日常操作改用数据库 Token。不要把上面变量或响应写进仓库、Shell history 或日志。
 
+## 远程 Capability 连接发布
+
+先把 `connector-http-capability` 安装到每个 Agent Worker，加入 `extensions.allowedIds`，再通过扩展中心激活并通过插件
+发布门禁使其 active。连接使用的 `signing_secret_ref` 只写 `env://VARIABLE`，同名变量必须存在于
+每个目标 Agent Worker 且至少 32 bytes；API 与 Console 进程不需要该密钥。
+
+在 Console“集成中心 → 远程能力”保存 Draft 后再发布。预热只校验固定 endpoint、密钥环境、
+Schema 和精确 Capability 定义，不会调用业务能力产生副作用。任一 Worker 失败时当前连接继续
+服务；查看 rollout target 错误，修复后重试失败目标。连接生效后还需逐个发布发现的 Capability，
+最后在 Agent Revision 中显式选择并授予最小权限。回滚使用正常 rollout 接口，禁止直接更改
+`remote_connections.current_revision_id`。完整协议和对账要求见 [远程 Capability 协议](REMOTE_CAPABILITY_PROTOCOL.md)。
+
+## 模型 Provider 配置发布
+
+先在所有 Agent Worker 安装并启用对应 `provider-*` 扩展，在插件中心发布为 active。密钥写入每个目标
+Worker 的环境，例如 `OPENROUTER_API_KEY`；Console“集成中心 → Models”只填写
+`env://OPENROUTER_API_KEY`，不能输入密钥值。Provider Draft 可以配置 Endpoint、附加 Header 环境引用、
+请求超时、模型上下文/输出上限以及 Tools、Reasoning、结构化输出等目录元数据。
+
+发布时 Worker 解析环境引用，校验精确 Provider 扩展并构造 Adapter，但不发送收费模型请求。任一 Worker
+失败时旧 Provider Revision 继续生效；修复缺失环境变量、扩展版本或 Endpoint 后重试失败目标。Provider
+生效后，再到 Agent Studio 选择模型并发布 Agent Revision。回滚必须走 rollout，不得直接修改
+`model_providers.current_revision_id`。Agent 发布会拒绝目录外模型及超过模型输出上限的 `max_tokens`；
+Provider 发布会拒绝删除或停用当前 Agent 正在引用的模型，应先发布替换 Agent Revision，再缩减目录。
+
+本地或部署安装扩展后可先运行 `joyhousebot discover-extensions --config config.json`。该命令不需要 LLM
+密钥，也不会启动执行 Worker；它用于解除“必须先启动 Worker 才能在 Console 看见配置 Schema”的
+引导死锁。目录发现不等于发布或加载成功，生产执行资格仍以 Worker rollout ACK 为准。
+
+## Agent 能力策略升级
+
+升级到带 Capability policy resolution v1 的版本后，`catalog` 不再隐式授予外部写入、计费、需审批或
+restricted 能力。已有发布版本不会被数据库迁移脚本改写，但它创建的新 Run 会按收紧后的规则解析能力。
+升级前应在预发布环境执行：
+
+1. 导出当前 Agent revision 的 `capability_policy`，确认实际依赖的外部/计费能力；
+2. 为每个 Agent 创建新 Draft，把这些能力加入 `allowed`，并在 `permissions` 中授予 Capability 声明的
+   最小权限；更推荐直接切换为 `mode=allowlist`；
+3. 确认插件已 active、目标 Worker 加载精确版本、运行时配置启用且凭据健康；
+4. 运行 Agent 配置测试和一条需审批的端到端 Run，验证审批、Artifact 与对账后再发布 Revision；
+5. 保留旧 Agent Revision，由 rollout 机制在预热失败时继续服务。
+
+该升级不删除数据库列或改写不可变 Revision。应用级回滚可重新部署上一版本 Runtime，并把 current Agent
+指针通过正常 rollout 切回旧 Revision；不要直接修改数据库指针。回滚期间创建的 Run 仍使用各自已经冻结
+的 execution snapshot，不能通过修改当前 Agent 绕过原 Run 的能力与权限边界。
+
 ## 扩容与故障恢复
 
 API 与 Worker 可独立扩容。Worker claim 使用 lease 和 fencing；实例退出后，过期工作可由其他 Worker 接管。SSE 客户端使用事件 sequence 断点续传，刷新页面不会取消 Run。
@@ -323,7 +420,7 @@ Tool 副作用和外部流量后，才使用 `branch`/`live`。供应商没有�
 被平台采集，诊断台会明确显示 `unavailable`。
 
 HTTP 客户端需要短等待时可发送 `Prefer: wait=20`；最大值为 30 秒。后台任务应发送
-`execution_mode=background` 并通过 Run 查询或 SSE 获取进度。
+`interaction_mode=background` 并通过 Run 查询或 SSE 获取进度。
 
 ## Eval 与生产验收
 
@@ -380,3 +477,24 @@ unset JOYHOUSEBOT_LOAD_TOKEN
 4. 开发机可检查 `ulimit -n`，但提升限制不能替代定位泄漏。
 
 命令执行默认依赖 Docker 沙箱；Docker 不可用时工具返回错误，不会在 API/Worker 宿主机执行。
+
+## 独立 JoyHouse Market
+
+JoyHouse Market 不是 Runtime 角色，也不位于本仓库。它在相邻的独立项目
+`../joyhouse-market` 中使用独立进程和独立密钥部署；第一阶段与其他服务共用 `JOYHOUSE_DATABASE_URL`，
+只迁移和访问 `cloud_*`、`market_*` 表。生产环境必须额外完成：
+
+1. TLS、限流、WAF 与 `/tuf`、`/targets`、`/v2` 的分层缓存；
+2. 共享数据库整体备份恢复和 Market 签名密钥离线备份演练；
+3. TUF root 离线 ceremony 与连续版本保留，不能只备份最新 `root.json`；
+4. OAuth/OIDC Token 发行、最小 scope、操作员分权和高风险双人复核；
+5. 真实支付 Provider 的 Webhook 验签、退款/拒付对账、税务、KYC 与 payout；
+6. 在 Runtime 侧用显式固定的 TUF root 注册 Registry，并验证一次跨服务 Acquisition。
+
+Market Web 与协议 API 可以使用不同 Origin；Registry Discovery 的 `market_web_url` 决定 Console 打开的
+登录/购买页面，`market_id` 决定 Runtime 拉取和验签的协议 Origin。Console 只向 Market Web 发送本地安装
+公钥，Market 用户 Token 不进入 Runtime；Market Web 返回的 DSSE Entitlement 由 Acquisition Worker 再次
+验签。生产环境两者都必须使用 HTTPS，本机开发只允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。
+
+Market Alpha 内置的 `free/manual` Checkout Provider 仅用于协议与状态机测试。Market 故障不得影响已提交 Run；授权在
+签名 `offline_until` 内按本地缓存继续生效，过期后只阻止新的付费能力或更新，不删除本地产物与历史。

@@ -45,20 +45,47 @@ async def system_metrics(
 
 @router.get("/agents")
 async def list_agents(context: ContextDep, container: ContainerDep):
-    profiles = await asyncio.to_thread(container.store.list_agent_profiles)
+    profiles, active_models, workers = await asyncio.gather(
+        asyncio.to_thread(container.store.list_agent_profiles),
+        asyncio.to_thread(container.store.list_active_models),
+        asyncio.to_thread(container.store.list_runtime_workers, limit=500),
+    )
+    active_model_ids = {
+        str(item.get("model_id") or "")
+        for item in active_models
+        if item.get("enabled", True) and str(item.get("kind") or "llm") == "llm"
+    }
+    has_execution_worker = any(
+        item.get("healthy") and bool(dict(item.get("capabilities") or {}).get("agent"))
+        for item in workers
+    )
     rows = [
-        {
-            "id": profile.definition.agent_id,
-            "name": profile.definition.name,
-            "description": profile.definition.description,
-            "role": profile.definition.role,
-            "is_default": profile.definition.is_default,
-            "revision_id": profile.revision.revision_id,
-            "model": profile.revision.model_policy["primary"],
-        }
+        _public_agent(profile, active_model_ids, has_execution_worker)
         for profile in profiles
     ]
     return {"items": rows}
+
+
+def _public_agent(profile, active_model_ids: set[str], has_execution_worker: bool):
+    model = str(profile.revision.model_policy.get("primary") or "")
+    blockers: list[str] = []
+    if not model or model == "unconfigured/model":
+        blockers.append("Agent 尚未选择已发布模型")
+    elif model not in active_model_ids:
+        blockers.append(f"Agent 模型不在已生效目录中：{model}")
+    if not has_execution_worker:
+        blockers.append("没有健康的 Agent Worker")
+    return {
+        "id": profile.definition.agent_id,
+        "name": profile.definition.name,
+        "description": profile.definition.description,
+        "role": profile.definition.role,
+        "is_default": profile.definition.is_default,
+        "revision_id": profile.revision.revision_id,
+        "model": model,
+        "execution_ready": not blockers,
+        "execution_blockers": blockers,
+    }
 
 
 @router.get("/capabilities")

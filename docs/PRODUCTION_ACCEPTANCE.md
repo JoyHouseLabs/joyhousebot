@@ -17,6 +17,17 @@ JSON 报告；任何一项变化都使旧证据失效。
 | 副作用 | 未解决 reconciliation、失败 compensation、失败 Saga 均为 0 |
 | 可观测 | 每个抽样 Run 可由 tracker → Run → Task → provider/tool span → Artifact 回放 |
 
+App 数据面在上述 Runtime 门禁之外使用独立目标。以下是发布 SLO，不是仓库代码对任意部署的自动承诺：
+
+| App 边界 | 目标与判定窗口 |
+|---|---|
+| Token 交换与安装查询 | 月可用性 ≥ 99.9%，服务端错误计入失败，客户端鉴权错误不计入 |
+| App Run 接受 | 月可用性 ≥ 99.9%，p95 ≤ 1 秒；同一幂等键新增 Run 数恒为 1 |
+| Run 终态投影 | 已接受 Run 终态完整率 ≥ 99.95%，不得出现两个相互冲突的终态 |
+| Callback | 接收端健康时 5 分钟内投递成功率 ≥ 99%，原始投递与人工重放均保持事件幂等 |
+| 用量归因 | 抽样安装的 Run、模型调用、Token 和 cost 与底层事实表差异为 0 |
+| 恢复 | 单区域 RPO=0（已提交 PostgreSQL 事务）；实际 RTO、跨区域 RPO/RTO 由部署演练记录决定 |
+
 ## 阶段一：构建与静态门禁
 
 ```bash
@@ -96,6 +107,41 @@ unset JOYHOUSEBOT_LOAD_TOKEN
 5. **PostgreSQL 短暂不可用**：仅在 staging 执行 30–60 秒连接中断。API readiness 应为 503、metrics 保留
    `joyhousebot_up 0`，恢复后队列继续；不得出现两个终态或丢失已接受 Run。
 6. **OTLP/Prometheus 不可用**：执行链路必须继续，遥测缓冲不得拖垮 Worker；恢复后新 Trace 正常上报。
+
+## 阶段六：独立 App 边界演练
+
+先用 `AppRuntimeSimulator` 跑 App 自身的无数据库契约测试，再在 staging 使用一次性 App Client、测试用户
+Grant 和无外部副作用的 Entry Point 执行真实链路：
+
+```bash
+export JOYHOUSEBOT_APP_CLIENT_ID='appclient_staging'
+export JOYHOUSEBOT_APP_CLIENT_SECRET='read-from-secret-manager'
+export JOYHOUSEBOT_APP_GRANT_ID='appgrant_staging'
+export JOYHOUSEBOT_APP_INSTALLATION_ID='appinst_staging'
+python scripts/app-integration-smoke.py \
+  --confirm LAUNCH_APP_SMOKE_RUN \
+  --base-url https://staging-runtime.example.com \
+  --entrypoint-id safe-smoke
+unset JOYHOUSEBOT_APP_CLIENT_ID JOYHOUSEBOT_APP_CLIENT_SECRET \
+  JOYHOUSEBOT_APP_GRANT_ID JOYHOUSEBOT_APP_INSTALLATION_ID
+```
+
+然后逐项执行并归档证据：
+
+1. **Client Secret 轮换**：先交换一个旧 Token；轮换后确认旧 Token 返回 401、旧 Secret 无法交换、新
+   Secret 可交换；用户 Grant 仍有效。只使用可丢弃的 staging Client。
+2. **Callback 接收端中断**：测试端先持续返回 503，让投递进入 `dead`；恢复 2xx 后用固定
+   `Idempotency-Key` 重放两次，确认只新增一个 replay Event、`replay_sequence` 递增、原 dead Event
+   不变且消费者只处理一次。
+3. **Scheduler 接管**：投递处于 `sending` 时终止 Scheduler，等待 lease 过期，由另一 Scheduler 接管；
+   旧 owner 的完成必须被 fencing 拒绝。
+4. **用量对账**：按安装查询 `/usage`，抽取同一时间窗的 root Run、所有子 Run 和
+   `model_invocations`，Run/调用/Token/cost 差异必须为 0。许可证或支付账单在 App/Market 侧另行对账。
+5. **备份恢复**：恢复同一 PostgreSQL 备份后，已提交 Run 及同事务产生的 Callback Outbox 必须同时存在；
+   记录实际 RPO/RTO。跨区域演练必须在目标云和网络拓扑完成，不能用本机测试结果代替。
+
+Smoke 报告默认写入 `artifacts/drills/`，不包含 Secret。真实回调 Payload、业务输出和用户数据仍只能进入
+受控发布记录，不能提交到公开仓库。
 
 ## 证据归档与结论
 

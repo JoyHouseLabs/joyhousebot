@@ -1,7 +1,7 @@
 # Joyhouse OPC 产品定位与引擎边界
 
 状态：Accepted（2026-08-09）
-适用范围：Joyhouse、JoyhouseBot、Task Pack、官网与产品控制台
+适用范围：Joyhouse、JoyhouseBot、独立 App、Task Pack、官网与产品控制台
 
 ## 1. 一句话战略
 
@@ -16,11 +16,24 @@ Joyhouse 面向一人公司，也服务希望持续成长、积累个人能力�
 | --- | --- | --- | --- |
 | Joyhouse | 普通用户、独立开发者、一人创业者 | 个人智能系统；目标、经营状态、确认、成果与连接管理 | 暴露 Run、Graph、Capability 等引擎概念 |
 | JoyhouseBot | 开发者、自部署用户、扩展作者 | 开源、可本地部署的长期任务执行引擎 | 重建 CRM、ERP、项目管理或内容平台 |
-| Smart Study | 有成长与学习需求的用户 | 基于相同理念形成的独立垂直产品 | 作为 JoyhouseBot 默认插件或 Core 参考业务 |
+| Smart Study | 有成长与学习需求的用户 | 基于相同理念形成的独立垂直 App | 作为 JoyhouseBot 默认 Extension 或 Core 参考业务 |
 | Task Pack | Joyhouse 用户和创作者 | 可安装、购买、分享和派生的持续任务产品 | 绕过 Runtime 权限、审批、版本和 Eval |
+| 独立 App | 垂直产品团队和客户 | 拥有自己的用户、计费与业务逻辑，按协议使用 Runtime | 作为 Python Extension 加载进 Core |
 
 普通用户主要接触 Joyhouse；JoyhouseBot 作为可信执行基础设施存在。只有自部署、开发扩展或排查运行问题
 时，用户才需要进入 JoyhouseBot Console。
+
+## 2.1 产品与技术词汇
+
+- App 是可以独立部署和售卖的完整业务产品；
+- Task Pack 是 App/Joyhouse 内可安装的持续任务产品；
+- Skill 是“如何完成工作”的版本化方法资产，不是可任意执行代码的插件；
+- Workflow 定义步骤和状态流转，Agent 承担执行角色，Capability 执行原子动作；
+- Integration 保存外部服务连接，Extension 是 Runtime 的技术安装制品；
+- Plugin 不作为控制台和用户产品概念使用。
+
+独立 App 的身份、数据、双向调用和商业模式见
+[独立 App 与 JoyhouseBot 协作契约](APP_INTEGRATION.md)。
 
 ## 3. 核心承诺
 
@@ -98,7 +111,7 @@ Task Pack 分享。
 ```text
 用户已有工具
 邮件 / 日历 / GitHub / 文档 / 表单 / 内容平台
-                    │ extension contracts
+                    │ App / Integration contracts
                     ▼
                  Joyhouse
 目标 / 个人事实 / 持续任务 / 待确认 / 经营状态 / 成果
@@ -114,7 +127,8 @@ Run / Task / Schedule / Approval / Recovery / Audit / Artifact / Work
 Joyhouse 保存轻量但关键的个人事实源：身份与业务、当前目标和项目、产品与关注对象、客户关系索引、已
 确认观点和决策、运行中的持续任务，以及已形成的内容、报告和作品。外部系统仍保存其擅长的完整业务数据。
 
-JoyhouseBot 不增加某个 Task Pack 的业务表、专属页面或硬编码流程；业务能力通过独立扩展注册。
+JoyhouseBot 不增加某个 App 或 Task Pack 的业务表、专属页面或硬编码流程。独立 App 通过 HTTP/SSE 与
+Remote Capability 协作；只有 Provider、Channel、Connector、Capability 等 Runtime 技术能力使用 Extension。
 
 ## 8. Joyhouse 首页
 

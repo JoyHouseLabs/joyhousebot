@@ -6,12 +6,14 @@ import asyncio
 import json
 from typing import Any
 
+from joyhousebot.domain.capabilities import capability_id, capability_kind
 from joyhousebot.orchestration.clarification import ClarificationEngine
 from joyhousebot.orchestration.coordinator_agent import normalize_coordinator_plan
 from joyhousebot.orchestration.planner import ScenarioPlanner, build_coordinator_graph
 from joyhousebot.runtime.context import CancellationToken
 from joyhousebot.runtime.models import AgentEvent, AgentOptions, AgentUsage, EventType
 from joyhousebot.runtime.planning_loop import run_coordinator_planning
+from joyhousebot.runtime.team_coordination import resolve_team_coordination_scope
 
 
 class RequestCoordinationMixin:
@@ -46,14 +48,136 @@ class RequestCoordinationMixin:
         options: AgentOptions,
         cancellation: CancellationToken,
     ) -> tuple[str | None, list[str], dict[str, Any], AgentUsage]:
+        capability_catalog = await asyncio.to_thread(
+            self.store.list_capability_definitions
+        )
+        snapshot = await asyncio.to_thread(
+            self.store.get_run_execution_snapshot, record.run_id
+        )
+        skill_bindings = list(snapshot.skill_bindings if snapshot is not None else ())
+        bound_skills = {
+            str(item.get("skill_id") or "").removeprefix("skill."): dict(item)
+            for item in skill_bindings
+            if str(item.get("skill_id") or "").startswith("skill.")
+        }
+
+        def binding_ref(binding: dict[str, Any]) -> dict[str, str]:
+            return {
+                "skill_id": str(binding["skill_id"]),
+                "version": str(binding["skill_version"]),
+                "content_sha256": str(binding.get("content_sha256") or ""),
+            }
+
+        always_skill_names = [
+            name
+            for name, binding in bound_skills.items()
+            if binding.get("activation_mode") == "always"
+        ]
+        team_scope = await resolve_team_coordination_scope(
+            self.store,
+            record=record,
+            metadata=options.metadata,
+            capability_catalog=capability_catalog,
+            snapshot=snapshot,
+        )
+        team = team_scope.team
+        effective_capabilities = team_scope.effective_capabilities
+        member_capabilities = team_scope.member_capabilities
+        member_skills = team_scope.member_skills
+        member_skill_refs = team_scope.member_skill_refs
+        effective_tools = [
+            capability_id(item)
+            for item in capability_catalog
+            if capability_id(item) in effective_capabilities
+            and capability_kind(item) in {"tool", "connector"}
+        ]
         scenario_state = await asyncio.to_thread(
             self.store.get_run_scenario_state,
             record.run_id,
             expected_user_id=record.user_id,
         )
         prompt = options.prompt
-        tools = list(options.allowed_tools)
-        metadata = dict(options.metadata)
+        requested_tools = list(options.allowed_tools)
+        requested_skill_ids = [
+            str(item.get("skill_id") or item.get("capability_id") or "").strip()
+            for item in (options.metadata.get("skill_refs") or ())
+            if isinstance(item, dict)
+            and str(item.get("skill_id") or item.get("capability_id") or "").strip()
+        ]
+        requested_skill_names = [
+            str(item).removeprefix("skill.")
+            for item in (options.metadata.get("skill_names") or ())
+            if str(item).strip()
+        ]
+        unauthorized_capabilities = [
+            item
+            for item in dict.fromkeys(requested_tools)
+            if item not in effective_capabilities
+        ]
+        unauthorized_skills = [
+            item
+            for item in dict.fromkeys(
+                [
+                    *requested_skill_names,
+                    *(item.removeprefix("skill.") for item in requested_skill_ids),
+                ]
+            )
+            if item not in bound_skills
+        ]
+        if unauthorized_capabilities:
+            raise ValueError(
+                "Agent revision does not authorize requested capabilities: "
+                + ", ".join(unauthorized_capabilities)
+            )
+        if unauthorized_skills:
+            raise ValueError(
+                "Agent revision does not bind requested Skills: "
+                + ", ".join(f"skill.{item}" for item in unauthorized_skills)
+            )
+        for requested_ref in options.metadata.get("skill_refs") or ():
+            if not isinstance(requested_ref, dict):
+                continue
+            requested_id = str(
+                requested_ref.get("skill_id")
+                or requested_ref.get("capability_id")
+                or ""
+            )
+            binding = bound_skills.get(requested_id.removeprefix("skill."))
+            if binding is None:
+                continue
+            requested_version = str(requested_ref.get("version") or "")
+            requested_digest = str(requested_ref.get("content_sha256") or "")
+            if requested_version and requested_version != str(binding["skill_version"]):
+                raise ValueError(
+                    "requested Skill version does not match the Agent binding: "
+                    f"{requested_id}@{requested_version}"
+                )
+            if requested_digest and requested_digest != str(
+                binding.get("content_sha256") or ""
+            ):
+                raise ValueError(
+                    "requested Skill digest does not match the Agent binding: "
+                    f"{requested_id}@{requested_version or binding['skill_version']}"
+                )
+        caller_allowlist_enforced = bool(
+            options.metadata.get("caller_tool_allowlist_enforced")
+        )
+        tools = requested_tools if caller_allowlist_enforced else requested_tools or effective_tools
+        initial_skill_names = list(
+            dict.fromkeys([*always_skill_names, *requested_skill_names])
+        )
+        metadata = {
+            **dict(options.metadata),
+            "capability_allowlist_enforced": True,
+            "effective_capabilities": sorted(effective_capabilities),
+            "skill_names": initial_skill_names,
+            "skill_refs": [
+                binding_ref(bound_skills[name])
+                for name in initial_skill_names
+                if name in bound_skills
+            ],
+            "skill_binding_enforced": True,
+        }
         coordination_usage = AgentUsage()
         graph_to_materialize = None
         if scenario_state is not None:
@@ -67,10 +191,72 @@ class RequestCoordinationMixin:
             return prompt, tools, metadata, coordination_usage
         dynamic_inputs = dict(options.metadata.get("dynamic_inputs") or {})
 
-        scenarios, capability_catalog = await asyncio.gather(
-            asyncio.to_thread(self.store.list_scenario_versions, published_only=True),
-            asyncio.to_thread(self.store.list_capability_definitions),
+        scenarios = (
+            []
+            if dict(options.metadata.get("orchestration") or {}).get("mode") != "scenario"
+            else await asyncio.to_thread(
+                self.store.list_scenario_versions, published_only=True
+            )
         )
+
+        def scenario_is_available(item: Any) -> bool:
+            if any(
+                reference.capability_id not in effective_capabilities
+                for reference in item.allowed_capabilities
+            ):
+                return False
+            for reference in item.required_skills:
+                binding = bound_skills.get(reference.skill_id.removeprefix("skill."))
+                if binding is None:
+                    return False
+                if str(binding.get("skill_version") or "") != reference.version:
+                    return False
+                if str(binding.get("content_sha256") or "") != reference.content_sha256:
+                    return False
+            return True
+
+        scenarios = [
+            item for item in scenarios if scenario_is_available(item)
+        ]
+        capability_catalog = [
+            {
+                **item,
+                "team_member_ids": [
+                    member_id
+                    for member_id, allowed in member_capabilities.items()
+                    if capability_id(item) in allowed
+                ],
+            }
+            for item in capability_catalog
+            if capability_id(item) in effective_capabilities
+        ]
+        coordinator_skills: list[dict[str, Any]] = []
+        for name, binding in bound_skills.items():
+            if binding.get("activation_mode") not in {"always", "coordinator_selected"}:
+                continue
+            skill = await asyncio.to_thread(
+                self.store.get_published_skill,
+                str(binding["skill_id"]),
+                str(binding["skill_version"]),
+            )
+            if skill is None or str(skill.get("content_sha256") or "") != str(
+                binding.get("content_sha256") or ""
+            ):
+                raise ValueError(
+                    "Agent Skill binding is no longer available with its exact digest: "
+                    f"{binding['skill_id']}@{binding['skill_version']}"
+                )
+            coordinator_skills.append(
+                {
+                    "skill_id": str(binding["skill_id"]),
+                    "version": str(binding["skill_version"]),
+                    "content_sha256": str(binding.get("content_sha256") or ""),
+                    "name": str(skill.get("name") or name),
+                    "description": str(skill.get("description") or ""),
+                    "activation_mode": str(binding.get("activation_mode") or ""),
+                }
+            )
+        planning_catalog = [*capability_catalog, *coordinator_skills]
         await self._publish_coordination_progress(
             record.run_id,
             "正在读取场景与能力目录",
@@ -87,7 +273,7 @@ class RequestCoordinationMixin:
 
         def normalize(raw_plan: dict[str, Any]) -> dict[str, Any]:
             normalized = normalize_coordinator_plan(
-                raw_plan, capability_catalog, scenario_values
+                raw_plan, planning_catalog, scenario_values, team=team
             )
             # A deterministic route is a contract, not merely a model hint.
             return _enforce_routed_scenario(
@@ -109,7 +295,7 @@ class RequestCoordinationMixin:
                 else options.prompt
             ),
             scenarios=scenario_values,
-            capabilities=capability_catalog,
+            capabilities=planning_catalog,
             routing_decision=routing_decision,
             normalize=normalize,
         )
@@ -128,7 +314,15 @@ class RequestCoordinationMixin:
             if isinstance(item, dict)
         ]
         tools = selected_tool_ids or tools
-        metadata["skill_names"] = plan["selected_skills"]
+        selected_skill_names = list(
+            dict.fromkeys([*always_skill_names, *plan["selected_skills"]])
+        )
+        metadata["skill_names"] = selected_skill_names
+        metadata["skill_refs"] = [
+            binding_ref(bound_skills[name])
+            for name in selected_skill_names
+            if name in bound_skills
+        ]
         metadata["coordinator_plan"] = plan
         if plan["selected_capabilities"]:
             await self._publish_coordination_progress(
@@ -276,9 +470,7 @@ class RequestCoordinationMixin:
                 data={"scenario_id": selected_scenario.scenario_id},
             )
             tools = [
-                item.capability_id
-                for item in selected_scenario.allowed_capabilities
-                if item.kind.value in {"tool", "connector"}
+                item.capability_id for item in selected_scenario.allowed_capabilities
             ]
             await self._publish_coordination_progress(
                 record.run_id,
@@ -287,15 +479,17 @@ class RequestCoordinationMixin:
                 status="completed",
                 data={"capability_count": len(tools)},
             )
-            metadata["skill_names"] = [
-                item.capability_id.removeprefix("skill.")
-                for item in selected_scenario.allowed_capabilities
-                if item.kind.value == "skill"
+            scenario_skill_names = [
+                item.skill_id.removeprefix("skill.")
+                for item in selected_scenario.required_skills
             ]
+            metadata["skill_names"] = list(
+                dict.fromkeys([*always_skill_names, *scenario_skill_names])
+            )
             metadata["skill_refs"] = [
-                item.to_dict()
-                for item in selected_scenario.allowed_capabilities
-                if item.kind.value == "skill"
+                binding_ref(bound_skills[name])
+                for name in metadata["skill_names"]
+                if name in bound_skills
             ]
             prompt += (
                 "\n\n## Validated scenario context\n"
@@ -375,6 +569,12 @@ class RequestCoordinationMixin:
                 session_id=record.session_id,
                 agent_id=record.agent_id,
                 request_id=str(options.request_id or f"req_{record.run_id}"),
+                team=team,
+                member_capabilities=member_capabilities,
+                member_skills=member_skills,
+                member_skill_refs=member_skill_refs,
+                shared_inputs=dynamic_inputs,
+                team_workspace_run_id=record.run_id if team is not None else None,
             )
         if graph_to_materialize is not None:
             graph_to_materialize.metadata["coordination_usage"] = coordination_usage.to_dict()

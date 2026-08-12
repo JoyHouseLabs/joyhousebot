@@ -21,11 +21,15 @@ def build_provider(
     client: httpx.AsyncClient | None = None,
     model_policy: dict[str, Any] | None = None,
 ) -> LLMProvider:
+    provider_config = config.get_provider(model)
     return create_model_provider(
         config=config,
         model=model,
         client=client,
         model_policy=model_policy,
+        request_timeout_seconds=float(
+            getattr(provider_config, "request_timeout_seconds", 120.0)
+        ),
     )
 
 

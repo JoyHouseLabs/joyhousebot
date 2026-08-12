@@ -67,6 +67,7 @@ def render_prometheus(data: dict[str, Any]) -> str:
         ("graph_patch_proposals", "GraphPatch proposals"),
         ("eval_runs", "Evaluation runs"),
         ("work_shares", "Work shares"),
+        ("app_callback_deliveries", "App callback deliveries"),
     ):
         _status_family(
             lines,
@@ -82,6 +83,9 @@ def render_prometheus(data: dict[str, Any]) -> str:
             "# TYPE joyhousebot_reconciliation_oldest_active_seconds gauge",
             "joyhousebot_reconciliation_oldest_active_seconds "
             f"{float(data.get('reconciliation_oldest_active_seconds', 0))}",
+            "# TYPE joyhousebot_app_callback_oldest_pending_seconds gauge",
+            "joyhousebot_app_callback_oldest_pending_seconds "
+            f"{float(data.get('app_callback_oldest_pending_seconds', 0))}",
         ]
     )
     for row in data.get("verifications") or []:

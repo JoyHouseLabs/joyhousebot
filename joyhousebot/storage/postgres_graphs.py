@@ -25,20 +25,62 @@ class PostgresGraphStoreMixin:
         idempotency_key: str | None = None,
         max_active_per_user: int | None = None,
         max_submissions_per_minute: int | None = None,
+        root_run_id: str | None = None,
+        parent_run_id: str | None = None,
+        parent_task_id: str | None = None,
+        max_children_per_root: int | None = None,
     ) -> tuple[RuntimeRunRecord, bool]:
         """Persist a run, immutable revision, Tasks and edges atomically."""
         with self._pool.connection() as conn, conn.transaction():
-            existing = check_top_level_submission_quota(
-                conn,
-                user_id=user_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                idempotency_key=idempotency_key,
-                max_active_per_user=max_active_per_user,
-                max_submissions_per_minute=max_submissions_per_minute,
-            )
-            if existing is not None:
-                return self._run(existing), False
+            def require_same_idempotent_graph(existing_row: Any) -> None:
+                requested_hash = str((revision or {}).get("spec_hash") or "")
+                if not requested_hash:
+                    return
+                frozen = conn.execute(
+                    """SELECT spec_hash FROM graph_revisions
+                       WHERE run_id=%s AND revision_number=1""",
+                    (existing_row["run_id"],),
+                ).fetchone()
+                if frozen and str(frozen["spec_hash"]) != requested_hash:
+                    raise ValueError(
+                        "Graph Idempotency-Key was reused with a different request"
+                    )
+
+            if parent_run_id is None and root_run_id is None:
+                existing = check_top_level_submission_quota(
+                    conn,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    idempotency_key=idempotency_key,
+                    max_active_per_user=max_active_per_user,
+                    max_submissions_per_minute=max_submissions_per_minute,
+                )
+                if existing is not None:
+                    require_same_idempotent_graph(existing)
+                    return self._run(existing), False
+            if root_run_id and parent_run_id and max_children_per_root is not None:
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (root_run_id,))
+                existing = None
+                if idempotency_key:
+                    existing = conn.execute(
+                        """SELECT *,FALSE AS created FROM runtime_runs
+                           WHERE user_id=%s AND agent_id=%s AND session_id=%s
+                             AND idempotency_key=%s""",
+                        (user_id, agent_id, session_id, idempotency_key),
+                    ).fetchone()
+                if existing is not None:
+                    require_same_idempotent_graph(existing)
+                    return self._run(existing), False
+                child_count = conn.execute(
+                    """SELECT COUNT(*) AS count FROM runtime_runs
+                       WHERE root_run_id=%s AND parent_run_id IS NOT NULL""",
+                    (root_run_id,),
+                ).fetchone()
+                if int(child_count["count"]) >= max(0, int(max_children_per_root)):
+                    raise RuntimeError(
+                        f"child run fan-out limit reached ({max_children_per_root})"
+                    )
             revision = revision or self._freeze_graph_revision_from_rows(
                 run_id, goal=prompt, options=options, tasks=tasks
             )
@@ -46,8 +88,8 @@ class PostgresGraphStoreMixin:
             row = conn.execute(
                 """INSERT INTO runtime_runs
                        (run_id,user_id,session_id,agent_id,kind,status,prompt,options,
-                        idempotency_key,root_run_id,total_task_count)
-                   VALUES (%s,%s,%s,%s,'graph','queued',%s,%s,%s,%s,%s)
+                        idempotency_key,root_run_id,parent_run_id,parent_task_id,total_task_count)
+                   VALUES (%s,%s,%s,%s,'graph','queued',%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (user_id,agent_id,session_id,idempotency_key)
                        WHERE idempotency_key IS NOT NULL DO NOTHING
                    RETURNING *,TRUE AS created""",
@@ -59,7 +101,9 @@ class PostgresGraphStoreMixin:
                     prompt,
                     Jsonb(options),
                     idempotency_key,
-                    run_id,
+                    root_run_id or run_id,
+                    parent_run_id,
+                    parent_task_id,
                     len(tasks),
                 ),
             ).fetchone()
@@ -74,6 +118,7 @@ class PostgresGraphStoreMixin:
                 ).fetchone()
             assert row is not None
             if not row["created"]:
+                require_same_idempotent_graph(row)
                 return self._run(row), False
             self._insert_graph_revision(
                 conn,

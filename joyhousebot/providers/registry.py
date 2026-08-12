@@ -102,9 +102,11 @@ def get_provider_registry(config: Any) -> ModelProviderRegistry:
     registry = getattr(config, "_model_provider_registry", None)
     if registry is None:
         extensions = getattr(config, "extensions", None)
+        explicit = getattr(extensions, "allowed_ids", ()) or ()
+        legacy = getattr(extensions, "enabled", ()) or ()
         enabled = {
             str(item).strip()
-            for item in getattr(extensions, "enabled", ()) or ()
+            for item in (*explicit, *legacy)
             if str(item).strip().startswith("provider-")
         }
         registry = ModelProviderRegistry(

@@ -15,6 +15,8 @@ from joyhousebot.domain.agents import (
 )
 from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityInvocation
 from joyhousebot.domain.scenarios import ScenarioVersion
+from joyhousebot.storage.agent_team_store import AgentTeamStore
+from joyhousebot.storage.app_pack_store import AppPackStore
 from joyhousebot.storage.approval_records import ApprovalRequestRecord
 from joyhousebot.storage.context_records import ContextManifestRecord
 from joyhousebot.storage.decision_records import LoopDecisionRecord
@@ -23,6 +25,7 @@ from joyhousebot.storage.execution_records import (
     ActionObservationRecord,
     RuntimeTurnRecord,
 )
+from joyhousebot.storage.external_configuration_store import ExternalConfigurationStore
 from joyhousebot.storage.graph_event_records import GraphEventWaitRecord
 from joyhousebot.storage.graph_patch_records import GraphPatchRecord
 from joyhousebot.storage.graph_revision_records import GraphRevisionRecord
@@ -157,7 +160,7 @@ class RequestTraceEventRecord:
 
 
 @runtime_checkable
-class RuntimeStore(Protocol):
+class RuntimeStore(AgentTeamStore, AppPackStore, ExternalConfigurationStore, Protocol):
     """Backend-neutral runtime contract used by FastAPI and workers.
 
     Methods are deliberately synchronous: database drivers remain isolated from
@@ -250,6 +253,30 @@ class RuntimeStore(Protocol):
 
     def list_agent_skill_bindings(self, agent_revision_id: str) -> list[dict[str, Any]]: ...
 
+    def unbind_agent_skill(self, **kwargs: Any) -> bool: ...
+
+    def save_skill_draft(self, value: dict[str, Any], *, actor_id: str) -> dict[str, Any]: ...
+
+    def validate_skill_version(
+        self, skill_id: str, version: str, *, actor_id: str | None = None
+    ) -> dict[str, Any]: ...
+
+    def stage_skill_version(self, skill_id: str, version: str, **kwargs: Any) -> str: ...
+
+    def list_skills(self, *, active_only: bool = False) -> list[dict[str, Any]]: ...
+
+    def get_skill(self, skill_id: str) -> dict[str, Any] | None: ...
+
+    def list_skill_versions(self, skill_id: str) -> list[dict[str, Any]]: ...
+
+    def get_skill_version(self, skill_id: str, version: str) -> dict[str, Any] | None: ...
+
+    def get_published_skill(
+        self, skill_id: str, version: str | None = None
+    ) -> dict[str, Any] | None: ...
+
+    def set_skill_status(self, skill_id: str, *, status: str, actor_id: str) -> bool: ...
+
     def list_memory_documents(self, **kwargs: Any) -> list[dict[str, Any]]: ...
 
     def summarize_memory_documents(self, **kwargs: Any) -> dict[str, Any]: ...
@@ -294,9 +321,7 @@ class RuntimeStore(Protocol):
 
     def list_configuration_rollout_targets(self, rollout_id: str) -> list[dict[str, Any]]: ...
 
-    def get_configuration_rollout(
-        self, rollout_id: str
-    ) -> ConfigurationRolloutRecord | None: ...
+    def get_configuration_rollout(self, rollout_id: str) -> ConfigurationRolloutRecord | None: ...
 
     def list_pending_configuration_revisions(
         self, worker_id: str
@@ -335,7 +360,8 @@ class RuntimeStore(Protocol):
     def get_capability_runtime_settings(self, capability_id: str) -> dict[str, Any]: ...
 
     def save_capability_runtime_settings(
-        self, capability_id: str, *, enabled: bool, configuration: dict[str, Any], actor_id: str
+        self, capability_id: str, *, enabled: bool, configuration: dict[str, Any],
+        actor_id: str, capability_version: str | None = None
     ) -> dict[str, Any]: ...
 
     def upsert_plugin_release(self, manifest: dict[str, Any]) -> None: ...
@@ -455,6 +481,8 @@ class RuntimeStore(Protocol):
     def apply_graph_patch(
         self, **kwargs: Any
     ) -> tuple[GraphPatchRecord, RuntimeRunRecord, bool]: ...
+
+    def suspend_graph_task_for_subrun(self, **kwargs: Any) -> bool: ...
 
     def list_graph_patches(
         self, run_id: str, *, expected_user_id: str

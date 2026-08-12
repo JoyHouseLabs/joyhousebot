@@ -25,23 +25,27 @@ capability-market-research = "market_research:create_plugin"
 - Runtime API 与 Extension SDK 版本；
 - 扩展类型、执行隔离、最小权限和外部依赖；
 - 非敏感配置 Schema；
-- Capability 扩展拥有的 Tool、Connector、Skill、Scenario、Workflow 或 Agent 组件。
+- Capability 扩展拥有的 Tool、Connector、Scenario、Workflow 或 Agent 组件；可分发的 Skill 作为独立资产导入 Skill Registry，再经过校验与发布，不能作为 Capability 特例直接生效。
 
 同一 `extension_id + version` 的 Manifest、digest 和组件目录不可原地修改。实现有任何变化都发布新版本。
 
-## 3. 安装不等于启用
+## 3. 可用、安装、准入与生效是四个状态
 
-安装 wheel 只增加 entry point metadata。Core 会先按 `extensions.enabled` 过滤 metadata，只有完整 ID
-明确启用后才 import 扩展代码：
+扩展源码目录只增加“可用”元数据，安装 wheel 才增加 distribution entry point。Core 按
+`extensions.allowedIds` 建立不可由 Console 扩大的部署安全边界；运行期启停写入 PostgreSQL，
+Worker 加载确认后才算实际生效：
 
 ```json
 {
   "extensions": {
-    "enabled": [
+    "catalogDirectories": ["./extensions"],
+    "allowedIds": [
       "provider-openai-compatible",
       "channel-email",
       "capability-market-research"
     ],
+    "initiallyActive": ["provider-openai-compatible"],
+    "allowConsoleActivation": true,
     "settings": {
       "channel-email": {
         "imapPassword": "env://EMAIL_IMAP_PASSWORD"
@@ -51,8 +55,9 @@ capability-market-research = "market_research:create_plugin"
 }
 ```
 
+`initiallyActive` 只在 inventory 首次建行时播种，之后 Console 中的期望状态不会被重启覆盖。
 配置引用未安装 ID、entry point 与 Manifest ID 不一致、SDK/API 不兼容或 digest 无效时，负责该扩展的
-Worker 直接启动失败。未启用的已安装包不会被 import。
+Worker 直接启动失败。目录扫描始终不执行扩展代码；API 进程也不会 import 扩展。
 
 ## 4. 进程边界
 

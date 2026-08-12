@@ -19,7 +19,15 @@ from psycopg_pool import ConnectionPool
 
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_admins import PostgresAdminStoreMixin
+from joyhousebot.storage.postgres_agent_skills import PostgresAgentSkillStoreMixin
+from joyhousebot.storage.postgres_agent_teams import PostgresAgentTeamStoreMixin
 from joyhousebot.storage.postgres_agents import PostgresAgentStoreMixin
+from joyhousebot.storage.postgres_app_callbacks import PostgresAppCallbackStoreMixin
+from joyhousebot.storage.postgres_app_delegation import PostgresAppDelegationStoreMixin
+from joyhousebot.storage.postgres_app_market import PostgresAppMarketStoreMixin
+from joyhousebot.storage.postgres_app_packs import PostgresAppPackStoreMixin
+from joyhousebot.storage.postgres_app_updates import PostgresAppUpdateStoreMixin
+from joyhousebot.storage.postgres_app_usage import PostgresAppUsageStoreMixin
 from joyhousebot.storage.postgres_approvals import PostgresApprovalStoreMixin
 from joyhousebot.storage.postgres_cancel import PostgresRunCancelMixin
 from joyhousebot.storage.postgres_capabilities import PostgresCapabilityStoreMixin
@@ -28,6 +36,9 @@ from joyhousebot.storage.postgres_context_manifests import PostgresContextManife
 from joyhousebot.storage.postgres_evals import PostgresEvalStoreMixin
 from joyhousebot.storage.postgres_event_triggers import PostgresEventTriggerStoreMixin
 from joyhousebot.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
+from joyhousebot.storage.postgres_extension_inventory import (
+    PostgresExtensionInventoryStoreMixin,
+)
 from joyhousebot.storage.postgres_graph_actions import PostgresGraphActionStoreMixin
 from joyhousebot.storage.postgres_graph_branches import PostgresGraphBranchStoreMixin
 from joyhousebot.storage.postgres_graph_control_nodes import PostgresGraphControlNodeStoreMixin
@@ -36,11 +47,13 @@ from joyhousebot.storage.postgres_graph_loops import PostgresGraphLoopStoreMixin
 from joyhousebot.storage.postgres_graph_patches import PostgresGraphPatchStoreMixin
 from joyhousebot.storage.postgres_graph_revisions import PostgresGraphRevisionStoreMixin
 from joyhousebot.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
+from joyhousebot.storage.postgres_graph_subruns import PostgresGraphSubrunStoreMixin
 from joyhousebot.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
 from joyhousebot.storage.postgres_graphs import PostgresGraphStoreMixin
 from joyhousebot.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
 from joyhousebot.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
 from joyhousebot.storage.postgres_migrations import PostgresMigrationMixin
+from joyhousebot.storage.postgres_model_providers import PostgresModelProviderStoreMixin
 from joyhousebot.storage.postgres_observability import PostgresObservabilityStoreMixin
 from joyhousebot.storage.postgres_operational_metrics import (
     PostgresOperationalMetricsStoreMixin,
@@ -49,10 +62,14 @@ from joyhousebot.storage.postgres_operations import PostgresOperationsStoreMixin
 from joyhousebot.storage.postgres_plugins import PostgresPluginStoreMixin
 from joyhousebot.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
 from joyhousebot.storage.postgres_reconciliations import PostgresReconciliationStoreMixin
+from joyhousebot.storage.postgres_remote_connections import (
+    PostgresRemoteConnectionStoreMixin,
+)
 from joyhousebot.storage.postgres_rollouts import PostgresRolloutStoreMixin
 from joyhousebot.storage.postgres_run_listing import PostgresRunListingStoreMixin
 from joyhousebot.storage.postgres_runs import PostgresRunStoreMixin
 from joyhousebot.storage.postgres_scenarios import PostgresScenarioStoreMixin
+from joyhousebot.storage.postgres_skills import PostgresSkillStoreMixin
 from joyhousebot.storage.postgres_tasks import PostgresTaskStoreMixin
 from joyhousebot.storage.postgres_verifications import PostgresVerificationStoreMixin
 from joyhousebot.storage.postgres_workflows import PostgresWorkflowStoreMixin
@@ -87,15 +104,25 @@ def _json(value: Any, default: Any = None) -> Any:
 
 class PostgresRuntimeStore(
     PostgresMigrationMixin,
+    PostgresAppCallbackStoreMixin,
+    PostgresAppDelegationStoreMixin,
+    PostgresAppMarketStoreMixin,
+    PostgresAppPackStoreMixin,
+    PostgresAppUpdateStoreMixin,
+    PostgresAppUsageStoreMixin,
+    PostgresAgentTeamStoreMixin,
     PostgresWorkflowStoreMixin,
     PostgresGraphRevisionStoreMixin,
     PostgresGraphSagaStoreMixin,
+    PostgresGraphSubrunStoreMixin,
     PostgresGraphPatchStoreMixin,
     PostgresEvalStoreMixin,
     PostgresWorkStoreMixin,
     PostgresGraphWaitEventStoreMixin,
     PostgresAdminStoreMixin,
+    PostgresAgentSkillStoreMixin,
     PostgresAgentStoreMixin,
+    PostgresSkillStoreMixin,
     PostgresCapabilityStoreMixin,
     PostgresExecutionLoopStoreMixin,
     PostgresContextManifestStoreMixin,
@@ -121,7 +148,10 @@ class PostgresRuntimeStore(
     PostgresObservabilityStoreMixin,
     PostgresOperationalMetricsStoreMixin,
     PostgresRolloutStoreMixin,
+    PostgresModelProviderStoreMixin,
+    PostgresRemoteConnectionStoreMixin,
     PostgresOperationsStoreMixin,
+    PostgresExtensionInventoryStoreMixin,
     PostgresPluginStoreMixin,
 ):
     """Production runtime store backed by a psycopg connection pool."""
@@ -153,9 +183,14 @@ class PostgresRuntimeStore(
         self._listener = None
         self._listener_lock = threading.Lock()
         self._closed = False
-        self._pool.wait(timeout=10)
-        if auto_migrate:
-            self._migrate_all()
+        try:
+            self._pool.wait(timeout=10)
+            if auto_migrate:
+                self._migrate_all()
+        except BaseException:
+            self._closed = True
+            self._pool.close()
+            raise
 
     @staticmethod
     def _run(row: dict[str, Any]) -> RuntimeRunRecord:

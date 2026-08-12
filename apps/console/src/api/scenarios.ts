@@ -32,7 +32,8 @@ export interface ScenarioVersion {
   fields: ScenarioField[]
   nodes: ScenarioNode[]
   edges: Array<Record<string, unknown>>
-  allowed_capabilities: string[]
+  allowed_capabilities: CapabilityDefinition['ref'][]
+  required_skills: ScenarioSkillRef[]
   planning_mode: 'fixed' | 'dynamic'
   execution_policy: Record<string, unknown>
   routing_rules: Array<Record<string, unknown>>
@@ -41,10 +42,18 @@ export interface ScenarioVersion {
 }
 
 export interface CapabilityDefinition {
-  ref: { capability_id: string; version: string; kind: string }
+  ref: { capability_id: string; version: string; kind: 'tool' | 'connector'; plugin_id: string; plugin_version: string; plugin_build_digest: string }
   name: string
   description: string
   execution_mode: string
+}
+
+export interface ScenarioSkillRef {
+  skill_id: string
+  version: string
+  content_sha256: string
+  name?: string
+  description?: string
 }
 
 async function payload<T>(response: Response, fallback: string): Promise<T> {
@@ -61,6 +70,11 @@ export async function listScenarios(): Promise<ScenarioVersion[]> {
 export async function listScenarioCapabilities(): Promise<CapabilityDefinition[]> {
   const response = await apiFetch('/v1/admin/scenarios/capability-catalog')
   return (await payload<{ items: CapabilityDefinition[] }>(response, '读取能力目录失败')).items
+}
+
+export async function listScenarioSkills(): Promise<ScenarioSkillRef[]> {
+  const response = await apiFetch('/v1/admin/scenarios/skill-catalog')
+  return (await payload<{ items: ScenarioSkillRef[] }>(response, '读取 Skill 目录失败')).items
 }
 
 export async function saveScenario(scenario: ScenarioVersion): Promise<ScenarioVersion> {

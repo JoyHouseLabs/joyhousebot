@@ -23,11 +23,18 @@ from joyhousebot.api.dependencies import _bearer_token
 from joyhousebot.api.mcp_gateway import MCPGateway
 from joyhousebot.api.rate_limit import RateLimitMiddleware
 from joyhousebot.api.routers import (
+    admin_apps,
     admin_catalog,
     admin_evals,
+    admin_model_providers,
     admin_platform,
     admin_plugins,
+    admin_remote_connections,
     admin_scenarios,
+    admin_skills,
+    admin_teams,
+    app_auth,
+    apps,
     auth,
     event_triggers,
     graph_events,
@@ -302,12 +309,19 @@ def create_app(
     if surface in {"combined", "control"}:
         app.include_router(auth.router, prefix=prefix)
         app.include_router(admin_platform.router, prefix=prefix)
+        app.include_router(admin_apps.router, prefix=prefix)
+        app.include_router(admin_teams.router, prefix=prefix)
         app.include_router(admin_catalog.router, prefix=prefix)
         app.include_router(admin_evals.router, prefix=prefix)
+        app.include_router(admin_model_providers.router, prefix=prefix)
         app.include_router(admin_plugins.router, prefix=prefix)
+        app.include_router(admin_remote_connections.router, prefix=prefix)
         app.include_router(admin_scenarios.router, prefix=prefix)
+        app.include_router(admin_skills.router, prefix=prefix)
     if surface in {"combined", "public"}:
+        app.include_router(app_auth.router, prefix=prefix)
         app.include_router(graph_events.router, prefix=prefix)
+        app.include_router(apps.router, prefix=prefix)
         app.include_router(event_triggers.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)
         app.include_router(knowledge.router, prefix=prefix)

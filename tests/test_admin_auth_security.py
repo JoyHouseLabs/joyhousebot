@@ -110,7 +110,10 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
         delegated_run = client.post(
             "/v1/runs",
             headers=delegated_headers,
-            json={"input": {"content": "remember this for the selected personal space"}},
+            json={
+                "execution": {"mode": "agent", "agent_id": "default"},
+                "input": {"content": "remember this for the selected personal space"},
+            },
         )
         assert delegated_run.status_code == 202
         assert delegated_run.json()["user_id"] == "personal-space-a"

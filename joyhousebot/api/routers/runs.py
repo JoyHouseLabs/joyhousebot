@@ -5,14 +5,15 @@ from __future__ import annotations
 import asyncio
 import re
 
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 
 from joyhousebot.api.dependencies import ContainerDep, ContextDep
+from joyhousebot.api.run_schemas import CreateRunRequest
+from joyhousebot.api.run_submission import submit_create_run
 from joyhousebot.api.schemas import (
     CreateGraphPatchRequest,
     CreateGraphRequest,
     CreateRunFeedbackRequest,
-    CreateRunRequest,
     ResolveApprovalRequest,
     ResolveGraphPatchProposalRequest,
     ResolveOperationRequest,
@@ -28,7 +29,7 @@ from joyhousebot.application.graph_patch_commands import (
 )
 from joyhousebot.application.loop_decisions import loop_decision_public_dict
 from joyhousebot.application.presenters import record_dict
-from joyhousebot.application.runs import CreateRunCommand, GraphTaskCommand
+from joyhousebot.application.runs import GraphTaskCommand
 from joyhousebot.application.verifications import verification_public_dict
 from joyhousebot.runtime.narrative import public_event_dict
 
@@ -56,33 +57,19 @@ async def create_run(
     response: Response,
     prefer: str | None = Header(default=None),
 ):
-    record = await container.runs.create(
-        context,
-        CreateRunCommand(
-            agent_id=body.agent_id,
-            session_id=body.session_id,
-            scenario_id=body.scenario_id,
-            scenario_inputs=body.scenario_inputs,
-            execution_mode=body.execution_mode,
-            input=body.input.content,
-            model=body.model,
-            system_prompt=body.system_prompt,
-            output_schema=body.output_schema,
-            verification_policy=body.verification_policy,
-            timeout_seconds=body.timeout_seconds,
-            max_turns=body.max_turns,
-            max_repairs=body.max_repairs,
-            max_replans=body.max_replans,
-            metadata=body.metadata,
-        ),
-    )
+    if context.principal.app_client_id:
+        raise HTTPException(
+            status_code=403,
+            detail="delegated App credentials must launch through its App entrypoint",
+        )
+    record = await submit_create_run(body, context=context, container=container)
     response.headers["Location"] = f"/v1/runs/{record.run_id}"
     wait_seconds = _prefer_wait(prefer)
     if wait_seconds > 0:
         response.headers["Preference-Applied"] = f"wait={wait_seconds:g}"
     if (
         wait_seconds > 0
-        and body.execution_mode != "background"
+        and body.interaction_mode != "background"
         and record.status
         not in {
             "waiting_input",
@@ -100,6 +87,11 @@ async def create_run(
 
 @router.post("/graphs", status_code=202)
 async def create_graph(body: CreateGraphRequest, context: ContextDep, container: ContainerDep):
+    if context.principal.app_client_id:
+        raise HTTPException(
+            status_code=403,
+            detail="delegated App credentials cannot submit arbitrary Graphs",
+        )
     record = await container.runs.create_graph(
         context,
         goal=body.goal,
@@ -140,6 +132,32 @@ async def list_runs(
 @router.get("/{run_id}")
 async def get_run(run_id: str, context: ContextDep, container: ContainerDep):
     return record_dict(await container.runs.get(context, run_id))
+
+
+@router.get("/{run_id}/app-callbacks")
+async def list_run_app_callbacks(
+    run_id: str, context: ContextDep, container: ContainerDep
+):
+    await container.runs.get(context, run_id)
+    return {
+        "items": await container.app_callbacks.list_run_deliveries(context, run_id)
+    }
+
+
+@router.post("/{run_id}/app-callbacks/{event_id}/replay", status_code=202)
+async def replay_run_app_callback(
+    run_id: str,
+    event_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    await container.runs.get(context, run_id)
+    if not context.idempotency_key:
+        raise HTTPException(
+            status_code=400,
+            detail="callback replay requires an Idempotency-Key header",
+        )
+    return await container.app_callbacks.replay(context, run_id, event_id)
 
 
 @router.get("/{run_id}/feedback")

@@ -30,12 +30,12 @@ from joyhousebot.api.schemas import (
     SaveCapabilityRuntimeSettingsRequest,
 )
 from joyhousebot.application.presenters import public_capability_definition
-from joyhousebot.config.extensions import enabled_channel_ids
 from joyhousebot.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
 from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
+    requires_explicit_grant,
 )
 from joyhousebot.domain.permissions import permission_catalog_response
 from joyhousebot.extension_discovery import installed_extensions
@@ -181,17 +181,93 @@ async def bind_agent_skill(
     return {"saved": True}
 
 
+@router.delete(
+    "/agents/{agent_id}/revisions/{revision_id}/skills/{skill_id}/{skill_version}"
+)
+async def unbind_agent_skill(
+    agent_id: str,
+    revision_id: str,
+    skill_id: str,
+    skill_version: str,
+    principal: AgentsWriterDep,
+    container: ContainerDep,
+):
+    revision = await asyncio.to_thread(container.store.get_agent_revision, revision_id)
+    if revision is None or revision.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Agent revision not found")
+    try:
+        removed = await container.platform.unbind_agent_skill(
+            agent_revision_id=revision_id,
+            skill_id=skill_id,
+            skill_version=skill_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Skill binding not found")
+    return {"removed": True}
+
+
 @router.get("/capabilities")
 async def capabilities(principal: CapabilitiesReaderDep, container: ContainerDep):
     rows = await container.platform.list_capabilities()
-    return {"items": [public_capability_definition(item) for item in rows]}
+    worker_readiness: dict[str, bool] = {}
+    items = []
+    for row in rows:
+        item = public_capability_definition(row)
+        reference = dict(item.get("ref") or {})
+        plugin_id = str(reference.get("plugin_id") or "")
+        if plugin_id and plugin_id not in worker_readiness:
+            workers = await asyncio.to_thread(
+                container.store.list_plugin_workers, plugin_id
+            )
+            worker_readiness[plugin_id] = any(
+                bool(worker.get("execution_eligible")) for worker in workers
+            )
+        settings = await asyncio.to_thread(
+            container.store.get_capability_runtime_settings,
+            str(reference.get("capability_id") or ""),
+        )
+        runtime_enabled = bool(settings.get("enabled", True))
+        worker_loaded = worker_readiness.get(plugin_id, True)
+        explicit_grant = requires_explicit_grant(item)
+        blockers = []
+        if not runtime_enabled:
+            blockers.append("能力已被操作员停用")
+        if not worker_loaded:
+            blockers.append("没有 Worker 加载当前扩展版本")
+        item.update(
+            {
+                "runtime_enabled": runtime_enabled,
+                "worker_loaded": worker_loaded,
+                "execution_ready": runtime_enabled and worker_loaded,
+                "requires_explicit_grant": explicit_grant,
+                "execution_blockers": blockers,
+            }
+        )
+        items.append(item)
+    return {"items": items}
 
 
 @router.get("/capabilities/{capability_id}/runtime-settings")
 async def capability_runtime_settings(
-    capability_id: str, principal: CapabilitiesReaderDep, container: ContainerDep
+    capability_id: str,
+    principal: CapabilitiesReaderDep,
+    container: ContainerDep,
+    version: str | None = Query(default=None, min_length=1, max_length=128),
 ):
-    definition = await asyncio.to_thread(container.store.get_capability_definition, capability_id)
+    definition = (
+        await asyncio.to_thread(
+            container.store.get_capability_release_definition,
+            capability_id,
+            version,
+        )
+        if version
+        else await asyncio.to_thread(
+            container.store.get_capability_definition,
+            capability_id,
+        )
+    )
     if definition is None:
         raise HTTPException(status_code=404, detail="capability not found")
     settings = await asyncio.to_thread(
@@ -216,6 +292,7 @@ async def save_capability_runtime_settings(
     body: SaveCapabilityRuntimeSettingsRequest,
     principal: CapabilitiesPublisherDep,
     container: ContainerDep,
+    version: str | None = Query(default=None, min_length=1, max_length=128),
 ):
     try:
         return await asyncio.to_thread(
@@ -224,6 +301,7 @@ async def save_capability_runtime_settings(
             enabled=body.enabled,
             configuration=body.configuration,
             actor_id=principal.subject,
+            capability_version=version,
         )
     except ValueError as exc:
         status = 404 if str(exc) == "capability not found" else 422
@@ -364,7 +442,14 @@ async def config_summary(principal: SettingsReaderDep, container: ContainerDep):
             "configured": bool(api_key or api_base),
             "endpoint": _safe_endpoint(api_base),
         }
-    channels = {name: True for name in enabled_channel_ids(config)}
+    inventory = await asyncio.to_thread(container.store.list_extension_inventory)
+    channels = {
+        item["extension_id"].removeprefix("channel-"): bool(
+            item["deployment_allowed"] and item["desired_active"]
+        )
+        for item in inventory
+        if "channel" in set(item.get("extension_types") or ())
+    }
     store = config.runtime.store
     return {
         "auth": {
@@ -384,7 +469,22 @@ async def config_summary(principal: SettingsReaderDep, container: ContainerDep):
         "providers": providers,
         "channels": channels,
         "extensions": {
-            "enabled": list(config.extensions.enabled),
+            "allowed": sorted(
+                {
+                    *config.extensions.allowed_ids,
+                    *config.extensions.enabled,
+                }
+            ),
+            "initially_active": sorted(
+                {
+                    *config.extensions.initially_active,
+                    *config.extensions.enabled,
+                }
+            ),
+            "catalog_directories": list(config.extensions.catalog_directories),
+            "allow_console_activation": bool(
+                config.extensions.allow_console_activation
+            ),
             "discover_entry_points": bool(config.extensions.discover_entry_points),
             "installed": [item.to_dict() for item in installed_extensions()],
         },

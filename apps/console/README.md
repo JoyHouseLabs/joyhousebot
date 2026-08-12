@@ -1,4 +1,4 @@
-# Joyhousebot Cloud Console
+# JoyhouseBot Runtime Console
 
 当前前端是 Joyhousebot 的平台运行、管理、监控与配置控制台，同时提供 Agent 在线试用。它只消费真实的 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE，不包含旧 Gateway RPC/WebSocket 客户端。
 

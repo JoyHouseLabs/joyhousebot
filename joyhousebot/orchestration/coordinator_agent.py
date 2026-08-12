@@ -81,11 +81,43 @@ COORDINATOR_OUTPUT_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "required": ["name", "objective"],
                 "properties": {
+                    "id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+                    },
                     "name": {"type": "string"},
                     "objective": {"type": "string"},
+                    "phase": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "produce",
+                            "review",
+                            "revise",
+                            "synthesize",
+                            "checkpoint",
+                        ],
+                    },
+                    "member_id": {"type": "string"},
                     "can_run_in_parallel": {"type": "boolean"},
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "review_of": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "revision_of": {"type": ["string", "null"]},
+                    "review_round": {"type": "integer", "minimum": 0},
+                    "output_schema": {"type": ["object", "null"]},
                 },
             },
         },
@@ -99,6 +131,7 @@ def build_coordinator_prompt(
     scenarios: list[dict[str, Any]],
     capabilities: list[dict[str, Any]],
     routing_decision: dict[str, Any] | None = None,
+    team: dict[str, Any] | None = None,
 ) -> str:
     catalog = [
         {
@@ -106,16 +139,41 @@ def build_coordinator_prompt(
             "description": item.get("description"),
             "execution_mode": item.get("execution_mode"),
             "expected_duration_seconds": item.get("expected_duration_seconds"),
+            "team_member_ids": item.get("team_member_ids", []),
         }
         for item in capabilities
+        if isinstance(item.get("ref"), dict)
+    ]
+    skill_catalog = [
+        {
+            "skill_id": item.get("skill_id"),
+            "version": item.get("version"),
+            "description": item.get("description"),
+            "activation_mode": item.get("activation_mode"),
+        }
+        for item in capabilities
+        if item.get("skill_id")
     ]
     route_hint = {
         "scenario_id": (routing_decision or {}).get("scenario_id"),
         "reason_code": (routing_decision or {}).get("reason_code"),
         "candidate_capabilities": (routing_decision or {}).get("candidate_capabilities", []),
     }
+    team_instruction = ""
+    if team:
+        team_instruction = (
+            "A published AgentTeam is frozen for this Run. Assign every planned step to "
+            "one listed member_id. The coordinator may assign only itself or members in its "
+            "allowed_handoffs. Respect each responsibility and never invent a member. "
+            "Build an explicit acyclic DAG: every step needs a stable id, phase, kind, "
+            "depends_on and acceptance_criteria. Use review steps for independent criticism, "
+            "revise steps for corrections, synthesize for the final decision, and checkpoint "
+            "only when the coordinator must assess a completed wave. review_of and revision_of "
+            "must reference dependency steps. Keep review_round within the Team budget.\n\n"
+            f"Frozen AgentTeam:\n{json.dumps(team, ensure_ascii=False)[:12000]}\n\n"
+        )
     return (
-        "You are the main coordinator for a multi-user Agent cloud. Classify the request "
+        "You are the main coordinator for a multi-user Agent runtime. Classify the request "
         "and produce a concise executable plan. Select only complete catalog ref objects; never "
         "invent or omit their version/plugin fields. Skills are prompt "
         "policies; tools and Agents are executable. A deterministic route candidate with a "
@@ -130,9 +188,11 @@ def build_coordinator_prompt(
         "most four non-sensitive fields). Prefer choice fields for bounded decisions; never "
         "ask for secrets, credentials, or personal sensitive data. Otherwise return null. "
         "Return only schema-valid JSON.\n\n"
+        f"{team_instruction}"
         f"Deterministic route candidate:\n{json.dumps(route_hint, ensure_ascii=False)}\n\n"
         f"Published scenarios:\n{json.dumps(scenarios, ensure_ascii=False)[:20000]}\n\n"
-        f"Capability catalog:\n{json.dumps(catalog, ensure_ascii=False)[:30000]}\n\n"
+        f"Capability catalog:\n{json.dumps(catalog, ensure_ascii=False)[:24000]}\n\n"
+        f"Skill catalog:\n{json.dumps(skill_catalog, ensure_ascii=False)[:6000]}\n\n"
         f"User request:\n{user_prompt}"
     )
 
@@ -141,6 +201,7 @@ def normalize_coordinator_plan(
     value: dict[str, Any],
     capabilities: list[dict[str, Any]],
     scenarios: list[dict[str, Any]] | None = None,
+    team: Any | None = None,
 ) -> dict[str, Any]:
     known = {
         (
@@ -152,6 +213,12 @@ def normalize_coordinator_plan(
             str(item.get("ref", {}).get("plugin_build_digest")),
         ): dict(item.get("ref") or {})
         for item in capabilities
+        if isinstance(item.get("ref"), dict)
+    }
+    known_skills = {
+        str(item.get("skill_id") or "").removeprefix("skill.")
+        for item in capabilities
+        if str(item.get("skill_id") or "").startswith("skill.")
     }
     selected = []
     for item in value.get("selected_capabilities") or []:
@@ -168,17 +235,131 @@ def normalize_coordinator_plan(
     skills = [
         str(item).removeprefix("skill.")
         for item in value.get("selected_skills") or []
-        if any(ref.get("capability_id") == str(item) and ref.get("kind") == "skill" for ref in known.values())
+        if str(item).removeprefix("skill.") in known_skills
     ]
-    steps = [
-        {
+    steps = []
+    step_ids: set[str] = set()
+    team_members = {item.member_id: item for item in team.members} if team else {}
+    coordinator = team.coordinator if team else None
+    allowed_targets = (
+        {coordinator.member_id, *coordinator.allowed_handoffs} if coordinator else set()
+    )
+    max_steps = int(team.budget_policy["max_tasks"]) if team else 32
+    source_steps = value.get("planned_steps") or []
+    for index, item in enumerate(source_steps):
+        if not isinstance(item, dict) or not str(item.get("objective") or "").strip():
+            continue
+        if team:
+            required_contract = {
+                "id",
+                "phase",
+                "kind",
+                "member_id",
+                "depends_on",
+                "acceptance_criteria",
+            }
+            missing_contract = required_contract - set(item)
+            if missing_contract:
+                raise ValueError(
+                    "AgentTeam planned step is missing contract fields: "
+                    f"{sorted(missing_contract)}"
+                )
+        raw_id = str(item.get("id") or "").strip()
+        if team and not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", raw_id):
+            raise ValueError("AgentTeam planned step requires a stable id")
+        step_id = raw_id or f"step-{index + 1}"
+        if step_id in step_ids:
+            raise ValueError(f"coordinator planned duplicate step id: {step_id}")
+        step_ids.add(step_id)
+        kind = str(item.get("kind") or "produce")
+        if kind not in {"produce", "review", "revise", "synthesize", "checkpoint"}:
+            raise ValueError(f"coordinator planned unsupported step kind: {kind}")
+        depends_on = list(
+            dict.fromkeys(str(value) for value in item.get("depends_on") or ())
+        )
+        review_of = list(
+            dict.fromkeys(str(value) for value in item.get("review_of") or ())
+        )
+        revision_of = str(item.get("revision_of") or "").strip() or None
+        criteria = [
+            str(value).strip()[:500]
+            for value in item.get("acceptance_criteria") or ()
+            if str(value).strip()
+        ][:16]
+        review_round = max(0, int(item.get("review_round") or 0))
+        step = {
+            "id": step_id,
             "name": str(item.get("name") or "step")[:128],
             "objective": str(item.get("objective") or "")[:2000],
+            "phase": str(item.get("phase") or "execution")[:128],
+            "kind": kind,
             "can_run_in_parallel": bool(item.get("can_run_in_parallel")),
+            "depends_on": depends_on,
+            "acceptance_criteria": criteria,
+            "review_of": review_of,
+            "revision_of": revision_of,
+            "review_round": review_round,
+            "output_schema": (
+                dict(item["output_schema"])
+                if isinstance(item.get("output_schema"), dict)
+                else None
+            ),
         }
-        for item in value.get("planned_steps") or []
-        if isinstance(item, dict) and str(item.get("objective") or "").strip()
-    ][:32]
+        if team:
+            member_id = str(item.get("member_id") or team.coordinator_member_id)
+            if member_id not in team_members:
+                raise ValueError(f"coordinator selected an unknown AgentTeam member: {member_id}")
+            if member_id not in allowed_targets:
+                raise ValueError(f"coordinator is not allowed to hand off to member: {member_id}")
+            step["member_id"] = member_id
+        steps.append(step)
+        if len(steps) > max_steps:
+            raise ValueError("coordinator plan exceeds the AgentTeam task budget")
+    if team:
+        known_step_ids = {str(item["id"]) for item in steps}
+        for step in steps:
+            references = set(step["depends_on"])
+            unknown = references - known_step_ids
+            if unknown:
+                raise ValueError(
+                    f"AgentTeam step {step['id']} has unknown dependencies: {sorted(unknown)}"
+                )
+            if step["id"] in references:
+                raise ValueError(f"AgentTeam step {step['id']} cannot depend on itself")
+            review_targets = set(step["review_of"])
+            if review_targets and not review_targets <= references:
+                raise ValueError(
+                    f"AgentTeam review step {step['id']} must depend on every review_of target"
+                )
+            revision_target = step["revision_of"]
+            if revision_target and revision_target not in references:
+                raise ValueError(
+                    f"AgentTeam revision step {step['id']} must depend on revision_of"
+                )
+            if step["kind"] == "review" and not review_targets:
+                raise ValueError(f"AgentTeam review step {step['id']} requires review_of")
+            if step["kind"] == "revise" and not revision_target:
+                raise ValueError(f"AgentTeam revise step {step['id']} requires revision_of")
+            if (
+                step["kind"] in {"synthesize", "checkpoint"}
+                and step.get("member_id") != team.coordinator_member_id
+            ):
+                raise ValueError(
+                    f"AgentTeam {step['kind']} step {step['id']} must use the coordinator"
+                )
+            if step["kind"] in {"review", "revise", "checkpoint"} and not step[
+                "acceptance_criteria"
+            ]:
+                raise ValueError(
+                    f"AgentTeam {step['kind']} step {step['id']} requires acceptance criteria"
+                )
+            if step["review_round"] > int(team.budget_policy["max_review_rounds"]):
+                raise ValueError("coordinator plan exceeds the AgentTeam review-round budget")
+        handoffs = sum(
+            item.get("member_id") != team.coordinator_member_id for item in steps
+        )
+        if handoffs > int(team.budget_policy["max_handoffs"]):
+            raise ValueError("coordinator plan exceeds the AgentTeam handoff budget")
     execution_class = str(value.get("execution_class") or "interactive")
     if execution_class not in {"immediate", "interactive", "background"}:
         execution_class = "interactive"

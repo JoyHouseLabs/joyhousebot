@@ -609,6 +609,12 @@ class TurnEngineMixin(ContextScopeMixin):
                 except (RuntimeError, BaseExceptionGroup):
                     pass  # Some connector SDK cancellation scopes are noisy on shutdown.
                 self._tool_connector_stack = None
+            for stack in self._retired_tool_connector_stacks:
+                try:
+                    await stack.aclose()
+                except (RuntimeError, BaseExceptionGroup):
+                    pass
+            self._retired_tool_connector_stacks.clear()
             self._tool_connectors_connected = False
         await self.provider.close()
 

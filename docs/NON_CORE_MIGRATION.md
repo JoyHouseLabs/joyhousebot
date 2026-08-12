@@ -29,12 +29,14 @@
 | Anthropic | `joyhousebot-provider-anthropic` | Provider contract、路由、审计 |
 | OpenAI-compatible | `joyhousebot-provider-openai-compatible` | 同上 |
 | Groq Transcription | `joyhousebot-capability-groq-transcription` | Capability 治理 |
+| Media Generation | `joyhousebot-capability-media-generation`，含 Seedream、Seedance、即梦适配 | Capability、Action、审批、异步对账与 Artifact |
 | Research/Web | `joyhousebot-capability-research` | 网络安全策略与 Dispatcher |
 | Context/Knowledge Tool | `joyhousebot-capability-context-assets` | Memory/Knowledge 事实源和窄服务 |
 | Filesystem Tool | `joyhousebot-capability-filesystem` | Run scratch 隔离服务 |
 | Shell Tool | `joyhousebot-capability-shell` | fail-closed sandbox 与命令策略 |
 | Runtime Control Tool | `joyhousebot-capability-runtime-control` | Schedule、Outbox、child Run、Monitor 服务 |
 | 外部 MCP Client | `joyhousebot-connector-mcp-client` | 对外 MCP Gateway、SSRF 和 Dispatcher |
+| 企业业务程序 | `joyhousebot-connector-http-capability` | Capability、Action、审批、对账和审计；业务代码保持独立进程 |
 
 ## 已删除的 Core 面
 
@@ -49,9 +51,11 @@
 ## 唯一启用规则
 
 - 安装：独立 distribution 提供 entry point；
-- Channel/Capability/Connector 启用：`extensions.enabled`；
-- 扩展设置：`extensions.settings.<extension-id>`；
-- Provider 启用：完整 ID 进入 `extensions.enabled`，例如 `provider-anthropic`；
+- Channel/Capability/Connector 部署准入：`extensions.allowedIds`；运行启停：PostgreSQL extension inventory；
+- Channel 和普通扩展部署设置：`extensions.settings.<extension-id>`；
+- 通用 HTTP Capability Connector：部署准入在 `extensions.allowedIds`，具体远程服务配置进入
+  PostgreSQL `remote_connection` Revision，并由 Console/API 发布；
+- Provider 部署准入：完整 ID 进入 `extensions.allowedIds`，例如 `provider-anthropic`；
 - Provider 设置：`providers.settings.<provider-name>`；
 - 模型初始化：精确 `runtime.bootstrapModel` / `LLM_MODEL`；
 - 旧配置直接校验失败，不迁移、不翻译。
@@ -65,6 +69,9 @@
 3. 以 Email + 市场研究 Task Pack 形成 OPC 首个可用组合；
 4. 新增 CRM、日历、内容平台时，只新增 Connector/Task Pack，不回填 Core；
 5. 用架构测试持续阻止供应商依赖、旧入口和业务 UI 回流。
+
+App Pack 的 Manifest、依赖锁、发布、安装、启停、升级、回滚与审计已进入 Core 控制面，协议见
+[App Pack 设计与安装协议](APP_PACKS.md)。垂直角色、页面和业务规则仍必须由独立 App Pack 提供。
 
 ## Core-only 发布门禁
 

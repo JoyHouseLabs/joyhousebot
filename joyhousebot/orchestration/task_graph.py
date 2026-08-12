@@ -15,6 +15,7 @@ from joyhousebot.orchestration.control_nodes import (
     validate_verify_node,
 )
 from joyhousebot.orchestration.foreach import validate_foreach_configuration
+from joyhousebot.orchestration.subruns import validate_subrun_configuration
 from joyhousebot.orchestration.wait_events import validate_wait_event_configuration
 
 
@@ -45,6 +46,7 @@ def validate_and_order_graph(tasks: list[GraphTaskSpec]) -> list[GraphTaskSpec]:
             "compensation": task.compensation,
             "bounded_loop": task.bounded_loop,
             "aggregate": task.aggregate,
+            "subrun": task.subrun,
         }
         unexpected = sorted(
             name
@@ -90,6 +92,8 @@ def validate_and_order_graph(tasks: list[GraphTaskSpec]) -> list[GraphTaskSpec]:
             )
         elif task.node_type == "aggregate":
             validate_aggregate_node(task)
+        elif task.node_type == "subrun":
+            validate_subrun_configuration(task)
     ordered: list[GraphTaskSpec] = []
     remaining = set(task_map)
     completed: set[str] = set()
