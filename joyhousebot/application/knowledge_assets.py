@@ -21,9 +21,7 @@ class KnowledgeAssetService:
         self.store = store
         self.runtime = runtime
 
-    async def submit_index_request(
-        self, context: RequestContext, snapshot: dict[str, Any]
-    ) -> Any:
+    async def submit_index_request(self, context: RequestContext, snapshot: dict[str, Any]) -> Any:
         if self.runtime is None:
             raise ConflictError("Knowledge indexing Runtime is unavailable")
         if not context.idempotency_key:
@@ -40,18 +38,14 @@ class KnowledgeAssetService:
                 )
                 == "knowledge.index"
                 and (
-                    item.ref.kind.value
-                    if hasattr(item, "ref")
-                    else item.get("ref", {}).get("kind")
+                    item.ref.kind.value if hasattr(item, "ref") else item.get("ref", {}).get("kind")
                 )
                 in {"tool", "connector"}
             ),
             None,
         )
         if definition is None:
-            raise ConflictError(
-                "Published knowledge.index capability is required before indexing"
-            )
+            raise ConflictError("Published knowledge.index capability is required before indexing")
         reference = (
             definition.ref
             if hasattr(definition, "ref")
@@ -154,12 +148,66 @@ class KnowledgeAssetService:
             raise NotFoundError("Knowledge document not found")
         return document
 
-    async def list_revisions(
-        self, context: RequestContext, doc_id: str
+    async def get_source_state(
+        self, context: RequestContext, *, source_system: str, source_id: str
+    ) -> dict[str, Any]:
+        document = await asyncio.to_thread(
+            self.repository.get_document_by_source,
+            user_id=context.user_id,
+            source_system=source_system,
+            source_id=source_id,
+        )
+        if document is None:
+            raise NotFoundError("Knowledge source not found")
+        revisions = await asyncio.to_thread(
+            self.repository.list_index_revisions,
+            user_id=context.user_id,
+            doc_id=document["doc_id"],
+        )
+        return {"document": document, "revisions": revisions}
+
+    async def search(
+        self,
+        context: RequestContext,
+        *,
+        query: str,
+        top_k: int,
+        knowledge_base_id: str | None = None,
+        source_type: str | None = None,
+        doc_id: str | None = None,
+        collection_ref: str | None = None,
     ) -> list[dict[str, Any]]:
-        if await asyncio.to_thread(
-            self.repository.get_document, user_id=context.user_id, doc_id=doc_id
-        ) is None:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ValidationError("Knowledge search query must not be blank")
+        if (
+            knowledge_base_id
+            and await asyncio.to_thread(
+                self.repository.get_knowledge_base,
+                user_id=context.user_id,
+                knowledge_base_id=knowledge_base_id,
+            )
+            is None
+        ):
+            raise NotFoundError("Knowledge base not found")
+        return await asyncio.to_thread(
+            self.repository.search,
+            user_id=context.user_id,
+            query=normalized_query,
+            top_k=top_k,
+            knowledge_base_id=knowledge_base_id,
+            source_type=source_type,
+            doc_id=doc_id,
+            collection_ref=collection_ref,
+        )
+
+    async def list_revisions(self, context: RequestContext, doc_id: str) -> list[dict[str, Any]]:
+        if (
+            await asyncio.to_thread(
+                self.repository.get_document, user_id=context.user_id, doc_id=doc_id
+            )
+            is None
+        ):
             raise NotFoundError("Knowledge document not found")
         return await asyncio.to_thread(
             self.repository.list_index_revisions,
@@ -224,9 +272,7 @@ class KnowledgeAssetService:
         assert item is not None
         return item
 
-    async def delete_base(
-        self, context: RequestContext, knowledge_base_id: str
-    ) -> dict[str, Any]:
+    async def delete_base(self, context: RequestContext, knowledge_base_id: str) -> dict[str, Any]:
         item = await asyncio.to_thread(
             self.repository.delete_knowledge_base,
             user_id=context.user_id,

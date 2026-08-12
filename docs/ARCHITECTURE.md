@@ -276,6 +276,9 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   `knowledge.index` Capability Graph；`GET /v1/knowledge/documents/{doc_id}/revisions` 查询不可变索引版本。
   `source_generation` 防止异步 Run 乱序完成覆盖新版本，revision 验证失败时保留上一版 active projection。
   Core/扩展职责和存储生命周期见 [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)。
+- `GET /v1/knowledge/search` 只检索当前 active projection，并返回 Source identity、revision、页码、章节路径、
+  字符区间和 Chunk 摘要；`GET /v1/knowledge/source-state` 通过稳定 `source_system + source_id` 查询当前文档
+  与不可变版本历史。`collection_ref` 使用 `knowledge_document_scopes` 规范化投影，不再依赖 metadata JSON 筛选。
 - `POST /v1/input-assets` 流式接收一次执行的不可变二进制输入，并校验 `Content-Length` 与 SHA-256；
   `POST /v1/runs`、`POST /v1/runs/graphs` 通过 `input_asset_ids` 在 Run 创建事务内做 owner 校验和冻结绑定。
   Worker Capability 只能经 `ContextPort.read_input_asset()` 读取当前 Run 已绑定内容；API 不返回存储 URI，

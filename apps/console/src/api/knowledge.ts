@@ -48,7 +48,13 @@ export interface KnowledgeIndexRevision {
 
 export interface KnowledgeChunk {
   chunk_index: number
+  revision_id: string
   page?: number | null
+  section_path: string[]
+  block_type: string
+  char_start?: number | null
+  char_end?: number | null
+  content_sha256: string
   content: string
   created_at_ms: number
 }

@@ -10,6 +10,8 @@ third-party extension capability.
 - owner-scoped PostgreSQL documents, immutable revisions, chunks, active projection and audit events;
 - atomic revision activation, failed-revision preservation and stale-generation rejection;
 - retrieval over the active projection only;
+- owner-scoped `GET /v1/knowledge/search` with document, revision, page, section and character-range evidence;
+- stable source lookup through `GET /v1/knowledge/source-state` for Product reconciliation and revision history;
 - versioned Knowledge base membership and control-plane APIs.
 
 Core does not import Product models, read `product_*` tables, fetch remote files in HTTP request threads or implement
@@ -91,5 +93,7 @@ to rebuild from immutable chunks. Vector activation requires all of the followin
 
 Until those gates exist, silently generating partial or provider-dependent embeddings would weaken revision consistency.
 
-The `retrieve` capability accepts an optional `collection_ref`. It filters the active projection by the frozen collection
-references so an App or Skill can request only the relevant branch of the user's library without reading Product tables.
+The `retrieve` capability and public search API accept an optional `collection_ref`. Activation projects frozen collection
+references into `knowledge_document_scopes`; retrieval no longer queries ad-hoc metadata JSON and still never reads Product
+tables. Search evidence is copied from the active immutable revision and includes `revision_id`, page, section path,
+block type, character range and chunk content hash.

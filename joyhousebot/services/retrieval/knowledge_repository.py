@@ -52,13 +52,30 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
                 doc_id TEXT NOT NULL REFERENCES knowledge_documents(doc_id) ON DELETE CASCADE,
                 chunk_index INTEGER NOT NULL,
                 user_id TEXT NOT NULL,
+                revision_id TEXT,
                 page INTEGER,
+                section_path TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                block_type TEXT NOT NULL DEFAULT 'text',
+                char_start INTEGER,
+                char_end INTEGER,
                 content TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL DEFAULT '',
                 search_vector TSVECTOR GENERATED ALWAYS AS
                     (to_tsvector('simple', content)) STORED,
                 created_at_ms BIGINT NOT NULL,
-                PRIMARY KEY(doc_id, chunk_index)
+                PRIMARY KEY(doc_id, chunk_index),
+                CHECK (char_start IS NULL OR char_start >= 0),
+                CHECK (char_end IS NULL OR char_end >= COALESCE(char_start,0))
             );
+            ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS revision_id TEXT;
+            ALTER TABLE knowledge_chunks
+                ADD COLUMN IF NOT EXISTS section_path TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+            ALTER TABLE knowledge_chunks
+                ADD COLUMN IF NOT EXISTS block_type TEXT NOT NULL DEFAULT 'text';
+            ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS char_start INTEGER;
+            ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS char_end INTEGER;
+            ALTER TABLE knowledge_chunks
+                ADD COLUMN IF NOT EXISTS content_sha256 TEXT NOT NULL DEFAULT '';
             CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_user
                 ON knowledge_chunks(user_id, doc_id, chunk_index);
             CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_search
@@ -74,6 +91,17 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
             );
             CREATE INDEX IF NOT EXISTS ix_knowledge_asset_events_user
                 ON knowledge_asset_events(user_id, created_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_document_scopes (
+                user_id TEXT NOT NULL,
+                doc_id TEXT NOT NULL REFERENCES knowledge_documents(doc_id) ON DELETE CASCADE,
+                scope_type TEXT NOT NULL,
+                scope_ref TEXT NOT NULL,
+                revision_id TEXT,
+                created_at_ms BIGINT NOT NULL,
+                PRIMARY KEY(user_id,doc_id,scope_type,scope_ref)
+            );
+            CREATE INDEX IF NOT EXISTS ix_knowledge_document_scopes_lookup
+                ON knowledge_document_scopes(user_id,scope_type,scope_ref,doc_id);
             """
         with self.store._pool.connection() as connection:
             with connection.transaction():
@@ -81,6 +109,37 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
                 connection.execute(ddl)
                 connection.execute(KNOWLEDGE_BASE_DDL)
                 connection.execute(KNOWLEDGE_REVISION_DDL)
+                connection.execute(
+                    """UPDATE knowledge_chunks active
+                          SET revision_id=document.active_revision_id,
+                              section_path=revision.section_path,
+                              block_type=revision.block_type,
+                              char_start=revision.char_start,
+                              char_end=revision.char_end,
+                              content_sha256=revision.content_sha256
+                         FROM knowledge_documents document,
+                              knowledge_revision_chunks revision
+                        WHERE active.user_id=document.user_id
+                          AND active.doc_id=document.doc_id
+                          AND revision.user_id=active.user_id
+                          AND revision.doc_id=active.doc_id
+                          AND revision.revision_id=document.active_revision_id
+                          AND revision.chunk_index=active.chunk_index
+                          AND (active.revision_id IS NULL OR active.content_sha256='')"""
+                )
+                connection.execute(
+                    """INSERT INTO knowledge_document_scopes
+                           (user_id,doc_id,scope_type,scope_ref,revision_id,created_at_ms)
+                       SELECT document.user_id,document.doc_id,'collection',scope.value,
+                              document.active_revision_id,document.updated_at_ms
+                         FROM knowledge_documents document
+                         CROSS JOIN LATERAL jsonb_array_elements_text(
+                             CASE WHEN jsonb_typeof(document.metadata->'collection_refs')='array'
+                                  THEN document.metadata->'collection_refs'
+                                  ELSE '[]'::jsonb END
+                         ) AS scope(value)
+                       ON CONFLICT(user_id,doc_id,scope_type,scope_ref) DO NOTHING"""
+                )
 
     def index_document(
         self,
@@ -255,7 +314,8 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
             if row is None:
                 return None
             chunk_rows = connection.execute(
-                """SELECT chunk_index,page,content,created_at_ms
+                """SELECT chunk_index,revision_id,page,section_path,block_type,
+                          char_start,char_end,content,content_sha256,created_at_ms
                      FROM knowledge_chunks
                     WHERE user_id=%s AND doc_id=%s ORDER BY chunk_index""",
                 (user_id, doc_id),
@@ -265,17 +325,38 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
             "chunks": [
                 {
                     "chunk_index": int(chunk["chunk_index"]),
+                    "revision_id": str(chunk["revision_id"] or ""),
                     "page": chunk["page"],
+                    "section_path": [str(value) for value in chunk["section_path"]],
+                    "block_type": str(chunk["block_type"]),
+                    "char_start": chunk["char_start"],
+                    "char_end": chunk["char_end"],
                     "content": str(chunk["content"]),
+                    "content_sha256": str(chunk["content_sha256"]),
                     "created_at_ms": int(chunk["created_at_ms"]),
                 }
                 for chunk in chunk_rows
             ],
         }
 
-    def delete_document(
-        self, *, user_id: str, doc_id: str, actor_id: str
+    def get_document_by_source(
+        self, *, user_id: str, source_system: str, source_id: str
     ) -> dict[str, Any] | None:
+        """Resolve an indexed document through the source system's stable identity."""
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT doc_id FROM knowledge_documents
+                    WHERE user_id=%s AND source_system=%s AND source_id=%s""",
+                (user_id, source_system, source_id),
+            ).fetchone()
+        if row is None:
+            return None
+        document = self.get_document(user_id=user_id, doc_id=str(row["doc_id"]))
+        if document is not None:
+            document.pop("chunks", None)
+        return document
+
+    def delete_document(self, *, user_id: str, doc_id: str, actor_id: str) -> dict[str, Any] | None:
         """Remove one owner-scoped source and retain an immutable audit event."""
         now_ms = int(time.time() * 1000)
         with self._connection() as connection:
@@ -346,6 +427,7 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
         top_k: int,
         source_type: str | None = None,
         doc_id: str | None = None,
+        knowledge_base_id: str | None = None,
         collection_ref: str | None = None,
     ) -> list[dict[str, Any]]:
         clauses = ["c.user_id=%s", "d.source_status<>'archived'"]
@@ -356,17 +438,31 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
         if doc_id:
             clauses.append("c.doc_id=%s")
             params.append(doc_id)
+        if knowledge_base_id:
+            clauses.append(
+                """EXISTS (SELECT 1 FROM knowledge_base_documents membership
+                            WHERE membership.user_id=d.user_id
+                              AND membership.doc_id=d.doc_id
+                              AND membership.knowledge_base_id=%s)"""
+            )
+            params.append(knowledge_base_id)
         if collection_ref:
-            clauses.append("COALESCE(d.metadata->'collection_refs','[]'::jsonb) ? %s")
+            clauses.append(
+                """EXISTS (SELECT 1 FROM knowledge_document_scopes scope
+                            WHERE scope.user_id=d.user_id AND scope.doc_id=d.doc_id
+                              AND scope.scope_type='collection' AND scope.scope_ref=%s)"""
+            )
             params.append(collection_ref)
-        params = [query, *params, query, f"%{query}%", top_k]
-        sql = f"""SELECT c.doc_id,c.chunk_index,c.page,c.content,
-                       d.source_type,d.source_url,d.title,
+        params = [query, *params, query, f"%{query}%", f"%{query}%", top_k]
+        sql = f"""SELECT c.doc_id,c.chunk_index,c.revision_id,c.page,c.section_path,
+                       c.block_type,c.char_start,c.char_end,c.content,c.content_sha256,
+                       d.source_type,d.source_url,d.title,d.source_system,d.source_id,
+                       d.source_version,d.source_generation,d.active_revision_id,
                        ts_rank(c.search_vector,websearch_to_tsquery('simple',%s)) AS rank
                 FROM knowledge_chunks c JOIN knowledge_documents d USING(doc_id)
                 WHERE {" AND ".join(clauses)}
                   AND (c.search_vector @@ websearch_to_tsquery('simple',%s)
-                       OR c.content ILIKE %s)
+                       OR c.content ILIKE %s OR d.title ILIKE %s)
                 ORDER BY rank DESC,c.created_at_ms DESC LIMIT %s"""
         with self._connection() as connection:
             rows = connection.execute(sql, params).fetchall()
@@ -377,13 +473,28 @@ class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseReposit
                 "source_url": str(row["source_url"] or ""),
                 "file_path": "",
                 "title": str(row["title"]),
+                "source_system": str(row["source_system"]),
+                "source_id": str(row["source_id"]),
+                "source_version": str(row["source_version"]),
+                "source_generation": int(row["source_generation"]),
+                "revision_id": str(row["revision_id"] or row["active_revision_id"] or ""),
                 "chunk_index": int(row["chunk_index"]),
                 "page": row["page"],
+                "section_path": [str(value) for value in row["section_path"]],
+                "block_type": str(row["block_type"]),
+                "char_start": row["char_start"],
+                "char_end": row["char_end"],
+                "content_sha256": str(row["content_sha256"]),
                 "content": str(row["content"]),
+                "rank": float(row["rank"] or 0),
                 "trace": {
                     "doc_id": str(row["doc_id"]),
+                    "revision_id": str(row["revision_id"] or row["active_revision_id"] or ""),
                     "source": str(row["source_url"] or ""),
                     "page": row["page"],
+                    "section_path": [str(value) for value in row["section_path"]],
+                    "char_start": row["char_start"],
+                    "char_end": row["char_end"],
                 },
             }
             for row in rows

@@ -113,15 +113,11 @@ def test_runtime_input_asset_upload_is_owner_scoped_and_integrity_checked(
     assert foreign_graph.status_code == 422
     assert [
         item.asset_id
-        for item in store.list_run_input_assets(
-            graph.json()["run_id"], expected_user_id="owner-a"
-        )
+        for item in store.list_run_input_assets(graph.json()["run_id"], expected_user_id="owner-a")
     ] == [uploaded.json()["asset_id"]]
     assert [
         item.asset_id
-        for item in store.list_run_input_assets(
-            run.json()["run_id"], expected_user_id="owner-a"
-        )
+        for item in store.list_run_input_assets(run.json()["run_id"], expected_user_id="owner-a")
     ] == [uploaded.json()["asset_id"]]
 
 
@@ -175,17 +171,13 @@ async def test_context_port_reads_only_assets_bound_to_current_run(tmp_path: Pat
     )
     port = ContextPort(store)
     resolved = await port.read_input_asset(
-        CapabilityContext(
-            user_id="owner-a", session_id="session-a", run_id="run-bound"
-        ),
+        CapabilityContext(user_id="owner-a", session_id="session-a", run_id="run-bound"),
         asset_id=asset.asset_id,
         max_bytes=1024,
     )
     with pytest.raises(PermissionError):
         await port.read_input_asset(
-            CapabilityContext(
-                user_id="owner-a", session_id="session-b", run_id="run-unbound"
-            ),
+            CapabilityContext(user_id="owner-a", session_id="session-b", run_id="run-unbound"),
             asset_id=asset.asset_id,
             max_bytes=1024,
         )
@@ -198,8 +190,7 @@ async def test_context_port_reads_only_assets_bound_to_current_run(tmp_path: Pat
         ).fetchall()
     assert [event["event_type"] for event in events] == ["created", "bound", "read"]
     assert any(
-        log.stage == "store.input_asset.read"
-        for log in store.list_runtime_logs("run-bound")
+        log.stage == "store.input_asset.read" for log in store.list_runtime_logs("run-bound")
     )
 
 
@@ -218,10 +209,20 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
         source_url="https://example.com/private-source",
         title="Private operating notes",
         chunks=[
-            {"text": "Evidence-backed first chunk", "page": 1},
+            {
+                "text": "Evidence-backed first chunk",
+                "page": 1,
+                "section_path": ["Operations", "Evidence"],
+                "block_type": "paragraph",
+                "char_start": 12,
+                "char_end": 39,
+            },
             {"text": "Second indexed chunk", "page": 2},
         ],
-        metadata={"trace": {"parser": "readability"}},
+        metadata={
+            "trace": {"parser": "readability"},
+            "collection_refs": ["collection-private"],
+        },
     )
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner = {"Authorization": "Bearer owner-a-token"}
@@ -231,18 +232,37 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
         listed = client.get("/v1/knowledge/documents", headers=owner)
         foreign_list = client.get("/v1/knowledge/documents", headers=foreign)
         detail = client.get("/v1/knowledge/documents/doc-owner-a", headers=owner)
-        revisions = client.get(
-            "/v1/knowledge/documents/doc-owner-a/revisions", headers=owner
+        revisions = client.get("/v1/knowledge/documents/doc-owner-a/revisions", headers=owner)
+        search = client.get(
+            "/v1/knowledge/search",
+            headers=owner,
+            params={"q": "Evidence-backed", "collection_ref": "collection-private"},
+        )
+        excluded_search = client.get(
+            "/v1/knowledge/search",
+            headers=owner,
+            params={"q": "Evidence-backed", "collection_ref": "another-collection"},
+        )
+        foreign_search = client.get(
+            "/v1/knowledge/search",
+            headers=foreign,
+            params={"q": "Evidence-backed"},
+        )
+        source_state = client.get(
+            "/v1/knowledge/source-state",
+            headers=owner,
+            params={"source_system": "runtime", "source_id": "doc-owner-a"},
+        )
+        foreign_source_state = client.get(
+            "/v1/knowledge/source-state",
+            headers=foreign,
+            params={"source_system": "runtime", "source_id": "doc-owner-a"},
         )
         foreign_revisions = client.get(
             "/v1/knowledge/documents/doc-owner-a/revisions", headers=foreign
         )
-        foreign_detail = client.get(
-            "/v1/knowledge/documents/doc-owner-a", headers=foreign
-        )
-        foreign_delete = client.delete(
-            "/v1/knowledge/documents/doc-owner-a", headers=foreign
-        )
+        foreign_detail = client.get("/v1/knowledge/documents/doc-owner-a", headers=foreign)
+        foreign_delete = client.delete("/v1/knowledge/documents/doc-owner-a", headers=foreign)
         deleted = client.delete("/v1/knowledge/documents/doc-owner-a", headers=owner)
         after_delete = client.get("/v1/knowledge/documents", headers=owner)
 
@@ -260,9 +280,23 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
     assert detail.json()["index_status"] == "ready"
     assert detail.json()["active_revision_id"].startswith("krev_")
     assert [item["page"] for item in detail.json()["chunks"]] == [1, 2]
+    assert detail.json()["chunks"][0]["section_path"] == ["Operations", "Evidence"]
+    assert detail.json()["chunks"][0]["block_type"] == "paragraph"
+    assert detail.json()["chunks"][0]["char_start"] == 12
+    assert detail.json()["chunks"][0]["char_end"] == 39
     assert revisions.status_code == 200
     assert revisions.json()["items"][0]["status"] == "active"
     assert revisions.json()["items"][0]["chunk_count"] == 2
+    assert search.status_code == 200
+    assert search.json()["items"][0]["source_id"] == "doc-owner-a"
+    assert search.json()["items"][0]["section_path"] == ["Operations", "Evidence"]
+    assert search.json()["items"][0]["trace"]["char_start"] == 12
+    assert excluded_search.json()["items"] == []
+    assert foreign_search.json()["items"] == []
+    assert source_state.status_code == 200
+    assert source_state.json()["document"]["doc_id"] == "doc-owner-a"
+    assert source_state.json()["revisions"][0]["status"] == "active"
+    assert foreign_source_state.status_code == 404
     assert foreign_revisions.status_code == 404
     assert foreign_detail.status_code == 404
     assert foreign_delete.status_code == 404
@@ -330,18 +364,12 @@ def test_knowledge_bases_manage_collections_without_deleting_sources(
             json={"name": "Runtime Architecture"},
         )
         foreign_list = client.get("/v1/knowledge/bases", headers=foreign)
-        foreign_bind = client.put(
-            f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=foreign
-        )
+        foreign_bind = client.put(f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=foreign)
         foreign_document_bind = client.put(
             f"/v1/knowledge/bases/{base_id}/documents/doc-b", headers=owner
         )
-        bound = client.put(
-            f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner
-        )
-        bound_again = client.put(
-            f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner
-        )
+        bound = client.put(f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner)
+        bound_again = client.put(f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner)
         scoped = client.get(
             "/v1/knowledge/documents",
             headers=owner,
@@ -405,9 +433,9 @@ def test_knowledge_revision_failure_preserves_previous_active_index(
         title="Versioned notes",
         chunks=[{"text": "stable searchable knowledge", "page": 1}],
     )
-    active_before = repository.get_document(
-        user_id="owner-a", doc_id="doc-versioned"
-    )["active_revision_id"]
+    active_before = repository.get_document(user_id="owner-a", doc_id="doc-versioned")[
+        "active_revision_id"
+    ]
     failed_revision = repository.stage_index_revision(
         doc_id="doc-versioned",
         user_id="owner-a",
@@ -431,15 +459,9 @@ def test_knowledge_revision_failure_preserves_previous_active_index(
     )
 
     document = repository.get_document(user_id="owner-a", doc_id="doc-versioned")
-    hits = repository.search(
-        user_id="owner-a", query="stable", top_k=10
-    )
-    replacement_hits = repository.search(
-        user_id="owner-a", query="replacement", top_k=10
-    )
-    revisions = repository.list_index_revisions(
-        user_id="owner-a", doc_id="doc-versioned"
-    )
+    hits = repository.search(user_id="owner-a", query="stable", top_k=10)
+    replacement_hits = repository.search(user_id="owner-a", query="replacement", top_k=10)
+    revisions = repository.list_index_revisions(user_id="owner-a", doc_id="doc-versioned")
     assert document["active_revision_id"] == active_before
     assert document["index_status"] == "ready"
     assert [hit["doc_id"] for hit in hits] == ["doc-versioned"]
@@ -485,21 +507,25 @@ def test_knowledge_revision_rejects_stale_generation_after_newer_activation(
     repository.mark_index_revision_ready(
         user_id="owner-a", doc_id="doc-ordered", revision_id=newer, actor_id="test"
     )
-    assert repository.activate_index_revision(
-        user_id="owner-a", doc_id="doc-ordered", revision_id=newer, actor_id="test"
-    ) is True
-    assert repository.activate_index_revision(
-        user_id="owner-a", doc_id="doc-ordered", revision_id=older, actor_id="test"
-    ) is False
+    assert (
+        repository.activate_index_revision(
+            user_id="owner-a", doc_id="doc-ordered", revision_id=newer, actor_id="test"
+        )
+        is True
+    )
+    assert (
+        repository.activate_index_revision(
+            user_id="owner-a", doc_id="doc-ordered", revision_id=older, actor_id="test"
+        )
+        is False
+    )
 
     document = repository.get_document(user_id="owner-a", doc_id="doc-ordered")
     assert document["source_generation"] == 2
     assert document["title"] == "Newer snapshot"
     assert repository.search(user_id="owner-a", query="new generation", top_k=5)
     assert repository.search(user_id="owner-a", query="old generation", top_k=5) == []
-    revisions = repository.list_index_revisions(
-        user_id="owner-a", doc_id="doc-ordered"
-    )
+    revisions = repository.list_index_revisions(user_id="owner-a", doc_id="doc-ordered")
     assert {item["revision_id"]: item["status"] for item in revisions} == {
         newer: "active",
         older: "superseded",
@@ -545,7 +571,9 @@ def test_knowledge_revision_activation_atomically_switches_search_projection(
         actor_id="worker:test",
     )
     assert repository.search(user_id="owner-a", query="old", top_k=10) == []
-    assert repository.search(user_id="owner-a", query="new", top_k=10)
+    hits = repository.search(user_id="owner-a", query="new", top_k=10)
+    assert hits[0]["section_path"] == ["Chapter 1"]
+    assert hits[0]["revision_id"] == revision_id
 
 
 @pytest.mark.asyncio

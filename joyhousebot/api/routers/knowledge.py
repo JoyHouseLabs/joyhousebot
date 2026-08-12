@@ -24,9 +24,7 @@ async def submit_knowledge_index_request(
     container: ContainerDep,
 ):
     """Compile one immutable source snapshot into the common Run/Task chain."""
-    record = await container.knowledge_assets.submit_index_request(
-        context, body.model_dump()
-    )
+    record = await container.knowledge_assets.submit_index_request(context, body.model_dump())
     return record_dict(record)
 
 
@@ -34,9 +32,7 @@ async def submit_knowledge_index_request(
 async def list_knowledge_bases(
     context: ContextDep,
     container: ContainerDep,
-    status_filter: Literal["active", "archived", "all"] = Query(
-        default="all", alias="status"
-    ),
+    status_filter: Literal["active", "archived", "all"] = Query(default="all", alias="status"),
 ):
     items = await container.knowledge_assets.list_bases(
         context,
@@ -91,9 +87,7 @@ async def bind_knowledge_document(
     context: ContextDep,
     container: ContainerDep,
 ):
-    created = await container.knowledge_assets.bind_document(
-        context, knowledge_base_id, doc_id
-    )
+    created = await container.knowledge_assets.bind_document(context, knowledge_base_id, doc_id)
     return {"bound": True, "created": created}
 
 
@@ -109,6 +103,43 @@ async def unbind_knowledge_document(
 ):
     await container.knowledge_assets.unbind_document(context, knowledge_base_id, doc_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/search")
+async def search_knowledge(
+    context: ContextDep,
+    container: ContainerDep,
+    query: str = Query(alias="q", min_length=1, max_length=200),
+    top_k: int = Query(default=20, ge=1, le=50),
+    knowledge_base_id: str | None = Query(default=None, max_length=200),
+    collection_ref: str | None = Query(default=None, max_length=200),
+    doc_id: str | None = Query(default=None, max_length=200),
+    source_type: str | None = Query(default=None, max_length=40),
+):
+    """Search the active private index and return source-positioned evidence."""
+    items = await container.knowledge_assets.search(
+        context,
+        query=query,
+        top_k=top_k,
+        knowledge_base_id=knowledge_base_id,
+        collection_ref=collection_ref,
+        doc_id=doc_id,
+        source_type=source_type,
+    )
+    return {"items": items}
+
+
+@router.get("/source-state")
+async def get_knowledge_source_state(
+    context: ContextDep,
+    container: ContainerDep,
+    source_system: str = Query(min_length=1, max_length=100),
+    source_id: str = Query(min_length=1, max_length=200),
+):
+    """Resolve one external source to its active document and immutable revisions."""
+    return await container.knowledge_assets.get_source_state(
+        context, source_system=source_system, source_id=source_id
+    )
 
 
 @router.get("/documents")
@@ -160,9 +191,7 @@ async def list_knowledge_document_revisions(
     container: ContainerDep,
 ):
     """Inspect immutable index attempts without exposing another user's assets."""
-    return {
-        "items": await container.knowledge_assets.list_revisions(context, doc_id)
-    }
+    return {"items": await container.knowledge_assets.list_revisions(context, doc_id)}
 
 
 @router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

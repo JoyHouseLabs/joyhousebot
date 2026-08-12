@@ -306,7 +306,9 @@ class KnowledgeRevisionRepositoryMixin:
                     user_id,
                     doc_id,
                     f"runtime:{agent_id or 'shared'}",
-                    Jsonb({"revision_id": revision_id, "chunk_count": len(chunks), "run_id": run_id}),
+                    Jsonb(
+                        {"revision_id": revision_id, "chunk_count": len(chunks), "run_id": run_id}
+                    ),
                     now_ms,
                 ),
             )
@@ -372,13 +374,31 @@ class KnowledgeRevisionRepositoryMixin:
             )
             connection.execute(
                 """INSERT INTO knowledge_chunks
-                       (doc_id,chunk_index,user_id,page,content,created_at_ms)
-                   SELECT doc_id,chunk_index,user_id,page,content,%s
+                       (doc_id,chunk_index,user_id,revision_id,page,section_path,
+                        block_type,char_start,char_end,content,content_sha256,created_at_ms)
+                   SELECT doc_id,chunk_index,user_id,revision_id,page,section_path,
+                          block_type,char_start,char_end,content,content_sha256,%s
                      FROM knowledge_revision_chunks
                     WHERE user_id=%s AND doc_id=%s AND revision_id=%s
                     ORDER BY chunk_index""",
                 (now_ms, user_id, doc_id, revision_id),
             )
+            connection.execute(
+                """DELETE FROM knowledge_document_scopes
+                    WHERE user_id=%s AND doc_id=%s""",
+                (user_id, doc_id),
+            )
+            collection_refs = revision["document_metadata"].get("collection_refs", [])
+            if isinstance(collection_refs, list):
+                for scope_ref in dict.fromkeys(
+                    str(value).strip() for value in collection_refs if str(value).strip()
+                ):
+                    connection.execute(
+                        """INSERT INTO knowledge_document_scopes
+                               (user_id,doc_id,scope_type,scope_ref,revision_id,created_at_ms)
+                           VALUES (%s,%s,'collection',%s,%s,%s)""",
+                        (user_id, doc_id, scope_ref, revision_id, now_ms),
+                    )
             if previous_revision_id:
                 connection.execute(
                     """UPDATE knowledge_index_revisions SET status='superseded'
@@ -483,9 +503,7 @@ class KnowledgeRevisionRepositoryMixin:
                 {"error_code": error_code},
             )
 
-    def list_index_revisions(
-        self, *, user_id: str, doc_id: str
-    ) -> list[dict[str, Any]]:
+    def list_index_revisions(self, *, user_id: str, doc_id: str) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
                 """SELECT revision.*,
