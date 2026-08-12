@@ -182,6 +182,7 @@ class CapabilityRegistry:
         outbound_sink: Any = None,
         subagent_manager: Any = None,
         schedule_service: Any = None,
+        embedding_provider_resolver: Any = None,
     ) -> None:
         self._adapters: dict[str, ToolCapabilityAdapter] = {}
         # The model-facing catalog exposes one current adapter per name, but
@@ -201,6 +202,7 @@ class CapabilityRegistry:
                 outbound_sink=outbound_sink,
                 subagent_manager=subagent_manager,
                 schedule_service=schedule_service,
+                embedding_provider_resolver=embedding_provider_resolver,
             )
             if any(
                 item is not None
@@ -210,6 +212,7 @@ class CapabilityRegistry:
                     outbound_sink,
                     subagent_manager,
                     schedule_service,
+                    embedding_provider_resolver,
                 )
             )
             else None

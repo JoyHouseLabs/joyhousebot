@@ -46,6 +46,9 @@ class KnowledgeSourceSnapshotRequest(BaseModel):
     collection_refs: list[str] = Field(default_factory=list, max_length=100)
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     index_profile_id: str = Field(default="lexical-v1", pattern=_ID_PATTERN)
+    embedding_profile_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$"
+    )
 
     @model_validator(mode="after")
     def snapshot_has_indexable_input(self):

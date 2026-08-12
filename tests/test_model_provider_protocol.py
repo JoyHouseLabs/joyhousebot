@@ -165,6 +165,69 @@ async def test_openai_compatible_parses_tool_calls_and_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_generates_exact_embedding_batch() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        assert request.url.path == "/v1/embeddings"
+        assert payload == {
+            "model": "text-embedding-test",
+            "input": ["alpha", "beta"],
+            "dimensions": 3,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "model": "text-embedding-test",
+                "data": [
+                    {"index": 1, "embedding": [0.0, 1.0, 0.0]},
+                    {"index": 0, "embedding": [1.0, 0.0, 0.0]},
+                ],
+                "usage": {"prompt_tokens": 2, "total_tokens": 2},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            api_key="x",
+            api_base="https://models.example/v1",
+            default_model="openai/gpt-test",
+            provider_name="openai",
+            client=client,
+        )
+        response = await provider.embed(
+            ["alpha", "beta"], model="openai/text-embedding-test", dimensions=3
+        )
+    assert response.embeddings == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    assert response.dimensions == 3
+    assert response.usage == {"input_tokens": 2, "output_tokens": 0, "total_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_rejects_invalid_embedding_indices() -> None:
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 0, "embedding": [1.0, 0.0]},
+                    {"index": 0, "embedding": [0.0, 1.0]},
+                ]
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = OpenAICompatibleProvider(
+            api_key="x",
+            api_base="https://models.example/v1",
+            default_model="openai/text-embedding-test",
+            provider_name="openai",
+            client=client,
+        )
+        with pytest.raises(Exception, match="invalid embedding indices"):
+            await provider.embed(["alpha", "beta"], dimensions=2)
+
+
+@pytest.mark.asyncio
 async def test_provider_persists_full_request_response_and_native_reasoning(tmp_path) -> None:
     store = PostgresTestStore(tmp_path / "provider-observability.db")
     store.create_runtime_run(

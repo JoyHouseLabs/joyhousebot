@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import math
 from typing import Any
 
 from joyhousebot.contracts.capabilities import CapabilityContext
@@ -11,10 +13,15 @@ from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.services.memory import MemoryStore, MemoryWriteController
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
+_logger = logging.getLogger(__name__)
+
 
 class ContextPort:
-    def __init__(self, runtime_store: Any | None) -> None:
+    def __init__(
+        self, runtime_store: Any | None, *, embedding_provider_resolver: Any = None
+    ) -> None:
         self._store = runtime_store
+        self._embedding_provider_resolver = embedding_provider_resolver
 
     def _require_store(self) -> Any:
         if self._store is None:
@@ -46,6 +53,48 @@ class ContextPort:
             raise PermissionError("memory retrieval is disabled by the Agent memory policy")
         from joyhousebot.services.retrieval.adapter import search_async
 
+        if scope == "knowledge" and self._embedding_provider_resolver is not None:
+            store = self._require_store()
+            profile = await asyncio.to_thread(store.get_published_embedding_profile)
+            if profile is not None:
+                provider = None
+                try:
+                    provider = self._embedding_provider_resolver(profile["configuration"])
+                    if asyncio.iscoroutine(provider):
+                        provider = await provider
+                    response = await provider.embed(
+                        [query],
+                        model=profile["configuration"]["model_id"],
+                        dimensions=int(profile["configuration"]["dimensions"]),
+                    )
+                    query_embedding = response.embeddings[0]
+                    if profile["configuration"]["normalization"] == "l2":
+                        query_embedding = self._l2_normalize(query_embedding)
+                    repository = getattr(store, "_knowledge_repository", None)
+                    if repository is None:
+                        repository = KnowledgeRepository(store)
+                        store._knowledge_repository = repository
+                    return await asyncio.to_thread(
+                        repository.search_hybrid,
+                        user_id=context.user_id,
+                        query=query,
+                        query_embedding=query_embedding,
+                        embedding_profile_id=profile["revision_id"],
+                        top_k=top_k,
+                        source_type=source_type,
+                        collection_ref=collection_ref,
+                    )
+                except Exception:
+                    # Retrieval stays available when the optional embedding path is unhealthy.
+                    _logger.warning(
+                        "hybrid Knowledge retrieval failed; using lexical fallback"
+                    )
+                finally:
+                    close = getattr(provider, "close", None) if provider is not None else None
+                    if callable(close):
+                        closed = close()
+                        if asyncio.iscoroutine(closed):
+                            await closed
         return await search_async(
             query=query,
             top_k=top_k,
@@ -184,6 +233,7 @@ class ContextPort:
         parser_version: str = "1",
         chunker_id: str = "provided-chunks",
         chunker_version: str = "1",
+        embedding_profile_id: str | None = None,
     ) -> str:
         store = self._require_store()
         repository = getattr(store, "_knowledge_repository", None)
@@ -192,8 +242,7 @@ class ContextPort:
             store._knowledge_repository = repository
         resolved_source_id = source_id or source_url or title
         doc_id = self._knowledge_doc_id(context.user_id, source_system, resolved_source_id)
-        await asyncio.to_thread(
-            self._index_knowledge_revision,
+        await self._index_knowledge_revision(
             repository,
             doc_id=doc_id,
             user_id=context.user_id,
@@ -213,8 +262,19 @@ class ContextPort:
             parser_version=parser_version,
             chunker_id=chunker_id,
             chunker_version=chunker_version,
+            embedding_profile_id=embedding_profile_id,
             run_id=context.run_id,
             actor_id=f"worker:{context.agent_id or 'default'}",
+            embedding_profile=(
+                await asyncio.to_thread(
+                    store.get_published_embedding_profile,
+                    profile_id=embedding_profile_id,
+                    allow_retired=True,
+                )
+                if embedding_profile_id
+                else None
+            ),
+            embedding_provider_resolver=self._embedding_provider_resolver,
         )
         return doc_id
 
@@ -238,6 +298,7 @@ class ContextPort:
         parser_version: str = "1",
         chunker_id: str = "semantic-text-v1",
         chunker_version: str = "1",
+        embedding_profile_id: str | None = None,
     ) -> str:
         """Persist a failed immutable attempt without replacing the active index."""
         store = self._require_store()
@@ -268,6 +329,7 @@ class ContextPort:
             parser_version=parser_version,
             chunker_id=chunker_id,
             chunker_version=chunker_version,
+            embedding_profile_id=embedding_profile_id,
             run_id=context.run_id,
             actor_id=f"worker:{context.agent_id or 'default'}",
             error_code=error_code,
@@ -280,28 +342,70 @@ class ContextPort:
         return hashlib.sha256(f"{user_id}:{source_system}:{source_id}".encode()).hexdigest()[:24]
 
     @staticmethod
-    def _index_knowledge_revision(
+    async def _index_knowledge_revision(
         repository: KnowledgeRepository,
         *,
         actor_id: str,
+        embedding_profile: dict[str, Any] | None,
+        embedding_provider_resolver: Any,
         **kwargs: Any,
     ) -> None:
-        revision_id = repository.stage_index_revision(**kwargs)
+        if kwargs.get("embedding_profile_id") and embedding_profile is None:
+            raise ValueError("published embedding profile not found")
+        revision_id = await asyncio.to_thread(repository.stage_index_revision, **kwargs)
         try:
-            repository.mark_index_revision_ready(
+            if embedding_profile is not None:
+                if embedding_provider_resolver is None:
+                    raise RuntimeError("embedding provider resolver is unavailable")
+                configuration = dict(embedding_profile["configuration"])
+                provider = embedding_provider_resolver(configuration)
+                if asyncio.iscoroutine(provider):
+                    provider = await provider
+                try:
+                    embeddings: list[list[float]] = []
+                    texts = [str(chunk.get("text") or "") for chunk in kwargs["chunks"]]
+                    batch_size = int(configuration["batch_size"])
+                    for offset in range(0, len(texts), batch_size):
+                        result = await provider.embed(
+                            texts[offset : offset + batch_size],
+                            model=configuration["model_id"],
+                            dimensions=int(configuration["dimensions"]),
+                        )
+                        embeddings.extend(result.embeddings)
+                    if configuration["normalization"] == "l2":
+                        embeddings = [ContextPort._l2_normalize(item) for item in embeddings]
+                    await asyncio.to_thread(
+                        repository.stage_revision_embeddings,
+                        user_id=kwargs["user_id"],
+                        doc_id=kwargs["doc_id"],
+                        revision_id=revision_id,
+                        embedding_profile_id=embedding_profile["revision_id"],
+                        embeddings=embeddings,
+                        actor_id=actor_id,
+                    )
+                finally:
+                    close = getattr(provider, "close", None)
+                    if callable(close):
+                        closed = close()
+                        if asyncio.iscoroutine(closed):
+                            await closed
+            await asyncio.to_thread(
+                repository.mark_index_revision_ready,
                 user_id=kwargs["user_id"],
                 doc_id=kwargs["doc_id"],
                 revision_id=revision_id,
                 actor_id=actor_id,
             )
-            repository.activate_index_revision(
+            await asyncio.to_thread(
+                repository.activate_index_revision,
                 user_id=kwargs["user_id"],
                 doc_id=kwargs["doc_id"],
                 revision_id=revision_id,
                 actor_id=actor_id,
             )
         except Exception as exc:
-            repository.fail_index_revision(
+            await asyncio.to_thread(
+                repository.fail_index_revision,
                 user_id=kwargs["user_id"],
                 doc_id=kwargs["doc_id"],
                 revision_id=revision_id,
@@ -310,6 +414,13 @@ class ContextPort:
                 error_message=str(exc),
             )
             raise
+
+    @staticmethod
+    def _l2_normalize(vector: list[float]) -> list[float]:
+        norm = math.sqrt(sum(float(value) ** 2 for value in vector))
+        if norm <= 0:
+            raise ValueError("embedding vector cannot be normalized")
+        return [float(value) / norm for value in vector]
 
     @staticmethod
     def _fail_knowledge_revision(

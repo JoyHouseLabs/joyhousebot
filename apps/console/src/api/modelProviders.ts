@@ -24,6 +24,7 @@ export interface ModelCatalogItem {
   supports_structured_output: boolean
   default_temperature: number
   tags: string[]
+  dimensions: number
 }
 
 export interface ModelProviderConfiguration {

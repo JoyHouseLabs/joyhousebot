@@ -35,6 +35,9 @@ from joyhousebot.storage.postgres_cancel import PostgresRunCancelMixin
 from joyhousebot.storage.postgres_capabilities import PostgresCapabilityStoreMixin
 from joyhousebot.storage.postgres_clarifications import PostgresClarificationStoreMixin
 from joyhousebot.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
+from joyhousebot.storage.postgres_embedding_profiles import (
+    PostgresEmbeddingProfileStoreMixin,
+)
 from joyhousebot.storage.postgres_evals import PostgresEvalStoreMixin
 from joyhousebot.storage.postgres_event_triggers import PostgresEventTriggerStoreMixin
 from joyhousebot.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
@@ -153,6 +156,7 @@ class PostgresRuntimeStore(
     PostgresOperationalMetricsStoreMixin,
     PostgresRolloutStoreMixin,
     PostgresModelProviderStoreMixin,
+    PostgresEmbeddingProfileStoreMixin,
     PostgresRemoteConnectionStoreMixin,
     PostgresOperationsStoreMixin,
     PostgresExtensionInventoryStoreMixin,

@@ -37,6 +37,19 @@ class LLMResponse:
         return len(self.tool_calls) > 0
 
 
+@dataclass(frozen=True, slots=True)
+class EmbeddingResponse:
+    """Provider-neutral embedding batch with exact usage metadata."""
+
+    embeddings: list[list[float]]
+    model: str
+    usage: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def dimensions(self) -> int:
+        return len(self.embeddings[0]) if self.embeddings else 0
+
+
 class LLMProvider(ABC):
     """
     Abstract base class for LLM providers.
@@ -97,6 +110,16 @@ class LLMProvider(ABC):
         if response.content:
             yield "delta", response.content
         yield "done", response
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        dimensions: int | None = None,
+    ) -> EmbeddingResponse:
+        """Generate embeddings when the provider extension implements them."""
+        raise NotImplementedError("model provider does not support embeddings")
 
     async def close(self) -> None:
         """Release provider-owned connection pools."""

@@ -68,6 +68,7 @@ class NativeAgentExecutor(
         session_manager: SessionStore | None = None,
         config: Any | None = None,
         outbound_sink: Any = None,
+        embedding_provider_resolver: Any = None,
     ):
         self.outbound_sink = outbound_sink
         self.provider = provider
@@ -125,6 +126,7 @@ class NativeAgentExecutor(
             outbound_sink=self.outbound_sink,
             subagent_manager=self.subagents,
             schedule_service=self.cron_service,
+            embedding_provider_resolver=embedding_provider_resolver,
             optional_allowlist=optional_allowlist,
             enabled_plugins=enabled_plugins,
         )

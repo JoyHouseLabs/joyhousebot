@@ -201,6 +201,7 @@ class PostgresMigrationMixin:
             self.migrate_skills()
             self.migrate_plugins()
             self.migrate_model_providers()
+            self.migrate_embedding_profiles()
             self.migrate_remote_connections()
             self.migrate_scenarios()
             self.migrate_app_packs()

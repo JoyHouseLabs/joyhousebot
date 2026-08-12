@@ -189,6 +189,11 @@ class IndexKnowledgeHandler:
                     parser_version=exc.parser_version,
                     chunker_id="semantic-text-v1",
                     chunker_version="2",
+                    embedding_profile_id=(
+                        str(input["embedding_profile_id"])
+                        if input.get("embedding_profile_id")
+                        else None
+                    ),
                 )
             except Exception as failure_exc:
                 return _failure(
@@ -215,6 +220,11 @@ class IndexKnowledgeHandler:
                 parser_version=parsed.parser_version,
                 chunker_id="semantic-text-v1",
                 chunker_version="2",
+                embedding_profile_id=(
+                    str(input["embedding_profile_id"])
+                    if input.get("embedding_profile_id")
+                    else None
+                ),
             )
         except ValueError as exc:
             return _failure("INVALID_SOURCE", sanitize_error_message(str(exc)))
@@ -352,13 +362,14 @@ INDEX_KNOWLEDGE_SCHEMA = {
         "collection_refs": {"type": "array", "items": {"type": "string"}},
         "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "index_profile_id": {"type": "string"},
+        "embedding_profile_id": {"type": "string", "minLength": 1},
     },
 }
 
 
 class ContextAssetsPlugin:
     plugin_id = "capability-context-assets"
-    version = "1.4.2"
+    version = "1.5.0"
 
     def manifest(self) -> PluginManifest:
         return PluginManifest(

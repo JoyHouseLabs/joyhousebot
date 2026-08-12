@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -12,6 +13,7 @@ import json_repair
 from joyhousebot.extension_sdk import ExtensionManifest
 from joyhousebot.extension_sdk.manifest import source_tree_digest
 from joyhousebot.extension_sdk.models import (
+    EmbeddingResponse,
     LLMProvider,
     LLMResponse,
     ModelProviderBuildRequest,
@@ -32,7 +34,7 @@ from joyhousebot.extension_sdk.models import (
 
 OPENAI_COMPATIBLE_EXTENSION_MANIFEST = ExtensionManifest(
     extension_id="provider-openai-compatible",
-    version="0.1.1",
+    version="0.1.2",
     name="JoyhouseBot OpenAI-compatible Provider",
     extension_types=("model_provider",),
     description="OpenAI-compatible chat completions, streaming, tools and reasoning adapter.",
@@ -157,6 +159,9 @@ class OpenAICompatibleProvider(LLMProvider):
     def _url(self) -> str:
         return f"{str(self.api_base).rstrip('/')}/chat/completions"
 
+    def _embeddings_url(self) -> str:
+        return f"{str(self.api_base).rstrip('/')}/embeddings"
+
     def _payload(
         self,
         *,
@@ -258,6 +263,75 @@ class OpenAICompatibleProvider(LLMProvider):
                 finish_reason="error",
                 **error_metadata(exc),
             )
+
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        dimensions: int | None = None,
+    ) -> EmbeddingResponse:
+        if not texts or len(texts) > 256 or any(not str(text).strip() for text in texts):
+            raise ValueError("embedding input requires 1-256 non-empty texts")
+        resolved_model = self._model(model)
+        payload: dict[str, Any] = {"model": resolved_model, "input": list(texts)}
+        if dimensions is not None:
+            payload["dimensions"] = int(dimensions)
+        request_id = await model_request_started(
+            model=resolved_model,
+            operation="embeddings",
+            message_count=len(texts),
+            tool_count=0,
+            provider=self.provider_name,
+            request_payload=payload,
+            request_url=self._embeddings_url(),
+        )
+        try:
+            response = await self._client.post(
+                self._embeddings_url(), headers=self._headers(), json=payload
+            )
+            await self._raise_for_status(response)
+            raw_response = response.json()
+            rows = sorted(raw_response.get("data") or [], key=lambda item: int(item["index"]))
+            indices = [int(item["index"]) for item in rows]
+            if indices != list(range(len(texts))):
+                raise ProviderHTTPError(502, "provider returned invalid embedding indices")
+            embeddings = [[float(value) for value in item["embedding"]] for item in rows]
+            if len(embeddings) != len(texts):
+                raise ProviderHTTPError(502, "provider returned an incomplete embedding batch")
+            width = len(embeddings[0]) if embeddings else 0
+            if not width or any(len(item) != width for item in embeddings):
+                raise ProviderHTTPError(502, "provider returned inconsistent embedding dimensions")
+            if any(not math.isfinite(value) for item in embeddings for value in item):
+                raise ProviderHTTPError(502, "provider returned non-finite embedding values")
+            if dimensions is not None and width != int(dimensions):
+                raise ProviderHTTPError(502, "provider returned unexpected embedding dimensions")
+            usage = self._usage(raw_response.get("usage"))
+            await model_request_finished(
+                request_id=request_id,
+                model=resolved_model,
+                operation="embeddings",
+                status="succeeded",
+                usage=usage,
+                provider_request_id=response.headers.get("x-request-id")
+                or response.headers.get("request-id"),
+                response_payload=raw_response,
+            )
+            return EmbeddingResponse(
+                embeddings=embeddings,
+                model=str(raw_response.get("model") or resolved_model),
+                usage=usage,
+            )
+        except Exception as exc:
+            await model_request_failed(
+                request_id=request_id,
+                model=resolved_model,
+                operation="embeddings",
+                exc=exc,
+                provider_request_id=getattr(exc, "provider_request_id", None),
+                response_payload=getattr(exc, "raw_response", None),
+            )
+            raise
 
     async def chat_stream(
         self,

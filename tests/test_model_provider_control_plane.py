@@ -40,6 +40,17 @@ def _model(model_id: str = "openrouter/openai/gpt-test") -> dict:
     }
 
 
+def _embedding_model(model_id: str = "openrouter/openai/text-embedding-test") -> dict:
+    return {
+        "model_id": model_id,
+        "name": "Test embedding model",
+        "kind": "embedding",
+        "enabled": True,
+        "input_modalities": ["text"],
+        "dimensions": 3,
+    }
+
+
 def _configuration(*, model_id: str = "openrouter/openai/gpt-test") -> dict:
     return {
         "enabled": True,
@@ -97,6 +108,17 @@ def test_model_provider_requires_secret_references(
             {"primary": "openrouter/openai/gpt-test", "max_tokens": 9000},
             normalized["models"],
         )
+
+    with pytest.raises(ValueError, match="dimensions"):
+        normalize_model_provider(
+            "openrouter",
+            {**_configuration(), "models": [_model(), {**_embedding_model(), "dimensions": 0}]},
+        )
+
+    embedding_only = normalize_model_provider(
+        "openrouter", {**_configuration(), "models": [_embedding_model()]}
+    )
+    assert embedding_only["models"][0]["kind"] == "embedding"
 
 
 def test_model_provider_rollout_and_safe_rollback(tmp_path: Path) -> None:

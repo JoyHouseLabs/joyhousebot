@@ -256,6 +256,23 @@ class ModelProviderRevisionRequest(BaseModel):
     models: list[dict[str, Any]] = Field(min_length=1, max_length=1000)
 
 
+class EmbeddingProfileRevisionRequest(BaseModel):
+    profile_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    provider_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    provider_revision_id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9_-]{0,63}:v[1-9][0-9]*$"
+    )
+    model_id: str = Field(min_length=1, max_length=256)
+    dimensions: int = Field(ge=1, le=16_000)
+    normalization: Literal["none", "l2"] = "none"
+    batch_size: int = Field(default=32, ge=1, le=256)
+    max_input_tokens: int = Field(default=8192, ge=1, le=1_000_000)
+    max_cost_usd: float = Field(default=0, ge=0, le=10_000)
+    is_default: bool = False
+
+
 class BindAgentSkillRequest(BaseModel):
     skill_id: str = Field(pattern=_ID_PATTERN)
     skill_version: str = Field(min_length=1, max_length=64)

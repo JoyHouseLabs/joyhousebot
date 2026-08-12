@@ -67,8 +67,8 @@ def normalize_model_provider(provider_id: str, value: dict[str, Any]) -> dict[st
     identities = [item["model_id"] for item in models]
     if len(identities) != len(set(identities)):
         raise ValueError("model provider contains duplicate model ids")
-    if not any(item["enabled"] and item["kind"] == "llm" for item in models):
-        raise ValueError("model provider must contain at least one enabled llm model")
+    if not any(item["enabled"] for item in models):
+        raise ValueError("model provider must contain at least one enabled model")
     return {
         "enabled": bool(value.get("enabled", True)),
         "extension_id": extension_id,
@@ -202,7 +202,17 @@ def _normalize_model(provider_id: str, raw: Any) -> dict[str, Any]:
         "supports_structured_output": bool(raw.get("supports_structured_output", False)),
         "default_temperature": temperature,
         "tags": list(dict.fromkeys(tags)),
+        "dimensions": _embedding_dimensions(model_id, kind, raw.get("dimensions")),
     }
+
+
+def _embedding_dimensions(model_id: str, kind: str, value: Any) -> int:
+    dimensions = int(value or 0)
+    if kind == "embedding" and not 1 <= dimensions <= 16_000:
+        raise ValueError(f"embedding model {model_id} dimensions must be between 1 and 16000")
+    if kind != "embedding" and dimensions:
+        raise ValueError(f"non-embedding model {model_id} cannot declare dimensions")
+    return dimensions
 
 
 def _header_references(value: Any) -> dict[str, str]:

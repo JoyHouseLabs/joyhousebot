@@ -9,6 +9,9 @@ Optional durable context capabilities for JoyhouseBot:
   Knowledge revision. The built-in Office Open XML parser supports DOCX paragraphs,
   heading paths, list items, table rows, and explicit page-break evidence, as well as
   page-positioned PPTX slides and XLSX sheets.
+- `knowledge.index` can opt into an operator-published Embedding Profile. The Runtime
+  owns Provider resolution, immutable vector staging and completeness checks; the
+  extension never receives credentials or database access.
 
 The extension receives only the Runtime's scope-enforcing context service. It does not
 receive a PostgreSQL repository or construct its own user/Agent scope.

@@ -22,8 +22,11 @@ class CapabilityServiceBroker:
         outbound_sink: Any = None,
         subagent_manager: Any = None,
         schedule_service: Any = None,
+        embedding_provider_resolver: Any = None,
     ) -> None:
-        self.context = ContextPort(runtime_store)
+        self.context = ContextPort(
+            runtime_store, embedding_provider_resolver=embedding_provider_resolver
+        )
         self.scratch = ScratchPort(scratch_root)
         self.sandbox = SandboxPort(self.scratch)
         self.delivery = DeliveryPort(outbound_sink)

@@ -7,6 +7,7 @@ export {}
 
 declare module 'vue' {
   export interface GlobalComponents {
+    EmbeddingProfiles: typeof import('./src/components/EmbeddingProfiles.vue')['default']
     ExecutionTimeline: typeof import('./src/components/ExecutionTimeline.vue')['default']
     ImpersonationControl: typeof import('./src/components/ImpersonationControl.vue')['default']
     MarkdownContent: typeof import('./src/components/MarkdownContent.vue')['default']

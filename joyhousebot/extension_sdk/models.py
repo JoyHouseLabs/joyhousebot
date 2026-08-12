@@ -5,7 +5,7 @@ from joyhousebot.contracts.extensions import (
     ModelProviderExtension,
     ModelProviderSpec,
 )
-from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from joyhousebot.providers.base import EmbeddingResponse, LLMProvider, LLMResponse, ToolCallRequest
 from joyhousebot.providers.observability import (
     bind_model_observation,
     model_cache_hit,
@@ -29,6 +29,7 @@ from joyhousebot.providers.provider_support import (
 __all__ = [
     "LLMProvider",
     "LLMResponse",
+    "EmbeddingResponse",
     "ModelProviderBuildRequest",
     "ModelProviderExtension",
     "ModelProviderSpec",

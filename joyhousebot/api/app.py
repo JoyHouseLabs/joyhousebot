@@ -25,6 +25,7 @@ from joyhousebot.api.rate_limit import RateLimitMiddleware
 from joyhousebot.api.routers import (
     admin_apps,
     admin_catalog,
+    admin_embedding_profiles,
     admin_evals,
     admin_model_providers,
     admin_platform,
@@ -316,6 +317,7 @@ def create_app(
         app.include_router(admin_catalog.router, prefix=prefix)
         app.include_router(admin_evals.router, prefix=prefix)
         app.include_router(admin_model_providers.router, prefix=prefix)
+        app.include_router(admin_embedding_profiles.router, prefix=prefix)
         app.include_router(admin_plugins.router, prefix=prefix)
         app.include_router(admin_remote_connections.router, prefix=prefix)
         app.include_router(admin_scenarios.router, prefix=prefix)

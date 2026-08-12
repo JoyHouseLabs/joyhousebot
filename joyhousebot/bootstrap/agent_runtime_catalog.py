@@ -97,6 +97,7 @@ class AgentRuntimeCatalog:
                 cron_service=self.cron_service,
                 client=self._shared_http_client,
                 outbound_sink=self.outbound_sink,
+                embedding_provider_resolver=self.resolve_embedding_provider,
             )
             if self._shared_http_client is None:
                 self._shared_http_client = getattr(loop.provider, "http_client", None)
@@ -107,6 +108,24 @@ class AgentRuntimeCatalog:
                 self._agents[definition.agent_id] = loop
             self._acknowledge(revision.agent_id, revision.revision_id, status="loaded")
             return loop
+
+    def resolve_embedding_provider(self, profile: dict[str, Any]) -> Any:
+        """Build the exact published Provider revision frozen by an embedding profile."""
+        configuration = self.store.get_model_provider_revision(
+            profile["provider_id"], profile["provider_revision_id"]
+        )
+        if configuration is None or configuration["status"] not in {"published", "retired"}:
+            raise RuntimeError("embedding profile provider revision is unavailable")
+        raw = dict(configuration["configuration"])
+        raw.pop("api_key_variable", None)
+        raw.pop("extra_header_variables", None)
+        runtime_config = self._runtime_model_config({profile["provider_id"]: raw})
+        return create_model_provider(
+            config=runtime_config,
+            model=profile["model_id"],
+            provider_name=profile["provider_id"],
+            request_timeout_seconds=float(raw.get("request_timeout_seconds") or 120),
+        )
 
     def set_runtime(self, runtime: Any) -> None:
         with self._lock:
@@ -246,7 +265,7 @@ class AgentRuntimeCatalog:
         default_model = next(
             str(model["model_id"])
             for model in configuration.get("models") or ()
-            if model.get("enabled", True) and model.get("kind") == "llm"
+            if model.get("enabled", True)
         )
         provider = create_model_provider(
             config=staged_config,

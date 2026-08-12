@@ -14,6 +14,7 @@ from joyhousebot.application.app_delegation import AppDelegationService
 from joyhousebot.application.app_market import AppMarketService
 from joyhousebot.application.app_packs import AppPackService
 from joyhousebot.application.approvals import ApprovalService
+from joyhousebot.application.embedding_profiles import EmbeddingProfileService
 from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
 from joyhousebot.application.event_triggers import EventTriggerService
@@ -82,6 +83,7 @@ class ApplicationContainer:
     workflows: WorkflowService
     remote_connections: RemoteConnectionService
     model_providers: ModelProviderService
+    embedding_profiles: EmbeddingProfileService
     skills: SkillService
     app_packs: AppPackService
     app_delegation: AppDelegationService
@@ -259,6 +261,7 @@ def build_api_container(
         ),
         remote_connections=RemoteConnectionService(store, platform),
         model_providers=ModelProviderService(store),
+        embedding_profiles=EmbeddingProfileService(store),
         skills=SkillService(store),
         app_packs=AppPackService(store),
         app_delegation=AppDelegationService(store),

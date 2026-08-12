@@ -90,19 +90,42 @@ A parser or reference-resolution failure is also persisted as an immutable faile
 the observed source generation while leaving the previous active projection searchable. Archived sources remain auditable
 but are excluded from normal retrieval.
 
-## Vector readiness decision
+## Vector and hybrid retrieval
 
-Vector indexing remains disabled by default. PostgreSQL full-text search is the zero-provider baseline and is already safe
-to rebuild from immutable chunks. Vector activation requires all of the following to be true first:
+PostgreSQL full-text search remains the zero-provider baseline. K3 adds an opt-in vector path without weakening that
+baseline:
 
-- an enabled, deployment-allowed embedding Provider and exact model ID;
-- a versioned embedding profile containing model ID, dimensions, normalization and chunker version;
-- `pgvector` availability verified by the migrator, without letting an Extension inject DDL;
-- per-Run token/cost policy, retry and rate-limit handling;
-- dual-write staging and complete-vector-count verification before active revision promotion;
-- a rebuild path for model or dimension changes and retrieval Eval coverage.
+- the model catalog declares an exact `embedding` model and dimensions;
+- an immutable Embedding Profile revision freezes Provider revision, model ID, dimensions, normalization, batching and
+  declared per-index cost boundary; the mutable default selector lives on the Profile, outside the signed revision;
+- publishing the profile fails closed unless the Provider revision is active and the operator has installed `pgvector`;
+- `knowledge.index` accepts a profile id, resolves it to an exact profile revision, stages every chunk embedding and
+  verifies embedding count before the revision can become ready or active;
+- embeddings remain attached to immutable revision/chunk identity; incomplete embedding batches fail the new revision
+  while preserving the prior active projection;
+- retrieval embeds the query only when a default profile is published, fuses lexical and vector candidates with reciprocal
+  rank fusion, and records the retrieval modes plus exact profile revision in evidence;
+- embedding or vector-query failure degrades to owner-scoped lexical retrieval, never to a process-local vector store.
 
-Until those gates exist, silently generating partial or provider-dependent embeddings would weaken revision consistency.
+Core owns profile governance, revision completeness and PostgreSQL data. Provider Extensions implement the model API but
+cannot install database extensions or inject Runtime DDL. `GET /v1/admin/embedding-profiles/readiness` reports pgvector
+availability, the published default profile and activation blockers without resolving secret values.
+
+Operator activation order:
+
+1. install `pgvector` in the target PostgreSQL instance (database-administrator action);
+2. in Console **Models → Provider 配置**, declare an enabled `embedding` model with its exact dimensions and publish the
+   Provider revision through the normal Worker preload/ACK flow;
+3. in **Models → Embedding Profiles**, create a draft from that exact Provider revision, review readiness, then publish it;
+4. submit Knowledge snapshots with `embedding_profile_id`. Submission resolves a profile name to its exact immutable
+   revision before the Run is created. Omitting it keeps that document on the lexical baseline.
+
+Changing the default Profile does not silently rewrite existing embeddings. Old exact revisions remain resolvable only
+for already-frozen indexing work; new submissions use the current published revision. Re-embedding is an explicit
+follow-up job, not an implicit side effect of profile publication.
+
+K3 follow-up work should add large-corpus ANN index selection, re-embedding jobs for model/dimension changes, cost/rate
+enforcement and retrieval Eval gates. Those are deliberately separate from the first safe hybrid baseline.
 
 The `retrieve` capability and public search API accept an optional `collection_ref`. Activation projects frozen collection
 references into `knowledge_document_scopes`; retrieval no longer queries ad-hoc metadata JSON and still never reads Product

@@ -42,6 +42,7 @@ def build_agent_executor(
     cron_service: Any | None = None,
     outbound_sink: Any = None,
     client: httpx.AsyncClient | None = None,
+    embedding_provider_resolver: Any = None,
 ) -> NativeAgentExecutor:
     """Construct one immutable Agent revision runtime."""
     policy = revision.model_policy
@@ -70,6 +71,7 @@ def build_agent_executor(
         session_manager=RuntimeSessionManager(store, namespace=definition.agent_id),
         config=config,
         outbound_sink=outbound_sink,
+        embedding_provider_resolver=embedding_provider_resolver,
     )
 
 

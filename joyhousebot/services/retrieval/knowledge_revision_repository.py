@@ -118,6 +118,8 @@ ALTER TABLE knowledge_index_revisions
     ADD COLUMN IF NOT EXISTS source_status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE knowledge_index_revisions
     ADD COLUMN IF NOT EXISTS document_metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE knowledge_index_revisions
+    ADD COLUMN IF NOT EXISTS embedding_profile_id TEXT;
 UPDATE knowledge_index_revisions revision
    SET source_type=document.source_type,source_url=document.source_url,
        title=document.title,source_status=document.source_status,
@@ -320,16 +322,26 @@ class KnowledgeRevisionRepositoryMixin:
         now_ms = int(time.time() * 1000)
         with self._connection() as connection:
             row = connection.execute(
-                """UPDATE knowledge_index_revisions SET status='ready',ready_at_ms=%s
-                    WHERE user_id=%s AND doc_id=%s AND revision_id=%s
-                      AND status='staging' RETURNING revision_id""",
+                """UPDATE knowledge_index_revisions revision
+                      SET status='ready',ready_at_ms=%s
+                    WHERE revision.user_id=%s AND revision.doc_id=%s
+                      AND revision.revision_id=%s AND revision.status='staging'
+                      AND (
+                          revision.embedding_profile_id IS NULL OR
+                          (SELECT COUNT(*) FROM knowledge_revision_embeddings embedding
+                            WHERE embedding.revision_id=revision.revision_id)=
+                          (SELECT COUNT(*) FROM knowledge_revision_chunks chunk
+                            WHERE chunk.revision_id=revision.revision_id)
+                      )
+                    RETURNING revision_id""",
                 (now_ms, user_id, doc_id, revision_id),
             ).fetchone()
             if row is None:
-                raise ValueError("knowledge revision is not staging")
+                raise ValueError("knowledge revision is not staging or embeddings are incomplete")
             self._record_revision_event(
                 connection, user_id, doc_id, revision_id, "revision_ready", actor_id, now_ms
             )
+        return True
 
     def activate_index_revision(
         self, *, user_id: str, doc_id: str, revision_id: str, actor_id: str

@@ -1,0 +1,70 @@
+<template>
+  <div class="embedding-space">
+    <section class="panel readiness-panel">
+      <div><span class="eyebrow">KNOWLEDGE RETRIEVAL</span><h2>Embedding Profiles</h2><p>冻结精确 Provider Revision、模型、维度与批处理策略；知识索引和检索证据始终记录实际使用的 Profile Revision。</p></div>
+      <div class="readiness-state" :class="{ ready: readiness?.ready }"><strong>{{ readiness?.ready ? 'VECTOR READY' : 'LEXICAL SAFE MODE' }}</strong><span>pgvector {{ readiness?.pgvector.installed ? readiness.pgvector.installed_version : '未安装' }}</span><small v-if="readiness?.default_profile">{{ readiness.default_profile.revision_id }}</small></div>
+    </section>
+    <div v-if="error" class="notice error-notice">{{ error }}</div>
+    <div v-if="readiness?.blockers.length" class="notice blocker-notice"><strong>向量检索尚未启用</strong><span v-for="item in readiness.blockers" :key="item">{{ item }}</span><small>不影响 PostgreSQL 全文检索；Profile 发布会失败关闭。</small></div>
+
+    <div class="embedding-layout">
+      <aside class="panel profile-list">
+        <div class="panel-heading"><div><span class="eyebrow">PROFILES</span><h2>索引策略</h2></div><button class="secondary-button" type="button" @click="newProfile">＋ 新建</button></div>
+        <button v-for="item in profiles" :key="item.profile_id" type="button" class="profile-row" :class="{ active: selected?.profile_id === item.profile_id }" @click="selectProfile(item.profile_id)"><i :class="{ ready: item.current_revision_id }"/><span><strong>{{ item.name }}</strong><code>{{ item.profile_id }}</code><small>{{ item.is_default ? '默认 · ' : '' }}{{ item.current_revision_id || '仅 Draft' }}</small></span></button>
+        <div v-if="!profiles.length && !loading" class="empty-state compact"><strong>尚无 Profile</strong><p>先在 Provider 配置中登记 embedding 模型。</p></div>
+      </aside>
+
+      <main class="profile-workspace">
+        <section v-if="editing" class="panel profile-editor">
+          <div class="panel-heading"><div><span class="eyebrow">IMMUTABLE REVISION</span><h2>{{ selected ? `更新 ${selected.name}` : '创建 Embedding Profile' }}</h2></div><button class="secondary-button" type="button" @click="cancelEdit">取消</button></div>
+          <form @submit.prevent="save">
+            <label><span>Profile ID</span><input v-model.trim="draft.profile_id" required :disabled="!!selected" placeholder="knowledge-default"/></label><label><span>名称</span><input v-model.trim="draft.name" required placeholder="Knowledge Default"/></label>
+            <label class="wide"><span>说明</span><input v-model.trim="draft.description" placeholder="私有知识库默认向量策略"/></label>
+            <label class="wide"><span>已发布 Provider Revision / Embedding 模型</span><select v-model="modelSelection" required @change="applyModelSelection"><option value="" disabled>请选择精确版本和模型</option><option v-for="option in modelOptions" :key="option.key" :value="option.key">{{ option.revisionId }} · {{ option.model.name }} · {{ option.model.dimensions }} dims</option></select><small>Profile 不跟随 latest；Provider 更新不会静默改变现有知识索引。</small></label>
+            <label><span>Dimensions</span><input v-model.number="draft.dimensions" type="number" min="1" max="16000" required readonly/></label><label><span>Normalization</span><select v-model="draft.normalization"><option value="none">Provider 原值</option><option value="l2">L2 Normalize</option></select></label>
+            <label><span>Batch Size</span><input v-model.number="draft.batch_size" type="number" min="1" max="256" required/></label><label><span>单输入 Token 上限</span><input v-model.number="draft.max_input_tokens" type="number" min="1" required/></label>
+            <label><span>声明成本边界（USD）</span><input v-model.number="draft.max_cost_usd" type="number" min="0" step="0.01" required/><small>当前用于治理声明；强制计费闸门将在后续版本接入。</small></label><label class="switch-field"><input v-model="draft.is_default" type="checkbox"/><span><strong>发布后设为默认</strong><small>默认指针不写入不可变 Revision 配置。</small></span></label>
+            <div class="wide form-actions"><button class="primary-button" type="submit" :disabled="saving || !modelSelection">{{ saving ? '保存中…' : '创建不可变 Draft' }}</button></div>
+          </form>
+        </section>
+
+        <template v-else-if="selected">
+          <section class="panel profile-hero"><div><span class="eyebrow">{{ selected.is_default ? 'DEFAULT PROFILE' : 'EMBEDDING PROFILE' }}</span><h2>{{ selected.name }}</h2><p>{{ selected.description || '未填写说明' }}</p><code>{{ selected.current_revision_id || '尚未发布' }}</code></div><div class="hero-actions"><button class="secondary-button" type="button" @click="editSelected">创建新 Revision</button><button v-if="draftRevision" class="primary-button" type="button" :disabled="publishing" @click="publish">{{ publishing ? '发布中…' : `发布 ${draftRevision.revision_id}` }}</button></div></section>
+          <section v-if="currentConfiguration" class="panel profile-configuration"><div class="panel-heading"><div><span class="eyebrow">ACTIVE CONFIGURATION</span><h2>当前索引参数</h2></div><span class="status-badge completed">published</span></div><dl><dt>Provider</dt><dd><code>{{ currentConfiguration.provider_revision_id }}</code></dd><dt>Model</dt><dd><code>{{ currentConfiguration.model_id }}</code></dd><dt>Dimensions</dt><dd>{{ currentConfiguration.dimensions }}</dd><dt>Normalization</dt><dd>{{ currentConfiguration.normalization }}</dd><dt>Batch</dt><dd>{{ currentConfiguration.batch_size }}</dd></dl></section>
+          <section class="panel revision-history"><div class="panel-heading"><div><span class="eyebrow">REVISION HISTORY</span><h2>不可变历史</h2></div><span>{{ selected.revisions?.length || 0 }}</span></div><article v-for="revision in selected.revisions" :key="revision.revision_id"><div><strong>v{{ revision.version }}</strong><code>{{ revision.revision_id }}</code><small>{{ revision.configuration.model_id }} · {{ revision.configuration.dimensions }} dims</small></div><span class="status-badge" :class="revision.status">{{ revision.status }}{{ revision.make_default ? ' · default' : '' }}</span></article></section>
+        </template>
+        <section v-else class="panel empty-workspace"><span>◉</span><strong>选择或创建 Profile</strong><p>它连接模型治理、知识索引版本与混合检索证据。</p></section>
+      </main>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useMessage } from 'naive-ui'
+import { createEmbeddingProfile, createEmbeddingProfileRevision, getEmbeddingProfile, getEmbeddingReadiness, listEmbeddingProfiles, publishEmbeddingProfileRevision, type EmbeddingProfile, type EmbeddingReadiness } from '../api/embeddingProfiles'
+import type { ModelProviderProfile } from '../api/modelProviders'
+
+const props = defineProps<{ providers: ModelProviderProfile[] }>()
+const message = useMessage(); const profiles = ref<EmbeddingProfile[]>([]); const selected = ref<EmbeddingProfile | null>(null); const readiness = ref<EmbeddingReadiness | null>(null); const loading = ref(false); const saving = ref(false); const publishing = ref(false); const editing = ref(false); const error = ref(''); const modelSelection = ref('')
+const emptyDraft = () => ({ profile_id: '', name: '', description: '', provider_id: '', provider_revision_id: '', model_id: '', dimensions: 0, normalization: 'none' as 'none' | 'l2', batch_size: 32, max_input_tokens: 8192, max_cost_usd: 0, is_default: false })
+const draft = reactive(emptyDraft())
+const modelOptions = computed(() => props.providers.flatMap(provider => { const revision = provider.current_revision; if (!revision || revision.status !== 'published') return []; return revision.configuration.models.filter(model => model.enabled && model.kind === 'embedding' && Number(model.dimensions) > 0).map(model => ({ key: `${provider.provider_id}|${revision.revision_id}|${model.model_id}`, providerId: provider.provider_id, revisionId: revision.revision_id, model })) }))
+const draftRevision = computed(() => selected.value?.revisions?.find(item => item.status === 'draft') || null)
+const currentConfiguration = computed(() => selected.value?.current_revision?.configuration || null)
+async function load(preferredId?: string) { loading.value = true; error.value = ''; try { const base = await listEmbeddingProfiles(); profiles.value = await Promise.all(base.map(item => getEmbeddingProfile(item.profile_id))); readiness.value = await getEmbeddingReadiness(); const id = preferredId || selected.value?.profile_id || profiles.value[0]?.profile_id; selected.value = id ? await getEmbeddingProfile(id) : null } catch (cause) { error.value = errorText(cause) } finally { loading.value = false } }
+async function selectProfile(id: string) { editing.value = false; selected.value = await getEmbeddingProfile(id) }
+function newProfile() { selected.value = null; Object.assign(draft, emptyDraft()); modelSelection.value = ''; editing.value = true }
+function editSelected() { if (!selected.value) return; const config = draftRevision.value?.configuration || selected.value.current_revision?.configuration; Object.assign(draft, { ...emptyDraft(), profile_id: selected.value.profile_id, name: selected.value.name, description: selected.value.description, ...(config || {}), is_default: selected.value.is_default }); modelSelection.value = config ? `${config.provider_id}|${config.provider_revision_id}|${config.model_id}` : ''; editing.value = true }
+function cancelEdit() { editing.value = false; if (!selected.value && profiles.value.length) void selectProfile(profiles.value[0].profile_id) }
+function applyModelSelection() { const option = modelOptions.value.find(item => item.key === modelSelection.value); if (!option) return; draft.provider_id = option.providerId; draft.provider_revision_id = option.revisionId; draft.model_id = option.model.model_id; draft.dimensions = Number(option.model.dimensions) }
+async function save() { saving.value = true; error.value = ''; try { const id = draft.profile_id; if (selected.value) await createEmbeddingProfileRevision(id, { ...draft }); else await createEmbeddingProfile({ ...draft }); message.success('Embedding Profile Draft 已保存'); editing.value = false; await load(id) } catch (cause) { error.value = errorText(cause) } finally { saving.value = false } }
+async function publish() { if (!selected.value || !draftRevision.value) return; publishing.value = true; error.value = ''; try { await publishEmbeddingProfileRevision(selected.value.profile_id, draftRevision.value.revision_id); message.success('Embedding Profile 已发布'); await load(selected.value.profile_id) } catch (cause) { error.value = errorText(cause) } finally { publishing.value = false } }
+function errorText(value: unknown) { return value instanceof Error ? value.message : '操作失败' }
+onMounted(() => load())
+</script>
+
+<style scoped>
+.embedding-space{display:grid;gap:16px}.readiness-panel{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:22px}.readiness-panel h2,.profile-hero h2{margin:6px 0;color:var(--text-strong)}.readiness-panel p,.profile-hero p{max-width:720px;color:var(--text-muted);line-height:1.6}.readiness-state{display:grid;min-width:190px;gap:5px;padding:14px;color:var(--warning);background:var(--warning-subtle);border:1px solid var(--warning-border);border-radius:10px}.readiness-state.ready{color:var(--success);background:var(--success-subtle);border-color:var(--success-border)}.readiness-state span,.readiness-state small{font-size:9px}.blocker-notice{display:grid;gap:5px}.embedding-layout{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px}.profile-list{align-self:start;overflow:hidden}.profile-row{display:flex;width:100%;gap:10px;padding:13px 16px;color:var(--text);background:transparent;border:0;border-top:1px solid var(--border);text-align:left}.profile-row.active{background:var(--accent-subtle)}.profile-row i{width:9px;height:9px;flex:none;margin-top:5px;border-radius:50%;background:var(--warning)}.profile-row i.ready{background:var(--success)}.profile-row span{display:grid;min-width:0;gap:3px}.profile-row code,.profile-row small{overflow:hidden;color:var(--text-muted);font-size:9px;text-overflow:ellipsis}.profile-workspace{display:grid;gap:16px;min-width:0}.profile-editor form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:18px;border-top:1px solid var(--border)}.profile-editor label{display:grid;gap:6px;color:var(--text-muted);font-size:11px}.profile-editor input,.profile-editor select{width:100%;box-sizing:border-box;padding:10px;color:var(--text-strong);background:var(--input);border:1px solid var(--border);border-radius:8px}.profile-editor small{color:var(--text-muted);font-size:9px}.wide{grid-column:1/-1}.switch-field{display:flex!important;align-items:flex-start;gap:9px;padding:10px;border:1px solid var(--border);border-radius:8px}.switch-field input{width:auto}.switch-field span{display:grid;gap:3px}.form-actions,.hero-actions{display:flex;gap:8px}.profile-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px}.profile-configuration dl{display:grid;grid-template-columns:130px minmax(0,1fr);margin:0;padding:0 18px 18px}.profile-configuration dt,.profile-configuration dd{margin:0;padding:10px 0;border-top:1px solid var(--border);font-size:11px}.profile-configuration dt{color:var(--text-muted)}.revision-history{padding-bottom:12px}.revision-history article{display:flex;align-items:center;justify-content:space-between;margin:0 18px;padding:11px 0;border-top:1px solid var(--border)}.revision-history article>div{display:flex;align-items:center;gap:10px}.revision-history code,.revision-history small{color:var(--text-muted);font-size:9px}.empty-workspace{display:grid;min-height:360px;place-items:center;align-content:center;gap:10px;text-align:center}.empty-workspace>span{color:var(--accent);font-size:40px}.empty-workspace p{color:var(--text-muted)}
+@media(max-width:1000px){.embedding-layout{grid-template-columns:1fr}}@media(max-width:720px){.readiness-panel,.profile-hero{align-items:flex-start;flex-direction:column}.profile-editor form{grid-template-columns:1fr}.wide{grid-column:auto}}
+</style>

@@ -74,6 +74,15 @@ class KnowledgeAssetService:
         source_id = str(snapshot["source_id"])
         source_version = str(snapshot["source_version"])
         profile_id = str(snapshot.get("index_profile_id") or "lexical-v1")
+        embedding_profile_id = snapshot.get("embedding_profile_id")
+        if embedding_profile_id:
+            embedding_profile = await asyncio.to_thread(
+                self.store.get_published_embedding_profile,
+                profile_id=str(embedding_profile_id),
+            )
+            if embedding_profile is None:
+                raise ValidationError("Published embedding profile not found")
+            snapshot["embedding_profile_id"] = embedding_profile["revision_id"]
         profile = await asyncio.to_thread(self.store.get_agent_profile)
         if profile is None:
             raise ConflictError("No active published default Agent exists")
@@ -103,6 +112,7 @@ class KnowledgeAssetService:
                 "source_id": source_id,
                 "source_version": source_version,
                 "index_profile_id": profile_id,
+                "embedding_profile_id": snapshot.get("embedding_profile_id"),
             },
             tasks=[
                 GraphTaskSpec(

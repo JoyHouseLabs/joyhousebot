@@ -70,7 +70,7 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
     ]
     assert "runtime_input" in attachment_schema["properties"]["reference_kind"]["enum"]
     assert "asset_id" in attachment_schema["properties"]
-    assert registry.manifests()[0].version == "1.4.2"
+    assert registry.manifests()[0].version == "1.5.0"
     assert registry.manifests()[0].runtime_contract_version == 2
 
 
@@ -98,6 +98,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
             "collection_refs": ["collection-a"],
             "content_sha256": "a" * 64,
             "index_profile_id": "lexical-v1",
+            "embedding_profile_id": "knowledge-default:v1",
         },
     )
     assert result.success is True
@@ -109,6 +110,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
     assert services.indexed["metadata"]["collection_refs"] == ["collection-a"]
     assert services.indexed["parser_id"] == "plain-text"
     assert services.indexed["chunker_version"] == "2"
+    assert services.indexed["embedding_profile_id"] == "knowledge-default:v1"
 
 
 @pytest.mark.asyncio
