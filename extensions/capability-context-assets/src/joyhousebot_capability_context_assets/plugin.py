@@ -358,7 +358,7 @@ INDEX_KNOWLEDGE_SCHEMA = {
 
 class ContextAssetsPlugin:
     plugin_id = "capability-context-assets"
-    version = "1.4.1"
+    version = "1.4.2"
 
     def manifest(self) -> PluginManifest:
         return PluginManifest(

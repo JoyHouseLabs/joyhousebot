@@ -5,6 +5,10 @@ Optional durable context capabilities for JoyhouseBot:
 - `retrieve`: search user-scoped knowledge or Agent memory;
 - `memory_get`: read a document from the current Run's memory scope;
 - `fetch_url_to_knowledgebase`: fetch a public URL and index its readable content.
+- `knowledge.index`: parse immutable Runtime inputs and stage a versioned private
+  Knowledge revision. The built-in Office Open XML parser supports DOCX paragraphs,
+  heading paths, list items, table rows, and explicit page-break evidence, as well as
+  page-positioned PPTX slides and XLSX sheets.
 
 The extension receives only the Runtime's scope-enforcing context service. It does not
 receive a PostgreSQL repository or construct its own user/Agent scope.

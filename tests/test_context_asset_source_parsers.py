@@ -28,7 +28,9 @@ def _pdf_with_text(text: str) -> bytes:
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
     stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
-    objects.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objects.append(
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
+    )
     output = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for number, value in enumerate(objects, start=1):
@@ -75,8 +77,7 @@ async def test_registry_combines_inline_text_and_docx_attachment(monkeypatch) ->
                     "uri": "https://files.example/evidence.docx",
                     "display_name": "evidence.docx",
                     "media_type": (
-                        "application/vnd.openxmlformats-officedocument."
-                        "wordprocessingml.document"
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     ),
                 }
             ],
@@ -88,6 +89,90 @@ async def test_registry_combines_inline_text_and_docx_attachment(monkeypatch) ->
         "Document evidence",
     ]
     assert parsed.chunks[1]["section_path"] == ["evidence.docx"]
+
+
+@pytest.mark.asyncio
+async def test_docx_parser_preserves_structure_and_explicit_pages(monkeypatch) -> None:
+    body = _archive(
+        {
+            "[Content_Types].xml": "<Types/>",
+            "word/styles.xml": (
+                '<w:styles xmlns:w="urn:word">'
+                '<w:style w:type="paragraph" w:styleId="Heading1">'
+                '<w:name w:val="Heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr>'
+                "</w:style>"
+                '<w:style w:type="paragraph" w:styleId="Heading2">'
+                '<w:name w:val="Heading 2"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr>'
+                "</w:style>"
+                "</w:styles>"
+            ),
+            "word/document.xml": (
+                '<w:document xmlns:w="urn:word"><w:body>'
+                '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+                "<w:r><w:t>整体</w:t></w:r><w:r><w:t>定位</w:t></w:r></w:p>"
+                "<w:p><w:r><w:t>AI </w:t></w:r><w:r><w:t>策略收益捕获</w:t></w:r></w:p>"
+                '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr>'
+                "<w:r><w:t>链上分析</w:t></w:r></w:p>"
+                '<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr>'
+                "<w:r><w:t>持续跟踪鲸鱼活动</w:t></w:r></w:p>"
+                "<w:tbl>"
+                "<w:tr><w:tc><w:p><w:r><w:t>数据</w:t></w:r></w:p></w:tc>"
+                "<w:tc><w:p><w:r><w:t>作用</w:t></w:r></w:p></w:tc></w:tr>"
+                "<w:tr><w:tc><w:p><w:r><w:t>鲸鱼转账</w:t></w:r></w:p></w:tc>"
+                "<w:tc><w:p><w:r><w:t>资金轮动</w:t></w:r></w:p></w:tc></w:tr>"
+                "</w:tbl>"
+                "<w:p><w:r><w:lastRenderedPageBreak/><w:t>第二页证据</w:t></w:r></w:p>"
+                "</w:body></w:document>"
+            ),
+        }
+    )
+
+    async def fake_fetch(url, _allowed):  # noqa: ANN001
+        return url, body, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    monkeypatch.setattr(source_parsers, "_fetch_binary", fake_fetch)
+    parsed = await source_parsers.default_source_parser_registry().parse_snapshot(
+        {
+            "source_type": "file",
+            "attachments": [
+                {
+                    "reference_kind": "url",
+                    "uri": "https://files.example/structured.docx",
+                    "display_name": "structured.docx",
+                    "media_type": (
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                }
+            ],
+        }
+    )
+
+    assert parsed.parser_version == "2"
+    assert [item["text"] for item in parsed.chunks] == [
+        "整体定位",
+        "AI 策略收益捕获",
+        "链上分析",
+        "持续跟踪鲸鱼活动",
+        "数据 | 作用",
+        "鲸鱼转账 | 资金轮动",
+        "第二页证据",
+    ]
+    assert [item["block_type"] for item in parsed.chunks] == [
+        "heading",
+        "paragraph",
+        "heading",
+        "list_item",
+        "table_row",
+        "table_row",
+        "paragraph",
+    ]
+    assert parsed.chunks[1]["section_path"] == ["structured.docx", "整体定位"]
+    assert parsed.chunks[5]["section_path"] == [
+        "structured.docx",
+        "整体定位",
+        "链上分析",
+    ]
+    assert [item["page"] for item in parsed.chunks] == [1, 1, 1, 1, 1, 1, 2]
 
 
 @pytest.mark.asyncio
@@ -164,7 +249,11 @@ async def test_parser_normalizes_pdf_radical_glyphs_for_cjk_search() -> None:
     ],
 )
 async def test_office_parser_extracts_presentation_and_sheet(
-    monkeypatch, uri, media_type, files, expected  # noqa: ANN001
+    monkeypatch,
+    uri,
+    media_type,
+    files,
+    expected,  # noqa: ANN001
 ) -> None:
     body = _archive(files)
 

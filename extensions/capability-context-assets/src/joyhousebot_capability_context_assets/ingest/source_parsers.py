@@ -21,6 +21,7 @@ from joyhousebot.extension_sdk.network import (
 )
 
 from .chunking import chunk_text
+from .docx_parser import parse_docx
 from .models import Chunk
 from .url_ingest import MAX_REDIRECTS, USER_AGENT, fetch_and_ingest_url
 
@@ -144,12 +145,9 @@ class SourceParserRegistry:
                     candidate,
                     binary_body=bytes(resolved["body"]),
                     display_name=(
-                        candidate.display_name
-                        or str(resolved.get("display_name") or "")
+                        candidate.display_name or str(resolved.get("display_name") or "")
                     ),
-                    media_type=(
-                        candidate.media_type or str(resolved.get("media_type") or "")
-                    ),
+                    media_type=(candidate.media_type or str(resolved.get("media_type") or "")),
                 )
             elif candidate.reference_kind not in {"inline", "url"}:
                 raise SourceParseError(
@@ -165,9 +163,7 @@ class SourceParserRegistry:
                     exc.parser_version = parser.parser_version
                 raise
             except Exception as exc:
-                raise SourceParseError(
-                    "PARSER_FAILED", sanitize_error_message(str(exc))
-                ) from exc
+                raise SourceParseError("PARSER_FAILED", sanitize_error_message(str(exc))) from exc
             if not parsed.chunks:
                 raise SourceParseError(
                     "EMPTY_DOCUMENT", f"{parser.parser_id} produced no searchable text"
@@ -194,6 +190,7 @@ class SourceParserRegistry:
                         "char_start": chunk.start_offset,
                         "char_end": chunk.end_offset,
                         "section_path": section_path,
+                        "block_type": str(chunk.meta.get("block_type") or "text"),
                     }
                 )
             traces.append(
@@ -210,9 +207,7 @@ class SourceParserRegistry:
         if len(identities) == 1:
             parser_id, parser_version = identities[0].split("@", 1)
         else:
-            parser_id = "composite:" + "+".join(
-                item.split("@", 1)[0] for item in identities
-            )
+            parser_id = "composite:" + "+".join(item.split("@", 1)[0] for item in identities)
             parser_version = "+".join(identities)
         return ParsedSnapshot(
             parser_id=parser_id,
@@ -297,7 +292,7 @@ class PdfParser:
 
 class OfficeOpenXmlParser:
     parser_id = "office-openxml"
-    parser_version = "1"
+    parser_version = "2"
     priority = 80
     _extensions = {".docx", ".pptx", ".xlsx"}
     _media_types = {
@@ -464,9 +459,7 @@ def _snapshot_candidates(value: dict[str, Any]) -> list[ParseCandidate]:
     return candidates
 
 
-async def _fetch_binary(
-    url: str, allowed_content_types: tuple[str, ...]
-) -> tuple[str, bytes, str]:
+async def _fetch_binary(url: str, allowed_content_types: tuple[str, ...]) -> tuple[str, bytes, str]:
     async with TrackedAsyncClient(
         propagate_headers=False,
         transport=SsrfProtectedTransport(),
@@ -511,7 +504,10 @@ def _validate_office_archive(archive: zipfile.ZipFile) -> None:
             "DOCUMENT_EXPANSION_LIMIT",
             f"Office document expands beyond {MAX_UNCOMPRESSED_OFFICE_BYTES} bytes",
         )
-    if any(item.filename.startswith(("/", "../")) or "/../" in item.filename for item in archive.infolist()):
+    if any(
+        item.filename.startswith(("/", "../")) or "/../" in item.filename
+        for item in archive.infolist()
+    ):
         raise SourceParseError("INVALID_DOCUMENT", "Office archive contains unsafe paths")
 
 
@@ -535,8 +531,13 @@ def _xml_texts(data: bytes, tags: set[str]) -> list[str]:
 
 
 def _parse_docx(archive: zipfile.ZipFile) -> list[Chunk]:
-    text = "\n".join(_xml_texts(archive.read("word/document.xml"), {"t"}))
-    return chunk_text(text[:MAX_PARSED_CHARS], chunk_size=1200, overlap=200)
+    document_root = _xml_root(archive.read("word/document.xml"))
+    styles_root = (
+        _xml_root(archive.read("word/styles.xml"))
+        if "word/styles.xml" in archive.namelist()
+        else None
+    )
+    return parse_docx(document_root, styles_root)
 
 
 def _numbered_name(value: str) -> tuple[int, str]:

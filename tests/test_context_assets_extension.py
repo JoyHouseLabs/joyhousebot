@@ -63,16 +63,14 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
         "retrieve",
     }
     assert definitions["fetch_url_to_knowledgebase"].side_effect == "write"
-    assert definitions["fetch_url_to_knowledgebase"].ref.plugin_id == (
-        "capability-context-assets"
-    )
+    assert definitions["fetch_url_to_knowledgebase"].ref.plugin_id == ("capability-context-assets")
     assert definitions["knowledge.index"].side_effect == "internal"
-    attachment_schema = definitions["knowledge.index"].input_schema["properties"][
-        "attachments"
-    ]["items"]
+    attachment_schema = definitions["knowledge.index"].input_schema["properties"]["attachments"][
+        "items"
+    ]
     assert "runtime_input" in attachment_schema["properties"]["reference_kind"]["enum"]
     assert "asset_id" in attachment_schema["properties"]
-    assert registry.manifests()[0].version == "1.4.1"
+    assert registry.manifests()[0].version == "1.4.2"
     assert registry.manifests()[0].runtime_contract_version == 2
 
 
