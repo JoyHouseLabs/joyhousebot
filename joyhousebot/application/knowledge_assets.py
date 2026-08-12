@@ -17,6 +17,8 @@ from joyhousebot.services.retrieval.knowledge_repository import KnowledgeReposit
 class KnowledgeAssetService:
     """Expose the Runtime knowledge index through an owner control plane."""
 
+    INDEX_AUTHORITY_PERMISSIONS = frozenset({"knowledge.write"})
+
     def __init__(self, store: Any, runtime: Any | None = None) -> None:
         self.repository = KnowledgeRepository(store)
         self.store = store
@@ -52,6 +54,23 @@ class KnowledgeAssetService:
             if hasattr(definition, "ref")
             else CapabilityRef.from_dict(dict(definition["ref"]))
         )
+        required_permissions = {
+            str(item).strip()
+            for item in (
+                getattr(definition, "permissions", ())
+                if hasattr(definition, "permissions")
+                else definition.get("permissions", ())
+            )
+            if str(item).strip()
+        }
+        unsupported_permissions = sorted(
+            required_permissions - self.INDEX_AUTHORITY_PERMISSIONS
+        )
+        if unsupported_permissions:
+            raise ConflictError(
+                "knowledge.index requests unsupported authority: "
+                + ", ".join(unsupported_permissions)
+            )
         source_id = str(snapshot["source_id"])
         source_version = str(snapshot["source_version"])
         profile_id = str(snapshot.get("index_profile_id") or "lexical-v1")
@@ -77,6 +96,7 @@ class KnowledgeAssetService:
             traceparent=context.traceparent,
             tracestate=context.tracestate,
             input_asset_ids=input_asset_ids,
+            authority_permissions=sorted(required_permissions),
             metadata={
                 "purpose": "knowledge.index",
                 "source_system": snapshot["source_system"],

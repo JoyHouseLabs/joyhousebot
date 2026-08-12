@@ -179,6 +179,44 @@ class CapabilityDefinition:
             value["compensation"] = self.compensation.to_dict()
         return value
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CapabilityDefinition":
+        """Rehydrate one immutable catalog definition without losing provenance."""
+        compensation = value.get("compensation")
+        return cls(
+            ref=CapabilityRef.from_dict(dict(value["ref"])),
+            name=str(value["name"]),
+            description=str(value.get("description") or ""),
+            input_schema=dict(value.get("input_schema") or {"type": "object"}),
+            output_schema=dict(value.get("output_schema") or {"type": "object"}),
+            adapter=str(value["adapter"]),
+            tags=tuple(str(item) for item in value.get("tags") or ()),
+            execution_mode=str(value.get("execution_mode") or "immediate"),
+            expected_duration_seconds=int(value.get("expected_duration_seconds", 10)),
+            timeout_seconds=int(value.get("timeout_seconds", 60)),
+            idempotent=bool(value.get("idempotent", True)),
+            retryable=bool(value.get("retryable", True)),
+            side_effect=str(value.get("side_effect") or "none"),
+            compensation=(
+                CapabilityRef.from_dict(dict(compensation)) if compensation else None
+            ),
+            invocation_concurrency=str(
+                value.get("invocation_concurrency") or "parallel_safe"
+            ),
+            max_concurrent_invocations=int(value.get("max_concurrent_invocations", 4)),
+            supports_stream=bool(value.get("supports_stream", False)),
+            permissions=tuple(str(item) for item in value.get("permissions") or ()),
+            data_classification=str(value.get("data_classification") or "internal"),
+            connection_ids=tuple(str(item) for item in value.get("connection_ids") or ()),
+            cost_policy=dict(value.get("cost_policy") or {}),
+            origin={
+                str(key): str(item)
+                for key, item in dict(value.get("origin") or {}).items()
+            },
+            configuration_schema=dict(value.get("configuration_schema") or {}),
+            configuration=dict(value.get("configuration") or {}),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CapabilityError:

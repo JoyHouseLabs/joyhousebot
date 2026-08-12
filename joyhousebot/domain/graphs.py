@@ -172,6 +172,9 @@ class TaskGraphSpec:
     parent_task_id: str | None = None
     max_children_per_root: int | None = None
     input_asset_ids: list[str] = field(default_factory=list)
+    # Internal application services may grant a narrow, frozen authority to
+    # one purpose-built Graph. Public Graph request schemas do not expose it.
+    authority_permissions: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -182,3 +185,10 @@ class TaskGraphSpec:
             raise ValueError("graph budgets must be greater than zero")
         if len(self.input_asset_ids) > 20:
             raise ValueError("a graph may bind at most 20 input assets")
+        self.authority_permissions = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in self.authority_permissions
+                if str(item).strip()
+            )
+        )

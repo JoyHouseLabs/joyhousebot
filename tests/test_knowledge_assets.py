@@ -635,6 +635,8 @@ async def test_context_port_failed_parse_attempt_preserves_active_projection(
         source_version="2",
         source_generation=2,
         parser_id="pdf-pypdf",
+        chunker_id="semantic-text-v1",
+        chunker_version="2",
         error_code="PARSER_FAILED",
         error_message="encrypted document cannot be parsed",
     )
@@ -649,6 +651,8 @@ async def test_context_port_failed_parse_attempt_preserves_active_projection(
     assert revisions[0]["source_version"] == "2"
     assert revisions[0]["error_code"] == "PARSER_FAILED"
     assert revisions[0]["run_id"] == "run-index-failed"
+    assert revisions[0]["chunker_id"] == "semantic-text-v1"
+    assert revisions[0]["chunker_version"] == "2"
 
 
 @pytest.mark.asyncio
@@ -697,7 +701,8 @@ class _KnowledgeSubmissionStore:
                     "capability-context-assets",
                     "1.0.0",
                     "sha256:" + "a" * 64,
-                )
+                ),
+                "permissions": ("knowledge.write",),
             },
         )()
 
@@ -754,6 +759,7 @@ async def test_knowledge_index_request_compiles_to_capability_graph() -> None:
     assert runtime.spec.tasks[0].node_type == "capability"
     assert runtime.spec.tasks[0].capability.capability_id == "knowledge.index"
     assert runtime.spec.tasks[0].capability_input["source_version"] == "2"
+    assert runtime.spec.authority_permissions == ["knowledge.write"]
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,13 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
     assert definitions["fetch_url_to_knowledgebase"].ref.plugin_id == (
         "capability-context-assets"
     )
+    assert definitions["knowledge.index"].side_effect == "internal"
+    attachment_schema = definitions["knowledge.index"].input_schema["properties"][
+        "attachments"
+    ]["items"]
+    assert "runtime_input" in attachment_schema["properties"]["reference_kind"]["enum"]
+    assert "asset_id" in attachment_schema["properties"]
+    assert registry.manifests()[0].version == "1.4.1"
     assert registry.manifests()[0].runtime_contract_version == 2
 
 
@@ -103,6 +110,46 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
     assert services.indexed["source_generation"] == 2
     assert services.indexed["metadata"]["collection_refs"] == ["collection-a"]
     assert services.indexed["parser_id"] == "plain-text"
+    assert services.indexed["chunker_version"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_index_failure_records_current_chunker_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _FakeContextServices()
+
+    async def fail_parse(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise context_assets.SourceParseError(
+            "REFERENCE_READ_FAILED",
+            "input asset object is unavailable",
+            parser_id="unresolved",
+            parser_version="1",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(context_assets.DEFAULT_SOURCE_PARSERS, "parse_snapshot", fail_parse)
+    result = await context_assets.IndexKnowledgeHandler().execute(
+        _context(
+            services=services,
+            action_id="action-failed-index",
+            idempotency_key="knowledge:source-failed:1",
+        ),
+        {
+            "source_system": "joyhouse-product",
+            "source_id": "source-failed",
+            "source_version": "1",
+            "source_generation": 1,
+            "source_type": "file",
+            "title": "Unavailable PDF",
+            "content_sha256": "a" * 64,
+            "attachments": [],
+        },
+    )
+
+    assert result.success is False
+    assert services.failed["chunker_id"] == "semantic-text-v1"
+    assert services.failed["chunker_version"] == "2"
 
 
 @pytest.mark.asyncio

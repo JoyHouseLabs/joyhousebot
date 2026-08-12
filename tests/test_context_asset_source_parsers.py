@@ -118,6 +118,18 @@ async def test_pdf_parser_extracts_page_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_parser_normalizes_pdf_radical_glyphs_for_cjk_search() -> None:
+    parsed = await source_parsers.default_source_parser_registry().parse_snapshot(
+        {
+            "source_type": "note",
+            "content": "⼀个⼈的⼈⽣与成⻓，⻩⾦机会需要对⻬。",
+        }
+    )
+
+    assert parsed.chunks[0]["text"] == "一个人的人生与成长,黄金机会需要对齐。"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("uri", "media_type", "files", "expected"),
     [

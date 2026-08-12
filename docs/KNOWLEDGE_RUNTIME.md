@@ -31,10 +31,19 @@ identity and immutable source snapshot. The extension:
 4. asks the narrow Runtime Context service to stage, verify and activate a revision;
 5. returns a write receipt tied to Runtime `action_id` and `idempotency_key`.
 
+`POST /v1/knowledge/index-requests` is the user's explicit authorization to build this private projection. Core freezes
+only the published capability's narrow `knowledge.write` authority into this internal Graph; that field is not exposed by
+the public Graph API. `knowledge.index` therefore remains a durable side-effecting Action with a write receipt, but does
+not add a second human approval after the owner already requested indexing. External publication, destructive mutation
+and other non-internal writes retain the normal approval policy.
+
 The official parser registry currently handles inline text, public HTML/text/JSON/XML, PDF, DOCX, PPTX and XLSX. Office
 archives have an additional 50 MB expanded-size cap and reject unsafe paths and XML entity declarations. PDF parsing uses
 the extension-local `pypdf` dependency. A source can combine inline text and multiple attachments; parser identity and
-version are frozen into the index revision.
+version are frozen into the index revision. Extracted text is Unicode NFKC-normalized before chunking, including the
+unmapped simplified CJK radical glyphs commonly emitted by presentation-generated PDFs, so ordinary Chinese queries use
+the same characters as indexed content. This normalization is recorded as `semantic-text-v1` chunker version `2` so a
+later rebuild never silently changes the meaning of an older active revision.
 
 Product-local or cloud Vault identifiers are never sent to a Capability. The Product Gateway reads an owner-authorized
 immutable object, streams it to `POST /v1/input-assets`, then submits a `runtime_input` attachment and its `asset_id`.

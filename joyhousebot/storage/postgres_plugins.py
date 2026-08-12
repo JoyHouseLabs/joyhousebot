@@ -410,8 +410,10 @@ class PostgresPluginStoreMixin:
             "updated_at": _iso(row["updated_at"]),
         }
 
-    def list_plugin_components(self, plugin_id: str) -> list[dict[str, Any]]:
-        release = self.get_plugin_release(plugin_id)
+    def list_plugin_components(
+        self, plugin_id: str, plugin_version: str | None = None
+    ) -> list[dict[str, Any]]:
+        release = self.get_plugin_release(plugin_id, plugin_version)
         if release is None:
             return []
         with self._pool.connection() as conn:

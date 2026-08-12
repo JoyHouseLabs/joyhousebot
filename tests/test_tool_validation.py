@@ -35,6 +35,15 @@ class SampleTool(Tool):
                     },
                     "required": ["tag"],
                 },
+                "nullable_count": {
+                    "type": ["integer", "null"],
+                    "minimum": 0,
+                },
+                "limited": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 2,
+                },
             },
             "required": ["query", "count"],
         }
@@ -82,6 +91,18 @@ def test_validate_params_ignores_unknown_fields() -> None:
     tool = SampleTool()
     errors = tool.validate_params({"query": "hi", "count": 2, "extra": "x"})
     assert errors == []
+
+
+def test_validate_params_supports_union_types_and_array_bounds() -> None:
+    tool = SampleTool()
+    assert tool.validate_params(
+        {"query": "hi", "count": 2, "nullable_count": None, "limited": ["a", "b"]}
+    ) == []
+    errors = tool.validate_params(
+        {"query": "hi", "count": 2, "nullable_count": -1, "limited": ["a", "b", "c"]}
+    )
+    assert any("nullable_count must be >= 0" in error for error in errors)
+    assert any("limited must contain at most 2 items" in error for error in errors)
 
 
 async def test_registry_returns_validation_error() -> None:

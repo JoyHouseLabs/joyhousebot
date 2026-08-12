@@ -236,6 +236,8 @@ class ContextPort:
         index_profile_id: str = "lexical-v1",
         parser_id: str = "unresolved",
         parser_version: str = "1",
+        chunker_id: str = "semantic-text-v1",
+        chunker_version: str = "1",
     ) -> str:
         """Persist a failed immutable attempt without replacing the active index."""
         store = self._require_store()
@@ -264,8 +266,8 @@ class ContextPort:
             index_profile_id=index_profile_id,
             parser_id=parser_id,
             parser_version=parser_version,
-            chunker_id="semantic-text-v1",
-            chunker_version="1",
+            chunker_id=chunker_id,
+            chunker_version=chunker_version,
             run_id=context.run_id,
             actor_id=f"worker:{context.agent_id or 'default'}",
             error_code=error_code,

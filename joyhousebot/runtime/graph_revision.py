@@ -76,6 +76,7 @@ def freeze_graph_revision(
         "max_output_tokens": spec.max_output_tokens,
         "max_cost_usd": spec.max_cost_usd,
         "input_asset_ids": list(spec.input_asset_ids),
+        "authority_permissions": list(spec.authority_permissions),
         "metadata": dict(spec.metadata),
     }
     snapshot = {
@@ -142,6 +143,7 @@ def freeze_graph_patch_revision(
         "max_output_tokens": spec.max_output_tokens,
         "max_cost_usd": spec.max_cost_usd,
         "input_asset_ids": list(spec.input_asset_ids),
+        "authority_permissions": list(spec.authority_permissions),
         "metadata": dict(spec.metadata),
     }
     snapshot = {
@@ -208,6 +210,7 @@ def graph_options(
         "parent_task_id": spec.parent_task_id,
         "max_children_per_root": spec.max_children_per_root,
         "input_asset_ids": list(spec.input_asset_ids),
+        "authority_permissions": list(spec.authority_permissions),
         "metadata": metadata,
         "graph_revision_id": revision["revision_id"],
         "tasks": [dict(node) for node in revision["nodes"]],

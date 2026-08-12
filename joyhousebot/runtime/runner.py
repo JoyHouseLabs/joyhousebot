@@ -228,6 +228,14 @@ class NativeAgentRuntime(
         original attempt, even after an administrator publishes a new
         revision.
         """
+        authority_permissions: frozenset[str] = frozenset()
+        run = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        if run is not None:
+            raw_authority = dict(run.options or {}).get("authority_permissions", ())
+            if isinstance(raw_authority, (list, tuple, set, frozenset)):
+                authority_permissions = frozenset(
+                    str(item).strip() for item in raw_authority if str(item).strip()
+                )
         if agent_revision_id:
             revision = await asyncio.to_thread(
                 self.store.get_agent_revision, agent_revision_id
@@ -237,21 +245,25 @@ class NativeAgentRuntime(
                 or revision.agent_id != agent_id
                 or revision.status not in {"published", "retired"}
             ):
-                return frozenset()
+                return authority_permissions
             value = revision.capability_policy.get("permissions", ())
             if not isinstance(value, (list, tuple, set, frozenset)):
-                return frozenset()
-            return frozenset(str(item).strip() for item in value if str(item).strip())
+                return authority_permissions
+            return authority_permissions | frozenset(
+                str(item).strip() for item in value if str(item).strip()
+            )
         reader = getattr(self.store, "get_run_execution_snapshot", None)
         if reader is None:
-            return frozenset()
+            return authority_permissions
         snapshot = await asyncio.to_thread(reader, run_id)
         if snapshot is None or agent_id not in {"default", snapshot.agent_id}:
-            return frozenset()
+            return authority_permissions
         value = snapshot.capability_policy.get("permissions", ())
         if not isinstance(value, (list, tuple, set, frozenset)):
-            return frozenset()
-        return frozenset(str(item).strip() for item in value if str(item).strip())
+            return authority_permissions
+        return authority_permissions | frozenset(
+            str(item).strip() for item in value if str(item).strip()
+        )
 
     def _assert_plugin_requirements(self, requirements: Any) -> None:
         """Refuse execution on a node without each pinned plugin artifact."""

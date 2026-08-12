@@ -1,11 +1,24 @@
 """Normalize and chunk text with overlap and source offsets."""
 
 import re
+import unicodedata
 
 from .models import Chunk
 
+_PDF_RADICAL_COMPATIBILITY = str.maketrans(
+    {
+        "⻓": "长",
+        "⻩": "黄",
+        "⻬": "齐",
+    }
+)
+
 
 def normalize_whitespace(text: str) -> str:
+    # Presentation/PDF generators sometimes encode ordinary Han characters as
+    # Kangxi or CJK radical glyphs. NFKC resolves the standardized mappings;
+    # the three simplified radical variants above have no Unicode decomposition.
+    text = unicodedata.normalize("NFKC", text).translate(_PDF_RADICAL_COMPATIBILITY)
     text = re.sub(r"[ \t]+", " ", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 

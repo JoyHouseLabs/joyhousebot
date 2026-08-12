@@ -54,25 +54,50 @@ class Tool(ABC):
             raise ValueError(f"Schema must be object type, got {schema.get('type')!r}")
         return self._validate(params, {**schema, "type": "object"}, "")
 
+    @classmethod
+    def _matches_type(cls, value: Any, type_name: str) -> bool:
+        if type_name == "null":
+            return value is None
+        expected = cls._TYPE_MAP.get(type_name)
+        if expected is None:
+            return True
+        if type_name in {"integer", "number"} and isinstance(value, bool):
+            return False
+        return isinstance(value, expected)
+
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
-        t, label = schema.get("type"), path or "parameter"
-        if t in self._TYPE_MAP and not isinstance(val, self._TYPE_MAP[t]):
-            return [f"{label} should be {t}"]
+        declared_type, label = schema.get("type"), path or "parameter"
+        type_names = (
+            [str(item) for item in declared_type]
+            if isinstance(declared_type, list)
+            else [str(declared_type)]
+            if declared_type is not None
+            else []
+        )
+        if type_names and not any(self._matches_type(val, item) for item in type_names):
+            expected = " or ".join(type_names)
+            return [f"{label} should be {expected}"]
+        if val is None:
+            return []
+
+        matched_types = {
+            item for item in type_names if self._matches_type(val, item)
+        }
 
         errors = []
         if "enum" in schema and val not in schema["enum"]:
             errors.append(f"{label} must be one of {schema['enum']}")
-        if t in ("integer", "number"):
+        if matched_types & {"integer", "number"}:
             if "minimum" in schema and val < schema["minimum"]:
                 errors.append(f"{label} must be >= {schema['minimum']}")
             if "maximum" in schema and val > schema["maximum"]:
                 errors.append(f"{label} must be <= {schema['maximum']}")
-        if t == "string":
+        if "string" in matched_types:
             if "minLength" in schema and len(val) < schema["minLength"]:
                 errors.append(f"{label} must be at least {schema['minLength']} chars")
             if "maxLength" in schema and len(val) > schema["maxLength"]:
                 errors.append(f"{label} must be at most {schema['maxLength']} chars")
-        if t == "object":
+        if "object" in matched_types:
             props = schema.get("properties", {})
             for k in schema.get("required", []):
                 if k not in val:
@@ -80,11 +105,20 @@ class Tool(ABC):
             for k, v in val.items():
                 if k in props:
                     errors.extend(self._validate(v, props[k], path + "." + k if path else k))
-        if t == "array" and "items" in schema:
-            for i, item in enumerate(val):
-                errors.extend(
-                    self._validate(item, schema["items"], f"{path}[{i}]" if path else f"[{i}]")
-                )
+        if "array" in matched_types:
+            if "minItems" in schema and len(val) < schema["minItems"]:
+                errors.append(f"{label} must contain at least {schema['minItems']} items")
+            if "maxItems" in schema and len(val) > schema["maxItems"]:
+                errors.append(f"{label} must contain at most {schema['maxItems']} items")
+            if "items" in schema:
+                for i, item in enumerate(val):
+                    errors.extend(
+                        self._validate(
+                            item,
+                            schema["items"],
+                            f"{path}[{i}]" if path else f"[{i}]",
+                        )
+                    )
         return errors
 
     def to_schema(self) -> dict[str, Any]:

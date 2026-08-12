@@ -187,6 +187,8 @@ class IndexKnowledgeHandler:
                     index_profile_id=str(input.get("index_profile_id") or "lexical-v1"),
                     parser_id=exc.parser_id,
                     parser_version=exc.parser_version,
+                    chunker_id="semantic-text-v1",
+                    chunker_version="2",
                 )
             except Exception as failure_exc:
                 return _failure(
@@ -212,7 +214,7 @@ class IndexKnowledgeHandler:
                 parser_id=parsed.parser_id,
                 parser_version=parsed.parser_version,
                 chunker_id="semantic-text-v1",
-                chunker_version="1",
+                chunker_version="2",
             )
         except ValueError as exc:
             return _failure("INVALID_SOURCE", sanitize_error_message(str(exc)))
@@ -328,17 +330,19 @@ INDEX_KNOWLEDGE_SCHEMA = {
             "maxItems": 20,
             "items": {
                 "type": "object",
-                "required": ["reference_kind", "uri"],
+                "required": ["reference_kind"],
                 "properties": {
                     "reference_kind": {
                         "type": "string",
-                        "enum": ["url", "local_vault", "cloud_vault"],
+                        "enum": ["url", "local_vault", "cloud_vault", "runtime_input"],
                     },
-                    "uri": {"type": "string", "minLength": 1},
+                    "uri": {"type": "string"},
+                    "asset_id": {"type": "string", "minLength": 1},
                     "display_name": {"type": "string"},
                     "media_type": {"type": "string"},
                     "byte_size": {"type": ["integer", "null"], "minimum": 0},
                     "sha256": {"type": "string"},
+                    "content_sha256": {"type": "string"},
                     "metadata": {"type": "object"},
                 },
                 "additionalProperties": False,
@@ -354,7 +358,7 @@ INDEX_KNOWLEDGE_SCHEMA = {
 
 class ContextAssetsPlugin:
     plugin_id = "capability-context-assets"
-    version = "1.1.0"
+    version = "1.4.1"
 
     def manifest(self) -> PluginManifest:
         return PluginManifest(
@@ -424,7 +428,7 @@ def _index_knowledge_definition(version: str) -> CapabilityDefinition:
         timeout_seconds=600,
         idempotent=True,
         retryable=True,
-        side_effect="write",
+        side_effect="internal",
         permissions=("knowledge.write",),
         data_classification="confidential",
         invocation_concurrency="sequential",

@@ -30,6 +30,30 @@ def test_capability_definition_and_result_are_structured() -> None:
     assert result.ok is True
 
 
+def test_capability_definition_round_trip_preserves_plugin_provenance() -> None:
+    definition = CapabilityDefinition(
+        ref=CapabilityRef(
+            "knowledge.index",
+            "1.1.0",
+            CapabilityKind.TOOL,
+            "capability-context-assets",
+            "1.1.0",
+            f"sha256:{'a' * 64}",
+        ),
+        name="Index knowledge",
+        description="Index one immutable source snapshot.",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        adapter="plugin",
+        tags=("knowledge",),
+        permissions=("knowledge.write",),
+        side_effect="write",
+        origin={"plugin_id": "capability-context-assets"},
+    )
+
+    assert CapabilityDefinition.from_dict(definition.to_dict()) == definition
+
+
 def test_failed_capability_result_requires_error() -> None:
     with pytest.raises(ValueError, match="requires an error"):
         CapabilityResult("inv_1", InvocationStatus.FAILED, "failed")

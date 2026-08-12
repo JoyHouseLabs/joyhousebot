@@ -249,6 +249,12 @@ class PlatformService:
         )
         if release is None:
             raise ValueError("plugin release has not been discovered")
+        component_rollouts = await self.publish_plugin_capabilities(
+            plugin_id,
+            version,
+            actor_id=actor_id,
+            rollout_policy=rollout_policy,
+        )
         rollout_id = await asyncio.to_thread(
             self.store.stage_plugin_release,
             plugin_id,
@@ -256,7 +262,81 @@ class PlatformService:
             actor_id=actor_id,
             **dict(rollout_policy or {}),
         )
-        return {**release, "status": "staged", "rollout_id": rollout_id}
+        return {
+            **release,
+            "status": "staged",
+            "rollout_id": rollout_id,
+            "component_rollouts": component_rollouts,
+        }
+
+    async def publish_plugin_capabilities(
+        self,
+        plugin_id: str,
+        plugin_version: str,
+        *,
+        actor_id: str,
+        rollout_policy: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        """Stage exact discovered Capability builds owned by one extension release."""
+        components = await asyncio.to_thread(
+            self.store.list_plugin_components, plugin_id, plugin_version
+        )
+        definitions: list[CapabilityDefinition] = []
+        seen: set[tuple[str, str]] = set()
+        for component in components:
+            if component.get("component_type") not in {"tool", "connector"}:
+                continue
+            capability_id = str(component.get("reference_id") or "")
+            capability_version = str(component.get("reference_version") or "")
+            key = (capability_id, capability_version)
+            if not all(key) or key in seen:
+                continue
+            seen.add(key)
+            stored = await asyncio.to_thread(
+                self.store.get_capability_release_definition,
+                capability_id,
+                capability_version,
+            )
+            if stored is None:
+                continue
+            definition = CapabilityDefinition.from_dict(stored)
+            if (
+                definition.ref.plugin_id != plugin_id
+                or definition.ref.plugin_version != plugin_version
+            ):
+                continue
+            published = await asyncio.to_thread(
+                self.store.get_capability_definition,
+                capability_id,
+                capability_version,
+            )
+            if published is None:
+                definitions.append(definition)
+
+        for definition in definitions:
+            await require_release_gate(
+                self.store,
+                target_type="capability",
+                target_id=definition.ref.capability_id,
+                target_revision_id=definition.ref.version,
+                purpose="publish_capability_version",
+                actor_id=actor_id,
+            )
+        for definition in definitions:
+            await asyncio.to_thread(
+                self.store.stage_capability_release,
+                definition,
+                actor_id=actor_id,
+                **dict(rollout_policy or {}),
+            )
+        return [
+            {
+                "capability_id": item.ref.capability_id,
+                "version": item.ref.version,
+                "status": "staged",
+            }
+            for item in definitions
+        ]
 
     async def approve_rollout(self, rollout_id: str, *, actor_id: str) -> bool:
         return await asyncio.to_thread(

@@ -254,6 +254,18 @@ async def activate_plugin(
                     "require_healthy_workers": True,
                 },
             )
+        else:
+            await container.platform.publish_plugin_capabilities(
+                plugin_id,
+                str(release["version"]),
+                actor_id=principal.subject,
+                rollout_policy={
+                    "activation_mode": "automatic",
+                    "timeout_seconds": 300,
+                    "auto_rollback": True,
+                    "require_healthy_workers": True,
+                },
+            )
         await asyncio.to_thread(
             container.store.set_extension_desired_active,
             plugin_id,

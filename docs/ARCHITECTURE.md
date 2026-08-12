@@ -273,7 +273,10 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   `knowledge_asset_events` 审计事件。知识抓取和解析仍由 Worker Tool 执行，HTTP API 不直接访问外部来源。
   当前 `agent_id` 只表示采集来源，知识检索仍按用户隔离；不能把它解释为已发布的 Agent 授权绑定。
 - `POST /v1/knowledge/index-requests` 要求稳定 `Idempotency-Key`，并将冻结 Source 快照编译为
-  `knowledge.index` Capability Graph；`GET /v1/knowledge/documents/{doc_id}/revisions` 查询不可变索引版本。
+  `knowledge.index` Capability Graph。该专用入口只把已发布能力声明的 `knowledge.write` 权限冻结为内部
+  Graph authority，公共 Graph API 不接受此字段；用户主动提交索引请求即为私有投影授权，因此内部索引
+  仍保留 durable Action/WriteReceipt，但不重复请求人工审批。`GET /v1/knowledge/documents/{doc_id}/revisions`
+  查询不可变索引版本。
   `source_generation` 防止异步 Run 乱序完成覆盖新版本，revision 验证失败时保留上一版 active projection。
   Core/扩展职责和存储生命周期见 [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)。
 - `GET /v1/knowledge/search` 只检索当前 active projection，并返回 Source identity、revision、页码、章节路径、
@@ -364,7 +367,8 @@ Worker ACK 后原子切换 Provider 配置；随后解析的执行使用新 Prov
 目录调整静默破坏正在服务的 Agent。
 
 Plugin Manifest 使用 `runtime_api_version=v1`，冻结包 URI、签名/SBOM 引用、执行隔离、最小权限、
-组件目录与 manifest SHA-256。发现插件只创建 `discovered` 发布单元；发布后依次进入 `staged → Worker
+组件目录与 manifest SHA-256。发现插件只创建 `discovered` 发布单元；发布 Plugin 版本会先按目标版本
+显式解析并 staged 其 Capability 组件，再进入 `staged → Worker
 loaded ACK → active`，同一插件只有一个 active 版本。Agent、Channel、Connector、Event Trigger、
 Knowledge Provider、MCP Server、Scenario、Skill、Tool 和 Workflow 都通过同一组件目录注册。
 

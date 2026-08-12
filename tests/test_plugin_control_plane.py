@@ -193,6 +193,40 @@ def test_plugin_catalog_is_durable_and_metrics_are_empty_without_invocations(tmp
     assert metrics["by_component"] == []
 
 
+def test_plugin_components_can_be_resolved_for_an_upgrade_target(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    second = PluginManifest(
+        plugin_id="example.discover",
+        version="2.0.0",
+        name="Example Discover",
+        distribution_name="example-plugin",
+        build_digest=OTHER_BUILD_DIGEST,
+    )
+    store.upsert_plugin_release(second.to_dict())
+    store.sync_plugin_components(
+        second.plugin_id,
+        second.version,
+        [
+            PluginComponent(
+                component_id="example.search",
+                component_type="tool",
+                name="Example search",
+                reference_id="example.search",
+                reference_version="2.0.0",
+            ).to_dict()
+        ],
+    )
+
+    assert store.list_plugin_components("example.discover", "1.0.0")[0][
+        "reference_version"
+    ] == "1.0.0"
+    assert store.list_plugin_components("example.discover", "2.0.0")[0][
+        "reference_version"
+    ] == "2.0.0"
+
+
 def test_enabled_extension_catalog_is_discovered_without_agent_worker(tmp_path: Path) -> None:
     store = _store(tmp_path)
     values = discover_enabled_extensions(
