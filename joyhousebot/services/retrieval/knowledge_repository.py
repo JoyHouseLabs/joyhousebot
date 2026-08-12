@@ -11,10 +11,14 @@ from joyhousebot.services.retrieval.knowledge_base_repository import (
     KNOWLEDGE_BASE_DDL,
     KnowledgeBaseRepositoryMixin,
 )
+from joyhousebot.services.retrieval.knowledge_revision_repository import (
+    KNOWLEDGE_REVISION_DDL,
+    KnowledgeRevisionRepositoryMixin,
+)
 from joyhousebot.storage.json_codec import Jsonb
 
 
-class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
+class KnowledgeRepository(KnowledgeRevisionRepositoryMixin, KnowledgeBaseRepositoryMixin):
     """Persist user-scoped knowledge; PostgreSQL provides indexed full-text search."""
 
     def __init__(self, store: Any) -> None:
@@ -76,6 +80,7 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
                 connection.execute("SELECT pg_advisory_xact_lock(%s)", (872341915,))
                 connection.execute(ddl)
                 connection.execute(KNOWLEDGE_BASE_DDL)
+                connection.execute(KNOWLEDGE_REVISION_DDL)
 
     def index_document(
         self,
@@ -89,33 +94,31 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
         chunks: list[dict[str, Any]],
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        revision_id = self.stage_index_revision(
+            doc_id=doc_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            source_type=source_type,
+            source_url=source_url,
+            title=title,
+            chunks=chunks,
+            metadata=metadata,
+        )
+        actor_id = f"runtime:{agent_id or 'shared'}"
+        self.mark_index_revision_ready(
+            user_id=user_id,
+            doc_id=doc_id,
+            revision_id=revision_id,
+            actor_id=actor_id,
+        )
+        self.activate_index_revision(
+            user_id=user_id,
+            doc_id=doc_id,
+            revision_id=revision_id,
+            actor_id=actor_id,
+        )
         now_ms = int(time.time() * 1000)
         with self._connection() as connection:
-            connection.execute(
-                "DELETE FROM knowledge_documents WHERE doc_id=%s AND user_id=%s",
-                (doc_id, user_id),
-            )
-            connection.execute(
-                """INSERT INTO knowledge_documents
-                   (doc_id,user_id,agent_id,source_type,source_url,title,metadata,created_at_ms,updated_at_ms)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (doc_id, user_id, agent_id, source_type, source_url, title, Jsonb(metadata or {}), now_ms, now_ms),
-            )
-            chunk_query = """INSERT INTO knowledge_chunks
-                (doc_id,chunk_index,user_id,page,content,created_at_ms)
-                VALUES (%s,%s,%s,%s,%s,%s)"""
-            for index, chunk in enumerate(chunks):
-                connection.execute(
-                    chunk_query,
-                    (
-                        doc_id,
-                        index,
-                        user_id,
-                        chunk.get("page"),
-                        str(chunk.get("text") or ""),
-                        now_ms,
-                    ),
-                )
             connection.execute(
                 """INSERT INTO knowledge_asset_events
                    (event_id,user_id,doc_id,event_type,actor_id,data,created_at_ms)
@@ -131,6 +134,7 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
                             "source_type": source_type,
                             "source_url": source_url,
                             "chunk_count": len(chunks),
+                            "revision_id": revision_id,
                         }
                     ),
                     now_ms,
@@ -167,6 +171,9 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
         with self._connection() as connection:
             rows = connection.execute(
                 f"""SELECT d.doc_id,d.agent_id,d.source_type,d.source_url,d.title,
+                           d.source_system,d.source_id,d.source_version,
+                           d.source_generation,d.source_status,d.content_sha256,
+                           d.active_revision_id,d.index_status,
                            d.metadata,d.created_at_ms,d.updated_at_ms,
                            COUNT(c.doc_id) AS chunk_count,
                            COALESCE(SUM(octet_length(c.content)),0) AS size_bytes,
@@ -178,6 +185,9 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
                  LEFT JOIN knowledge_chunks c ON c.doc_id=d.doc_id
                      WHERE {" AND ".join(clauses)}
                   GROUP BY d.doc_id,d.agent_id,d.source_type,d.source_url,d.title,
+                           d.source_system,d.source_id,d.source_version,
+                           d.source_generation,d.source_status,d.content_sha256,
+                           d.active_revision_id,d.index_status,
                            d.metadata,d.created_at_ms,d.updated_at_ms
                   ORDER BY d.updated_at_ms DESC,d.title
                      LIMIT %s""",
@@ -222,6 +232,9 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
         with self._connection() as connection:
             row = connection.execute(
                 """SELECT d.doc_id,d.agent_id,d.source_type,d.source_url,d.title,
+                          d.source_system,d.source_id,d.source_version,
+                          d.source_generation,d.source_status,d.content_sha256,
+                          d.active_revision_id,d.index_status,
                           d.metadata,d.created_at_ms,d.updated_at_ms,
                           COUNT(c.doc_id) AS chunk_count,
                           COALESCE(SUM(octet_length(c.content)),0) AS size_bytes,
@@ -233,6 +246,9 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
                 LEFT JOIN knowledge_chunks c ON c.doc_id=d.doc_id
                     WHERE d.user_id=%s AND d.doc_id=%s
                  GROUP BY d.doc_id,d.agent_id,d.source_type,d.source_url,d.title,
+                          d.source_system,d.source_id,d.source_version,
+                          d.source_generation,d.source_status,d.content_sha256,
+                          d.active_revision_id,d.index_status,
                           d.metadata,d.created_at_ms,d.updated_at_ms""",
                 (user_id, doc_id),
             ).fetchone()
@@ -304,6 +320,16 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
             "source_type": str(row["source_type"]),
             "source_url": str(row["source_url"] or ""),
             "title": str(row["title"]),
+            "source_system": str(row["source_system"]),
+            "source_id": str(row["source_id"]),
+            "source_version": str(row["source_version"]),
+            "source_generation": int(row["source_generation"]),
+            "source_status": str(row["source_status"]),
+            "content_sha256": str(row["content_sha256"]),
+            "active_revision_id": (
+                str(row["active_revision_id"]) if row["active_revision_id"] else None
+            ),
+            "index_status": str(row["index_status"]),
             "metadata": dict(metadata) if isinstance(metadata, dict) else {},
             "knowledge_base_ids": [str(value) for value in row["knowledge_base_ids"]],
             "chunk_count": int(row["chunk_count"] or 0),
@@ -320,8 +346,9 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
         top_k: int,
         source_type: str | None = None,
         doc_id: str | None = None,
+        collection_ref: str | None = None,
     ) -> list[dict[str, Any]]:
-        clauses = ["c.user_id=%s"]
+        clauses = ["c.user_id=%s", "d.source_status<>'archived'"]
         params: list[Any] = [user_id]
         if source_type:
             clauses.append("d.source_type=%s")
@@ -329,6 +356,9 @@ class KnowledgeRepository(KnowledgeBaseRepositoryMixin):
         if doc_id:
             clauses.append("c.doc_id=%s")
             params.append(doc_id)
+        if collection_ref:
+            clauses.append("COALESCE(d.metadata->'collection_refs','[]'::jsonb) ? %s")
+            params.append(collection_ref)
         params = [query, *params, query, f"%{query}%", top_k]
         sql = f"""SELECT c.doc_id,c.chunk_index,c.page,c.content,
                        d.source_type,d.source_url,d.title,

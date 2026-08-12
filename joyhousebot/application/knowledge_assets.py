@@ -8,14 +8,103 @@ from typing import Any
 
 from joyhousebot.application.context import RequestContext
 from joyhousebot.application.errors import ConflictError, NotFoundError, ValidationError
+from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
 
 class KnowledgeAssetService:
     """Expose the Runtime knowledge index through an owner control plane."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, runtime: Any | None = None) -> None:
         self.repository = KnowledgeRepository(store)
+        self.store = store
+        self.runtime = runtime
+
+    async def submit_index_request(
+        self, context: RequestContext, snapshot: dict[str, Any]
+    ) -> Any:
+        if self.runtime is None:
+            raise ConflictError("Knowledge indexing Runtime is unavailable")
+        if not context.idempotency_key:
+            raise ValidationError("Knowledge indexing requires an Idempotency-Key header")
+        definitions = await asyncio.to_thread(self.store.list_capability_definitions)
+        definition = next(
+            (
+                item
+                for item in definitions
+                if (
+                    item.ref.capability_id
+                    if hasattr(item, "ref")
+                    else item.get("ref", {}).get("capability_id")
+                )
+                == "knowledge.index"
+                and (
+                    item.ref.kind.value
+                    if hasattr(item, "ref")
+                    else item.get("ref", {}).get("kind")
+                )
+                in {"tool", "connector"}
+            ),
+            None,
+        )
+        if definition is None:
+            raise ConflictError(
+                "Published knowledge.index capability is required before indexing"
+            )
+        reference = (
+            definition.ref
+            if hasattr(definition, "ref")
+            else CapabilityRef.from_dict(dict(definition["ref"]))
+        )
+        source_id = str(snapshot["source_id"])
+        source_version = str(snapshot["source_version"])
+        profile_id = str(snapshot.get("index_profile_id") or "lexical-v1")
+        profile = await asyncio.to_thread(self.store.get_agent_profile)
+        if profile is None:
+            raise ConflictError("No active published default Agent exists")
+        spec = TaskGraphSpec(
+            goal=f"Index knowledge source {source_id} version {source_version}",
+            user_id=context.user_id,
+            session_id=f"knowledge-index:{source_id}"[:128],
+            agent_id=profile.definition.agent_id,
+            max_concurrent=1,
+            fail_fast=True,
+            aggregate=False,
+            idempotency_key=context.idempotency_key,
+            request_id=context.request_id,
+            tracker_id=context.tracker_id,
+            traceparent=context.traceparent,
+            tracestate=context.tracestate,
+            metadata={
+                "purpose": "knowledge.index",
+                "source_system": snapshot["source_system"],
+                "source_id": source_id,
+                "source_version": source_version,
+                "index_profile_id": profile_id,
+            },
+            tasks=[
+                GraphTaskSpec(
+                    id="index",
+                    name="Parse and index source snapshot",
+                    prompt="",
+                    node_type="capability",
+                    capability=reference,
+                    capability_input=snapshot,
+                    max_attempts=3,
+                    timeout_seconds=600,
+                    metadata={
+                        "source_system": snapshot["source_system"],
+                        "source_id": source_id,
+                        "source_version": source_version,
+                    },
+                )
+            ],
+        )
+        try:
+            return await self.runtime.submit_graph(spec)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     async def list(
         self,
@@ -58,6 +147,19 @@ class KnowledgeAssetService:
         if document is None:
             raise NotFoundError("Knowledge document not found")
         return document
+
+    async def list_revisions(
+        self, context: RequestContext, doc_id: str
+    ) -> list[dict[str, Any]]:
+        if await asyncio.to_thread(
+            self.repository.get_document, user_id=context.user_id, doc_id=doc_id
+        ) is None:
+            raise NotFoundError("Knowledge document not found")
+        return await asyncio.to_thread(
+            self.repository.list_index_revisions,
+            user_id=context.user_id,
+            doc_id=doc_id,
+        )
 
     async def list_bases(
         self, context: RequestContext, *, status: str | None = None

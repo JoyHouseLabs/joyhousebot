@@ -37,6 +37,7 @@ class ContextPort:
         query: str,
         top_k: int = 10,
         source_type: str | None = None,
+        collection_ref: str | None = None,
         scope: str = "knowledge",
     ) -> list[dict[str, Any]]:
         if scope == "memory" and not EffectiveMemoryPolicy.from_dict(
@@ -49,6 +50,7 @@ class ContextPort:
             query=query,
             top_k=top_k,
             source_type=source_type,
+            collection_ref=collection_ref,
             scope=scope,
             memory_scope_key=context.memory_scope,
             runtime_store=self._require_store(),
@@ -129,15 +131,29 @@ class ContextPort:
         title: str,
         chunks: list[dict[str, Any]],
         metadata: dict[str, Any] | None = None,
+        source_system: str = "runtime",
+        source_id: str | None = None,
+        source_version: str = "1",
+        source_generation: int = 1,
+        source_status: str = "active",
+        index_profile_id: str = "lexical-v1",
+        parser_id: str = "preparsed",
+        parser_version: str = "1",
+        chunker_id: str = "provided-chunks",
+        chunker_version: str = "1",
     ) -> str:
         store = self._require_store()
         repository = getattr(store, "_knowledge_repository", None)
         if repository is None:
             repository = KnowledgeRepository(store)
             store._knowledge_repository = repository
-        doc_id = hashlib.sha256(f"{context.user_id}:{source_url}".encode()).hexdigest()[:24]
+        resolved_source_id = source_id or source_url or title
+        doc_id = hashlib.sha256(
+            f"{context.user_id}:{source_system}:{resolved_source_id}".encode()
+        ).hexdigest()[:24]
         await asyncio.to_thread(
-            repository.index_document,
+            self._index_knowledge_revision,
+            repository,
             doc_id=doc_id,
             user_id=context.user_id,
             agent_id=context.agent_id,
@@ -146,8 +162,41 @@ class ContextPort:
             title=title,
             chunks=chunks,
             metadata=metadata or {},
+            source_system=source_system,
+            source_id=resolved_source_id,
+            source_version=source_version,
+            source_generation=source_generation,
+            source_status=source_status,
+            index_profile_id=index_profile_id,
+            parser_id=parser_id,
+            parser_version=parser_version,
+            chunker_id=chunker_id,
+            chunker_version=chunker_version,
+            run_id=context.run_id,
+            actor_id=f"worker:{context.agent_id or 'default'}",
         )
         return doc_id
+
+    @staticmethod
+    def _index_knowledge_revision(
+        repository: KnowledgeRepository,
+        *,
+        actor_id: str,
+        **kwargs: Any,
+    ) -> None:
+        revision_id = repository.stage_index_revision(**kwargs)
+        repository.mark_index_revision_ready(
+            user_id=kwargs["user_id"],
+            doc_id=kwargs["doc_id"],
+            revision_id=revision_id,
+            actor_id=actor_id,
+        )
+        repository.activate_index_revision(
+            user_id=kwargs["user_id"],
+            doc_id=kwargs["doc_id"],
+            revision_id=revision_id,
+            actor_id=actor_id,
+        )
 
 
 __all__ = ["ContextPort"]

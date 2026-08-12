@@ -44,6 +44,40 @@ async def test_knowledge_retrieval_is_user_scoped(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_knowledge_retrieval_can_scope_to_product_collection(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "retrieval-collections.db")
+    repository = KnowledgeRepository(store)
+    repository.index_document(
+        doc_id="doc-market",
+        user_id="user-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Market",
+        chunks=[{"text": "shared keyword opportunity"}],
+        metadata={"collection_refs": ["collection-market"]},
+    )
+    repository.index_document(
+        doc_id="doc-growth",
+        user_id="user-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Growth",
+        chunks=[{"text": "shared keyword reflection"}],
+        metadata={"collection_refs": ["collection-growth"]},
+    )
+    hits = await search_async(
+        query="shared keyword",
+        scope="knowledge",
+        collection_ref="collection-market",
+        runtime_store=store,
+        user_id="user-a",
+    )
+    assert [item["doc_id"] for item in hits] == ["doc-market"]
+
+
+@pytest.mark.asyncio
 async def test_memory_retrieval_reads_scoped_repository(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "memory.db")
     MemoryStore(store, "user:user-a:agent:default").write_long_term("User prefers concise answers.")

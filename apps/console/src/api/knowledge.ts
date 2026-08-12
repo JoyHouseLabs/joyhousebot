@@ -1,7 +1,7 @@
 import { apiFetch } from './http'
 import { getIdentityHeaders } from './identity'
 
-export type KnowledgeSourceType = 'url' | 'note'
+export type KnowledgeSourceType = 'url' | 'note' | 'web' | 'file' | 'image' | 'video' | 'email' | 'capture' | 'paper' | 'report'
 
 export interface KnowledgeDocumentListItem {
   doc_id: string
@@ -9,12 +9,41 @@ export interface KnowledgeDocumentListItem {
   source_type: KnowledgeSourceType | string
   source_url: string
   title: string
+  source_system: string
+  source_id: string
+  source_version: string
+  source_generation: number
+  source_status: 'inbox' | 'active' | 'archived'
+  content_sha256: string
+  active_revision_id?: string | null
+  index_status: 'indexing' | 'ready' | 'failed' | string
   metadata: Record<string, unknown>
   knowledge_base_ids: string[]
   chunk_count: number
   size_bytes: number
   created_at_ms: number
   updated_at_ms: number
+}
+
+export interface KnowledgeIndexRevision {
+  revision_id: string
+  doc_id: string
+  source_version: string
+  source_generation: number
+  content_sha256: string
+  index_profile_id: string
+  parser_id: string
+  parser_version: string
+  chunker_id: string
+  chunker_version: string
+  embedding_profile_id?: string | null
+  status: 'staging' | 'ready' | 'active' | 'superseded' | 'failed'
+  run_id?: string | null
+  error_code?: string | null
+  error_message?: string | null
+  chunk_count: number
+  created_at_ms: number
+  activated_at_ms?: number | null
 }
 
 export interface KnowledgeChunk {
@@ -72,6 +101,13 @@ export function getKnowledgeDocuments(
 
 export function getKnowledgeDocument(docId: string) {
   return knowledgeFetch<KnowledgeDocument>(`/documents/${encodeURIComponent(docId)}`)
+}
+
+export async function getKnowledgeDocumentRevisions(docId: string) {
+  const result = await knowledgeFetch<{ items: KnowledgeIndexRevision[] }>(
+    `/documents/${encodeURIComponent(docId)}/revisions`,
+  )
+  return result.items
 }
 
 export function deleteKnowledgeDocument(docId: string) {

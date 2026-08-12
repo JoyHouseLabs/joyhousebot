@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
+from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.knowledge_assets import KnowledgeAssetService
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.config.schema import Config
+from joyhousebot.domain.capabilities.models import CapabilityKind, CapabilityRef
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
@@ -41,6 +45,12 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
         listed = client.get("/v1/knowledge/documents", headers=owner)
         foreign_list = client.get("/v1/knowledge/documents", headers=foreign)
         detail = client.get("/v1/knowledge/documents/doc-owner-a", headers=owner)
+        revisions = client.get(
+            "/v1/knowledge/documents/doc-owner-a/revisions", headers=owner
+        )
+        foreign_revisions = client.get(
+            "/v1/knowledge/documents/doc-owner-a/revisions", headers=foreign
+        )
         foreign_detail = client.get(
             "/v1/knowledge/documents/doc-owner-a", headers=foreign
         )
@@ -61,7 +71,13 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
     assert listed.json()["items"][0]["agent_id"] == "research-agent"
     assert foreign_list.status_code == 200 and foreign_list.json()["items"] == []
     assert detail.status_code == 200
+    assert detail.json()["index_status"] == "ready"
+    assert detail.json()["active_revision_id"].startswith("krev_")
     assert [item["page"] for item in detail.json()["chunks"]] == [1, 2]
+    assert revisions.status_code == 200
+    assert revisions.json()["items"][0]["status"] == "active"
+    assert revisions.json()["items"][0]["chunk_count"] == 2
+    assert foreign_revisions.status_code == 404
     assert foreign_detail.status_code == 404
     assert foreign_delete.status_code == 404
     assert deleted.status_code == 204
@@ -73,7 +89,13 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
                 WHERE user_id=%s AND doc_id=%s ORDER BY created_at_ms DESC""",
             ("owner-a", "doc-owner-a"),
         ).fetchall()
-    assert {row["event_type"] for row in audit} == {"indexed", "deleted"}
+    assert {row["event_type"] for row in audit} == {
+        "revision_staged",
+        "revision_ready",
+        "revision_activated",
+        "indexed",
+        "deleted",
+    }
     deleted_event = next(row for row in audit if row["event_type"] == "deleted")
     assert deleted_event["actor_id"].startswith("token:tok_")
     assert deleted_event["data"]["title"] == "Private operating notes"
@@ -181,3 +203,232 @@ def test_knowledge_bases_manage_collections_without_deleting_sources(
         "deleted",
     }
     assert bindings == []
+
+
+def test_knowledge_revision_failure_preserves_previous_active_index(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "knowledge-revisions.db")
+    repository = KnowledgeRepository(store)
+    repository.index_document(
+        doc_id="doc-versioned",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Versioned notes",
+        chunks=[{"text": "stable searchable knowledge", "page": 1}],
+    )
+    active_before = repository.get_document(
+        user_id="owner-a", doc_id="doc-versioned"
+    )["active_revision_id"]
+    failed_revision = repository.stage_index_revision(
+        doc_id="doc-versioned",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Versioned notes",
+        chunks=[{"text": "replacement that must not activate", "page": 2}],
+        source_system="joyhouse-product",
+        source_id="source-versioned",
+        source_version="2",
+        run_id="run-index-failed",
+    )
+    repository.fail_index_revision(
+        user_id="owner-a",
+        doc_id="doc-versioned",
+        revision_id=failed_revision,
+        actor_id="worker:test",
+        error_code="PARSER_FAILED",
+        error_message="synthetic parser failure",
+    )
+
+    document = repository.get_document(user_id="owner-a", doc_id="doc-versioned")
+    hits = repository.search(
+        user_id="owner-a", query="stable", top_k=10
+    )
+    replacement_hits = repository.search(
+        user_id="owner-a", query="replacement", top_k=10
+    )
+    revisions = repository.list_index_revisions(
+        user_id="owner-a", doc_id="doc-versioned"
+    )
+    assert document["active_revision_id"] == active_before
+    assert document["index_status"] == "ready"
+    assert [hit["doc_id"] for hit in hits] == ["doc-versioned"]
+    assert replacement_hits == []
+    assert revisions[0]["status"] == "failed"
+    assert revisions[0]["run_id"] == "run-index-failed"
+
+
+def test_knowledge_revision_rejects_stale_generation_after_newer_activation(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "knowledge-generation-order.db")
+    repository = KnowledgeRepository(store)
+    older = repository.stage_index_revision(
+        doc_id="doc-ordered",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Older snapshot",
+        chunks=[{"text": "old generation content"}],
+        source_system="joyhouse-product",
+        source_id="source-ordered",
+        source_version="1",
+        source_generation=1,
+    )
+    repository.mark_index_revision_ready(
+        user_id="owner-a", doc_id="doc-ordered", revision_id=older, actor_id="test"
+    )
+    newer = repository.stage_index_revision(
+        doc_id="doc-ordered",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Newer snapshot",
+        chunks=[{"text": "new generation content"}],
+        source_system="joyhouse-product",
+        source_id="source-ordered",
+        source_version="1",
+        source_generation=2,
+    )
+    repository.mark_index_revision_ready(
+        user_id="owner-a", doc_id="doc-ordered", revision_id=newer, actor_id="test"
+    )
+    assert repository.activate_index_revision(
+        user_id="owner-a", doc_id="doc-ordered", revision_id=newer, actor_id="test"
+    ) is True
+    assert repository.activate_index_revision(
+        user_id="owner-a", doc_id="doc-ordered", revision_id=older, actor_id="test"
+    ) is False
+
+    document = repository.get_document(user_id="owner-a", doc_id="doc-ordered")
+    assert document["source_generation"] == 2
+    assert document["title"] == "Newer snapshot"
+    assert repository.search(user_id="owner-a", query="new generation", top_k=5)
+    assert repository.search(user_id="owner-a", query="old generation", top_k=5) == []
+    revisions = repository.list_index_revisions(
+        user_id="owner-a", doc_id="doc-ordered"
+    )
+    assert {item["revision_id"]: item["status"] for item in revisions} == {
+        newer: "active",
+        older: "superseded",
+    }
+
+
+def test_knowledge_revision_activation_atomically_switches_search_projection(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "knowledge-activation.db")
+    repository = KnowledgeRepository(store)
+    repository.index_document(
+        doc_id="doc-switch",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Switchable notes",
+        chunks=[{"text": "old indexed phrase"}],
+    )
+    revision_id = repository.stage_index_revision(
+        doc_id="doc-switch",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="note",
+        source_url=None,
+        title="Switchable notes",
+        chunks=[{"text": "new indexed phrase", "section_path": ["Chapter 1"]}],
+        source_version="2",
+    )
+    assert repository.search(user_id="owner-a", query="old", top_k=10)
+    assert repository.search(user_id="owner-a", query="new", top_k=10) == []
+    repository.mark_index_revision_ready(
+        user_id="owner-a",
+        doc_id="doc-switch",
+        revision_id=revision_id,
+        actor_id="worker:test",
+    )
+    repository.activate_index_revision(
+        user_id="owner-a",
+        doc_id="doc-switch",
+        revision_id=revision_id,
+        actor_id="worker:test",
+    )
+    assert repository.search(user_id="owner-a", query="old", top_k=10) == []
+    assert repository.search(user_id="owner-a", query="new", top_k=10)
+
+
+class _KnowledgeSubmissionStore:
+    def __init__(self) -> None:
+        self.definition = type(
+            "Definition",
+            (),
+            {
+                "ref": CapabilityRef(
+                    "knowledge.index",
+                    "1.0.0",
+                    CapabilityKind.TOOL,
+                    "capability-context-assets",
+                    "1.0.0",
+                    "sha256:" + "a" * 64,
+                )
+            },
+        )()
+
+    def list_capability_definitions(self):
+        return [self.definition]
+
+    def get_agent_profile(self, _agent_id=None):
+        return type("Profile", (), {"definition": type("Agent", (), {"agent_id": "default"})()})()
+
+
+class _KnowledgeSubmissionRuntime:
+    def __init__(self) -> None:
+        self.spec = None
+
+    async def submit_graph(self, spec):  # noqa: ANN001
+        self.spec = spec
+        return type("Run", (), {"run_id": "run-index", "status": "queued"})()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_index_request_compiles_to_capability_graph() -> None:
+    store = _KnowledgeSubmissionStore()
+    runtime = _KnowledgeSubmissionRuntime()
+    service = object.__new__(KnowledgeAssetService)
+    service.store = store
+    service.runtime = runtime
+    context = RequestContext(
+        principal=Principal(subject="token:owner", user_id="owner-a", role="user"),
+        request_id="request-index",
+        tracker_id="tracker-index",
+        idempotency_key="knowledge:source-a:2",
+    )
+    record = await service.submit_index_request(
+        context,
+        {
+            "source_system": "joyhouse-product",
+            "source_id": "source-a",
+            "source_version": "2",
+            "source_generation": 2,
+            "source_status": "active",
+            "source_type": "note",
+            "title": "Source A",
+            "content": "snapshot",
+            "source_url": "",
+            "attachments": [],
+            "tags": [],
+            "collection_refs": [],
+            "content_sha256": "a" * 64,
+            "index_profile_id": "lexical-v1",
+        },
+    )
+    assert record.run_id == "run-index"
+    assert runtime.spec.idempotency_key == "knowledge:source-a:2"
+    assert runtime.spec.tasks[0].node_type == "capability"
+    assert runtime.spec.tasks[0].capability.capability_id == "knowledge.index"
+    assert runtime.spec.tasks[0].capability_input["source_version"] == "2"

@@ -15,6 +15,7 @@ async def search_async(
     top_k: int = 10,
     source_type: str | None = None,
     doc_id: str | None = None,
+    collection_ref: str | None = None,
     scope: str = "knowledge",
     memory_scope_key: str | None = None,
     runtime_store: Any = None,
@@ -36,6 +37,7 @@ async def search_async(
             top_k=limit,
             source_type=source_type,
             doc_id=doc_id,
+            collection_ref=collection_ref,
         )
     if scope != "memory":
         return []

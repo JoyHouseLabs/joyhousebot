@@ -272,6 +272,10 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   索引汇总、分块正文与来源证据；`DELETE /v1/knowledge/documents/{doc_id}` 删除文档及分块并保留
   `knowledge_asset_events` 审计事件。知识抓取和解析仍由 Worker Tool 执行，HTTP API 不直接访问外部来源。
   当前 `agent_id` 只表示采集来源，知识检索仍按用户隔离；不能把它解释为已发布的 Agent 授权绑定。
+- `POST /v1/knowledge/index-requests` 要求稳定 `Idempotency-Key`，并将冻结 Source 快照编译为
+  `knowledge.index` Capability Graph；`GET /v1/knowledge/documents/{doc_id}/revisions` 查询不可变索引版本。
+  `source_generation` 防止异步 Run 乱序完成覆盖新版本，revision 验证失败时保留上一版 active projection。
+  Core/扩展职责和存储生命周期见 [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)。
 - `GET/POST /v1/knowledge/bases` 和 `PATCH/DELETE /v1/knowledge/bases/{knowledge_base_id}` 管理
   owner 私有知识库；`PUT/DELETE /v1/knowledge/bases/{knowledge_base_id}/documents/{doc_id}` 幂等维护
   知识源绑定。知识源可进入多个知识库，删除知识库只级联删除绑定，不删除 `knowledge_documents`；
@@ -416,7 +420,8 @@ Verification、Action/Invocation 与 evidence manifest。URI Artifact 没有内�
   `model_invocations`、`model_reasoning_segments`、`trace_blobs`、`replay_runs`、
   `model_response_cache`。
 - 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`、
-  `knowledge_asset_events`、`knowledge_bases`、`knowledge_base_documents`、`knowledge_base_events`。
+  `knowledge_index_revisions`、`knowledge_revision_chunks`、`knowledge_asset_events`、`knowledge_bases`、
+  `knowledge_base_documents`、`knowledge_base_events`。
 - 调度：`schedules`、`schedule_occurrences`、`schedule_occurrence_runs`、`schedule_monitor_state`、
   `schedule_monitor_scratch_revisions`。
 - Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。

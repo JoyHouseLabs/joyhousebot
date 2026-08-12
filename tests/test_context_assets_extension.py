@@ -53,6 +53,7 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
     definitions = {item.ref.capability_id: item for item in registry.list_capabilities()}
     assert set(definitions) == {
         "fetch_url_to_knowledgebase",
+        "knowledge.index",
         "memory_get",
         "retrieve",
     }
@@ -61,6 +62,41 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
         "capability-context-assets"
     )
     assert registry.manifests()[0].runtime_contract_version == 2
+
+
+@pytest.mark.asyncio
+async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() -> None:
+    services = _FakeContextServices()
+    result = await context_assets.IndexKnowledgeHandler().execute(
+        _context(
+            services=services,
+            action_id="action-index",
+            idempotency_key="knowledge:source-a:2",
+        ),
+        {
+            "source_system": "joyhouse-product",
+            "source_id": "source-a",
+            "source_version": "2",
+            "source_generation": 2,
+            "source_status": "active",
+            "source_type": "note",
+            "title": "Versioned note",
+            "content": "A long-lived source snapshot.",
+            "source_url": "",
+            "attachments": [],
+            "tags": ["market"],
+            "collection_refs": ["collection-a"],
+            "content_sha256": "a" * 64,
+            "index_profile_id": "lexical-v1",
+        },
+    )
+    assert result.success is True
+    assert result.write_receipt.idempotency_key == "knowledge:source-a:2"
+    assert services.indexed["source_system"] == "joyhouse-product"
+    assert services.indexed["source_id"] == "source-a"
+    assert services.indexed["source_version"] == "2"
+    assert services.indexed["source_generation"] == 2
+    assert services.indexed["metadata"]["collection_refs"] == ["collection-a"]
 
 
 @pytest.mark.asyncio
@@ -77,10 +113,16 @@ async def test_memory_handler_rejects_traversal_before_runtime_service() -> None
 async def test_retrieve_handler_uses_runtime_scoped_service() -> None:
     result = await context_assets.RetrieveHandler().execute(
         _context(),
-        {"query": "market", "scope": "knowledge", "top_k": 3},
+        {
+            "query": "market",
+            "scope": "knowledge",
+            "top_k": 3,
+            "collection_ref": "collection-market",
+        },
     )
     assert result.success is True
     assert result.output["hits"][0]["user_id"] == "user-a"
+    assert result.output["hits"][0]["collection_ref"] == "collection-market"
 
 
 @pytest.mark.asyncio

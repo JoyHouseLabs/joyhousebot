@@ -49,6 +49,9 @@ class RetrieveHandler:
                 query=query,
                 top_k=int(input.get("top_k") or 10),
                 source_type=str(input["source_type"]) if input.get("source_type") else None,
+                collection_ref=(
+                    str(input["collection_ref"]) if input.get("collection_ref") else None
+                ),
                 scope=scope,
             )
         except PermissionError as exc:
@@ -138,6 +141,97 @@ class FetchUrlToKnowledgebaseHandler:
         )
 
 
+class IndexKnowledgeHandler:
+    async def execute(
+        self, context: CapabilityContext, input: dict[str, Any]
+    ) -> CapabilityResult:
+        if not context.action_id or not context.idempotency_key:
+            return _failure(
+                "ACTION_IDENTITY_REQUIRED",
+                "knowledge writes require a frozen Runtime Action identity",
+            )
+        source_type = str(input.get("source_type") or "note")
+        content = str(input.get("content") or "")
+        source_url = str(input.get("source_url") or "")
+        try:
+            if source_type == "web" and source_url and not content.strip():
+                document = await fetch_and_ingest_url(source_url)
+                chunks = [
+                    {
+                        "text": item.text,
+                        "page": item.page,
+                        "char_start": item.start_offset,
+                        "char_end": item.end_offset,
+                        "section_path": list(item.meta.get("section_path") or []),
+                    }
+                    for item in document.chunks
+                ]
+                title = str(input.get("title") or document.title)
+                parser_id = "web-readability"
+                trace = document.trace
+            elif content.strip():
+                from .ingest.chunking import chunk_text
+
+                normalized = chunk_text(content, chunk_size=1200, overlap=200)
+                chunks = [
+                    {
+                        "text": item.text,
+                        "page": item.page,
+                        "char_start": item.start_offset,
+                        "char_end": item.end_offset,
+                    }
+                    for item in normalized
+                ]
+                title = str(input.get("title") or "Untitled knowledge source")
+                parser_id = "plain-text"
+                trace = {"content_length": len(content)}
+            else:
+                return _failure(
+                    "PARSER_UNAVAILABLE",
+                    f"no installed parser can index source_type={source_type}",
+                )
+            doc_id = await _services(context).index_knowledge(
+                context,
+                source_type=source_type,
+                source_url=source_url,
+                title=title,
+                chunks=chunks,
+                metadata={
+                    "trace": trace,
+                    "tags": list(input.get("tags") or []),
+                    "collection_refs": list(input.get("collection_refs") or []),
+                    "snapshot_content_sha256": input.get("content_sha256"),
+                },
+                source_system=str(input["source_system"]),
+                source_id=str(input["source_id"]),
+                source_version=str(input["source_version"]),
+                source_generation=int(input["source_generation"]),
+                source_status=str(input.get("source_status") or "active"),
+                index_profile_id=str(input.get("index_profile_id") or "lexical-v1"),
+                parser_id=parser_id,
+                parser_version="1",
+                chunker_id="semantic-text-v1",
+                chunker_version="1",
+            )
+        except ValueError as exc:
+            return _failure("INVALID_SOURCE", sanitize_error_message(str(exc)))
+        except Exception as exc:
+            return _failure(
+                "KNOWLEDGE_INDEX_FAILED",
+                sanitize_error_message(str(exc)),
+                retryable=True,
+            )
+        return CapabilityResult(
+            success=True,
+            output={"doc_id": doc_id, "chunk_count": len(chunks), "source_version": input["source_version"]},
+            write_receipt=WriteReceipt(
+                action_id=context.action_id,
+                idempotency_key=context.idempotency_key,
+                provider_operation_id=doc_id,
+            ),
+        )
+
+
 def _failure(
     code: str,
     message: str,
@@ -160,8 +254,23 @@ RETRIEVE_SCHEMA = {
     "properties": {
         "query": {"type": "string", "minLength": 1},
         "top_k": {"type": "integer", "minimum": 1, "maximum": 50},
-        "source_type": {"type": "string", "enum": ["url", "note"]},
+        "source_type": {
+            "type": "string",
+            "enum": [
+                "url",
+                "note",
+                "web",
+                "file",
+                "image",
+                "video",
+                "email",
+                "capture",
+                "paper",
+                "report",
+            ],
+        },
         "scope": {"type": "string", "enum": ["knowledge", "memory"]},
+        "collection_ref": {"type": "string", "minLength": 1},
     },
 }
 MEMORY_GET_SCHEMA = {
@@ -177,6 +286,34 @@ FETCH_TO_KNOWLEDGE_SCHEMA = {
     "type": "object",
     "required": ["url"],
     "properties": {"url": {"type": "string", "minLength": 1}},
+}
+INDEX_KNOWLEDGE_SCHEMA = {
+    "type": "object",
+    "required": [
+        "source_system",
+        "source_id",
+        "source_version",
+        "source_generation",
+        "source_type",
+        "title",
+        "content_sha256",
+    ],
+    "properties": {
+        "source_system": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "source_version": {"type": "string", "minLength": 1},
+        "source_generation": {"type": "integer", "minimum": 1},
+        "source_status": {"type": "string", "enum": ["inbox", "active", "archived"]},
+        "source_type": {"type": "string"},
+        "title": {"type": "string", "minLength": 1},
+        "content": {"type": "string"},
+        "source_url": {"type": "string"},
+        "attachments": {"type": "array"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "collection_refs": {"type": "array", "items": {"type": "string"}},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "index_profile_id": {"type": "string"},
+    },
 }
 
 
@@ -212,6 +349,9 @@ class ContextAssetsPlugin:
             _fetch_to_knowledge_definition(self.version),
             FetchUrlToKnowledgebaseHandler(),
         )
+        registry.register_capability(
+            _index_knowledge_definition(self.version), IndexKnowledgeHandler()
+        )
 
     def health_checks(self) -> tuple[Any, ...]:
         return ()
@@ -233,6 +373,27 @@ def _retrieve_definition(version: str) -> CapabilityDefinition:
         side_effect="read",
         permissions=("context.read",),
         data_classification="confidential",
+    )
+
+
+def _index_knowledge_definition(version: str) -> CapabilityDefinition:
+    return CapabilityDefinition(
+        ref=CapabilityRef("knowledge.index", version, CapabilityKind.TOOL),
+        name="Index knowledge source",
+        description="Parse one immutable source snapshot and activate a versioned Knowledge index.",
+        input_schema=INDEX_KNOWLEDGE_SCHEMA,
+        output_schema={"type": "object"},
+        adapter="plugin",
+        tags=("knowledge", "ingestion", "index"),
+        expected_duration_seconds=10,
+        timeout_seconds=600,
+        idempotent=True,
+        retryable=True,
+        side_effect="write",
+        permissions=("knowledge.write",),
+        data_classification="confidential",
+        invocation_concurrency="sequential",
+        max_concurrent_invocations=1,
     )
 
 

@@ -9,10 +9,25 @@ from fastapi import APIRouter, Query, Response, status
 from joyhousebot.api.dependencies import ContainerDep, ContextDep
 from joyhousebot.api.schemas import (
     CreateKnowledgeBaseRequest,
+    KnowledgeSourceSnapshotRequest,
     UpdateKnowledgeBaseRequest,
 )
+from joyhousebot.application.presenters import record_dict
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+
+
+@router.post("/index-requests", status_code=status.HTTP_202_ACCEPTED)
+async def submit_knowledge_index_request(
+    body: KnowledgeSourceSnapshotRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    """Compile one immutable source snapshot into the common Run/Task chain."""
+    record = await container.knowledge_assets.submit_index_request(
+        context, body.model_dump()
+    )
+    return record_dict(record)
 
 
 @router.get("/bases")
@@ -101,7 +116,19 @@ async def list_knowledge_documents(
     context: ContextDep,
     container: ContainerDep,
     knowledge_base_id: str | None = Query(default=None, max_length=200),
-    source_type: Literal["url", "note", "all"] = "all",
+    source_type: Literal[
+        "url",
+        "note",
+        "web",
+        "file",
+        "image",
+        "video",
+        "email",
+        "capture",
+        "paper",
+        "report",
+        "all",
+    ] = "all",
     search: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=200, ge=1, le=500),
 ):
@@ -124,6 +151,18 @@ async def get_knowledge_document(
 ):
     """Read one private source with its indexed chunks."""
     return await container.knowledge_assets.get(context, doc_id)
+
+
+@router.get("/documents/{doc_id}/revisions")
+async def list_knowledge_document_revisions(
+    doc_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    """Inspect immutable index attempts without exposing another user's assets."""
+    return {
+        "items": await container.knowledge_assets.list_revisions(context, doc_id)
+    }
 
 
 @router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)

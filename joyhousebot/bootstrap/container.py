@@ -226,7 +226,7 @@ def build_api_container(
         runs=runs,
         approvals=ApprovalService(runtime, runs, store),
         reconciliations=ReconciliationService(runtime, runs, store),
-        knowledge_assets=KnowledgeAssetService(store),
+        knowledge_assets=KnowledgeAssetService(store, runtime),
         memory_candidates=MemoryCandidateService(store),
         graph_events=GraphEventService(runtime, runs, store),
         graph_patches=GraphPatchService(runtime, runs, store),
