@@ -137,6 +137,7 @@ class RunService:
             max_turns=command.max_turns,
             max_repairs=command.max_repairs,
             max_replans=command.max_replans,
+            input_asset_ids=list(command.input_asset_ids),
             metadata=metadata,
             allowed_tools=allowed_tools,
             idempotency_key=context.idempotency_key,
@@ -240,6 +241,7 @@ class RunService:
                     raise ValidationError(str(exc)) from exc
                 if graph is not None:
                     graph.metadata["orchestration"] = orchestration
+                    graph.input_asset_ids = list(command.input_asset_ids)
             record = (
                 await self.runtime.submit_graph(graph)
                 if graph is not None
@@ -496,6 +498,7 @@ class RunService:
         max_input_tokens: int | None = None,
         max_output_tokens: int | None = None,
         max_cost_usd: float | None = None,
+        input_asset_ids: list[str] | None = None,
     ) -> Any:
         if not goal.strip() or not tasks:
             raise ValidationError("goal and tasks are required")
@@ -516,6 +519,7 @@ class RunService:
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
             max_cost_usd=max_cost_usd,
+            input_asset_ids=list(input_asset_ids or []),
             idempotency_key=context.idempotency_key,
             request_id=context.request_id,
             tracker_id=context.tracker_id,

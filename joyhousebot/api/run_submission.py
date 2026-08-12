@@ -36,6 +36,7 @@ async def submit_create_run(
                 "input": body.input.content,
                 "session_id": body.session_id,
                 "metadata": body.metadata,
+                "input_asset_ids": body.input_asset_ids,
                 "preview": False,
             },
         )
@@ -77,6 +78,7 @@ async def submit_create_run(
             max_turns=body.max_turns,
             max_repairs=body.max_repairs,
             max_replans=body.max_replans,
+            input_asset_ids=body.input_asset_ids,
             metadata=body.metadata,
         ),
     )

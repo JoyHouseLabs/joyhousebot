@@ -105,6 +105,7 @@ async def create_graph(body: CreateGraphRequest, context: ContextDep, container:
         max_input_tokens=body.max_input_tokens,
         max_output_tokens=body.max_output_tokens,
         max_cost_usd=body.max_cost_usd,
+        input_asset_ids=body.input_asset_ids,
         tasks=[GraphTaskCommand(**item.model_dump()) for item in body.tasks],
     )
     return record_dict(record)

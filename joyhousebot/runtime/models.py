@@ -93,6 +93,7 @@ class AgentOptions:
     parent_run_id: str | None = None
     parent_task_id: str | None = None
     max_children_per_root: int | None = None
+    input_asset_ids: list[str] = field(default_factory=list)
     request_id: str | None = None
     tracker_id: str | None = None
     parent_request_id: str | None = None

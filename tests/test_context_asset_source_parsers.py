@@ -242,3 +242,111 @@ async def test_registry_fails_closed_for_vault_and_media_without_parser() -> Non
             }
         )
     assert media_error.value.code == "PARSER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_registry_reads_runtime_input_through_scoped_loader() -> None:
+    calls: list[str] = []
+
+    async def load_input_asset(asset_id: str) -> dict[str, object]:
+        calls.append(asset_id)
+        return {
+            "body": b"Durable private evidence",
+            "display_name": "evidence.txt",
+            "media_type": "text/plain",
+        }
+
+    parsed = await source_parsers.default_source_parser_registry().parse_snapshot(
+        {
+            "source_type": "file",
+            "attachments": [
+                {
+                    "reference_kind": "runtime_input",
+                    "asset_id": "input_" + "a" * 32,
+                    "display_name": "evidence.txt",
+                    "media_type": "text/plain",
+                }
+            ],
+        },
+        input_asset_loader=load_input_asset,
+    )
+
+    assert calls == ["input_" + "a" * 32]
+    assert parsed.parser_id == "public-text-file"
+    assert parsed.chunks[0]["text"] == "Durable private evidence"
+    assert parsed.trace["parts"][0]["uri"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "media_type", "body", "expected"),
+    [
+        ("evidence.pdf", "application/pdf", _pdf_with_text("Private PDF"), "Private PDF"),
+        (
+            "evidence.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            _archive(
+                {
+                    "[Content_Types].xml": "<Types/>",
+                    "word/document.xml": (
+                        '<w:document xmlns:w="urn:word"><w:body>'
+                        "<w:p><w:r><w:t>Private Word</w:t></w:r></w:p>"
+                        "</w:body></w:document>"
+                    ),
+                }
+            ),
+            "Private Word",
+        ),
+        (
+            "deck.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            _archive(
+                {
+                    "[Content_Types].xml": "<Types/>",
+                    "ppt/slides/slide1.xml": (
+                        '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld>'
+                        "<a:t>Private Slide</a:t></p:cSld></p:sld>"
+                    ),
+                }
+            ),
+            "Private Slide",
+        ),
+        (
+            "table.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            _archive(
+                {
+                    "[Content_Types].xml": "<Types/>",
+                    "xl/sharedStrings.xml": '<sst xmlns="urn:x"><si><t>Private Cell</t></si></sst>',
+                    "xl/worksheets/sheet1.xml": (
+                        '<worksheet xmlns="urn:x"><sheetData><row>'
+                        '<c t="s"><v>0</v></c></row></sheetData></worksheet>'
+                    ),
+                }
+            ),
+            "Private Cell",
+        ),
+    ],
+)
+async def test_runtime_input_parses_private_pdf_and_office(
+    name: str, media_type: str, body: bytes, expected: str
+) -> None:
+    async def load_input_asset(_asset_id: str) -> dict[str, object]:
+        return {"body": body, "display_name": name, "media_type": media_type}
+
+    parsed = await source_parsers.default_source_parser_registry().parse_snapshot(
+        {
+            "source_type": "file",
+            "attachments": [
+                {
+                    "reference_kind": "runtime_input",
+                    "asset_id": "input_" + "b" * 32,
+                    "display_name": name,
+                    "media_type": media_type,
+                }
+            ],
+        },
+        input_asset_loader=load_input_asset,
+    )
+    assert parsed.chunks[0]["text"] == expected
+    assert parsed.trace["parts"][0]["uri"] == ""

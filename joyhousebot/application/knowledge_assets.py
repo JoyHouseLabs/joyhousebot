@@ -63,6 +63,11 @@ class KnowledgeAssetService:
         profile = await asyncio.to_thread(self.store.get_agent_profile)
         if profile is None:
             raise ConflictError("No active published default Agent exists")
+        input_asset_ids = [
+            str(item.get("asset_id") or "")
+            for item in list(snapshot.get("attachments") or [])
+            if str(item.get("reference_kind") or "") == "runtime_input"
+        ]
         spec = TaskGraphSpec(
             goal=f"Index knowledge source {source_id} version {source_version}",
             user_id=context.user_id,
@@ -76,6 +81,7 @@ class KnowledgeAssetService:
             tracker_id=context.tracker_id,
             traceparent=context.traceparent,
             tracestate=context.tracestate,
+            input_asset_ids=input_asset_ids,
             metadata={
                 "purpose": "knowledge.index",
                 "source_system": snapshot["source_system"],

@@ -67,4 +67,7 @@ class CreateRunRequest(StrictRunModel):
     max_turns: int | None = Field(default=None, gt=0)
     max_repairs: int | None = Field(default=None, ge=0, le=10)
     max_replans: int | None = Field(default=None, ge=0, le=10)
+    input_asset_ids: list[Annotated[str, Field(pattern=_ID_PATTERN)]] = Field(
+        default_factory=list, max_length=20
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)

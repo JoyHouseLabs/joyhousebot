@@ -37,6 +37,10 @@ class GraphMaterializationMixin:
         )
         if record is None:
             raise ValueError("planning run not found")
+        # Planning is allowed to replace execution structure, but not to drop
+        # the immutable inputs frozen on the accepted top-level Run.
+        if not spec.input_asset_ids:
+            spec.input_asset_ids = list((record.options or {}).get("input_asset_ids") or [])
         revision = freeze_graph_revision(
             run_id, spec, ordered, source="planning_materialization"
         )

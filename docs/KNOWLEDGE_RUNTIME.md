@@ -32,9 +32,25 @@ archives have an additional 50 MB expanded-size cap and reject unsafe paths and 
 the extension-local `pypdf` dependency. A source can combine inline text and multiple attachments; parser identity and
 version are frozen into the index revision.
 
-`local_vault` and `cloud_vault` references deliberately fail closed until a resolver is installed that can exchange a
-short-lived readable stream for the current Run. OCR, image understanding and transcription remain separate extension
-capabilities because they need explicit model, quota and data-classification permissions.
+Product-local or cloud Vault identifiers are never sent to a Capability. The Product Gateway reads an owner-authorized
+immutable object, streams it to `POST /v1/input-assets`, then submits a `runtime_input` attachment and its `asset_id`.
+Run/Graph creation verifies ownership and atomically freezes `runtime_run_input_assets`; the Worker can read the bytes only
+through `ContextPort.read_input_asset()` for that exact owner and Run. The public API never exposes the storage URI or host
+path. Direct `local_vault` and `cloud_vault` references therefore continue to fail closed. OCR, image understanding and
+transcription remain separate extension capabilities because they need explicit model, quota and data-classification
+permissions.
+
+## Runtime Input Assets
+
+- `POST /v1/input-assets` requires `Idempotency-Key`, `Content-Length` and `X-Content-SHA256`, streams to a private
+  content-addressed object store and returns only immutable metadata;
+- `POST /v1/runs`, `POST /v1/runs/graphs` and Workflow execution accept up to 20 `input_asset_ids`; binding occurs in the
+  same PostgreSQL transaction as Run creation and idempotent replay must name the same set;
+- `runtime_input_asset_events` records create/bind/read lifecycle events while `runtime_logs` records Run-scoped reads;
+- the normal Runtime retention job soft-deletes unneeded assets only after every bound Run is terminal, then reclaims
+  unreferenced objects with a two-phase 24-hour grace period;
+- single-host deployments may use `runtime.store.inputAssetDirectory`; multi-host API/Worker deployments need one shared
+  durable filesystem or an adapter implementing the same binary object-store contract.
 
 ## Public snapshot contract
 

@@ -57,6 +57,49 @@ class ContextPort:
             user_id=context.user_id,
         )
 
+    async def read_input_asset(
+        self,
+        context: CapabilityContext,
+        *,
+        asset_id: str,
+        max_bytes: int,
+    ) -> dict[str, Any]:
+        """Read only an immutable file explicitly frozen into this Run."""
+        store = self._require_store()
+        record = await asyncio.to_thread(
+            store.get_bound_input_asset,
+            asset_id,
+            run_id=context.run_id,
+            expected_user_id=context.user_id,
+        )
+        if record is None:
+            raise PermissionError("input asset is not bound to the current Run")
+        configured_limit = int(getattr(store, "input_asset_max_bytes", max_bytes))
+        read_limit = min(max(1, int(max_bytes)), configured_limit)
+        object_store = getattr(store, "input_asset_store", None)
+        if object_store is None:
+            raise RuntimeError("Runtime Input Asset storage is unavailable")
+        body = await asyncio.to_thread(
+            object_store.read_bytes, record.storage_uri, max_bytes=read_limit
+        )
+        audit_read = getattr(store, "audit_input_asset_read", None)
+        if audit_read is not None:
+            await asyncio.to_thread(
+                audit_read,
+                asset_id=asset_id,
+                run_id=context.run_id,
+                user_id=context.user_id,
+            )
+        return {
+            "body": body,
+            "asset_id": record.asset_id,
+            "display_name": record.original_name,
+            "media_type": record.media_type,
+            "content_sha256": record.content_sha256,
+            "byte_size": record.byte_size,
+            "object_version": record.object_version,
+        }
+
     async def read_memory(
         self,
         context: CapabilityContext,

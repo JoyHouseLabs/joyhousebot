@@ -29,6 +29,7 @@ class PostgresGraphStoreMixin:
         parent_run_id: str | None = None,
         parent_task_id: str | None = None,
         max_children_per_root: int | None = None,
+        input_asset_ids: list[str] | tuple[str, ...] = (),
     ) -> tuple[RuntimeRunRecord, bool]:
         """Persist a run, immutable revision, Tasks and edges atomically."""
         with self._pool.connection() as conn, conn.transaction():
@@ -58,6 +59,12 @@ class PostgresGraphStoreMixin:
                 )
                 if existing is not None:
                     require_same_idempotent_graph(existing)
+                    self._require_same_run_input_assets_in_transaction(
+                        conn,
+                        run_id=str(existing["run_id"]),
+                        user_id=user_id,
+                        asset_ids=input_asset_ids,
+                    )
                     return self._run(existing), False
             if root_run_id and parent_run_id and max_children_per_root is not None:
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (root_run_id,))
@@ -71,6 +78,12 @@ class PostgresGraphStoreMixin:
                     ).fetchone()
                 if existing is not None:
                     require_same_idempotent_graph(existing)
+                    self._require_same_run_input_assets_in_transaction(
+                        conn,
+                        run_id=str(existing["run_id"]),
+                        user_id=user_id,
+                        asset_ids=input_asset_ids,
+                    )
                     return self._run(existing), False
                 child_count = conn.execute(
                     """SELECT COUNT(*) AS count FROM runtime_runs
@@ -119,7 +132,16 @@ class PostgresGraphStoreMixin:
             assert row is not None
             if not row["created"]:
                 require_same_idempotent_graph(row)
+                self._require_same_run_input_assets_in_transaction(
+                    conn,
+                    run_id=str(row["run_id"]),
+                    user_id=user_id,
+                    asset_ids=input_asset_ids,
+                )
                 return self._run(row), False
+            self._bind_input_assets_in_transaction(
+                conn, run_id=run_id, user_id=user_id, asset_ids=input_asset_ids
+            )
             self._insert_graph_revision(
                 conn,
                 run_id=run_id,

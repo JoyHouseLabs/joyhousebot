@@ -7,9 +7,9 @@ from typing import Literal
 from fastapi import APIRouter, Query, Response, status
 
 from joyhousebot.api.dependencies import ContainerDep, ContextDep
+from joyhousebot.api.knowledge_schemas import KnowledgeSourceSnapshotRequest
 from joyhousebot.api.schemas import (
     CreateKnowledgeBaseRequest,
-    KnowledgeSourceSnapshotRequest,
     UpdateKnowledgeBaseRequest,
 )
 from joyhousebot.application.presenters import record_dict

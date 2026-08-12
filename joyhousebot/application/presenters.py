@@ -42,6 +42,25 @@ def runtime_run_list_item(value: Any) -> dict[str, Any]:
     }
 
 
+def input_asset_public_dict(value: Any) -> dict[str, Any]:
+    """Expose immutable input metadata without leaking storage credentials or paths."""
+    record = record_dict(value)
+    return {
+        key: record.get(key)
+        for key in (
+            "asset_id",
+            "original_name",
+            "media_type",
+            "content_sha256",
+            "byte_size",
+            "object_version",
+            "status",
+            "created_at",
+            "deleted_at",
+        )
+    }
+
+
 def public_capability_definition(value: dict[str, Any]) -> dict[str, Any]:
     """Project catalog metadata without adapter-private configuration.
 

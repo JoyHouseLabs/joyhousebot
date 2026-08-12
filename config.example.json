@@ -13,6 +13,8 @@
       "autoMigrate": true,
       "blobDirectory": "~/.joyhousebot/runtime-blobs",
       "blobInlineThresholdBytes": 65536,
+      "inputAssetDirectory": "~/.joyhousebot/input-assets",
+      "inputAssetMaxBytes": 26214400,
       "leaseSeconds": 60,
       "pollIntervalSeconds": 0.2
     }

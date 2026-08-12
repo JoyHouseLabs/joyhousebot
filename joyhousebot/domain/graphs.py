@@ -171,6 +171,7 @@ class TaskGraphSpec:
     parent_run_id: str | None = None
     parent_task_id: str | None = None
     max_children_per_root: int | None = None
+    input_asset_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -179,3 +180,5 @@ class TaskGraphSpec:
             for value in (self.max_input_tokens, self.max_output_tokens, self.max_cost_usd)
         ):
             raise ValueError("graph budgets must be greater than zero")
+        if len(self.input_asset_ids) > 20:
+            raise ValueError("a graph may bind at most 20 input assets")

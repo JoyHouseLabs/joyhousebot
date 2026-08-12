@@ -14,7 +14,7 @@ from joyhousebot.extension_sdk import (
     WriteReceipt,
 )
 from joyhousebot.extension_sdk.manifest import source_tree_digest
-from joyhousebot.extension_sdk.network import sanitize_error_message
+from joyhousebot.extension_sdk.network import DEFAULT_MAX_BYTES, sanitize_error_message
 
 from .ingest.source_parsers import DEFAULT_SOURCE_PARSERS, SourceParseError
 from .ingest.url_ingest import fetch_and_ingest_url
@@ -158,7 +158,17 @@ class IndexKnowledgeHandler:
         except RuntimeError as exc:
             return _failure("CONTEXT_REQUIRED", str(exc))
         try:
-            parsed = await DEFAULT_SOURCE_PARSERS.parse_snapshot(input)
+            async def load_input_asset(asset_id: str) -> dict[str, Any]:
+                return await services.read_input_asset(
+                    context,
+                    asset_id=asset_id,
+                    max_bytes=DEFAULT_MAX_BYTES,
+                )
+
+            parsed = await DEFAULT_SOURCE_PARSERS.parse_snapshot(
+                input,
+                input_asset_loader=load_input_asset,
+            )
         except SourceParseError as exc:
             try:
                 await services.fail_knowledge_index(

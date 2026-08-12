@@ -38,6 +38,7 @@ from joyhousebot.api.routers import (
     auth,
     event_triggers,
     graph_events,
+    input_assets,
     knowledge,
     memory,
     runs,
@@ -187,6 +188,7 @@ def create_app(
             "Authorization",
             "Content-Type",
             "Idempotency-Key",
+            "X-Content-SHA256",
             "Prefer",
             "X-Request-Id",
             "X-Tracker-Id",
@@ -324,6 +326,7 @@ def create_app(
         app.include_router(apps.router, prefix=prefix)
         app.include_router(event_triggers.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)
+        app.include_router(input_assets.router, prefix=prefix)
         app.include_router(knowledge.router, prefix=prefix)
         app.include_router(memory.router, prefix=prefix)
         app.include_router(sessions.router, prefix=prefix)

@@ -276,6 +276,10 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   `knowledge.index` Capability Graph；`GET /v1/knowledge/documents/{doc_id}/revisions` 查询不可变索引版本。
   `source_generation` 防止异步 Run 乱序完成覆盖新版本，revision 验证失败时保留上一版 active projection。
   Core/扩展职责和存储生命周期见 [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)。
+- `POST /v1/input-assets` 流式接收一次执行的不可变二进制输入，并校验 `Content-Length` 与 SHA-256；
+  `POST /v1/runs`、`POST /v1/runs/graphs` 通过 `input_asset_ids` 在 Run 创建事务内做 owner 校验和冻结绑定。
+  Worker Capability 只能经 `ContextPort.read_input_asset()` 读取当前 Run 已绑定内容；API 不返回存储 URI，
+  Product Vault 地址和宿主机路径也不进入 Runtime Graph。
 - `GET/POST /v1/knowledge/bases` 和 `PATCH/DELETE /v1/knowledge/bases/{knowledge_base_id}` 管理
   owner 私有知识库；`PUT/DELETE /v1/knowledge/bases/{knowledge_base_id}/documents/{doc_id}` 幂等维护
   知识源绑定。知识源可进入多个知识库，删除知识库只级联删除绑定，不删除 `knowledge_documents`；
@@ -422,6 +426,8 @@ Verification、Action/Invocation 与 evidence manifest。URI Artifact 没有内�
 - 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`、
   `knowledge_index_revisions`、`knowledge_revision_chunks`、`knowledge_asset_events`、`knowledge_bases`、
   `knowledge_base_documents`、`knowledge_base_events`。
+- 执行输入：`runtime_input_assets`、`runtime_run_input_assets`、`runtime_input_asset_events`。输入资产与
+  Runtime Artifact 分离：前者是被冻结的执行输入，后者是 Run 产生的输出。
 - 调度：`schedules`、`schedule_occurrences`、`schedule_occurrence_runs`、`schedule_monitor_state`、
   `schedule_monitor_scratch_revisions`。
 - Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。
@@ -457,6 +463,10 @@ Trace Blob 和 Runtime Artifact 超过 `runtime.store.blobInlineThresholdBytes` 
 读取时必须校验摘要。单机可使用私有本地目录；多 Worker/多主机部署必须把该目录放在所有执行进程都能访问、
 可备份的共享文件系统，或实现同一 `ContentBlobStore` 契约的对象存储适配器。清理任务先删除过期数据库引用，
 再通过标记与 24 小时宽限期回收未引用对象，避免与未提交事务竞态。未配置目录时正文继续内联 JSONB。
+
+Runtime Input Asset 使用独立的二进制内容寻址存储 `runtime.store.inputAssetDirectory`，默认单文件上限由
+`inputAssetMaxBytes` 控制。普通保留清理只会软删除已超过周期、且所有绑定 Run 都已终态的输入；对象文件在
+失去全部 ready 引用后采用相同的两阶段 24 小时宽限回收。数据库快照和 Input Asset 目录必须作为同一恢复点。
 
 `JOYHOUSEBOT_DESTRUCTIVE_MIGRATE` 是仅限开发重置的逃生口：只有取值精确等于 `DROP_ALL_TABLES`
 才生效（`=1` 等真值不再触发），执行前会以 critical 级日志列出将删除的 runtime 表；生产环境

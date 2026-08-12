@@ -5,7 +5,8 @@ from __future__ import annotations
 import io
 import re
 import zipfile
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
@@ -52,10 +53,12 @@ class ParseCandidate:
     display_name: str = ""
     media_type: str = ""
     content: str = ""
+    asset_id: str = ""
+    binary_body: bytes = b""
 
     @property
     def extension(self) -> str:
-        path = unquote(urlparse(self.uri).path)
+        path = unquote(urlparse(self.uri).path) or self.display_name
         return PurePosixPath(path).suffix.lower()
 
 
@@ -104,7 +107,12 @@ class SourceParserRegistry:
         label = candidate.media_type or candidate.extension or candidate.reference_kind
         raise SourceParseError("PARSER_UNAVAILABLE", f"no installed parser supports {label}")
 
-    async def parse_snapshot(self, value: dict[str, Any]) -> ParsedSnapshot:
+    async def parse_snapshot(
+        self,
+        value: dict[str, Any],
+        *,
+        input_asset_loader: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+    ) -> ParsedSnapshot:
         candidates = _snapshot_candidates(value)
         if not candidates:
             source_type = str(value.get("source_type") or "unknown")
@@ -116,7 +124,34 @@ class SourceParserRegistry:
         parser_versions: list[str] = []
         parsed_chars = 0
         for candidate in candidates:
-            if candidate.reference_kind not in {"inline", "url"}:
+            if candidate.reference_kind == "runtime_input":
+                if input_asset_loader is None:
+                    raise SourceParseError(
+                        "REFERENCE_RESOLVER_UNAVAILABLE",
+                        "runtime_input references require the Runtime input asset port",
+                    )
+                try:
+                    resolved = await input_asset_loader(candidate.asset_id)
+                except PermissionError as exc:
+                    raise SourceParseError("REFERENCE_ACCESS_DENIED", str(exc)) from exc
+                except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+                    raise SourceParseError(
+                        "REFERENCE_READ_FAILED",
+                        sanitize_error_message(str(exc)),
+                        retryable=isinstance(exc, (FileNotFoundError, OSError, RuntimeError)),
+                    ) from exc
+                candidate = replace(
+                    candidate,
+                    binary_body=bytes(resolved["body"]),
+                    display_name=(
+                        candidate.display_name
+                        or str(resolved.get("display_name") or "")
+                    ),
+                    media_type=(
+                        candidate.media_type or str(resolved.get("media_type") or "")
+                    ),
+                )
+            elif candidate.reference_kind not in {"inline", "url"}:
                 raise SourceParseError(
                     "REFERENCE_RESOLVER_UNAVAILABLE",
                     f"{candidate.reference_kind} references require an installed vault resolver",
@@ -164,7 +199,8 @@ class SourceParserRegistry:
             traces.append(
                 {
                     "reference_kind": candidate.reference_kind,
-                    "uri": candidate.uri,
+                    "uri": candidate.uri if candidate.reference_kind == "url" else "",
+                    "asset_id": candidate.asset_id,
                     "display_name": candidate.display_name,
                     "parser_id": parsed.parser_id,
                     **parsed.trace,
@@ -210,13 +246,13 @@ class PdfParser:
     priority = 90
 
     def supports(self, candidate: ParseCandidate) -> bool:
-        return candidate.reference_kind == "url" and (
+        return candidate.reference_kind in {"url", "runtime_input"} and (
             candidate.extension == ".pdf" or candidate.media_type.lower() == "application/pdf"
         )
 
     async def parse(self, candidate: ParseCandidate) -> ParsedCandidate:
-        _, body, content_type = await _fetch_binary(
-            candidate.uri,
+        body, content_type = await _candidate_binary(
+            candidate,
             ("application/pdf", "application/octet-stream"),
         )
         if not body.startswith(b"%PDF-"):
@@ -271,14 +307,14 @@ class OfficeOpenXmlParser:
     }
 
     def supports(self, candidate: ParseCandidate) -> bool:
-        return candidate.reference_kind == "url" and (
+        return candidate.reference_kind in {"url", "runtime_input"} and (
             candidate.extension in self._extensions
             or candidate.media_type.lower() in self._media_types
         )
 
     async def parse(self, candidate: ParseCandidate) -> ParsedCandidate:
-        _, body, content_type = await _fetch_binary(
-            candidate.uri,
+        body, content_type = await _candidate_binary(
+            candidate,
             tuple(sorted(self._media_types | {"application/zip", "application/octet-stream"})),
         )
         if not zipfile.is_zipfile(io.BytesIO(body)):
@@ -319,15 +355,15 @@ class PublicTextFileParser:
 
     def supports(self, candidate: ParseCandidate) -> bool:
         media = candidate.media_type.lower()
-        return candidate.reference_kind == "url" and (
+        return candidate.reference_kind in {"url", "runtime_input"} and (
             candidate.extension in self._extensions
             or media.startswith("text/")
             or media in {"application/json", "application/xml"}
         )
 
     async def parse(self, candidate: ParseCandidate) -> ParsedCandidate:
-        _, body, content_type = await _fetch_binary(
-            candidate.uri,
+        body, content_type = await _candidate_binary(
+            candidate,
             ("text/", "application/json", "application/xml", "application/octet-stream"),
         )
         text = body.decode("utf-8", errors="replace")[:MAX_PARSED_CHARS]
@@ -411,15 +447,18 @@ def _snapshot_candidates(value: dict[str, Any]) -> list[ParseCandidate]:
     seen = {candidate.uri for candidate in candidates if candidate.uri}
     for item in list(value.get("attachments") or []):
         uri = str(item.get("uri") or "").strip()
-        if not uri or uri in seen:
+        asset_id = str(item.get("asset_id") or "").strip()
+        identity = uri or asset_id
+        if not identity or identity in seen:
             continue
-        seen.add(uri)
+        seen.add(identity)
         candidates.append(
             ParseCandidate(
                 str(item.get("reference_kind") or "url"),
                 uri=uri,
                 display_name=str(item.get("display_name") or ""),
                 media_type=str(item.get("media_type") or ""),
+                asset_id=asset_id,
             )
         )
     return candidates
@@ -452,6 +491,17 @@ async def _fetch_binary(
                 "FETCH_FAILED", sanitize_error_message(str(exc)), retryable=True
             ) from exc
     return str(response.url), body, response.headers.get("content-type", "")
+
+
+async def _candidate_binary(
+    candidate: ParseCandidate, allowed_content_types: tuple[str, ...]
+) -> tuple[bytes, str]:
+    if candidate.reference_kind == "runtime_input":
+        if not candidate.binary_body:
+            raise SourceParseError("EMPTY_DOCUMENT", "input asset is empty")
+        return candidate.binary_body, candidate.media_type
+    _, body, content_type = await _fetch_binary(candidate.uri, allowed_content_types)
+    return body, content_type
 
 
 def _validate_office_archive(archive: zipfile.ZipFile) -> None:

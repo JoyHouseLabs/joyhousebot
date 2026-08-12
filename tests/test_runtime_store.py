@@ -1135,6 +1135,8 @@ async def test_postgres_purge_old_runtime_data(tmp_path: Path) -> None:
         "runtime_runs_tombstoned": 1,
         "capability_invocations": 0,
         "schedule_occurrences": 0,
+        "runtime_input_assets": 0,
+        "input_asset_objects": 0,
     }
     assert store.list_runtime_events(run.run_id) == []
     assert store.list_runtime_logs(run.run_id) == []
@@ -1162,6 +1164,8 @@ async def test_postgres_purge_old_runtime_data(tmp_path: Path) -> None:
         "runtime_runs_tombstoned": 0,
         "capability_invocations": 0,
         "schedule_occurrences": 0,
+        "runtime_input_assets": 0,
+        "input_asset_objects": 0,
     }
     assert len(store.list_runtime_logs(run.run_id)) == 1
 

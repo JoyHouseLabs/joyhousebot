@@ -51,6 +51,7 @@ class CreateRunCommand:
     max_turns: int | None = None
     max_repairs: int | None = None
     max_replans: int | None = None
+    input_asset_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

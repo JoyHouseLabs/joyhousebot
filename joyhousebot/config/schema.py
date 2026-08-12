@@ -148,6 +148,10 @@ class RuntimeStoreConfig(BaseModel):
     auto_migrate: bool = True
     blob_directory: str = ""
     blob_inline_threshold_bytes: int = Field(default=65536, ge=0, le=16 * 1024 * 1024)
+    input_asset_directory: str = "~/.joyhousebot/input-assets"
+    input_asset_max_bytes: int = Field(
+        default=25 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024
+    )
     lease_seconds: int = 60
     # PostgreSQL NOTIFY is the normal wake-up path.  This is only the durable
     # recovery cadence for listener reconnects and startup races.

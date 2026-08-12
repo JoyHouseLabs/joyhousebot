@@ -61,6 +61,7 @@ class PostgresRunStoreMixin:
         max_children_per_root: int | None = None,
         max_active_per_user: int | None = None,
         max_submissions_per_minute: int | None = None,
+        input_asset_ids: list[str] | tuple[str, ...] = (),
     ) -> tuple[RuntimeRunRecord, bool]:
         with self._pool.connection() as conn, conn.transaction():
             if parent_run_id is None and root_run_id is None:
@@ -74,6 +75,12 @@ class PostgresRunStoreMixin:
                     max_submissions_per_minute=max_submissions_per_minute,
                 )
                 if existing is not None:
+                    self._require_same_run_input_assets_in_transaction(
+                        conn,
+                        run_id=str(existing["run_id"]),
+                        user_id=user_id,
+                        asset_ids=input_asset_ids,
+                    )
                     return self._run(existing), False
             if root_run_id and parent_run_id and max_children_per_root is not None:
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (root_run_id,))
@@ -86,6 +93,12 @@ class PostgresRunStoreMixin:
                         (user_id, agent_id, session_id, idempotency_key),
                     ).fetchone()
                 if existing is not None:
+                    self._require_same_run_input_assets_in_transaction(
+                        conn,
+                        run_id=str(existing["run_id"]),
+                        user_id=user_id,
+                        asset_ids=input_asset_ids,
+                    )
                     return self._run(existing), False
                 child_count = conn.execute(
                     """SELECT COUNT(*) AS count FROM runtime_runs
@@ -130,6 +143,17 @@ class PostgresRunStoreMixin:
                     (user_id, agent_id, session_id, idempotency_key),
                 ).fetchone()
             assert row is not None
+            if row["created"]:
+                self._bind_input_assets_in_transaction(
+                    conn, run_id=str(row["run_id"]), user_id=user_id, asset_ids=input_asset_ids
+                )
+            else:
+                self._require_same_run_input_assets_in_transaction(
+                    conn,
+                    run_id=str(row["run_id"]),
+                    user_id=user_id,
+                    asset_ids=input_asset_ids,
+                )
             if row["created"]:
                 self._audit(
                     conn,

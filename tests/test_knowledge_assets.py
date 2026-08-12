@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,189 @@ from joyhousebot.domain.capabilities.models import CapabilityKind, CapabilityRef
 from joyhousebot.extension_sdk import CapabilityContext
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
+
+
+def test_runtime_input_asset_upload_is_owner_scoped_and_integrity_checked(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(
+        tmp_path / "input-assets.db",
+        input_asset_directory=str(tmp_path / "runtime-input-assets"),
+    )
+    store.create_api_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
+    store.create_api_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    body = b"private source body"
+    digest = hashlib.sha256(body).hexdigest()
+    headers = {
+        "Authorization": "Bearer owner-a-token",
+        "Idempotency-Key": "file-object-a-v1",
+        "X-Content-SHA256": digest,
+        "Content-Type": "text/plain",
+    }
+
+    with client:
+        uploaded = client.post(
+            "/v1/input-assets?file_name=private.txt", content=body, headers=headers
+        )
+        repeated = client.post(
+            "/v1/input-assets?file_name=private.txt", content=body, headers=headers
+        )
+        owner_detail = client.get(
+            f"/v1/input-assets/{uploaded.json()['asset_id']}",
+            headers={"Authorization": "Bearer owner-a-token"},
+        )
+        foreign_detail = client.get(
+            f"/v1/input-assets/{uploaded.json()['asset_id']}",
+            headers={"Authorization": "Bearer owner-b-token"},
+        )
+        invalid = client.post(
+            "/v1/input-assets?file_name=invalid.txt",
+            content=body,
+            headers={**headers, "Idempotency-Key": "invalid", "X-Content-SHA256": "0" * 64},
+        )
+        graph = client.post(
+            "/v1/runs/graphs",
+            headers={
+                "Authorization": "Bearer owner-a-token",
+                "Idempotency-Key": "asset-graph-a",
+            },
+            json={
+                "goal": "consume immutable input",
+                "session_id": "asset-graph-a",
+                "input_asset_ids": [uploaded.json()["asset_id"]],
+                "tasks": [{"id": "read", "prompt": "read the input"}],
+            },
+        )
+        run = client.post(
+            "/v1/runs",
+            headers={
+                "Authorization": "Bearer owner-a-token",
+                "Idempotency-Key": "asset-run-a",
+            },
+            json={
+                "execution": {"mode": "agent", "agent_id": "default"},
+                "session_id": "asset-run-a",
+                "input": {"type": "message", "content": "read the immutable input"},
+                "input_asset_ids": [uploaded.json()["asset_id"]],
+            },
+        )
+        foreign_graph = client.post(
+            "/v1/runs/graphs",
+            headers={
+                "Authorization": "Bearer owner-b-token",
+                "Idempotency-Key": "asset-graph-b",
+            },
+            json={
+                "goal": "steal immutable input",
+                "session_id": "asset-graph-b",
+                "input_asset_ids": [uploaded.json()["asset_id"]],
+                "tasks": [{"id": "read", "prompt": "read the input"}],
+            },
+        )
+
+    assert uploaded.status_code == 201
+    assert uploaded.json()["created"] is True
+    assert "storage_uri" not in uploaded.json()
+    assert repeated.status_code == 201
+    assert repeated.json()["asset_id"] == uploaded.json()["asset_id"]
+    assert repeated.json()["created"] is False
+    assert owner_detail.status_code == 200
+    assert foreign_detail.status_code == 404
+    assert invalid.status_code == 422
+    assert graph.status_code == 202, graph.text
+    assert run.status_code == 202, run.text
+    assert foreign_graph.status_code == 422
+    assert [
+        item.asset_id
+        for item in store.list_run_input_assets(
+            graph.json()["run_id"], expected_user_id="owner-a"
+        )
+    ] == [uploaded.json()["asset_id"]]
+    assert [
+        item.asset_id
+        for item in store.list_run_input_assets(
+            run.json()["run_id"], expected_user_id="owner-a"
+        )
+    ] == [uploaded.json()["asset_id"]]
+
+
+@pytest.mark.asyncio
+async def test_context_port_reads_only_assets_bound_to_current_run(tmp_path: Path) -> None:
+    store = PostgresTestStore(
+        tmp_path / "input-assets-port.db",
+        input_asset_directory=str(tmp_path / "runtime-input-assets-port"),
+    )
+    body = b"bound evidence"
+    digest = hashlib.sha256(body).hexdigest()
+
+    async def chunks():
+        yield body
+
+    stored = await store.input_asset_store.put_stream(
+        chunks(),
+        expected_sha256=digest,
+        expected_size=len(body),
+        max_bytes=1024,
+    )
+    asset, _ = store.create_input_asset(
+        asset_id="input_" + "a" * 32,
+        user_id="owner-a",
+        original_name="bound.txt",
+        media_type="text/plain",
+        content_sha256=digest,
+        byte_size=len(body),
+        storage_uri=stored.uri,
+        object_version=stored.object_version,
+        idempotency_key="asset-a",
+    )
+    store.create_runtime_run(
+        run_id="run-bound",
+        user_id="owner-a",
+        session_id="session-a",
+        agent_id="default",
+        kind="agent",
+        prompt="read",
+        options={},
+        input_asset_ids=[asset.asset_id],
+    )
+    store.create_runtime_run(
+        run_id="run-unbound",
+        user_id="owner-a",
+        session_id="session-b",
+        agent_id="default",
+        kind="agent",
+        prompt="read",
+        options={},
+    )
+    port = ContextPort(store)
+    resolved = await port.read_input_asset(
+        CapabilityContext(
+            user_id="owner-a", session_id="session-a", run_id="run-bound"
+        ),
+        asset_id=asset.asset_id,
+        max_bytes=1024,
+    )
+    with pytest.raises(PermissionError):
+        await port.read_input_asset(
+            CapabilityContext(
+                user_id="owner-a", session_id="session-b", run_id="run-unbound"
+            ),
+            asset_id=asset.asset_id,
+            max_bytes=1024,
+        )
+    assert resolved["body"] == body
+    with store._pool.connection() as connection:
+        events = connection.execute(
+            """SELECT event_type FROM runtime_input_asset_events
+               WHERE asset_id=%s ORDER BY event_id""",
+            (asset.asset_id,),
+        ).fetchall()
+    assert [event["event_type"] for event in events] == ["created", "bound", "read"]
+    assert any(
+        log.stage == "store.input_asset.read"
+        for log in store.list_runtime_logs("run-bound")
+    )
 
 
 def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
@@ -517,3 +701,45 @@ async def test_knowledge_index_request_compiles_to_capability_graph() -> None:
     assert runtime.spec.tasks[0].node_type == "capability"
     assert runtime.spec.tasks[0].capability.capability_id == "knowledge.index"
     assert runtime.spec.tasks[0].capability_input["source_version"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_index_request_freezes_runtime_input_assets() -> None:
+    store = _KnowledgeSubmissionStore()
+    runtime = _KnowledgeSubmissionRuntime()
+    service = object.__new__(KnowledgeAssetService)
+    service.store = store
+    service.runtime = runtime
+    context = RequestContext(
+        principal=Principal(subject="token:owner", user_id="owner-a", role="user"),
+        request_id="request-index-file",
+        idempotency_key="knowledge:file-a:1",
+    )
+    asset_id = "input_" + "a" * 32
+    await service.submit_index_request(
+        context,
+        {
+            "source_system": "joyhouse-product",
+            "source_id": "source-file-a",
+            "source_version": "1",
+            "source_generation": 1,
+            "source_status": "active",
+            "source_type": "file",
+            "title": "File A",
+            "content": "",
+            "source_url": "",
+            "attachments": [
+                {
+                    "reference_kind": "runtime_input",
+                    "asset_id": asset_id,
+                    "display_name": "file-a.txt",
+                    "media_type": "text/plain",
+                }
+            ],
+            "tags": [],
+            "collection_refs": [],
+            "content_sha256": "a" * 64,
+            "index_profile_id": "lexical-v1",
+        },
+    )
+    assert runtime.spec.input_asset_ids == [asset_id]

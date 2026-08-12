@@ -29,6 +29,7 @@ from joyhousebot.storage.external_configuration_store import ExternalConfigurati
 from joyhousebot.storage.graph_event_records import GraphEventWaitRecord
 from joyhousebot.storage.graph_patch_records import GraphPatchRecord
 from joyhousebot.storage.graph_revision_records import GraphRevisionRecord
+from joyhousebot.storage.input_asset_records import InputAssetRecord
 from joyhousebot.storage.observability_records import (
     ExecutionSpanRecord,
     ModelInvocationRecord,
@@ -467,6 +468,24 @@ class RuntimeStore(AgentTeamStore, AppPackStore, ExternalConfigurationStore, Pro
     def resolve_dynamic_input_request(self, **kwargs: Any) -> bool: ...
 
     def create_runtime_run(self, **kwargs: Any) -> tuple[RuntimeRunRecord, bool]: ...
+
+    def create_input_asset(self, **kwargs: Any) -> tuple[InputAssetRecord, bool]: ...
+
+    def get_input_asset(
+        self, asset_id: str, *, expected_user_id: str
+    ) -> InputAssetRecord | None: ...
+
+    def get_bound_input_asset(
+        self, asset_id: str, *, run_id: str, expected_user_id: str
+    ) -> InputAssetRecord | None: ...
+
+    def list_run_input_assets(
+        self, run_id: str, *, expected_user_id: str
+    ) -> list[InputAssetRecord]: ...
+
+    def audit_input_asset_read(
+        self, *, asset_id: str, run_id: str, user_id: str
+    ) -> None: ...
 
     def materialize_runtime_graph(self, **kwargs: Any) -> RuntimeRunRecord: ...
 

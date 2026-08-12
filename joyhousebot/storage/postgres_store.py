@@ -17,6 +17,7 @@ from typing import Any
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from joyhousebot.storage.binary_objects import LocalBinaryObjectStore
 from joyhousebot.storage.content_blobs import LocalContentBlobStore
 from joyhousebot.storage.json_codec import Jsonb
 from joyhousebot.storage.postgres_admins import PostgresAdminStoreMixin
@@ -51,6 +52,7 @@ from joyhousebot.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
 from joyhousebot.storage.postgres_graph_subruns import PostgresGraphSubrunStoreMixin
 from joyhousebot.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
 from joyhousebot.storage.postgres_graphs import PostgresGraphStoreMixin
+from joyhousebot.storage.postgres_input_assets import PostgresInputAssetStoreMixin
 from joyhousebot.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
 from joyhousebot.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
 from joyhousebot.storage.postgres_migrations import PostgresMigrationMixin
@@ -142,6 +144,7 @@ class PostgresRuntimeStore(
     PostgresGraphControlNodeStoreMixin,
     PostgresGraphActionStoreMixin,
     PostgresRunListingStoreMixin,
+    PostgresInputAssetStoreMixin,
     PostgresRunStoreMixin,
     PostgresRunCancelMixin,
     PostgresTaskStoreMixin,
@@ -170,6 +173,8 @@ class PostgresRuntimeStore(
         bootstrap_model: str = "unconfigured/model",
         blob_directory: str = "",
         blob_inline_threshold_bytes: int = 65536,
+        input_asset_directory: str = "~/.joyhousebot/input-assets",
+        input_asset_max_bytes: int = 25 * 1024 * 1024,
     ) -> None:
         if not database_url.strip():
             raise ValueError("PostgreSQL database_url is required")
@@ -180,6 +185,12 @@ class PostgresRuntimeStore(
             LocalContentBlobStore(blob_directory) if str(blob_directory).strip() else None
         )
         self.blob_inline_threshold_bytes = max(0, int(blob_inline_threshold_bytes))
+        self.input_asset_store = (
+            LocalBinaryObjectStore(input_asset_directory)
+            if str(input_asset_directory).strip()
+            else None
+        )
+        self.input_asset_max_bytes = max(1, int(input_asset_max_bytes))
         self._pool = ConnectionPool(
             conninfo=database_url,
             min_size=max(0, min_pool_size),

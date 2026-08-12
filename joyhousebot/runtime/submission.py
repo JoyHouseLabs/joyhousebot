@@ -88,6 +88,8 @@ class SubmissionMixin(GraphMaterializationMixin):
         ):
             if not value.strip():
                 raise ValueError(f"{name} is required")
+        if len(options.input_asset_ids) > 20:
+            raise ValueError("a Run may bind at most 20 input assets")
         top_level = not (options.root_run_id or options.parent_run_id or options.parent_task_id)
         profile = None
         if options.agent_revision_id:
@@ -213,6 +215,7 @@ class SubmissionMixin(GraphMaterializationMixin):
                 if top_level
                 else None
             ),
+            input_asset_ids=options.input_asset_ids,
         )
         if created:
             snapshot = await asyncio.to_thread(
@@ -397,6 +400,7 @@ class SubmissionMixin(GraphMaterializationMixin):
                 parent_run_id=spec.parent_run_id,
                 parent_task_id=spec.parent_task_id,
                 max_children_per_root=spec.max_children_per_root,
+                input_asset_ids=spec.input_asset_ids,
             )
         else:
             record, created = await asyncio.to_thread(
@@ -416,6 +420,7 @@ class SubmissionMixin(GraphMaterializationMixin):
                 max_children_per_root=spec.max_children_per_root,
                 max_active_per_user=max_active_per_user,
                 max_submissions_per_minute=max_submissions_per_minute,
+                input_asset_ids=spec.input_asset_ids,
             )
         if created:
             snapshot = await asyncio.to_thread(

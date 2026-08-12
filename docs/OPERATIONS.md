@@ -36,6 +36,11 @@ PostgreSQL 行。单机默认目录为 `~/.joyhousebot/runtime-blobs`；容器�
 视为一个恢复点；只恢复数据库会保留 URI 但无法读取正文，只恢复目录则不会恢复运行状态。运行数据 purge 使用
 两阶段、24 小时宽限的未引用对象回收；不要绕过 PostgreSQL 直接删除目录内容。
 
+`runtime.store.inputAssetDirectory`（默认 `~/.joyhousebot/input-assets`）保存上传后冻结到 Run 的二进制
+输入，`inputAssetMaxBytes` 默认 25 MiB。目录应为 `0700`，对象为 `0600`；多主机 API/Worker 必须使用共享、
+持久且可备份的挂载或对象存储适配器。Runtime 保留清理不会触碰非终态 Run 的输入，终态引用过期后先软删除
+数据库资产，再以 24 小时宽限回收无引用对象。不要把 Product Vault 目录直接配置成 Input Asset 目录。
+
 ## PostgreSQL 启动
 
 ```bash

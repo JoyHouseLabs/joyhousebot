@@ -46,6 +46,12 @@ def create_runtime_store(config: Any | None = None) -> RuntimeStore:
         blob_inline_threshold_bytes=int(
             getattr(settings, "blob_inline_threshold_bytes", 65536)
         ),
+        input_asset_directory=str(
+            getattr(settings, "input_asset_directory", "~/.joyhousebot/input-assets") or ""
+        ),
+        input_asset_max_bytes=int(
+            getattr(settings, "input_asset_max_bytes", 25 * 1024 * 1024)
+        ),
         bootstrap_model=(
             config.get_bootstrap_model()
             if config is not None and callable(getattr(config, "get_bootstrap_model", None))

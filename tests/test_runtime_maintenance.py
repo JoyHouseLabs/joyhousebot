@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -259,6 +260,73 @@ async def test_content_blob_gc_is_two_phase_and_follows_database_references(
 
     second = await store.purge_old_runtime_data(future_ms, future_ms)
     assert second["content_blobs"] == 1
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_input_asset_retention_preserves_active_runs_and_two_phase_deletes_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import joyhousebot.storage.postgres_maintenance as maintenance
+
+    monkeypatch.setattr(maintenance, "_CONTENT_BLOB_GC_GRACE_SECONDS", 0)
+    store = PostgresTestStore(
+        tmp_path / "input-asset-gc.db",
+        input_asset_directory=str(tmp_path / "input-assets"),
+    )
+    body = b"immutable private input"
+    digest = hashlib.sha256(body).hexdigest()
+
+    async def chunks():
+        yield body
+
+    stored = await store.input_asset_store.put_stream(
+        chunks(),
+        expected_sha256=digest,
+        expected_size=len(body),
+        max_bytes=1024,
+    )
+    asset, _ = store.create_input_asset(
+        asset_id="input-gc",
+        user_id="test-user",
+        original_name="private.txt",
+        media_type="text/plain",
+        content_sha256=digest,
+        byte_size=len(body),
+        storage_uri=stored.uri,
+        object_version=stored.object_version,
+        idempotency_key="input-gc",
+    )
+    run = store.create_runtime_run(
+        run_id="input-asset-gc",
+        user_id="test-user",
+        session_id="input-gc",
+        agent_id="default",
+        kind="agent",
+        prompt="read",
+        options={},
+        input_asset_ids=[asset.asset_id],
+    )[0]
+    with store._pool.connection() as connection, connection.transaction():
+        connection.execute(
+            "UPDATE runtime_input_assets SET created_at=clock_timestamp()-interval '2 days'"
+        )
+
+    future_ms = int(time.time() * 1000) + 60_000
+    active = await store.purge_old_runtime_data(future_ms)
+    assert active["runtime_input_assets"] == 0
+    path = store.input_asset_store._path(digest)
+    assert path.exists()
+
+    store.update_runtime_run(run.run_id, status="completed")
+    first = await store.purge_old_runtime_data(future_ms)
+    assert first["runtime_input_assets"] == 1
+    assert first["input_asset_objects"] == 0
+    assert path.exists()
+    assert store.get_input_asset(asset.asset_id, expected_user_id="test-user") is None
+
+    second = await store.purge_old_runtime_data(future_ms)
+    assert second["input_asset_objects"] == 1
     assert not path.exists()
 
 

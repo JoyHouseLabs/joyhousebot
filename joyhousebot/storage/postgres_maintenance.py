@@ -53,6 +53,7 @@ class PostgresMaintenanceStoreMixin:
             try:
                 counts: dict[str, int] = {}
                 referenced_blob_uris: set[str] = set()
+                referenced_input_uris: set[str] = set()
                 with self._pool.connection() as conn, conn.transaction():
                     migration_lock = conn.execute(
                         "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
@@ -139,6 +140,19 @@ class PostgresMaintenanceStoreMixin:
                         )
                         counts[table] = max(0, cursor.rowcount)
                     cursor = conn.execute(
+                        """UPDATE runtime_input_assets AS asset
+                           SET status='deleted', deleted_at=clock_timestamp()
+                           WHERE asset.status='ready' AND asset.created_at < %s
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM runtime_run_input_assets binding
+                                 JOIN runtime_runs run ON run.run_id=binding.run_id
+                                 WHERE binding.asset_id=asset.asset_id
+                                   AND run.status NOT IN (
+                                       'completed','failed','cancelled','timed_out'))""",
+                        (cutoff,),
+                    )
+                    counts["runtime_input_assets"] = max(0, cursor.rowcount)
+                    cursor = conn.execute(
                         """DELETE FROM capability_invocations
                            WHERE created_at < %s AND finished_at IS NOT NULL""",
                         (cutoff,),
@@ -173,10 +187,25 @@ class PostgresMaintenanceStoreMixin:
                                 for row in conn.execute(query).fetchall()
                                 if row["uri"]
                             )
+                    if getattr(self, "input_asset_store", None) is not None:
+                        referenced_input_uris.update(
+                            str(row["storage_uri"])
+                            for row in conn.execute(
+                                """SELECT storage_uri FROM runtime_input_assets
+                                   WHERE status='ready'"""
+                            ).fetchall()
+                            if row["storage_uri"]
+                        )
                 blob_store = getattr(self, "blob_store", None)
                 if blob_store is not None and hasattr(blob_store, "prune_unreferenced"):
                     counts["content_blobs"] = blob_store.prune_unreferenced(
                         referenced_blob_uris,
+                        min_unreferenced_seconds=_CONTENT_BLOB_GC_GRACE_SECONDS,
+                    )
+                input_store = getattr(self, "input_asset_store", None)
+                if input_store is not None and hasattr(input_store, "prune_unreferenced"):
+                    counts["input_asset_objects"] = input_store.prune_unreferenced(
+                        referenced_input_uris,
                         min_unreferenced_seconds=_CONTENT_BLOB_GC_GRACE_SECONDS,
                     )
                 return counts

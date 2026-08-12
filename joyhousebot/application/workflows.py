@@ -631,6 +631,7 @@ class WorkflowService:
                 fail_fast=policies["fail_fast"],
                 aggregate=policies["aggregate"],
                 aggregation_policy={"mode": "llm_synthesis", "version": "v1"},
+                input_asset_ids=list(value.get("input_asset_ids") or []),
                 idempotency_key=context.idempotency_key,
                 request_id=context.request_id,
                 tracker_id=context.tracker_id,

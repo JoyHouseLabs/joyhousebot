@@ -178,6 +178,7 @@ class PostgresMigrationMixin:
         """
         with self.schema_migration_lock():
             self.migrate()
+            self.migrate_input_assets()
             self.migrate_graph_revisions()
             self.migrate_graph_sagas()
             self.migrate_graph_patches()
