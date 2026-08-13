@@ -37,7 +37,16 @@ export interface RuntimeUsage {
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
+  billed_input_tokens?: number
+  billed_output_tokens?: number
+  billed_total_tokens?: number
   cost_usd?: number | null
+  model_invocations?: number
+  missing_usage_invocations?: number
+  partial_usage_invocations?: number
+  missing_billing_invocations?: number
+  usage_status?: 'exact' | 'partial' | 'missing'
+  billing_status?: 'exact' | 'partial' | 'missing'
   model?: string | null
 }
 

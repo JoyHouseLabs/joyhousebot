@@ -509,6 +509,19 @@ Worker、耗时、首 Token 时间和错误；模型调用另存 provider/model/
 供应商请求 ID、请求/响应 hash 与完整 payload。Tool Span 保存输入、结果和错误，Run 事件仍负责面向人的
 实时进度。
 
+模型用量使用双口径契约：`input_tokens/output_tokens/total_tokens` 表示本次执行完成的逻辑工作量，
+`billed_input_tokens/billed_output_tokens/billed_total_tokens` 表示本次真实 Provider 调用的计费量。精确缓存
+命中保留前者用于质量和容量分析，但后者与本次成本均为 0，避免重复计费。Provider 还能记录 cached、
+cache creation、reasoning 和 audio token 明细。`usage_source + usage_status` 区分 provider/cache/estimated/
+missing 与 exact/partial/missing；`billing_status + cost_source` 区分已知供应商成本、按冻结模型目录价格计算、
+不计费和未知成本。未知用量或成本不能伪装成“精确 0”。流式调用失败时，已收到的 Provider usage 以
+partial 保存；完全未收到时明确保存 missing。
+
+`model_invocations` 是模型用量和成本的权威账本。Run、Team、Workflow 与规划结果会汇总相同字段，便于执行
+预算和用户展示；`GET /v1/usage`、平台概览与安装级 App 用量直接聚合调用账本，不通过截断的 Run 列表或
+父子 Run 结果二次估算。模型目录中的每百万普通输入、输出、缓存读取和缓存写入价格随调用写入 pricing
+快照，后续调价不会改写历史成本。
+
 推理数据必须标记真实性级别：
 
 - `provider_native/exact`：供应商响应或流中实际返回的 thinking/reasoning 块；

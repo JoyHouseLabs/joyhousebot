@@ -19,6 +19,7 @@ from joyhousebot.domain.model_providers import (
     normalize_model_provider,
     validate_agent_model_policy,
 )
+from joyhousebot.providers.factory import create_model_provider
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -37,6 +38,9 @@ def _model(model_id: str = "openrouter/openai/gpt-test") -> dict:
         "supports_structured_output": True,
         "default_temperature": 0.2,
         "tags": ["test"],
+        "input_cost_per_million_tokens": 2.0,
+        "output_cost_per_million_tokens": 10.0,
+        "cached_input_cost_per_million_tokens": 0.5,
     }
 
 
@@ -275,12 +279,29 @@ async def test_worker_preheats_provider_and_applies_runtime_configuration(
         }
     )
     runtime_config = catalog._runtime_model_config(  # noqa: SLF001
-        {"openrouter": _configuration()}
+        {
+            "openrouter": {
+                **_configuration(),
+                "_revision_id": revision["revision_id"],
+            }
+        }
     )
-    provider = runtime_config.providers.settings["openrouter"]
-    assert provider.api_key == "provider-secret"
-    assert provider.api_base == "https://models.example.test/v1"
-    assert provider.request_timeout_seconds == 45
+    provider_config = runtime_config.providers.settings["openrouter"]
+    assert provider_config.api_key == "provider-secret"
+    assert provider_config.api_base == "https://models.example.test/v1"
+    assert provider_config.request_timeout_seconds == 45
+    assert provider_config.models[0]["output_cost_per_million_tokens"] == 10.0
+    runtime_provider = create_model_provider(
+        config=runtime_config,
+        model="openrouter/openai/gpt-test",
+    )
+    try:
+        assert runtime_provider.usage_pricing["input_cost_per_million_tokens"] == 2.0
+        assert runtime_provider.usage_pricing["output_cost_per_million_tokens"] == 10.0
+        assert runtime_provider.usage_pricing["model_id"] == "openrouter/openai/gpt-test"
+        assert runtime_provider.usage_pricing["provider_revision_id"] == revision["revision_id"]
+    finally:
+        await runtime_provider.close()
 
 
 def test_model_provider_api_never_returns_secret_values(tmp_path: Path) -> None:

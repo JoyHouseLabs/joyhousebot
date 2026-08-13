@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+from joyhousebot.providers.usage import cache_hit_usage, missing_usage
 from joyhousebot.runtime.context import get_current_run_context
 from joyhousebot.runtime.tracking import (
     append_trace_event_async,
@@ -240,7 +241,7 @@ async def model_cache_hit(
     tools: list[dict[str, Any]] | None,
     response_payload: dict[str, Any],
     reasoning_content: str | None,
-) -> None:
+) -> dict[str, Any]:
     request_id = await model_request_started(
         provider=provider,
         model=model,
@@ -251,12 +252,13 @@ async def model_cache_hit(
         request_url="cache://exact-model-response",
     )
     await model_first_token(request_id)
+    usage = cache_hit_usage(dict(response_payload.get("usage") or {}))
     await model_request_finished(
         request_id=request_id,
         model=model,
         operation=operation,
         status=str(response_payload.get("finish_reason") or "stop"),
-        usage=dict(response_payload.get("usage") or {}),
+        usage=usage,
         has_tool_calls=bool(response_payload.get("tool_calls")),
         provider_request_id=str(response_payload.get("source_invocation_id") or "") or None,
         response_payload=response_payload,
@@ -266,6 +268,7 @@ async def model_cache_hit(
         provider_block_type="cache",
         cache_status="hit",
     )
+    return usage
 
 
 async def model_request_failed(
@@ -276,6 +279,7 @@ async def model_request_failed(
     exc: Exception,
     provider_request_id: str | None = None,
     response_payload: Any = None,
+    usage: dict[str, Any] | None = None,
 ) -> None:
     tracking = get_request_tracking()
     error = {
@@ -283,6 +287,7 @@ async def model_request_failed(
         "message": redact_sensitive_text(str(exc)),
     }
     response_blob = None
+    recorded_usage = dict(usage or missing_usage())
     if tracking and request_id:
         response_blob = await _store_call(
             "put_trace_blob",
@@ -300,6 +305,8 @@ async def model_request_failed(
             status="failed",
             finish_reason="error",
             reasoning_availability="unavailable",
+            usage=recorded_usage,
+            cost_usd=float(recorded_usage.get("cost_usd") or 0.0),
             error=error,
         )
     await append_trace_event_async(
@@ -310,5 +317,10 @@ async def model_request_failed(
         operation=operation,
         stage="error",
         status="failed",
-        data={"model": model, **error, "invocation_id": request_id},
+        data={
+            "model": model,
+            **error,
+            "invocation_id": request_id,
+            "usage": recorded_usage,
+        },
     )

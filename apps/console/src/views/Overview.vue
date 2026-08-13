@@ -35,7 +35,7 @@
         <span>平台 Runs</span><strong>{{ platform.runs }}</strong><small>{{ platform.active_runs }} 个正在执行</small>
       </article>
       <article class="metric-card">
-        <span>Token 用量</span><strong>{{ compactNumber(platform.usage.total_tokens) }}</strong><small>输入 {{ compactNumber(platform.usage.input_tokens) }} · 输出 {{ compactNumber(platform.usage.output_tokens) }}</small>
+        <span>工作 / 计费 Token</span><strong>{{ compactNumber(platform.usage.total_tokens) }} / {{ compactNumber(platform.usage.billed_total_tokens) }}</strong><small>计费输入 {{ compactNumber(platform.usage.billed_input_tokens) }} · 输出 {{ compactNumber(platform.usage.billed_output_tokens) }}</small>
       </article>
       <article class="metric-card">
         <span>用户 / 会话</span><strong>{{ platform.users }}</strong><small>{{ platform.sessions }} 个会话</small>
@@ -134,7 +134,7 @@ const lastUpdated = ref<Date | null>(null)
 const runs = ref<RuntimeRun[]>([])
 const schedules = ref<ScheduleItem[]>([])
 const workerList = ref<RuntimeWorker[]>([])
-const platform = reactive<AdminOverview>({ runs: 0, users: 0, sessions: 0, active_runs: 0, workers: 0, healthy_workers: 0, statuses: {}, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, cost_usd: 0 } })
+const platform = reactive<AdminOverview>({ runs: 0, users: 0, sessions: 0, active_runs: 0, workers: 0, healthy_workers: 0, statuses: {}, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, billed_input_tokens: 0, billed_output_tokens: 0, billed_total_tokens: 0, cost_usd: 0, missing_usage_invocations: 0, missing_billing_invocations: 0 } })
 const identity = reactive<RuntimeIdentity>({
   subject: '',
   user_id: runtimeUserId,

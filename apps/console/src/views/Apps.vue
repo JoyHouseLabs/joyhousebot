@@ -64,8 +64,8 @@
       <div v-if="appUsage" class="usage-grid">
         <article><span>RUNS · 30D</span><strong>{{ appUsage.totals.runs }}</strong></article>
         <article><span>MODEL CALLS</span><strong>{{ appUsage.totals.model_invocations }}</strong></article>
-        <article><span>TOKENS</span><strong>{{ appUsage.totals.input_tokens + appUsage.totals.output_tokens }}</strong></article>
-        <article><span>MODEL COST</span><strong>${{ appUsage.totals.model_cost_usd.toFixed(4) }}</strong></article>
+        <article><span>WORK / BILLED TOKENS</span><strong>{{ appUsage.totals.input_tokens + appUsage.totals.output_tokens }} / {{ appUsage.totals.billed_input_tokens + appUsage.totals.billed_output_tokens }}</strong></article>
+        <article><span>MODEL COST</span><strong>{{ appCostLabel(appUsage) }}</strong></article>
       </div>
       <div class="governance-grid">
         <article class="governance-card">
@@ -323,6 +323,7 @@ function draftManifest() {
     metering: [],
   }
 }
+function appCostLabel(value: AppUsage) { const status = value.totals.billing_status; if (status === 'missing') return '成本未知'; return `$${value.totals.model_cost_usd.toFixed(4)}${status === 'partial' ? '（部分）' : ''}` }
 function newDraft() { selected.value = null; validation.value = null; manifestText.value = JSON.stringify(draftManifest(), null, 2) }
 function selectRelease(release: AppRelease) { selected.value = release; validation.value = release.validation_report?.valid === undefined ? null : release.validation_report as AppValidationReport; manifestText.value = JSON.stringify(release.manifest, null, 2) }
 function parseManifest() { const value = JSON.parse(manifestText.value); if (!value.app_id || !value.version) throw new Error('manifest 必须包含 app_id 和 version'); return value }

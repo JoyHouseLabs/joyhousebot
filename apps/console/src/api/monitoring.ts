@@ -8,7 +8,16 @@ export interface RuntimeUsageSummary {
   input_tokens: number
   output_tokens: number
   total_tokens: number
+  billed_input_tokens: number
+  billed_output_tokens: number
+  billed_total_tokens: number
   cost_usd: number
+  model_invocations: number
+  missing_usage_invocations: number
+  partial_usage_invocations: number
+  missing_billing_invocations: number
+  usage_status: 'exact' | 'partial' | 'missing'
+  billing_status: 'exact' | 'partial' | 'missing'
 }
 
 export interface RuntimeIdentity {
@@ -58,7 +67,7 @@ export interface OperationalMetrics {
   runs: Record<string, number>
   tasks: Record<string, number>
   workers: Record<string, number>
-  providers: Array<{ provider: string; model: string; status: string; count: number; avg_duration_ms: number; avg_ttft_ms: number; p95_duration_ms: number; p95_ttft_ms: number; cost_usd: number }>
+  providers: Array<{ provider: string; model: string; status: string; count: number; avg_duration_ms: number; avg_ttft_ms: number; p95_duration_ms: number; p95_ttft_ms: number; input_tokens: number; output_tokens: number; billed_input_tokens: number; billed_output_tokens: number; missing_usage_invocations: number; missing_billing_invocations: number; cost_usd: number }>
   channels: Array<{ channel: string; status: string; count: number }>
   queue: { queued: number; oldest_age_seconds: number; expired_leases: number; retried_tasks: number }
   workers_stale: number

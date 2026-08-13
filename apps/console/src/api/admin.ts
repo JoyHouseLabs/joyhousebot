@@ -20,7 +20,7 @@ export interface AdminOverview {
   workers: number
   healthy_workers: number
   statuses: Record<string, number>
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number; cost_usd: number }
+  usage: { input_tokens: number; output_tokens: number; total_tokens: number; billed_input_tokens: number; billed_output_tokens: number; billed_total_tokens: number; cost_usd: number; missing_usage_invocations: number; missing_billing_invocations: number }
 }
 
 export interface PlatformAdmin {
@@ -234,7 +234,7 @@ export interface ModelInvocation {
   status: string
   finish_reason?: string | null
   reasoning_availability: string
-  usage: Record<string, number>
+  usage: Record<string, unknown>
   cost_usd: number
   cache_status: string
   error?: Record<string, unknown> | null

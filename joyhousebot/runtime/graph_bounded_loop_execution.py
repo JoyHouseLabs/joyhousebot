@@ -14,7 +14,7 @@ from joyhousebot.orchestration.bounded_loop import (
     select_next_loop_state,
 )
 from joyhousebot.orchestration.task_graph import render_value
-from joyhousebot.runtime.models import AgentEvent, EventType
+from joyhousebot.runtime.models import AgentEvent, AgentUsage, EventType
 
 _TERMINAL = {"completed", "failed", "cancelled", "timed_out", "skipped"}
 
@@ -140,23 +140,10 @@ def _loop_child(
 
 
 def _usage(children: list[Any]) -> dict[str, Any]:
-    input_tokens = sum(
-        int((dict(child.result or {}).get("usage") or {}).get("input_tokens") or 0)
-        for child in children
-    )
-    output_tokens = sum(
-        int((dict(child.result or {}).get("usage") or {}).get("output_tokens") or 0)
-        for child in children
-    )
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
-        "cost_usd": sum(
-            float((dict(child.result or {}).get("usage") or {}).get("cost_usd") or 0.0)
-            for child in children
-        ),
-    }
+    usage = AgentUsage()
+    for child in children:
+        usage.add(AgentUsage.from_dict(dict(child.result or {}).get("usage")))
+    return usage.to_dict()
 
 
 async def _publish_iteration_ledger(runtime: Any, run: Any, parent: Any, children: list[Any]) -> None:

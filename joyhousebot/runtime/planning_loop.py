@@ -422,15 +422,8 @@ async def _planning_usage(store: Any, run_id: str) -> AgentUsage:
         if not str(turn.scope).startswith(f"{_SCOPE_PREFIX}:"):
             continue
         value = dict(turn.usage or {})
-        usage.input_tokens += int(value.get("input_tokens", value.get("prompt_tokens", 0)) or 0)
-        usage.output_tokens += int(
-            value.get("output_tokens", value.get("completion_tokens", 0)) or 0
-        )
-        usage.total_tokens = usage.input_tokens + usage.output_tokens
-        usage.cost_usd = float(usage.cost_usd or 0) + float(
-            value.get("cost_usd", value.get("total_cost", value.get("cost", 0))) or 0
-        )
-        usage.model = turn.model or usage.model
+        value["model"] = turn.model
+        usage.add(AgentUsage.from_dict(value))
     return usage
 
 
@@ -448,17 +441,12 @@ def _budget_reason(options: AgentOptions, usage: AgentUsage) -> str | None:
         return "maximum input token budget exceeded during planning"
     if options.max_output_tokens is not None and usage.output_tokens > options.max_output_tokens:
         return "maximum output token budget exceeded during planning"
+    if options.max_cost_usd is not None and usage.missing_billing_invocations:
+        return "maximum cost budget cannot be enforced because planning billing is missing"
     if options.max_cost_usd is not None and float(usage.cost_usd or 0) > options.max_cost_usd:
         return "maximum cost budget exceeded during planning"
     return None
 
 
 def _usage_from_dict(value: Any) -> AgentUsage:
-    source = dict(value or {})
-    return AgentUsage(
-        input_tokens=int(source.get("input_tokens") or 0),
-        output_tokens=int(source.get("output_tokens") or 0),
-        total_tokens=int(source.get("total_tokens") or 0),
-        cost_usd=(float(source["cost_usd"]) if source.get("cost_usd") is not None else None),
-        model=str(source.get("model") or "") or None,
-    )
+    return AgentUsage.from_dict(value)

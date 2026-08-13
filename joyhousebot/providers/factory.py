@@ -55,6 +55,30 @@ def create_model_provider(
         raise RuntimeError(
             f"model provider extension for {name!r} is not installed or failed to load"
         )
+    catalog_item = next(
+        (
+            dict(item)
+            for item in (getattr(provider_config, "models", None) or [])
+            if str(item.get("model_id") or "") == str(model)
+        ),
+        {},
+    )
+    pricing_keys = (
+        "input_cost_per_million_tokens",
+        "output_cost_per_million_tokens",
+        "cached_input_cost_per_million_tokens",
+        "cache_creation_input_cost_per_million_tokens",
+    )
+    usage_pricing = {
+        key: catalog_item.get(key)
+        for key in pricing_keys
+        if catalog_item.get(key) is not None
+    }
+    if catalog_item:
+        usage_pricing["model_id"] = str(catalog_item.get("model_id") or model)
+    revision_id = getattr(provider_config, "revision_id", None)
+    if revision_id:
+        usage_pricing["provider_revision_id"] = str(revision_id)
     return extension.factory(
         ModelProviderBuildRequest(
             provider_name=name,
@@ -63,6 +87,7 @@ def create_model_provider(
             default_model=model,
             extra_headers=headers,
             reasoning_options=dict(model_policy or {}),
+            usage_pricing=usage_pricing,
             request_timeout_seconds=float(request_timeout_seconds),
             client=client,
         )

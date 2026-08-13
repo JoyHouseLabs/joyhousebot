@@ -22,10 +22,13 @@ from joyhousebot.extension_sdk.models import (
     ProviderHTTPError,
     ToolCallRequest,
     error_metadata,
+    missing_usage,
     model_first_token,
     model_request_failed,
     model_request_finished,
     model_request_started,
+    normalized_usage,
+    partial_usage,
     restore_tool_name,
     sanitize_messages,
     sanitize_tools,
@@ -34,7 +37,7 @@ from joyhousebot.extension_sdk.models import (
 
 OPENAI_COMPATIBLE_EXTENSION_MANIFEST = ExtensionManifest(
     extension_id="provider-openai-compatible",
-    version="0.1.2",
+    version="0.1.3",
     name="JoyhouseBot OpenAI-compatible Provider",
     extension_types=("model_provider",),
     description="OpenAI-compatible chat completions, streaming, tools and reasoning adapter.",
@@ -119,6 +122,7 @@ class OpenAICompatibleProvider(LLMProvider):
         provider_name: str,
         extra_headers: dict[str, str] | None = None,
         reasoning_options: dict[str, Any] | None = None,
+        usage_pricing: dict[str, Any] | None = None,
         request_timeout_seconds: float = 120.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -127,6 +131,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.provider_name = provider_name
         self.extra_headers = dict(extra_headers or {})
         self.reasoning_options = dict(reasoning_options or {})
+        self.usage_pricing = dict(usage_pricing or {})
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(float(request_timeout_seconds), connect=10.0),
@@ -250,6 +255,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             return parsed
         except Exception as exc:
+            failed_usage = self._error_usage(exc)
             await model_request_failed(
                 request_id=request_id,
                 model=resolved_model,
@@ -257,10 +263,12 @@ class OpenAICompatibleProvider(LLMProvider):
                 exc=exc,
                 provider_request_id=getattr(exc, "provider_request_id", None),
                 response_payload=getattr(exc, "raw_response", None),
+                usage=failed_usage,
             )
             return LLMResponse(
                 content=user_friendly_error(exc, model=self._model(model)),
                 finish_reason="error",
+                usage=failed_usage,
                 **error_metadata(exc),
             )
 
@@ -323,6 +331,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 usage=usage,
             )
         except Exception as exc:
+            failed_usage = self._error_usage(exc)
             await model_request_failed(
                 request_id=request_id,
                 model=resolved_model,
@@ -330,6 +339,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 exc=exc,
                 provider_request_id=getattr(exc, "provider_request_id", None),
                 response_payload=getattr(exc, "raw_response", None),
+                usage=failed_usage,
             )
             raise
 
@@ -363,7 +373,7 @@ class OpenAICompatibleProvider(LLMProvider):
         reasoning_parts: list[str] = []
         calls: dict[int, dict[str, str]] = {}
         finish_reason = "stop"
-        usage: dict[str, int] = {}
+        usage: dict[str, Any] = missing_usage()
         raw_events: list[dict[str, Any]] = []
         first_token_seen = False
         try:
@@ -379,7 +389,8 @@ class OpenAICompatibleProvider(LLMProvider):
                         continue
                     event = json.loads(raw)
                     raw_events.append(event)
-                    usage = self._usage(event.get("usage")) or usage
+                    if isinstance(event.get("usage"), dict):
+                        usage = self._usage(event["usage"])
                     choices = event.get("choices") or []
                     if not choices:
                         continue
@@ -432,19 +443,28 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             yield "done", final
         except Exception as exc:
+            failed_usage = partial_usage(usage)
+            if failed_usage.get("usage_status") == "missing":
+                failed_usage = self._error_usage(exc)
+            raw_error = getattr(exc, "raw_response", None)
+            failure_payload: Any = {"stream_events": raw_events}
+            if raw_error is not None:
+                failure_payload["provider_error"] = raw_error
             await model_request_failed(
                 request_id=request_id,
                 model=resolved_model,
                 operation="chat.completion.stream",
                 exc=exc,
                 provider_request_id=getattr(exc, "provider_request_id", None),
-                response_payload=getattr(exc, "raw_response", None),
+                response_payload=failure_payload,
+                usage=failed_usage,
             )
             yield (
                 "done",
                 LLMResponse(
                     content=user_friendly_error(exc, model=self._model(model)),
                     finish_reason="error",
+                    usage=failed_usage,
                     **error_metadata(exc),
                 ),
             )
@@ -473,8 +493,7 @@ class OpenAICompatibleProvider(LLMProvider):
             or response.headers.get("request-id"),
         )
 
-    @classmethod
-    def _parse_response(cls, value: dict[str, Any], aliases: dict[str, str]) -> LLMResponse:
+    def _parse_response(self, value: dict[str, Any], aliases: dict[str, str]) -> LLMResponse:
         choices = value.get("choices") or []
         if not choices:
             raise ProviderHTTPError(502, "provider returned no choices")
@@ -500,7 +519,7 @@ class OpenAICompatibleProvider(LLMProvider):
             content=message.get("content"),
             tool_calls=calls,
             finish_reason=str(choice.get("finish_reason") or "stop"),
-            usage=cls._usage(value.get("usage")),
+            usage=self._usage(value.get("usage")),
             reasoning_content=message.get("reasoning_content") or message.get("reasoning"),
             reasoning_blocks=reasoning_blocks,
         )
@@ -522,17 +541,48 @@ class OpenAICompatibleProvider(LLMProvider):
             )
         return result
 
-    @staticmethod
-    def _usage(value: Any) -> dict[str, int]:
+    def _usage(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, dict):
-            return {}
+            return missing_usage()
         input_tokens = int(value.get("prompt_tokens") or value.get("input_tokens") or 0)
         output_tokens = int(value.get("completion_tokens") or value.get("output_tokens") or 0)
-        return {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": int(value.get("total_tokens") or input_tokens + output_tokens),
-        }
+        raw_prompt_details = value.get("prompt_tokens_details")
+        raw_completion_details = value.get("completion_tokens_details")
+        prompt_details = (
+            dict(raw_prompt_details) if isinstance(raw_prompt_details, dict) else {}
+        )
+        completion_details = (
+            dict(raw_completion_details)
+            if isinstance(raw_completion_details, dict)
+            else {}
+        )
+        has_counts = any(
+            key in value
+            for key in ("prompt_tokens", "input_tokens", "completion_tokens", "output_tokens", "total_tokens")
+        )
+        return normalized_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            billed_input_tokens=input_tokens,
+            billed_output_tokens=output_tokens,
+            cached_input_tokens=prompt_details.get("cached_tokens", value.get("cached_tokens", 0)),
+            reasoning_output_tokens=completion_details.get(
+                "reasoning_tokens", value.get("reasoning_tokens", 0)
+            ),
+            audio_input_tokens=prompt_details.get("audio_tokens", 0),
+            audio_output_tokens=completion_details.get("audio_tokens", 0),
+            usage_source="provider" if has_counts else "missing",
+            usage_status="exact" if has_counts else "missing",
+            provider_cost_usd=value.get(
+                "cost", value.get("cost_usd", value.get("total_cost"))
+            ),
+            pricing=self.usage_pricing,
+        )
+
+    def _error_usage(self, exc: Exception) -> dict[str, Any]:
+        raw = getattr(exc, "raw_response", None)
+        value = raw.get("usage") if isinstance(raw, dict) else None
+        return partial_usage(self._usage(value)) if isinstance(value, dict) else missing_usage()
 
     async def close(self) -> None:
         if self._owns_client:
@@ -547,6 +597,7 @@ def _create_provider(request: ModelProviderBuildRequest) -> OpenAICompatibleProv
         provider_name=request.provider_name,
         extra_headers=request.extra_headers,
         reasoning_options=request.reasoning_options,
+        usage_pricing=request.usage_pricing,
         request_timeout_seconds=request.request_timeout_seconds,
         client=request.client,
     )

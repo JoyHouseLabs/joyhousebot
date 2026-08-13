@@ -96,21 +96,46 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 """SELECT count(*) AS runs,count(DISTINCT user_id) AS users,
                           count(DISTINCT (user_id,agent_id,session_id)) AS sessions,
                           count(*) FILTER (WHERE status IN ('queued','running','planning'))
-                              AS active_runs,
-                          COALESCE(sum((result->'usage'->>'input_tokens')::bigint),0)
-                              AS input_tokens,
-                          COALESCE(sum((result->'usage'->>'output_tokens')::bigint),0)
-                              AS output_tokens,
-                          COALESCE(sum((result->'usage'->>'cost_usd')::double precision),0)
-                              AS cost_usd
+                              AS active_runs
                    FROM runtime_runs"""
+            ).fetchone()
+            usage_totals = conn.execute(
+                """SELECT COALESCE(SUM((usage->>'input_tokens')::bigint),0)
+                              AS input_tokens,
+                          COALESCE(SUM((usage->>'output_tokens')::bigint),0)
+                              AS output_tokens,
+                          COALESCE(SUM(COALESCE(
+                              (usage->>'billed_input_tokens')::bigint,
+                              CASE WHEN cache_status='hit' THEN 0
+                                   ELSE (usage->>'input_tokens')::bigint END)),0)
+                              AS billed_input_tokens,
+                          COALESCE(SUM(COALESCE(
+                              (usage->>'billed_output_tokens')::bigint,
+                              CASE WHEN cache_status='hit' THEN 0
+                                   ELSE (usage->>'output_tokens')::bigint END)),0)
+                              AS billed_output_tokens,
+                          COALESCE(SUM(cost_usd),0) AS cost_usd,
+                          COUNT(*) FILTER (WHERE
+                              COALESCE(usage->>'usage_status',CASE
+                                  WHEN usage ? 'input_tokens' OR usage ? 'output_tokens'
+                                      THEN 'exact' ELSE 'missing' END)='missing')
+                              AS missing_usage_invocations,
+                          COUNT(*) FILTER (WHERE
+                              COALESCE(usage->>'billing_status',CASE
+                                  WHEN cache_status='hit' THEN 'not_billed'
+                                  WHEN cost_usd<>0 THEN 'exact'
+                                  ELSE 'missing' END)='missing')
+                              AS missing_billing_invocations
+                   FROM model_invocations"""
             ).fetchone()
             statuses = conn.execute(
                 "SELECT status,count(*) AS count FROM runtime_runs GROUP BY status"
             ).fetchall()
         workers = self.list_runtime_workers(limit=5000)
-        input_tokens = int(totals["input_tokens"] or 0)
-        output_tokens = int(totals["output_tokens"] or 0)
+        input_tokens = int(usage_totals["input_tokens"] or 0)
+        output_tokens = int(usage_totals["output_tokens"] or 0)
+        billed_input = int(usage_totals["billed_input_tokens"] or 0)
+        billed_output = int(usage_totals["billed_output_tokens"] or 0)
         return {
             "runs": int(totals["runs"]),
             "users": int(totals["users"]),
@@ -123,7 +148,16 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": input_tokens + output_tokens,
-                "cost_usd": float(totals["cost_usd"] or 0),
+                "billed_input_tokens": billed_input,
+                "billed_output_tokens": billed_output,
+                "billed_total_tokens": billed_input + billed_output,
+                "cost_usd": float(usage_totals["cost_usd"] or 0),
+                "missing_usage_invocations": int(
+                    usage_totals["missing_usage_invocations"] or 0
+                ),
+                "missing_billing_invocations": int(
+                    usage_totals["missing_billing_invocations"] or 0
+                ),
             },
         }
 

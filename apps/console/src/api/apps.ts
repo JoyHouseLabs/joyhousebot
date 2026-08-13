@@ -157,10 +157,10 @@ export interface AppUsage {
   app_id: string
   version: string
   period: { since: string; until: string }
-  totals: { runs: number; model_invocations: number; input_tokens: number; output_tokens: number; model_cost_usd: number }
+  totals: { runs: number; model_invocations: number; input_tokens: number; output_tokens: number; billed_input_tokens: number; billed_output_tokens: number; missing_usage_invocations: number; partial_usage_invocations: number; missing_billing_invocations: number; usage_status: 'exact' | 'partial' | 'missing'; billing_status: 'exact' | 'partial' | 'missing'; model_cost_usd: number }
   statuses: Record<string, number>
   entrypoints: Array<{ entrypoint_id: string; runs: number; statuses: Record<string, number> }>
-  models: Array<{ provider: string; model: string; invocations: number; input_tokens: number; output_tokens: number; cost_usd: number }>
+  models: Array<{ provider: string; model: string; invocations: number; input_tokens: number; output_tokens: number; billed_input_tokens: number; billed_output_tokens: number; missing_usage_invocations: number; partial_usage_invocations: number; missing_billing_invocations: number; cost_usd: number }>
   declared_meters: Array<Record<string, any>>
 }
 

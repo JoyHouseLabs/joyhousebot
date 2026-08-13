@@ -26,6 +26,9 @@ export interface ModelCatalogItem {
   tags: string[]
   dimensions: number
   input_cost_per_million_tokens?: number | null
+  output_cost_per_million_tokens?: number | null
+  cached_input_cost_per_million_tokens?: number | null
+  cache_creation_input_cost_per_million_tokens?: number | null
 }
 
 export interface ModelProviderConfiguration {

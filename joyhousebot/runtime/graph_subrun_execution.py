@@ -23,14 +23,7 @@ def _child_run_id(task: Any) -> str:
 
 
 def _usage(value: dict[str, Any]) -> AgentUsage:
-    usage = dict(value.get("usage") or {})
-    return AgentUsage(
-        input_tokens=int(usage.get("input_tokens") or 0),
-        output_tokens=int(usage.get("output_tokens") or 0),
-        total_tokens=int(usage.get("total_tokens") or 0),
-        cost_usd=(float(usage["cost_usd"]) if usage.get("cost_usd") is not None else None),
-        model=(str(usage["model"]) if usage.get("model") else None),
-    )
+    return AgentUsage.from_dict(value.get("usage"))
 
 
 async def _submit_team_child(

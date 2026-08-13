@@ -20,10 +20,13 @@ from joyhousebot.extension_sdk.models import (
     ProviderHTTPError,
     ToolCallRequest,
     error_metadata,
+    missing_usage,
     model_first_token,
     model_request_failed,
     model_request_finished,
     model_request_started,
+    normalized_usage,
+    partial_usage,
     restore_tool_name,
     sanitize_tools,
     user_friendly_error,
@@ -31,7 +34,7 @@ from joyhousebot.extension_sdk.models import (
 
 ANTHROPIC_EXTENSION_MANIFEST = ExtensionManifest(
     extension_id="provider-anthropic",
-    version="0.1.0",
+    version="0.1.1",
     name="JoyhouseBot Anthropic Provider",
     extension_types=("model_provider",),
     description="Anthropic Messages API, streaming, tools and native reasoning adapter.",
@@ -77,6 +80,7 @@ class AnthropicProvider(LLMProvider):
         default_model: str,
         extra_headers: dict[str, str] | None = None,
         reasoning_options: dict[str, Any] | None = None,
+        usage_pricing: dict[str, Any] | None = None,
         request_timeout_seconds: float = 120.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -84,6 +88,7 @@ class AnthropicProvider(LLMProvider):
         self.default_model = default_model
         self.extra_headers = dict(extra_headers or {})
         self.reasoning_options = dict(reasoning_options or {})
+        self.usage_pricing = dict(usage_pricing or {})
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(float(request_timeout_seconds), connect=10.0),
@@ -199,6 +204,7 @@ class AnthropicProvider(LLMProvider):
             )
             return parsed
         except Exception as exc:
+            failed_usage = self._error_usage(exc)
             await model_request_failed(
                 request_id=request_id,
                 model=resolved_model,
@@ -206,10 +212,12 @@ class AnthropicProvider(LLMProvider):
                 exc=exc,
                 provider_request_id=getattr(exc, "provider_request_id", None),
                 response_payload=getattr(exc, "raw_response", None),
+                usage=failed_usage,
             )
             return LLMResponse(
                 content=user_friendly_error(exc, model=self._model(model)),
                 finish_reason="error",
+                usage=failed_usage,
                 **error_metadata(exc),
             )
 
@@ -244,7 +252,7 @@ class AnthropicProvider(LLMProvider):
         reasoning_blocks: dict[int, dict[str, Any]] = {}
         tool_blocks: dict[int, dict[str, Any]] = {}
         stop_reason = "end_turn"
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        raw_usage: dict[str, int] = {}
         raw_events: list[dict[str, Any]] = []
         first_token_seen = False
         try:
@@ -262,7 +270,9 @@ class AnthropicProvider(LLMProvider):
                     raw_events.append(event)
                     event_type = event.get("type")
                     if event_type == "message_start":
-                        self._merge_usage(usage, (event.get("message") or {}).get("usage"))
+                        self._merge_raw_usage(
+                            raw_usage, (event.get("message") or {}).get("usage")
+                        )
                     elif event_type == "content_block_start":
                         block = event.get("content_block") or {}
                         if block.get("type") == "tool_use":
@@ -317,7 +327,8 @@ class AnthropicProvider(LLMProvider):
                         stop_reason = str(
                             (event.get("delta") or {}).get("stop_reason") or stop_reason
                         )
-                        self._merge_usage(usage, event.get("usage"))
+                        self._merge_raw_usage(raw_usage, event.get("usage"))
+            usage = self._usage(raw_usage)
             final = LLMResponse(
                 content="".join(text_parts) or None,
                 tool_calls=self._stream_tool_calls(tool_blocks, aliases),
@@ -342,19 +353,28 @@ class AnthropicProvider(LLMProvider):
             )
             yield "done", final
         except Exception as exc:
+            failed_usage = partial_usage(self._usage(raw_usage))
+            if failed_usage.get("usage_status") == "missing":
+                failed_usage = self._error_usage(exc)
+            raw_error = getattr(exc, "raw_response", None)
+            failure_payload: Any = {"stream_events": raw_events}
+            if raw_error is not None:
+                failure_payload["provider_error"] = raw_error
             await model_request_failed(
                 request_id=request_id,
                 model=resolved_model,
                 operation="messages.stream",
                 exc=exc,
                 provider_request_id=getattr(exc, "provider_request_id", None),
-                response_payload=getattr(exc, "raw_response", None),
+                response_payload=failure_payload,
+                usage=failed_usage,
             )
             yield (
                 "done",
                 LLMResponse(
                     content=user_friendly_error(exc, model=self._model(model)),
                     finish_reason="error",
+                    usage=failed_usage,
                     **error_metadata(exc),
                 ),
             )
@@ -420,8 +440,7 @@ class AnthropicProvider(LLMProvider):
             )
         return result, "\n\n".join(part for part in system_parts if part)
 
-    @classmethod
-    def _parse_response(cls, value: dict[str, Any], aliases: dict[str, str]) -> LLMResponse:
+    def _parse_response(self, value: dict[str, Any], aliases: dict[str, str]) -> LLMResponse:
         text_parts = []
         reasoning_parts = []
         reasoning_blocks = []
@@ -442,8 +461,7 @@ class AnthropicProvider(LLMProvider):
                         arguments=dict(block.get("input") or {}),
                     )
                 )
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        cls._merge_usage(usage, value.get("usage"))
+        usage = self._usage(value.get("usage"))
         stop_reason = str(value.get("stop_reason") or "end_turn")
         return LLMResponse(
             content="".join(text_parts) or None,
@@ -472,12 +490,53 @@ class AnthropicProvider(LLMProvider):
         return result
 
     @staticmethod
-    def _merge_usage(target: dict[str, int], value: Any) -> None:
+    def _merge_raw_usage(target: dict[str, int], value: Any) -> None:
         if not isinstance(value, dict):
             return
-        target["input_tokens"] += int(value.get("input_tokens") or 0)
-        target["output_tokens"] += int(value.get("output_tokens") or 0)
-        target["total_tokens"] = target["input_tokens"] + target["output_tokens"]
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ):
+            if key in value:
+                target[key] = max(int(target.get(key) or 0), int(value.get(key) or 0))
+
+    def _usage(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return missing_usage()
+        uncached = int(value.get("input_tokens") or 0)
+        cache_creation = int(value.get("cache_creation_input_tokens") or 0)
+        cache_read = int(value.get("cache_read_input_tokens") or 0)
+        output = int(value.get("output_tokens") or 0)
+        has_counts = any(
+            key in value
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+        )
+        return normalized_usage(
+            input_tokens=uncached + cache_creation + cache_read,
+            output_tokens=output,
+            billed_input_tokens=uncached + cache_creation + cache_read,
+            billed_output_tokens=output,
+            cached_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_creation,
+            usage_source="provider" if has_counts else "missing",
+            usage_status="exact" if has_counts else "missing",
+            provider_cost_usd=value.get(
+                "cost", value.get("cost_usd", value.get("total_cost"))
+            ),
+            pricing=self.usage_pricing,
+        )
+
+    def _error_usage(self, exc: Exception) -> dict[str, Any]:
+        raw = getattr(exc, "raw_response", None)
+        value = raw.get("usage") if isinstance(raw, dict) else None
+        return partial_usage(self._usage(value)) if isinstance(value, dict) else missing_usage()
 
     @staticmethod
     async def _raise_for_status(response: httpx.Response) -> None:
@@ -515,6 +574,7 @@ def _create_provider(request: ModelProviderBuildRequest) -> AnthropicProvider:
         default_model=request.default_model,
         extra_headers=request.extra_headers,
         reasoning_options=request.reasoning_options,
+        usage_pricing=request.usage_pricing,
         request_timeout_seconds=request.request_timeout_seconds,
         client=request.client,
     )

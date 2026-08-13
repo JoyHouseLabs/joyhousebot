@@ -51,7 +51,7 @@
         <div class="trace-metrics">
           <div><span>模型调用</span><strong>{{ modelInvocations.length }}</strong></div>
           <div><span>模型耗时</span><strong>{{ totalModelDuration.toLocaleString() }} ms</strong></div>
-          <div><span>Token</span><strong>{{ totalModelTokens.toLocaleString() }}</strong></div>
+          <div><span>工作 / 计费 Token</span><strong>{{ totalModelTokens.toLocaleString() }} / {{ totalBilledTokens.toLocaleString() }}</strong></div>
           <div><span>推理内容</span><strong>{{ reasoningChars.toLocaleString() }} 字符</strong></div>
         </div>
         <div class="detail-actions" v-if="isActive(selected.status)"><button class="danger-button" type="button" @click="cancelSelected">取消 Run</button></div>
@@ -70,7 +70,7 @@
               <div class="model-call-facts">
                 <span>TURN <b>{{ shortId(item.turn_id || '—') }}</b></span><span>ATTEMPT <b>{{ item.attempt }}</b></span><span>FINISH <b>{{ item.finish_reason || '—' }}</b></span><span>REASONING <b>{{ reasoningLabel(item.reasoning_availability) }}</b></span><span>CACHE <b>{{ item.cache_status }}</b></span>
               </div>
-              <div class="model-call-usage"><code>{{ Number(item.usage.input_tokens || item.usage.prompt_tokens || 0).toLocaleString() }} input</code><code>{{ Number(item.usage.output_tokens || item.usage.completion_tokens || 0).toLocaleString() }} output</code><code>${{ Number(item.cost_usd || 0).toFixed(6) }}</code></div>
+              <div class="model-call-usage"><code>工作 {{ usageNumber(item, 'input_tokens', 'prompt_tokens') }} in / {{ usageNumber(item, 'output_tokens', 'completion_tokens') }} out</code><code>计费 {{ usageNumber(item, 'billed_input_tokens') }} in / {{ usageNumber(item, 'billed_output_tokens') }} out</code><code v-if="Number(item.usage.cached_input_tokens || 0)">缓存 {{ Number(item.usage.cached_input_tokens).toLocaleString() }}</code><code v-if="Number(item.usage.reasoning_output_tokens || 0)">推理 {{ Number(item.usage.reasoning_output_tokens).toLocaleString() }}</code><code>{{ usageState(item) }}</code><code>{{ costLabel(item) }}</code></div>
               <div class="raw-actions"><button type="button" :disabled="!item.request_blob_id || rawLoading" @click="openBlob(item.request_blob_id)">查看完整请求</button><button type="button" :disabled="!item.response_blob_id || rawLoading" @click="openBlob(item.response_blob_id)">查看原始响应</button></div>
             </article>
             <div v-if="!modelInvocations.length" class="empty-state compact">暂无模型调用。新 Run 将记录完整请求、响应与首 Token 时延。</div>
@@ -196,8 +196,12 @@ let streamAbort: AbortController | null = null; const seenEvents = new Set<strin
 
 const tabs = computed(() => [{ key: 'timeline', label: '时间线', count: events.value.length }, { key: 'models', label: '模型调用', count: modelInvocations.value.length }, { key: 'reasoning', label: '原始推理', count: reasoning.value.length }, { key: 'spans', label: '性能', count: spans.value.length }, { key: 'tasks', label: 'Tasks', count: tasks.value.length }, { key: 'patches', label: '图变更', count: graphProposals.value.length }, { key: 'invocations', label: '工具', count: invocations.value.length }, { key: 'feedback', label: '人工反馈', count: feedback.value.length }, { key: 'replays', label: '回放', count: replays.value.length }, { key: 'traces', label: 'HTTP Trace', count: traces.value.length }, { key: 'children', label: '子 Agent', count: children.value.length }, { key: 'logs', label: '日志', count: logs.value.length }, { key: 'artifacts', label: '产物', count: artifacts.value.length }, { key: 'result', label: '输入 / 输出', count: 0 }])
 const totalModelTokens = computed(() => modelInvocations.value.reduce((sum, item) => sum + Number(item.usage?.total_tokens || 0), 0))
+const totalBilledTokens = computed(() => modelInvocations.value.reduce((sum, item) => sum + Number(item.usage?.billed_total_tokens ?? item.usage?.total_tokens ?? 0), 0))
 const totalModelDuration = computed(() => modelInvocations.value.reduce((sum, item) => sum + Number(item.duration_ms || 0), 0))
 const reasoningChars = computed(() => reasoning.value.reduce((sum, item) => sum + item.content.length, 0))
+function usageNumber(item: ModelInvocation, key: string, fallback?: string) { return Number(item.usage?.[key] ?? (fallback ? item.usage?.[fallback] : 0) ?? 0).toLocaleString() }
+function usageState(item: ModelInvocation) { const status = String(item.usage?.usage_status || 'missing'); const source = String(item.usage?.usage_source || 'legacy'); return `${source} · ${status}` }
+function costLabel(item: ModelInvocation) { const status = String(item.usage?.billing_status || 'missing'); if (status === 'missing') return '成本未知'; if (status === 'not_billed') return '本次不计费'; return `$${Number(item.cost_usd || 0).toFixed(6)}${status === 'partial' ? '（部分）' : ''}` }
 const traceRange = computed(() => {
   const starts = spans.value.map((item) => item.started_at ? Date.parse(item.started_at) : NaN).filter(Number.isFinite)
   const ends = spans.value.map((item) => item.finished_at ? Date.parse(item.finished_at) : (item.started_at ? Date.parse(item.started_at) + Number(item.duration_ms || 1) : NaN)).filter(Number.isFinite)

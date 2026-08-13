@@ -128,6 +128,7 @@ class ModelProviderBuildRequest:
     default_model: str
     extra_headers: dict[str, str] = field(default_factory=dict)
     reasoning_options: dict[str, Any] = field(default_factory=dict)
+    usage_pricing: dict[str, Any] = field(default_factory=dict)
     request_timeout_seconds: float = 120.0
     client: Any = None
 

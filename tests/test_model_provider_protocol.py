@@ -134,7 +134,12 @@ async def test_openai_compatible_parses_tool_calls_and_usage() -> None:
                         },
                     }
                 ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 3,
+                    "prompt_tokens_details": {"cached_tokens": 4},
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                },
             },
         )
 
@@ -144,6 +149,11 @@ async def test_openai_compatible_parses_tool_calls_and_usage() -> None:
             api_base="https://models.example/v1",
             default_model="openai/gpt-test",
             provider_name="openai",
+            usage_pricing={
+                "input_cost_per_million_tokens": 2,
+                "cached_input_cost_per_million_tokens": 0.5,
+                "output_cost_per_million_tokens": 10,
+            },
             client=client,
         )
         response = await provider.chat(
@@ -161,7 +171,14 @@ async def test_openai_compatible_parses_tool_calls_and_usage() -> None:
         )
     assert response.tool_calls[0].name == "plugin.invoke"
     assert response.tool_calls[0].arguments == {"value": 1}
-    assert response.usage == {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13}
+    assert response.usage["input_tokens"] == 10
+    assert response.usage["output_tokens"] == 3
+    assert response.usage["total_tokens"] == 13
+    assert response.usage["billed_total_tokens"] == 13
+    assert response.usage["cached_input_tokens"] == 4
+    assert response.usage["reasoning_output_tokens"] == 2
+    assert response.usage["cost_usd"] == pytest.approx(0.000044)
+    assert response.usage["usage_status"] == "exact"
 
 
 @pytest.mark.asyncio
@@ -199,7 +216,10 @@ async def test_openai_compatible_generates_exact_embedding_batch() -> None:
         )
     assert response.embeddings == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     assert response.dimensions == 3
-    assert response.usage == {"input_tokens": 2, "output_tokens": 0, "total_tokens": 2}
+    assert response.usage["input_tokens"] == 2
+    assert response.usage["output_tokens"] == 0
+    assert response.usage["total_tokens"] == 2
+    assert response.usage["billed_total_tokens"] == 2
 
 
 @pytest.mark.asyncio
@@ -438,6 +458,35 @@ async def test_openai_compatible_stream_merges_tool_argument_fragments() -> None
     assert final.usage["total_tokens"] == 6
 
 
+@pytest.mark.asyncio
+async def test_openai_stream_failure_retains_partial_provider_usage() -> None:
+    body = (
+        'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":1}}\n\n'
+        "data: {not-json}\n\n"
+    )
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, text=body))
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = OpenAICompatibleProvider(
+            api_key="x",
+            api_base="https://models.example/v1",
+            default_model="openai/gpt-test",
+            provider_name="openai",
+            client=client,
+        )
+        chunks = [
+            item
+            async for item in provider.chat_stream(
+                messages=[{"role": "user", "content": "run"}]
+            )
+        ]
+
+    final = chunks[-1][1]
+    assert final.finish_reason == "error"
+    assert final.usage["input_tokens"] == 7
+    assert final.usage["output_tokens"] == 1
+    assert final.usage["usage_status"] == "partial"
+
+
 def test_sanitize_tools_replaces_dotted_names() -> None:
     tools = [
         {"type": "function", "function": {"name": "read_file", "parameters": {}}},
@@ -481,7 +530,12 @@ async def test_anthropic_provider_converts_system_tools_and_usage() -> None:
                     }
                 ],
                 "stop_reason": "tool_use",
-                "usage": {"input_tokens": 8, "output_tokens": 2},
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                    "cache_creation_input_tokens": 3,
+                    "cache_read_input_tokens": 4,
+                },
             },
         )
 
@@ -511,4 +565,9 @@ async def test_anthropic_provider_converts_system_tools_and_usage() -> None:
     assert response.finish_reason == "tool_calls"
     assert response.tool_calls[0].name == "plugin.invoke"
     assert response.tool_calls[0].arguments == {"query": "postgres"}
-    assert response.usage == {"input_tokens": 8, "output_tokens": 2, "total_tokens": 10}
+    assert response.usage["input_tokens"] == 15
+    assert response.usage["output_tokens"] == 2
+    assert response.usage["total_tokens"] == 17
+    assert response.usage["billed_total_tokens"] == 17
+    assert response.usage["cached_input_tokens"] == 4
+    assert response.usage["cache_creation_input_tokens"] == 3

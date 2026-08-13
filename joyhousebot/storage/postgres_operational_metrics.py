@@ -52,6 +52,31 @@ class PostgresOperationalMetricsStoreMixin:
                               FILTER (WHERE duration_ms IS NOT NULL),0) AS p95_duration_ms,
                           COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms)
                               FILTER (WHERE ttft_ms IS NOT NULL),0) AS p95_ttft_ms,
+                          COALESCE(sum((usage->>'input_tokens')::bigint),0)
+                              AS input_tokens,
+                          COALESCE(sum((usage->>'output_tokens')::bigint),0)
+                              AS output_tokens,
+                          COALESCE(sum(COALESCE(
+                              (usage->>'billed_input_tokens')::bigint,
+                              CASE WHEN cache_status='hit' THEN 0
+                                   ELSE (usage->>'input_tokens')::bigint END)),0)
+                              AS billed_input_tokens,
+                          COALESCE(sum(COALESCE(
+                              (usage->>'billed_output_tokens')::bigint,
+                              CASE WHEN cache_status='hit' THEN 0
+                                   ELSE (usage->>'output_tokens')::bigint END)),0)
+                              AS billed_output_tokens,
+                          count(*) FILTER (WHERE
+                              COALESCE(usage->>'usage_status',CASE
+                                  WHEN usage ? 'input_tokens' OR usage ? 'output_tokens'
+                                      THEN 'exact' ELSE 'missing' END)='missing')
+                              AS missing_usage_invocations,
+                          count(*) FILTER (WHERE
+                              COALESCE(usage->>'billing_status',CASE
+                                  WHEN cache_status='hit' THEN 'not_billed'
+                                  WHEN cost_usd<>0 THEN 'exact'
+                                  ELSE 'missing' END)='missing')
+                              AS missing_billing_invocations,
                           COALESCE(sum(cost_usd),0) AS cost_usd
                    FROM model_invocations GROUP BY provider,model,status
                    ORDER BY provider,model,status LIMIT 500"""
@@ -279,6 +304,16 @@ class PostgresOperationalMetricsStoreMixin:
                 "avg_ttft_ms": float(row["avg_ttft_ms"] or 0),
                 "p95_duration_ms": float(row["p95_duration_ms"] or 0),
                 "p95_ttft_ms": float(row["p95_ttft_ms"] or 0),
+                "input_tokens": int(row["input_tokens"] or 0),
+                "output_tokens": int(row["output_tokens"] or 0),
+                "billed_input_tokens": int(row["billed_input_tokens"] or 0),
+                "billed_output_tokens": int(row["billed_output_tokens"] or 0),
+                "missing_usage_invocations": int(
+                    row["missing_usage_invocations"] or 0
+                ),
+                "missing_billing_invocations": int(
+                    row["missing_billing_invocations"] or 0
+                ),
                 "cost_usd": float(row["cost_usd"] or 0),
             }
             for row in providers

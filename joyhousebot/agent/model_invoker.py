@@ -245,7 +245,7 @@ class ModelInvokerMixin:
                             attempt=attempt_index,
                             provider=provider_name,
                         ):
-                            await model_cache_hit(
+                            response.usage = await model_cache_hit(
                                 provider=provider_name,
                                 model=candidate,
                                 operation="model.cache.hit",

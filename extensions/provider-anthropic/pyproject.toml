@@ -1,6 +1,6 @@
 [project]
 name = "joyhousebot-provider-anthropic"
-version = "0.1.0"
+version = "0.1.1"
 description = "Anthropic Messages model provider extension for JoyhouseBot"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}

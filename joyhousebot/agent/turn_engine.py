@@ -91,7 +91,13 @@ class TurnEngineMixin(ContextScopeMixin):
             effective_max_iterations = max(1, min(effective_max_iterations, run_context.max_turns))
         total_input_tokens = 0
         total_output_tokens = 0
+        billed_input_tokens = 0
+        billed_output_tokens = 0
         total_cost_usd = 0.0
+        model_invocations = 0
+        missing_usage_invocations = 0
+        partial_usage_invocations = 0
+        missing_billing_invocations = 0
         previous_action_signature: str | None = None
         repairs_used = 0
         journal = await DurableTurnJournal.open(run_context)
@@ -237,8 +243,56 @@ class TurnEngineMixin(ContextScopeMixin):
             total_output_tokens += int(
                 usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
             )
+            cache_hit = usage.get("usage_source") == "cache"
+            billed_input_tokens += int(
+                usage.get(
+                    "billed_input_tokens",
+                    0
+                    if cache_hit
+                    else usage.get("input_tokens", usage.get("prompt_tokens", 0)),
+                )
+                or 0
+            )
+            billed_output_tokens += int(
+                usage.get(
+                    "billed_output_tokens",
+                    0
+                    if cache_hit
+                    else usage.get("output_tokens", usage.get("completion_tokens", 0)),
+                )
+                or 0
+            )
+            model_invocations += 1
+            usage_status = str(usage.get("usage_status") or "exact")
+            billing_status = str(
+                usage.get("billing_status")
+                or (
+                    "not_billed"
+                    if cache_hit
+                    else "exact"
+                    if any(key in usage for key in ("cost_usd", "total_cost", "cost"))
+                    else "missing"
+                )
+            )
+            missing_usage_invocations += int(usage_status == "missing")
+            partial_usage_invocations += int(usage_status == "partial")
+            missing_billing_invocations += int(billing_status == "missing")
             total_cost_usd += float(
                 usage.get("cost_usd", usage.get("total_cost", usage.get("cost", 0.0))) or 0.0
+            )
+            aggregate_usage_status = (
+                "missing"
+                if missing_usage_invocations >= model_invocations
+                else "partial"
+                if missing_usage_invocations or partial_usage_invocations
+                else "exact"
+            )
+            aggregate_billing_status = (
+                "missing"
+                if missing_billing_invocations >= model_invocations
+                else "partial"
+                if missing_billing_invocations
+                else "exact"
             )
             if execution_stream_callback:
                 await execution_stream_callback(
@@ -247,7 +301,16 @@ class TurnEngineMixin(ContextScopeMixin):
                         "input_tokens": total_input_tokens,
                         "output_tokens": total_output_tokens,
                         "total_tokens": total_input_tokens + total_output_tokens,
+                        "billed_input_tokens": billed_input_tokens,
+                        "billed_output_tokens": billed_output_tokens,
+                        "billed_total_tokens": billed_input_tokens + billed_output_tokens,
                         "cost_usd": total_cost_usd,
+                        "model_invocations": model_invocations,
+                        "missing_usage_invocations": missing_usage_invocations,
+                        "partial_usage_invocations": partial_usage_invocations,
+                        "missing_billing_invocations": missing_billing_invocations,
+                        "usage_status": aggregate_usage_status,
+                        "billing_status": aggregate_billing_status,
                         "model": used_model,
                         "iteration": iteration,
                         "turn_id": current_turn_id,
@@ -263,6 +326,10 @@ class TurnEngineMixin(ContextScopeMixin):
                 and total_output_tokens > run_context.max_output_tokens
             ):
                 raise RunBudgetExceededError("maximum output token budget exceeded")
+            if run_context.max_cost_usd is not None and missing_billing_invocations:
+                raise RunBudgetExceededError(
+                    "maximum cost budget cannot be enforced because model billing is missing"
+                )
             if run_context.max_cost_usd is not None and total_cost_usd > run_context.max_cost_usd:
                 raise RunBudgetExceededError("maximum cost budget exceeded")
             active_model = used_model

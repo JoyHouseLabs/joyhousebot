@@ -281,6 +281,13 @@ async def test_public_app_data_plane_launches_only_active_owner_installation(tmp
             "model_invocations": 1,
             "input_tokens": 120,
             "output_tokens": 30,
+            "billed_input_tokens": 120,
+            "billed_output_tokens": 30,
+            "missing_usage_invocations": 0,
+            "partial_usage_invocations": 0,
+            "missing_billing_invocations": 0,
+            "usage_status": "exact",
+            "billing_status": "exact",
             "model_cost_usd": 0.0125,
         }
         assert usage.json()["entrypoints"][0]["entrypoint_id"] == "research"

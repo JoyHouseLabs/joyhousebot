@@ -36,6 +36,8 @@ class ProviderConfig(BaseModel):
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
     request_timeout_seconds: float = Field(default=120.0, ge=1, le=3600)
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    revision_id: str | None = None
 
 
 class ProvidersConfig(BaseModel):

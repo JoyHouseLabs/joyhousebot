@@ -188,15 +188,28 @@ def _normalize_model(provider_id: str, raw: Any) -> dict[str, Any]:
     tags = [str(item).strip() for item in raw.get("tags") or []]
     if any(not item for item in tags):
         raise ValueError(f"model {model_id} tags contain an empty value")
-    input_cost = raw.get("input_cost_per_million_tokens")
-    if input_cost is not None:
-        input_cost = float(input_cost)
-        if kind != "embedding":
-            raise ValueError(
-                f"non-embedding model {model_id} cannot declare embedding input cost"
-            )
-        if not 0 <= input_cost <= 1_000_000:
-            raise ValueError(f"model {model_id} embedding input cost is invalid")
+    pricing_keys = (
+        "input_cost_per_million_tokens",
+        "output_cost_per_million_tokens",
+        "cached_input_cost_per_million_tokens",
+        "cache_creation_input_cost_per_million_tokens",
+    )
+    pricing: dict[str, float | None] = {}
+    for key in pricing_keys:
+        value = raw.get(key)
+        if value is None:
+            pricing[key] = None
+            continue
+        price = float(value)
+        if not 0 <= price <= 1_000_000:
+            raise ValueError(f"model {model_id} {key} is invalid")
+        pricing[key] = price
+    if kind == "embedding" and any(
+        pricing[key] is not None for key in pricing_keys if key != "input_cost_per_million_tokens"
+    ):
+        raise ValueError(f"embedding model {model_id} only supports input token pricing")
+    if kind not in {"llm", "embedding"} and any(value is not None for value in pricing.values()):
+        raise ValueError(f"model {model_id} kind does not use token pricing")
     return {
         "model_id": model_id,
         "name": str(raw.get("name") or model_id).strip()[:160],
@@ -212,7 +225,7 @@ def _normalize_model(provider_id: str, raw: Any) -> dict[str, Any]:
         "default_temperature": temperature,
         "tags": list(dict.fromkeys(tags)),
         "dimensions": _embedding_dimensions(model_id, kind, raw.get("dimensions")),
-        "input_cost_per_million_tokens": input_cost,
+        **pricing,
     }
 
 

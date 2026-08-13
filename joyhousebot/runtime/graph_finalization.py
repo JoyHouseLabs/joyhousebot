@@ -141,18 +141,19 @@ class GraphFinalizationMixin:
             coordination = dict(
                 (record.options.get("metadata") or {}).get("coordination_usage") or {}
             )
-            prior_input_tokens = sum(
-                int((value.get("usage") or {}).get("input_tokens") or 0)
-                for value in usage_results
-            ) + int(coordination.get("input_tokens") or 0)
-            prior_output_tokens = sum(
-                int((value.get("usage") or {}).get("output_tokens") or 0)
-                for value in usage_results
-            ) + int(coordination.get("output_tokens") or 0)
-            prior_cost_usd = sum(
-                float((value.get("usage") or {}).get("cost_usd") or 0.0)
-                for value in usage_results
-            ) + float(coordination.get("cost_usd") or 0.0)
+            prior_usage = AgentUsage()
+            for value in usage_results:
+                prior_usage.add(AgentUsage.from_dict(value.get("usage")))
+            prior_usage.add(AgentUsage.from_dict(coordination))
+            prior_input_tokens = prior_usage.input_tokens
+            prior_output_tokens = prior_usage.output_tokens
+            prior_cost_usd = float(prior_usage.cost_usd or 0.0)
+            if record.options.get("max_cost_usd") is not None and (
+                prior_usage.missing_billing_invocations
+            ):
+                raise RuntimeError(
+                    "graph max_cost_usd cannot be enforced because model billing is missing"
+                )
 
             def remaining_budget(name: str, consumed: float) -> float | None:
                 configured = record.options.get(name)
@@ -227,28 +228,14 @@ class GraphFinalizationMixin:
                 tools = []
                 aggregate_usage = AgentUsage()
                 aggregation = deterministic.audit
-            usage = AgentUsage(
-                input_tokens=sum(
-                    int((value.get("usage") or {}).get("input_tokens") or 0)
-                    for value in usage_results
+            usage = prior_usage
+            usage.add(aggregate_usage)
+            if record.options.get("max_cost_usd") is not None and (
+                usage.missing_billing_invocations
+            ):
+                raise RuntimeError(
+                    "graph max_cost_usd cannot be enforced because model billing is missing"
                 )
-                + aggregate_usage.input_tokens
-                + int(coordination.get("input_tokens") or 0),
-                output_tokens=sum(
-                    int((value.get("usage") or {}).get("output_tokens") or 0)
-                    for value in usage_results
-                )
-                + aggregate_usage.output_tokens
-                + int(coordination.get("output_tokens") or 0),
-                cost_usd=sum(
-                    float((value.get("usage") or {}).get("cost_usd") or 0.0)
-                    for value in usage_results
-                )
-                + float(aggregate_usage.cost_usd or 0.0)
-                + float(coordination.get("cost_usd") or 0.0),
-                model=aggregate_usage.model,
-            )
-            usage.total_tokens = usage.input_tokens + usage.output_tokens
             for name, actual in (
                 ("max_input_tokens", usage.input_tokens),
                 ("max_output_tokens", usage.output_tokens),

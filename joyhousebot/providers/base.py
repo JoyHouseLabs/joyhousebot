@@ -22,7 +22,7 @@ class LLMResponse:
     content: str | None
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
     finish_reason: str = "stop"
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
     reasoning_content: str | None = None  # Kimi, DeepSeek-R1 etc.
     reasoning_blocks: list[dict[str, Any]] = field(default_factory=list)
     # Structured error metadata for failover/cooldown logic.
@@ -43,7 +43,7 @@ class EmbeddingResponse:
 
     embeddings: list[list[float]]
     model: str
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def dimensions(self) -> int:

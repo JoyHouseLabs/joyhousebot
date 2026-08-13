@@ -301,6 +301,8 @@ class AgentRuntimeCatalog:
                 request_timeout_seconds=float(
                     materialized.get("request_timeout_seconds") or 120
                 ),
+                models=[dict(item) for item in materialized.get("models") or []],
+                revision_id=str(raw.get("_revision_id") or "") or None,
             )
         checker = getattr(self.store, "is_plugin_execution_enabled", None)
         if callable(checker):

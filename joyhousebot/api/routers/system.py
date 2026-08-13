@@ -102,20 +102,4 @@ async def list_scenarios(context: ContextDep, container: ContainerDep):
 
 @router.get("/usage")
 async def usage(context: ContextDep, container: ContainerDep):
-    records = await asyncio.to_thread(
-        container.store.list_runtime_runs, user_id=context.user_id, limit=1000
-    )
-    input_tokens = output_tokens = 0
-    cost_usd = 0.0
-    for row in records:
-        values = (row.result or {}).get("usage") or {}
-        input_tokens += int(values.get("input_tokens") or 0)
-        output_tokens += int(values.get("output_tokens") or 0)
-        cost_usd += float(values.get("cost_usd") or 0.0)
-    return {
-        "runs": len(records),
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
-        "cost_usd": cost_usd,
-    }
+    return await asyncio.to_thread(container.store.get_user_model_usage, context.user_id)

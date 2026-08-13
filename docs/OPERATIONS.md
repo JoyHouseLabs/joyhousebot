@@ -214,6 +214,14 @@ Secret 立即失效，用户 Grant 保留。应先确保 App 后端可以原子�
 只能再次轮换，不能从数据库恢复明文。安装级 Run/模型成本可在 App 治理页或
 `GET /v1/apps/{installation_id}/usage` 对账；它是 Runtime 事实用量，不是支付账单。
 
+模型用量排查优先查看 Console **运行中心 → 模型调用**。每次调用会同时展示工作 Token 与计费 Token、
+缓存/推理明细、`usage_source/usage_status` 和成本完整性。`missing` 表示 Provider 没有返回可核实用量，
+`partial` 表示流在失败前只返回了部分用量，不能按 0 当作完整数据。模型目录可为 LLM 配置每百万普通输入、
+输出、缓存读取和缓存写入 Token 价格；Provider 未返回成本时 Runtime 才使用该冻结价格计算。未配置足够
+价格时 `billing_status=missing`，即使 `cost_usd` 聚合数值为 0，也不代表免费。
+配置了 `max_cost_usd` 的 Run/Task/Graph 遇到缺失成本会失败关闭，因为 Runtime 无法证明仍在预算内；要么
+让 Provider 返回成本，要么在已发布模型目录补全所需价格并重新发布。
+
 ### Agent Monitor
 
 Agent Monitor 通过普通 Schedule API 创建，只需把 `payload.kind` 设为 `agent_monitor`：

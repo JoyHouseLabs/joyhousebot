@@ -25,6 +25,12 @@ from joyhousebot.providers.provider_support import (
     sanitize_tools,
     user_friendly_error,
 )
+from joyhousebot.providers.usage import (
+    cache_hit_usage,
+    missing_usage,
+    normalized_usage,
+    partial_usage,
+)
 
 __all__ = [
     "LLMProvider",
@@ -49,4 +55,8 @@ __all__ = [
     "sanitize_messages",
     "sanitize_tools",
     "user_friendly_error",
+    "cache_hit_usage",
+    "missing_usage",
+    "normalized_usage",
+    "partial_usage",
 ]

@@ -164,6 +164,9 @@ Owner 可通过 `GET /v1/apps/{installation_id}/usage?since=<ISO8601>&until=<ISO
 Entry Point、模型调用、Token 和模型成本归因；默认窗口为最近 30 天、单次最长 366 天。该端点不向委托
 App Token 开放，避免 App 自行扩大计费可见范围。Manifest 的 `metering.source_event` 会映射到受支持的
 Runtime 事实计量项；许可证、订单、税务和最终账单仍由 App/Market 持有，Runtime 用量不能直接冒充账单。
+Token 同时返回逻辑 `input/output_tokens` 和当前调用实际 `billed_input/output_tokens`；缓存命中只增加逻辑
+工作量，不增加计费量。App/Market 如按模型资源结算，应使用 `model.billed_input_tokens`、
+`model.billed_output_tokens` 与成本完整性状态，不应把逻辑工作量直接当作供应商账单。
 
 跨实例市场采用独立的 Registry、作者签名和 Entitlement，不把支付、评价或结算塞入 Runtime。完整的
 信任、安装、更新、撤销、计量和创作者治理见

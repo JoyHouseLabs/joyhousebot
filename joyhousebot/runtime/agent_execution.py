@@ -169,10 +169,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 max_repairs=options.max_repairs,
                 run_lease_version=record.lease_version,
             )
-            usage.input_tokens += coordinator_usage.input_tokens
-            usage.output_tokens += coordinator_usage.output_tokens
-            usage.total_tokens += coordinator_usage.total_tokens
-            usage.cost_usd = float(usage.cost_usd or 0) + float(coordinator_usage.cost_usd or 0)
+            usage.add(coordinator_usage)
             await self._ensure_run_owned(
                 record.run_id, cancellation, lease_version=record.lease_version
             )
@@ -321,6 +318,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 return None
 
         async def _execution_event(event_type: str, payload: dict[str, Any]) -> None:
+            nonlocal usage
             mapping = {
                 "llm_delta": EventType.MESSAGE_DELTA.value,
                 "model_request_start": EventType.MODEL_REQUEST_STARTED.value,
@@ -392,11 +390,9 @@ class AgentExecutionMixin(AgentTerminalMixin):
                     },
                 )
             if event_type == "usage":
-                usage.input_tokens = int(payload.get("input_tokens") or 0)
-                usage.output_tokens = int(payload.get("output_tokens") or 0)
-                usage.total_tokens = int(payload.get("total_tokens") or 0)
-                usage.cost_usd = float(payload.get("cost_usd") or 0.0)
-                usage.model = str(payload.get("model") or model or "") or None
+                received = AgentUsage.from_dict(payload)
+                received.model = str(payload.get("model") or model or "") or None
+                usage = received
             await self.events.publish(
                 AgentEvent(
                     run_id=run_id,
