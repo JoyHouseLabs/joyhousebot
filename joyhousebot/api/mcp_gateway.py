@@ -14,6 +14,7 @@ import os
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -29,6 +30,37 @@ from joyhousebot.utils.permissions import permission_granted
 
 _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
+_LOCAL_MCP_HOSTS = ("127.0.0.1:*", "localhost:*")
+
+
+def _transport_security(cors_origins: list[str] | tuple[str, ...]) -> TransportSecuritySettings:
+    """Build MCP DNS-rebinding protection from deployment CORS origins.
+
+    MCP is mounted before the application lifespan begins, so this setting must
+    use the same immutable deployment configuration that creates the FastAPI
+    CORS middleware. Product and customer hostnames must never be hard-coded.
+    """
+    hosts = set(_LOCAL_MCP_HOSTS)
+    origins: set[str] = set()
+    for raw_origin in cors_origins:
+        parsed = urlparse(str(raw_origin).strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            continue
+        if (
+            parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            continue
+        netloc = parsed.netloc.lower()
+        origins.add(f"{parsed.scheme.lower()}://{netloc}")
+        hosts.add(netloc)
+    return TransportSecuritySettings(
+        allowed_hosts=sorted(hosts),
+        allowed_origins=sorted(origins),
+    )
 
 
 def _mcp_name(capability_id: str) -> str:
@@ -57,7 +89,7 @@ def _signature_for_schema(schema: dict[str, Any]) -> inspect.Signature:
 class MCPGateway:
     """Expose published executable capabilities as authenticated MCP tools."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, cors_origins: list[str] | tuple[str, ...] = ()) -> None:
         self.server = FastMCP(
             "Joyhousebot Capability Gateway",
             instructions=(
@@ -67,15 +99,7 @@ class MCPGateway:
             streamable_http_path="/",
             stateless_http=True,
             json_response=True,
-            transport_security=TransportSecuritySettings(
-                allowed_hosts=[
-                    "127.0.0.1:*",
-                    "localhost:*",
-                    "dinq.smartjob.top",
-                    "dinq.smartjob.top:*",
-                ],
-                allowed_origins=["https://dinq.smartjob.top"],
-            ),
+            transport_security=_transport_security(cors_origins),
         )
         self.asgi_app = self.server.streamable_http_app()
         self._container: Any | None = None

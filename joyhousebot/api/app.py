@@ -177,7 +177,7 @@ def create_app(
     )
     app.state.metrics_cache = {"expires_at": 0.0, "data": None, "lock": asyncio.Lock()}
     app.state.surface = surface
-    mcp_gateway = MCPGateway()
+    mcp_gateway = MCPGateway(cors_origins=_cors_origins(injected))
     app.state.mcp_gateway = mcp_gateway
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(

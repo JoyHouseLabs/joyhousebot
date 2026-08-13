@@ -22,9 +22,9 @@ Domain rules / Transactions / Product analytics   Agent / Workflow / Approval
 App 可以拥有自己的品牌、用户系统、定价、会员、订单、许可证、数据库、领域逻辑和发布节奏。Runtime
 只负责把需要长期、异步、可恢复和可审计的工作可靠执行，并返回 Run、事件、确认点、Artifact 和 Work。
 
-第一阶段官方一体化 App 不为每个模块创建 PostgreSQL database：它们与 Product、Runtime、Cloud/Market
-共用 `JOYHOUSE_DATABASE_URL`，业务表使用 `app_<id>_*` 前缀并保留独立 migration chain。远程或独立售卖的
-App 仍可使用自己的数据库。无论物理部署方式如何，App 都不能直接读写 Runtime/Product/Market 表。
+官方 App 可与 Product、Runtime 和 Market 共用 `JOYHOUSE_DATABASE_URL`，业务表使用 `app_<id>_*` 前缀并
+保留独立 migration chain。远程或独立售卖的 App 仍可使用自己的数据库。无论物理部署方式如何，App 都不能
+直接读写 Runtime、Product 或 Market 表。
 
 ## 2. 统一概念
 

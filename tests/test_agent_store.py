@@ -83,9 +83,9 @@ def test_default_agent_seed_does_not_restore_pruned_revision(tmp_path: Path) -> 
         revision_id="default:v2",
         agent_id="default",
         version=2,
-        instructions="Use approved Dinq capabilities.",
+        instructions="Use approved catalog capabilities.",
         model_policy={"primary": "test/model"},
-        capability_policy={"permissions": ["dinq.search.read"]},
+        capability_policy={"permissions": ["catalog.search.read"]},
         status="published",
     )
     store.save_agent_revision(definition, revision)
@@ -106,21 +106,21 @@ def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> 
     pinned = replace(
         revision,
         plugin_requirements=(
-            PluginReleaseRequirement("dinq.discover", "0.4.0", TEST_PLUGIN_DIGEST),
+            PluginReleaseRequirement("sample.catalog", "0.4.0", TEST_PLUGIN_DIGEST),
         ),
     )
     with pytest.raises(ValueError, match="unavailable plugin release"):
         store.save_agent_revision(definition, pinned)
     store.upsert_plugin_release(
         PluginManifest(
-            plugin_id="dinq.discover",
+            plugin_id="sample.catalog",
             version="0.4.0",
-            name="Dinq Discover",
+            name="Sample Catalog",
             build_digest=TEST_PLUGIN_DIGEST,
         ).to_dict()
     )
     store.stage_plugin_release(
-        "dinq.discover",
+        "sample.catalog",
         "0.4.0",
         actor_id="test:trusted-fixture",
         require_healthy_workers=False,

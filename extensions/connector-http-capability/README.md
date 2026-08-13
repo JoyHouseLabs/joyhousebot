@@ -12,9 +12,9 @@
 uv pip install -e extensions/connector-http-capability
 ```
 
-在 `extensions.enabled` 中加入并发布 `connector-http-capability`。随后从 Console 的“集成中心 →
-远程能力”创建服务 Revision、`env://` 密钥引用和 Capability 目录；发布会执行逐 Worker 预热，配置不会
-依赖首个 Run 才加载。完整协议与控制面流程见
+将 `connector-http-capability` 加入 `extensions.allowedIds`，首次安装时如需自动激活再加入
+`extensions.initiallyActive`，然后从 Console 的“集成中心 → 远程能力”创建服务 Revision、`env://`
+密钥引用和 Capability 目录；发布会执行逐 Worker 预热，配置不会依赖首个 Run 才加载。完整协议与控制面流程见
 [`docs/REMOTE_CAPABILITY_PROTOCOL.md`](../../docs/REMOTE_CAPABILITY_PROTOCOL.md)。
 
 远端企业程序只实现：

@@ -8,4 +8,4 @@ uv pip install -e extensions/channel-dingtalk
 ```
 
 安装后显式启用 `channel-dingtalk`；`clientSecret` 必须通过 `env://VARIABLE` 引用。该渠道不是 Joyhouse
-面向 OPC 的默认产品能力。
+的默认产品能力。

@@ -3,7 +3,7 @@
 # Run from repo root: ./scripts/build-ui.sh
 # Then: hatch build  (or pip install -e .)
 
-set -e
+set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND="$ROOT/apps/console"
 STATIC="$ROOT/joyhousebot/static/ui"
@@ -13,8 +13,8 @@ if ! command -v npm &>/dev/null; then
   echo "npm not found; skip console build. Install Node.js to build the UI." >&2
   exit 0
 fi
-# Use npm install so lock file can be updated when out of sync with package.json
-npm install --no-audit
+# A release build must use the checked-in lockfile exactly.
+npm ci --no-audit
 npm run build
 
 rm -rf "$STATIC"

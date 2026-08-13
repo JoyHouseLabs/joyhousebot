@@ -1,10 +1,51 @@
 # Joyhousebot
 
-## Governance for enterprise Agent applications
+## Durable, governed execution for Agent applications
 
-Joyhousebot is not a single-agent chat client and not a model-vendor SDK. It governs the concerns that appear when an Agent application enters real business workflows: identity and permissions, capability access, version rollout, distributed execution, recovery, auditability, replay, cost, and performance.
+Joyhousebot is not a single-agent chat client or a model-vendor SDK. It is an open-source, PostgreSQL-first Agent Runtime for local or cloud deployment. It turns goals into durable Runs and Tasks with governed capabilities, recovery, human confirmation, evidence, audit, and replay.
 
-It provides one PostgreSQL-first control plane and runtime for building, publishing, operating, and governing many Agent applications.
+It provides one execution control plane for building, publishing, operating, and governing Agent applications without making a product, model, or business domain a Core dependency.
+
+## Why Joyhousebot
+
+Most Agent tools answer a prompt or call a tool once. Joyhousebot makes a goal progress safely over hours, days, or longer. Its differentiation is not access to more models; it makes execution itself durable, governed, and reusable.
+
+| Capability | Runtime mechanism | Result |
+| --- | --- | --- |
+| Durable execution | PostgreSQL Run/Task state machine, Worker leases, fencing, retries, and recovery | A task can be taken over after a process or Worker failure instead of starting over |
+| Governed action | Capability Registry, allowlists, permissions, approvals, idempotency keys, and reconciliation | An Agent can act in external systems with explicit boundaries and receipts |
+| Evidence and verification | Events, Traces, Artifacts, verification, audit, and replay | Users can inspect what happened, why, where it failed, and how to reproduce it |
+| Compounding assets | Immutable Artifact → Work versions, Skills/Evals, and release gates | Outputs and methods remain reusable assets when a conversation or model changes |
+| Safe extensibility | Core / Extension / App separation; versioned HTTP/SSE and MCP enter one Run chain | Models and capabilities can change without embedding product code or user state in Core |
+
+## Architecture: one execution chain
+
+```mermaid
+flowchart TB
+    CLIENTS[JoyHouse / independent Apps / Console / API clients]
+    ENTRY[HTTP + SSE / schedules / webhooks / channels / MCP]
+    API[API and control plane\nauthentication, submission, queries, releases]
+    PG[(PostgreSQL\nthe sole runtime source of truth)]
+    AGENT[Agent Workers\nplanning, models, Workflows, Tool Dispatcher]
+    SCHEDULER[Scheduler Workers\nwakeups, recovery, timeouts, callbacks]
+    CHANNEL[Channel Workers\ninbound channels and Outbox delivery]
+    GOVERN[Governance\nallowlists · permissions · approvals · idempotency · audit]
+    EXT[Extensions\nProviders · Channels · Connectors · Capabilities]
+    APP[Independent Apps / external systems\nsigned Remote Capability]
+    OUTPUT[Events · Traces · Artifacts · Work · Evals]
+
+    CLIENTS --> ENTRY --> API --> PG
+    PG <--> AGENT
+    PG <--> SCHEDULER
+    PG <--> CHANNEL
+    AGENT --> GOVERN --> EXT
+    EXT <--> APP
+    AGENT --> OUTPUT
+    SCHEDULER --> OUTPUT
+    OUTPUT --> PG
+```
+
+Every entry point reaches the same `Run → Task → Event → Trace → Artifact` chain. APIs never execute models or tools in a request thread; Workers never treat process memory as the source of truth; external capabilities always run within version, permission, approval, and audit boundaries.
 
 Business Apps remain independently deployable products; Skills are versioned methods; Extensions are technical Runtime artifacts. JoyHouse Market is a separate private repository and deployment; its replaceable Registry uses author DSSE signatures, Market attestations, TUF metadata, local permission approval, and signed Entitlements. Core does not require the official Market, and Market never receives private Run, Prompt, Memory, or Artifact contents. The private JoyHouse Desktop, Web, Mobile, website, and browser extension live in the adjacent `../joyhouse` product repository. See the [App integration contract](docs/APP_INTEGRATION.md) and [App Market governance protocol](docs/APP_MARKET_GOVERNANCE.md).
 
@@ -98,7 +139,7 @@ api / bootstrap / channel adapters
        module-owned PostgreSQL repositories
 ```
 
-Business applications such as Dinq Discover and Smart Study should register Scenarios, Capabilities, Tools, Skills, or MCP servers through an independent plugin package rather than adding business code to the `joyhousebot` core package. The Smart Study reference plugin also demonstrates forwarding the Runtime's Durable Action idempotency identity to a business API and returning reviews/outcomes as governed Artifacts.
+Business applications keep their own UI, identity, billing, domain rules, and database. They integrate through versioned HTTP/SSE, the App SDK, and Remote Capability rather than adding business code to the `joyhousebot` core package. The Runtime freezes Durable Action identities for external writes and records receipts and governed Artifacts on the shared execution chain.
 
 ## Start locally
 
@@ -108,7 +149,7 @@ PostgreSQL is required:
 cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
-export JOYHOUSE_DATABASE_URL="postgresql://joyhouse:password@127.0.0.1:5432/joyhouse"
+export JOYHOUSE_DATABASE_URL="postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot"
 ./scripts/start-local.sh
 ```
 
@@ -121,11 +162,15 @@ Docker Compose is also available:
 ```bash
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
+export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
 export POSTGRES_PASSWORD="choose-a-strong-password"
 export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
+export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
+
+Store `JOYHOUSEBOT_AUTH_ENCRYPTION_KEY` in secret management and retain it: it encrypts control-plane TOTP secrets, and losing it prevents recovery of enrolled authenticators.
 
 Compose starts two API roles: `api` (public data plane, 18790) and `control` (admin plane and console UI, bound to `127.0.0.1:18791` by default — do not expose it publicly).
 

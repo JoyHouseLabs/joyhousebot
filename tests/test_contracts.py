@@ -7,18 +7,18 @@ from joyhousebot.contracts import Artifact, CapabilityContext, CapabilityResult
 
 def test_artifact_is_business_opaque_and_serializable() -> None:
     artifact = Artifact(
-        artifact_type="dinq.candidate",
+        artifact_type="catalog.item",
         data={"name": "Ada"},
         operation="upsert",
-        metadata={"namespace": "dinq"},
+        metadata={"namespace": "catalog"},
     )
 
     value = artifact.to_dict()
 
-    assert value["artifact_type"] == "dinq.candidate"
+    assert value["artifact_type"] == "catalog.item"
     assert value["operation"] == "upsert"
     assert value["data"] == {"name": "Ada"}
-    assert value["metadata"]["namespace"] == "dinq"
+    assert value["metadata"]["namespace"] == "catalog"
     assert value["artifact_id"].startswith("artifact_")
 
 

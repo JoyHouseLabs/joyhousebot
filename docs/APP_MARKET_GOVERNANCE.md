@@ -329,7 +329,7 @@ published release -> installed -> active / disabled -> upgrade / rollback / unin
 ### 6.3 安装事务
 
 1. 用户选择 App、版本范围和更新频道；本地把选择解析并持久化为精确版本后再提交；
-2. Cloud/Market 校验 Entitlement 与设备安装公钥、精确 Release、Bundle digest 和已确认权限摘要，返回
+2. Market 校验 Entitlement 与设备安装公钥、精确 Release、Bundle digest 和已确认权限摘要，返回
    短期有效的 DSSE `InstallationGrant`，其中绑定稳定 `operation_id + installation_id + intent_revision`；
 3. Runtime 获取并固定 Registry root/TUF 元数据，验证时间、版本和阈值签名；
 4. Market 返回精确 `ResolutionLock`；
@@ -628,7 +628,7 @@ Market 默认只可获得：Market 账号、安装公钥指纹、购买/授权�
 | 作者身份、DSSE 签名和双证明密钥轮换 | 已有 Alpha | Publisher CLI + Market Identity API |
 | 可携带声明式资产的跨实例 App Bundle | 格式和验签已实现 | App Manifest v2 + `.joyhouse-app`；资产导入继续走各自发布门禁 |
 | Entitlement、Checkout 和 Update Subscription | 已有 Alpha 状态机 | Scheduler 轮询签名 Feed，`notify/download/stage` 可用；`activate_safe` 在 Eval/ACK 门禁接入前 fail closed；真实支付需独立适配器 |
-| 设备 Installation Grant、精确版本意图与幂等 Receipt | 已有 Alpha | JoyHouse Cloud/Market `cloud_*` 协议；本机实际安装仍由 Runtime 状态机负责 |
+| 设备 Installation Grant、精确版本意图与幂等 Receipt | 已有 Alpha | JoyHouse Market `cloud_*` 协议；本机实际安装仍由 Runtime 状态机负责 |
 | Release Gate 与聚合 Eval 证明 | 已有 Alpha | Market Attestation 绑定五项门禁、`release_acceptance` Eval 和精确 Bundle；不上传私人 Run 内容 |
 | 评价、更新通告和统计口径 | 已有 Alpha | Market 服务；Runtime 不上传私有运行数据 |
 | Usage Receipt、退款/拒付与结算 Statement | 已有 Alpha | 签名 Meter 回执 + append-only ledger；真实 payout 不在 Core |

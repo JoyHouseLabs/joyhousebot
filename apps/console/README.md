@@ -1,6 +1,6 @@
 # JoyhouseBot Runtime Console
 
-当前前端是 Joyhousebot 的平台运行、管理、监控与配置控制台，同时提供 Agent 在线试用。它只消费真实的 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE，不包含旧 Gateway RPC/WebSocket 客户端。
+控制台用于 Joyhousebot 的平台运行、管理、监控与配置，同时提供 Agent 在线试用。它只消费版本化 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE。
 
 ## 页面
 
@@ -16,14 +16,17 @@
 
 ## 开发
 
-先启动 API，再启动 Vite：
+先按 Runtime 本地启动流程启动 PostgreSQL、API 和 Worker，再启动 Vite：
 
 ```bash
-uv run joyhousebot api --port 18790
+./scripts/start-local.sh
+# 在另一个终端：
 cd apps/console
-npm install
+npm ci
 npm run dev
 ```
+
+若只调试 Console API 适配，可改为自行启动 `uv run joyhousebot api --port 18790 --config ./config.json`；该命令仍需要已可用的 PostgreSQL 与有效配置，且不会启动 Agent Worker。
 
 访问 `http://localhost:5178/ui/overview`。Vite 将 `/v1`、`/healthz` 和 `/readyz` 代理到 18790。无 Token 的开发模式默认使用测试用户 `joyhousebot`；后端仅在显式 insecure 模式把该用户引导为管理员。生产环境使用 Bearer Token。operator token 打开控制台时，同一个浏览器身份会作为 `X-Impersonate-User-ID`，普通用户 token 的服务端身份始终优先。
 

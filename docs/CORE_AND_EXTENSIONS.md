@@ -5,8 +5,8 @@
 
 ## 1. 决策
 
-JoyhouseBot 聚焦个人与 OPC 的长期智能执行基座。Core 负责把目标可靠地变成可追踪、可恢复、可验证的
-执行；独立业务 App 通过公共协议协作，供应商协议和模型可调用的具体技术能力通过 Extension 接入。
+JoyhouseBot 是面向个人与小型组织的长期智能执行 Runtime。Core 负责把目标可靠地变成可追踪、可恢复、
+可验证的执行；独立业务 App 通过公共协议协作，供应商协议和模型可调用的具体技术能力通过 Extension 接入。
 
 首个推荐组合是：
 
@@ -14,13 +14,10 @@ JoyhouseBot 聚焦个人与 OPC 的长期智能执行基座。Core 负责把目�
 joyhousebot core + model provider extension + email channel extension
 ```
 
-项目尚未发布，不保留旧 Channel、Provider、Tool、MCP Client 的导入路径、配置字段或运行时翻译层。
-旧配置会校验失败，部署必须从当前 `config.example.json` 开始。
+Core 不保留旧 Channel、Provider、Tool 或 MCP Client 的导入路径、配置字段和运行时翻译层。部署从当前
+`config.example.json` 开始。
 
 可售卖业务组合使用 [App Pack 安装协议](APP_PACKS.md)，不再借用 Extension/Plugin 表达业务 App。
-
-产品分工见 [Joyhouse OPC 产品定位](PRODUCT_OPC.md)，逐项拆分结果见
-[非 Core 功能拆分台账](NON_CORE_MIGRATION.md)。
 
 ## 2. Core 必须拥有
 
@@ -53,7 +50,7 @@ Core 不选择供应商或默认模型。空 Agent 目录只接受 `runtime.boot
 
 独立业务产品保留自己的界面、身份、权限、业务服务和业务表所有权，通过版本化 HTTP/SSE 提交 Run，并通过
 唯一的通用远程 Capability Connector 接受 Worker 的签名调用。业务代码不得作为 Python 扩展加载到
-Runtime；业务路由、数据库模型和页面不得写入 Core。`smart-study` 保持独立。完整协作边界见
+Runtime；业务路由、数据库模型和页面不得写入 Core。完整协作边界见
 [独立 App 与 JoyhouseBot 协作契约](APP_INTEGRATION.md)。
 
 ## 4. 判定规则
@@ -146,7 +143,8 @@ Model Provider 同样使用两层配置：`provider-*` 扩展的安装/启用属
 ```
 
 - `providers.anthropic`、`channels.email`、`tools.exec`、`tools.retrieval` 均不存在；
-- `extensions.modules`、`tools.capability_plugins` 均不存在；
+- `extensions.modules`、`tools.capability_plugins` 均不存在；`extensions.enabled` 仅为旧部署的迁移兼容输入，
+  新配置必须使用 `extensions.allowedIds` 与 `extensions.initiallyActive`；
 - `LLM_API_KEY` / `LLM_API_BASE` 必须同时用 `LLM_PROVIDER` 指明协议；
 - Secret 只允许 `env://VARIABLE` 或进程环境变量。
 
@@ -155,8 +153,7 @@ Model Provider 同样使用两层配置：`provider-*` 扩展的安装/启用属
 Core 负责入站去重、Run 提交、PG Outbox、Lease、fencing、投递重试、死信和审计。Channel 扩展只负责
 协议转换、连接和一次投递，返回供应商 message id、错误类别与重试提示。
 
-Email 是 OPC 第一阶段唯一推荐 Channel，但仍是可卸载扩展。其他 Channel 均为独立 distribution，
-Console 不把未安装扩展描述为内置能力。
+Email 与其他 Channel 均为可卸载的独立 distribution；Console 不把未安装扩展描述为内置能力。
 
 部署安装或启用扩展后，先执行 `joyhousebot discover-extensions --config config.json`。该命令只导入
 显式启用扩展的不可变目录元数据，使 Console 能在 Agent Worker 启动前完成非敏感参数配置；它不赋予

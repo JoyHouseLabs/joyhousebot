@@ -26,7 +26,7 @@ joyhousebot channel-worker --config ./config.json
 本地已有 PostgreSQL 时可直接运行 `./scripts/start-local.sh`。它会安全解析统一环境变量或旧
 OpenRouter 配置中的 Key，初始化数据库，启动一个 Combined API、一个 Scheduler 和默认两个
 Agent Worker，以及一个 Channel Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKERS`、`JOYHOUSEBOT_LOCAL_PORT`、
-`JOYHOUSE_DATABASE_URL` 覆盖本地默认值；Product、Cloud/Market 和官方 App 使用相同连接。旧
+`JOYHOUSE_DATABASE_URL` 覆盖本地默认值；Product、Market 和官方 App 使用相同连接。旧
 `JOYHOUSEBOT_DATABASE_URL` 仍会被本地脚本映射为共享连接。所有组件日志写入
 `~/.joyhousebot/logs/local/<timestamp>/`。
 
@@ -46,10 +46,11 @@ PostgreSQL 行。单机默认目录为 `~/.joyhousebot/runtime-blobs`；容器�
 ```bash
 export POSTGRES_PASSWORD='choose-a-strong-password'  # 必填，compose 不提供默认值
 export JOYHOUSEBOT_METRICS_TOKEN='choose-a-scrape-token'  # 必填，/metrics 未配置 token 时 fail-closed
+export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"  # 必填，持久化保存
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
-Compose 默认挂载生产安全基线 `config.example.json`（`allowInsecureAuth=false`）。
+Compose 默认挂载 `deploy/config.runtime.json`（`allowInsecureAuth=false`）；它是容器部署的生产安全基线。
 本机开发改用 `config.dev.json`（开启 insecure auth，仅限本机，不要对外暴露）：
 
 ```bash
@@ -514,7 +515,7 @@ unset JOYHOUSEBOT_LOAD_TOKEN
 
 出现 `Too many open files` 时：
 
-1. 确认启动的是当前 `joyhousebot api`，而不是旧 WebSocket Gateway 或旧安装目录。
+1. 确认运行的是预期版本的 `joyhousebot api`，并核对其实际配置与进程角色。
 2. 使用 `lsof -p <pid>` 按类型统计句柄；PG 连接池会在角色关闭时统一释放，Agent 也不再启动 knowledge watcher/subprocess。
 3. 检查是否意外把 Channel 角色与 API 混合启动，以及第三方 SDK 是否反复重连。
 4. 开发机可检查 `ulimit -n`，但提升限制不能替代定位泄漏。

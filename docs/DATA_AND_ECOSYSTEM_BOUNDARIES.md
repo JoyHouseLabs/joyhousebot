@@ -1,10 +1,10 @@
-# 第一阶段单数据库与生态扩展边界
+# 单数据库与生态扩展边界
 
 ## 1. 当前决定
 
-JoyHouse 第一阶段优先完成真实业务闭环，不为尚未出现的规模和组织边界承担多数据库运维成本。
+JoyHouse 采用一个 PostgreSQL database 作为第一阶段的集成部署方式，不为尚未出现的规模和组织边界承担多数据库运维成本。
 
-JoyHouse Product、JoyhouseBot Runtime、JoyHouse Cloud/Market 和当前官方 App 统一连接一个 PostgreSQL
+JoyHouse Product、JoyhouseBot Runtime、JoyHouse Market 和官方 App 统一连接一个 PostgreSQL
 database，使用同一个环境变量：
 
 ```bash
@@ -16,10 +16,10 @@ export JOYHOUSE_DATABASE_URL='postgresql://user:password@127.0.0.1:5432/joyhouse
 映射到统一连接，新增部署统一配置 `JOYHOUSE_DATABASE_URL`。
 
 ```text
-PostgreSQL database: joyhouse
+PostgreSQL database: <shared database>
 ├── Runtime tables              owner: JoyhouseBot migrations/repositories
 ├── product_*                   owner: JoyHouse Product
-├── cloud_* / market_*          owner: JoyHouse Cloud/Market
+├── cloud_* / market_*          owner: JoyHouse Market
 └── app_<app_id>_*              owner: corresponding App
 ```
 
@@ -39,7 +39,7 @@ PostgreSQL database: joyhouse
 
 未来只有出现以下真实信号后才评估拆库：
 
-- Cloud/Market 与本地 Product 必须独立扩缩容或独立发布；
+- Market 与本地 Product 必须独立扩缩容或独立发布；
 - 第三方 App 需要独立资源、合规、地域或数据保留策略；
 - 单库连接数、写入量、备份窗口或故障域已经成为瓶颈；
 - 不同团队需要数据库级权限隔离；
@@ -55,7 +55,7 @@ PostgreSQL database: joyhouse
 | --- | --- | --- | --- |
 | JoyhouseBot Runtime | Runtime 现有执行、配置、审计和成果表 | `runtime_schema_migrations` 等 Runtime 自有记录 | Product/App migration 修改 Run、Task、Schedule、Approval |
 | JoyHouse Product | `product_*` | `product_schema_migrations` | 复制 Runtime 状态机或修改 Market 商业账本 |
-| JoyHouse Cloud/Market | `cloud_*`、`market_*` | `market_schema_migrations` | 读取私人 Product/Runtime 正文或修改 App 业务状态 |
+| JoyHouse Market | `cloud_*`、`market_*` | `market_schema_migrations` | 读取私人 Product/Runtime 正文或修改 App 业务状态 |
 | 官方 App | `app_<stable_app_id>_*` | `app_<stable_app_id>_schema_migrations` | 使用无前缀通用表名、修改其他 App 或 Core 表 |
 
 规则：
@@ -74,10 +74,10 @@ PostgreSQL database: joyhouse
 本地和单机部署使用同一个 `JOYHOUSE_DATABASE_URL`，按以下顺序启动：
 
 ```text
-1. 创建一个 joyhouse database
+1. 创建共享 PostgreSQL database
 2. JoyhouseBot 执行 Runtime migration
 3. JoyHouse Product 执行 product_* migration
-4. JoyHouse Cloud/Market 执行 cloud_*/market_* migration
+4. JoyHouse Market 执行 cloud_*/market_* migration
 5. 已启用的官方 App 各自执行 app_<id>_* migration
 6. 启动 API、Worker、Scheduler、Product、App 和前端
 ```
@@ -91,7 +91,7 @@ PostgreSQL database: joyhouse
 | --- | --- | --- |
 | JoyhouseBot Runtime | Run、Task、Event、Trace、Schedule、Approval、Agent/Team/Workflow/Skill/Capability、Artifact/Work、审计和执行成本 | JoyHouse 目标、联系人、个人问题、Market 订单、App 私有领域状态 |
 | JoyHouse Product | 用户、设备、Source、Contact、Opportunity、Challenge、Goal、Plan、Action、Metric、Review、Handoff 和 Runtime 引用 | Runtime lease/retry/终态、Market 支付账本、App 专用生产状态 |
-| JoyHouse Cloud/Market | Cloud Profile、密文同步信封、Catalog、Offer、订单、支付事件、Entitlement、治理和结算 | Prompt、私人资料、Run/Memory/Artifact 正文、App 业务正文 |
+| JoyHouse Market | Catalog、Offer、订单、支付事件、Entitlement、治理和结算 | Prompt、私人资料、Run/Memory/Artifact 正文、App 业务正文 |
 | 独立 App | 自己的领域规则、专用页面、生产资产、外部回执和领域业务状态 | Runtime 执行状态机、Product 通用个人经营事实、Market 支付账本 |
 
 模块只能通过自己的 Repository 写自己的表。跨模块协作仍使用 application service、版本化 HTTP/SSE、

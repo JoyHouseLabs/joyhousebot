@@ -3,7 +3,7 @@
 # 在仓库根目录执行: ./scripts/build-and-package.sh [--install]
 # 若传入 --install，会在构建后执行 pip install -e .
 
-set -e
+set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

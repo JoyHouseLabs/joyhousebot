@@ -38,7 +38,7 @@ docker compose -f docker-compose.runtime.yml config --quiet
 
 记录 wheel 和镜像 SHA-256。生产变量中必须有 `JOYHOUSEBOT_ENVIRONMENT=production`，API 分别以
 `--surface public`、`--surface control` 启动。先确认 Prometheus、Grafana 和 OTLP Collector 都能接收数据，
-并验证 `/metrics` 无 token 为 401、错误 token 为 401、正确 token 为 200。
+并验证 `/metrics` 未配置 token 时为 404；配置 token 后，无 token 或错误 token 为 401、正确 token 为 200。
 
 ## 阶段二：真实业务 Eval
 

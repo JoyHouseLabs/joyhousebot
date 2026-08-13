@@ -18,7 +18,7 @@ from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
 TEST_DATABASE_URL = (
     os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL")
-    or "postgresql://postgres:postgres@127.0.0.1:5432/joyhousebot_test"
+    or "postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot_test"
 )
 
 # One connectivity probe per database URL per test run, so a missing

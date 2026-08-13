@@ -20,7 +20,7 @@ development identity; this must not be used for a public deployment.
 Published `tool` and `connector` capabilities are exposed with a safe MCP name:
 
 ```text
-dinq.talent.filter -> joy_dinq_talent_filter
+catalog.item.filter -> joy_catalog_item_filter
 ```
 
 The original capability id, version, schema, permissions and runtime settings
@@ -51,9 +51,20 @@ event records remain the consistency source. Tool permissions, runtime
 enablement, leases, retries, Trace and artifact retention are shared with
 native Coordinator execution.
 
-## Dinq Plugin contract
+## Extension contract
 
-Dinq Plugin should publish one Capability Definition and one handler. The
-native Joyhouse adapter and this MCP gateway consume that same definition and
-handler. Business code must not call FastMCP directly; protocol-specific code
-belongs in the plugin's adapter layer.
+An Extension should publish one Capability Definition and one handler. Native
+App adapters and this MCP gateway consume that same definition and handler.
+Business code must not call FastMCP directly; protocol-specific code belongs in
+the Extension adapter layer.
+
+## Deployment origins
+
+`gateway.corsOrigins` is the public browser-origin allowlist. The MCP gateway
+derives its allowed `Host` and `Origin` values from the same setting, in
+addition to loopback hosts used for local development. Production deployments
+must list every actual public origin as `https://host[:port]`; do not use `*`,
+paths, or embedded credentials. This prevents an old product hostname from
+being silently accepted by the Runtime's MCP endpoint. The checked-in
+production templates intentionally use an empty list: set this value before
+exposing a Runtime through a public reverse proxy.

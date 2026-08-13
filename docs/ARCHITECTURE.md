@@ -1,6 +1,18 @@
 # Joyhousebot 个人数据与智能执行底座架构
 
-本文是当前代码唯一有效的总体架构说明。Joyhousebot 是以个人资源归属为核心、同时支持本地一体化与云端多用户并发部署的智能执行底座。它不是本地单 Agent 聊天客户端，也不兼容 OpenClaw Gateway；多用户并发是 Runtime 能力，当前产品不预设企业租户模型。
+本文是当前代码唯一有效的总体架构说明。Joyhousebot 是以个人资源归属为核心、同时支持本地一体化与云端多用户并发部署的智能执行底座。它不是本地单 Agent 聊天客户端；多用户并发是 Runtime 能力，当前产品不预设企业租户模型。
+
+## 核心价值来自执行治理
+
+Joyhousebot 的差异不在模型数量或聊天界面，而在于把 Agent 的长期执行做成可恢复、可约束、可验证的基础设施：
+
+- **持久与恢复**：`Run / Task / Event` 写入 PostgreSQL；Worker 通过 lease、fencing 与 `SKIP LOCKED` 接管中断工作。
+- **受治理的副作用**：Capability 调用经过版本目录、allowlist、权限、审批、配额、冻结的 `action_id`/`idempotency_key` 与对账链路。
+- **证据与验证**：Trace、Artifact、Verification、审计和 replay 共同说明执行过程与结果；模型输出不能自行改变状态机。
+- **可积累与可演进**：Artifact 可进入不可变 Work；Skill、Agent、Scenario、Workflow 与 Capability 都是可审计的版本发布物，未通过 Eval 或 Worker ACK 的版本不能替换现行版本。
+- **扩展不反向污染 Core**：模型、渠道和技术能力以 Extension 接入；独立 App 通过 HTTP/SSE 与签名 Remote Capability 协作，不能把业务代码或业务表写进 Runtime。
+
+[README](../README.md) 中的执行架构图展示各入口、Worker 和外部能力如何汇聚到同一条执行链。
 
 ## 不可变原则
 
@@ -388,9 +400,9 @@ CapabilityDefinition 还声明 data classification、connection IDs、permission
 `capability_policy.permissions` 是两道独立门，二者都满足后才允许调用。Console 新建 Agent 默认使用
 严格白名单，并在发布前提示未就绪能力和缺失权限。
 
-业务插件（例如 Dinq）不修改核心 Agent 默认配置。插件负责发布自己的 Capability、Scenario、Skill 和
+业务插件不修改核心 Agent 默认配置。插件负责发布自己的 Capability、Scenario、Skill 和
 manifest；部署者创建或发布业务 Agent revision，显式写入该插件的 `plugin_requirements` 及最小
-`capability_policy.permissions`。因此通用平台可以不安装 Dinq，安装后也能以最小权限运行 Dinq Agent。
+`capability_policy.permissions`。因此通用平台可以不安装任何具体业务插件；安装后也只能以最小权限运行其 Agent。
 
 已确认的 Scenario inputs 会复制到不可变 Run execution context，并传入每次 CapabilityContext metadata。
 这使业务能力可以确定性执行用户确认的约束，即使模型生成 Tool 参数时漏掉字段；插件不需要读取核心表，
@@ -642,7 +654,7 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
 - 监控概览读取平台全局 Run/User/Session/Token/Worker 指标。
 - 运行中心使用管理 API 查询所有用户 Run；详情统一展示 Task、Event、Log、Artifact、
   Capability Invocation、Request Trace、模型调用、原始推理、性能瀑布、回放对比和动态子 Agent。
-- 配置导航分为运行治理和通用能力配置两组。平台负责访问控制、集群发布、审计和运行摘要；插件中心、Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护。核心控制台只读取通用插件 Manifest、组件、Quickstart、健康与调用，不包含 Dinq 等业务专属导航、路由或字段。
+- 配置导航分为运行治理和通用能力配置两组。平台负责访问控制、集群发布、审计和运行摘要；插件中心、Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护。核心控制台只读取通用插件 Manifest、组件、Quickstart、健康与调用，不包含业务专属导航、路由或字段。
 - 场景工作台负责路由、追问 DAG 与执行策略配置，可编辑单选、多选、Other、选项说明和条件边；试用页将
   InputRequest 渲染为可提交的交互卡片，并显示题目进度。
 - Agent 试用仍以当前 `user_id` 提交普通用户 Run，用于验证真实业务链路，不绕过用户隔离。
@@ -655,13 +667,3 @@ Vue 前端是平台运行、管理、监控、配置控制台，同时保留一�
   失效，代操作中界面有常驻醒目提示）。后端只允许它改变用户数据 API 的资源归属，`auth/admin/system`
   控制面仍使用真实管理员；`/v1/me` 同时返回资源主体和管理员 actor。control token 只存
   sessionStorage，不落 localStorage。
-
-## 已删除且不得恢复
-
-- OpenClaw compatibility 以及旧 Gateway 风格的 device pairing、client Node 和 control plane。未来本地执行节点必须通过 Joyhousebot 自己的版本化协议、用户边界和统一 Run/Task 状态机接入。
-- `/ws/rpc`、`/ws/chat`、`/ws/agent-stream` 和两套 HTTP/RPC handler。
-- 进程内业务队列、通用 shared-state、旧 heartbeat scheduler。
-- 单一全局 wallet/x402、旧本地 identity/task/knowledge service 入口。
-- API 进程里的 NativeAgentExecutor、Cron loop 和第三方 Channel 长连接。
-- 进程内子 Agent、本地 JSONL Session、主机 shell/process、外部 Agent CLI/SDK 适配。
-- 动态插件主机、Browser server、Mochat 本地 cursor/polling 实现和运行时安装 Skill。

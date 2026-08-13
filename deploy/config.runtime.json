@@ -1,6 +1,7 @@
 {
   "gateway": {
     "allowInsecureAuth": false,
+    "corsOrigins": [],
     "maxConcurrentSessions": 8
   },
   "runtime": {

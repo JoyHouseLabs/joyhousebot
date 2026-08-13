@@ -1,19 +1,55 @@
 # Joyhousebot
 
-## 个人数据与智能的云端/本地执行体
+## 开源 Agent Runtime：持久、受治理的真实执行
 
-JoyhouseBot 是开源、可本地部署的长期任务执行引擎，为面向 OPC 与个人成长的 Joyhouse 提供可靠执行。
-它把自然语言目标转化为持久 Run/Task，经过能力准入、定时或事件唤醒、长任务恢复、人工确认、验证、
-审计和回放，最终形成可积累的 Artifact 与 Work。
+JoyhouseBot 是开源、PostgreSQL-first 的 Agent Runtime，可本地或云端部署。它把自然语言目标转化为持久
+Run/Task，经由能力准入、定时或事件唤醒、长任务恢复、人工确认、验证、审计与回放，形成可积累的
+Artifact 与 Work。
 
-> OPC 是目标用户，长期持续任务是产品机制，成果与收入增长是用户价值，JoyhouseBot 是底层执行引擎。
+它不是聊天客户端或模型 SDK。个人数据默认私有；模型、Skill、Connector 与其他 Agent 可替换，而用户的
+Run、Task、证据、成果与审计链保持可追踪、可恢复和可验证。
 
-普通用户使用 Joyhouse 管理目标、持续任务、待确认事项和成果，不需要理解 Run、Graph、Agent 或
-Capability；扩展作者和自部署用户才直接使用 JoyhouseBot。完整产品定位见
-[Joyhouse OPC 产品定位](docs/PRODUCT_OPC.md)。
+## 为什么是 JoyhouseBot
 
-Core 与供应商技术扩展已经按独立制品拆分，业务 App 保持独立，完整边界和结果见
-[非 Core 功能拆分台账](docs/NON_CORE_MIGRATION.md)。
+大多数 Agent 工具解决“这一次怎样回答或调用工具”；JoyhouseBot 解决“一个目标如何在数小时、数天甚至更长时间内，安全地推进到可验证结果”。它的价值不来自接入更多模型，而来自把执行过程本身变成长期、可治理的系统。
+
+| 能力 | Runtime 机制 | 用户得到的结果 |
+| --- | --- | --- |
+| 长程稳定运行 | PostgreSQL Run/Task 状态机、Worker lease、fencing、重试与恢复 | Worker 或进程中断后，任务可接管而不是从头再来 |
+| 可控的真实行动 | Capability Registry、allowlist、权限、审批、幂等键与对账 | Agent 能操作外部系统，但每次副作用都有边界、确认与回执 |
+| 可追踪与可验证 | Event、Trace、Artifact、Verification、审计与回放 | 用户可以知道做了什么、依据是什么、哪里失败，并复现或修正 |
+| 可持续积累 | Artifact → Work 不可变版本、Skill/Eval、版本发布门禁 | 成果、方法与经验成为自己的资产，不随一次对话或模型替换而消失 |
+| 可扩展而不失控 | Core / Extension / App 分层，版本化 HTTP/SSE 与 MCP 统一进入同一 Run 链路 | 可以替换模型、安装能力、接入独立 App，不把业务代码和用户状态锁进 Runtime |
+
+## 架构：一条执行链，而不是一组分散的 Agent
+
+```mermaid
+flowchart TB
+    CLIENTS[JoyHouse / 独立 App / Console / API Client]
+    ENTRY[HTTP + SSE / Schedule / Webhook / Channel / MCP]
+    API[API 与控制面\n认证、提交、查询、版本发布]
+    PG[(PostgreSQL\n唯一运行时事实源)]
+    AGENT[Agent Worker\n规划、模型调用、Workflow、Tool Dispatcher]
+    SCHEDULER[Scheduler Worker\n唤醒、恢复、超时、回调投递]
+    CHANNEL[Channel Worker\n渠道入站与 Outbox 投递]
+    GOVERN[治理层\nCapability allowlist · 权限 · 审批 · 幂等 · 审计]
+    EXT[Extensions\nProvider · Channel · Connector · Capability]
+    APP[独立 App / 外部系统\n签名 Remote Capability]
+    OUTPUT[Event · Trace · Artifact · Work · Eval]
+
+    CLIENTS --> ENTRY --> API --> PG
+    PG <--> AGENT
+    PG <--> SCHEDULER
+    PG <--> CHANNEL
+    AGENT --> GOVERN --> EXT
+    EXT <--> APP
+    AGENT --> OUTPUT
+    SCHEDULER --> OUTPUT
+    OUTPUT --> PG
+```
+
+所有入口最终进入同一条 `Run → Task → Event → Trace → Artifact` 链路。API 不在请求线程执行模型或工具；Worker
+不把进程内内存当事实源；任何模型、渠道或外部业务能力都必须在版本、权限、审批和审计范围内运行。
 
 App 是可以拥有独立用户、计费、业务数据库并单独售卖的业务产品；Skill 是版本化方法资产；Extension
 只表示 Runtime 的技术安装制品。三者不能混用，完整协作协议见
@@ -43,7 +79,7 @@ joyhousebot/
 └── tests/                    # Runtime 契约与集成测试
 ```
 
-面向用户的 JoyHouse 产品位于相邻私有项目 `../joyhouse`；官方市场位于 `../joyhouse-market`。两者都不打包进开源 Runtime。
+JoyHouse 是构建在 JoyhouseBot Runtime 之上的产品层；Market 为其生态提供可选的目录、授权与分发能力。二者都不是开源 Runtime 的依赖。
 
 ## 治理模型
 
@@ -160,12 +196,12 @@ api / bootstrap / channel adapters
        module-owned PostgreSQL repositories
 ```
 
-业务 App（例如 Dinq Discover）应保留自己的界面、用户、计费、领域服务和数据库，通过 HTTP/SSE 与
+业务 App 应保留自己的界面、用户、计费、领域服务和数据库，通过 HTTP/SSE 与
 Remote Capability 协议使用 JoyhouseBot。只有 Provider、Channel、Connector 和原子 Capability 等技术
 能力才通过 Extension 安装，不把业务代码写入 `joyhousebot` 核心包。Core 与扩展的判定、依赖方向和迁移规则见
 [Core 与扩展包边界设计](docs/CORE_AND_EXTENSIONS.md)、
 [AgentTeam 协作协议](docs/AGENT_TEAMS.md)、
-[Run 顶层执行模式](docs/EXECUTION_MODES.md)。Smart Study 保持独立项目，不作为默认集成。
+[Run 顶层执行模式](docs/EXECUTION_MODES.md)。具体业务应用始终作为独立项目接入，不作为 Core 的默认集成。
 
 第一阶段 Runtime、JoyHouse Product、Market 和官方 App 共用一个 PostgreSQL database 和
 `JOYHOUSE_DATABASE_URL`，通过表所有权与独立迁移链保持模块边界；Skill 不拥有业务表，Extension 不得向
@@ -187,11 +223,12 @@ Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
 
 ![Run 详情与执行时间线](docs/pictures/ScreenShot_2026-08-05_230625_459.png)
 
-## JoyHouse 产品接入
+## 基于 JoyhouseBot 构建的 JoyHouse
 
-JoyHouse Desktop、Web、Mobile、官网与浏览器扩展属于独立闭源产品仓库。它们通过版本化 HTTP/SSE、
-App SDK 与 Market 协议使用 JoyhouseBot，不复制 Run/Task 状态机，也不让产品身份、计费和同步逻辑进入
-开源 Core。产品与 Runtime 的完整边界维护在相邻项目 `../joyhouse/docs/ARCHITECTURE.md`。
+JoyHouse Desktop、Web、Mobile、官网与浏览器扩展基于 JoyhouseBot 构建面向用户的产品体验：管理目标、
+数据、持续任务、待确认事项与成果。它们通过版本化 HTTP/SSE、App SDK 与 Market 协议使用 Runtime，
+不复制 Run/Task 状态机；产品身份、计费、同步和领域体验保持在产品层，Runtime 则持续提供执行、恢复、
+权限、审计与成果链路。
 
 ## 快速启动
 
@@ -202,13 +239,13 @@ cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
-export JOYHOUSE_DATABASE_URL="postgresql://joyhouse:password@127.0.0.1:5432/joyhouse"
+export JOYHOUSE_DATABASE_URL="postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot"
 ./scripts/start-local.sh
 ```
 
 `config.dev.json` 开启了 `allowInsecureAuth`（仅凭 `X-User-ID` 头即可认证），仅限本机开发，不要用于任何可对外访问的部署；`config.example.json` 是生产安全基线模板。
 
-Core 默认不安装或启动任何渠道。个人/OPC 推荐先安装 Email 官方扩展：
+Core 默认不安装或启动任何渠道。需要邮件入口时，可按需安装 Email 官方扩展：
 
 ```bash
 uv pip install -e extensions/channel-email
@@ -258,9 +295,12 @@ export LLM_API_KEY="your-key"
 export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
 export POSTGRES_PASSWORD="choose-a-strong-password"
 export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
+export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
+
+请将 `JOYHOUSEBOT_AUTH_ENCRYPTION_KEY` 放入秘密管理系统并长期保留；它用于加密控制面 TOTP 密钥，丢失会使已启用的验证器无法恢复。
 
 Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`（管理面与控制台 UI，默认只绑 `127.0.0.1:18791`，不要暴露公网）。
 

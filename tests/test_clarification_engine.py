@@ -292,17 +292,17 @@ def test_scenario_field_round_trips_plugin_owned_interaction_policy() -> None:
     field = ScenarioField(
         "topic", "string", required=True, input_mode="single_choice", allow_other=True,
         options=({"value": "rl", "label": "强化学习"},),
-        suggestion_provider={"capability_id": "dinq.search.suggestions", "version": "1"},
-        normalization={"strategy": "dinq.search_topic.v1"},
+        suggestion_provider={"capability_id": "catalog.search.suggestions", "version": "1"},
+        normalization={"strategy": "catalog.search_topic.v1"},
         constraint_policy={"default_strength": "required"},
         confirmation_policy="always", examples=("Deep RL",), group="search_goal", order=10,
     )
     scenario = ScenarioVersion(
-        scenario_id="dinq.search", version=1, name="Search", description="",
+        scenario_id="catalog.search", version=1, name="Search", description="",
         fields=(field,), nodes=(ClarificationNode("topic", "question", "方向？", ("topic",)),),
         edges=(), allowed_capabilities=(),
     )
     restored = ScenarioVersion.from_dict(scenario.to_dict()).fields[0]
-    assert restored.suggestion_provider["capability_id"] == "dinq.search.suggestions"
+    assert restored.suggestion_provider["capability_id"] == "catalog.search.suggestions"
     assert restored.constraint_policy["default_strength"] == "required"
     assert restored.examples == ("Deep RL",)

@@ -18,7 +18,7 @@
 .brand strong { color: var(--text-strong); font-size: 15px; letter-spacing: -.03em; }
 .brand span { color: var(--text-muted); font: 500 10px/1.3 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
 .sidebar-collapsed .brand { justify-content: center; margin-inline: 0; }
-.sidebar-collapsed .brand div, .sidebar-collapsed .main-nav a > span:last-child, .sidebar-collapsed .architecture-note, .sidebar-collapsed .account-copy, .sidebar-collapsed .account-chevron { display: none; }
+.sidebar-collapsed .brand div, .sidebar-collapsed .main-nav a > span:last-child, .sidebar-collapsed .account-copy, .sidebar-collapsed .account-chevron { display: none; }
 .sidebar-scroll { min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; scrollbar-width: thin; }
 .main-nav { display: flex; flex-direction: column; gap: 6px; }
 .main-nav a { display: flex; align-items: center; gap: 12px; min-height: 57px; padding: 9px 11px; border: 1px solid transparent; border-radius: 12px; color: var(--text-muted); }
@@ -40,9 +40,6 @@
 .nav-subnav a strong { font-size: 11px; font-weight: 600; }
 .sidebar-collapsed .nav-center-group { border: 0; background: transparent; }
 .sidebar-collapsed .nav-subnav { display: none !important; }
-.architecture-note { margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); }
-.architecture-note strong { display: block; margin-top: 7px; color: var(--text-strong); font-size: 12px; }
-.architecture-note p { margin: 5px 0 0; color: var(--text-muted); font: 400 10px/1.65 var(--font-mono); }
 .sidebar-account { position: relative; flex: none; margin-top: 12px; }
 .sidebar-account summary { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 50px; padding: 7px 9px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; cursor: pointer; list-style: none; }
 .sidebar-account summary::-webkit-details-marker { display: none; }

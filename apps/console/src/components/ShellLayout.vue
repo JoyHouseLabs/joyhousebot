@@ -18,11 +18,6 @@
           </div>
         </nav>
 
-        <div class="architecture-note">
-          <span class="eyebrow">RUNTIME</span>
-          <strong>PG-first distributed</strong>
-          <p>API 提交 · Worker 执行<br />SSE 回放 · Lease 接管</p>
-        </div>
       </div>
 
       <details class="sidebar-account">
