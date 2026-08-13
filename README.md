@@ -1,17 +1,34 @@
 # Joyhousebot
 
-## 开源 Agent Runtime：持久、受治理的真实执行
+## 开源企业级 Agent 执行与治理 Runtime
 
-JoyhouseBot 是开源、PostgreSQL-first 的 Agent Runtime，可本地或云端部署。它把自然语言目标转化为持久
-Run/Task，经由能力准入、定时或事件唤醒、长任务恢复、人工确认、验证、审计与回放，形成可积累的
-Artifact 与 Work。
+JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可本地或云端部署。它把企业级的
+长程执行、恢复、权限、审批、审计与发布治理，交给独立开发者、小团队和垂直 App：自然语言目标被转化为
+持久 Run/Task，并经由能力准入、定时或事件唤醒、人工确认、验证与回放，形成可积累的 Artifact 与 Work。
 
-它不是聊天客户端或模型 SDK。个人数据默认私有；模型、Skill、Connector 与其他 Agent 可替换，而用户的
-Run、Task、证据、成果与审计链保持可追踪、可恢复和可验证。
+它不是聊天客户端、模型 SDK 或企业 SaaS 套件。开发者无需自行重写调度、状态机、幂等、审批、权限、审计和
+失败恢复，就能把 Agent 从一次性 Demo 变成可交付的真实应用；模型、Skill、Connector 与其他 Agent 可替换，
+而用户的 Run、Task、证据、成果与审计链保持可追踪、可恢复和可验证。
+
+## 给开发者的执行底座
+
+开发一个会调用模型的 Agent 很容易；交付一个能长期运行、可安全操作外部系统、故障后不丢状态且能说明
+“做了什么”的 Agent 应用，才需要完整的执行基础设施。JoyhouseBot 将这套基础设施作为开源 Runtime 提供：
+
+- **不重写可靠执行**：统一 Run/Task 状态机、PostgreSQL 事实源、Worker lease、fencing、重试、唤醒和故障接管。
+- **不绕过治理做集成**：Tool、Connector、MCP 与 Remote Capability 进入同一套版本、allowlist、权限、审批、
+  `action_id`、幂等和回执链路。
+- **不把业务锁进框架**：业务 App 保留自己的 UI、身份、计费和数据库；通过 HTTP/SSE、App SDK 与签名 Remote
+  Capability 使用 Runtime，不复制执行状态机。
+- **不把升级变成风险**：Agent、Skill、Scenario、Workflow、Capability 与 Extension 都以不可变版本发布；
+  Worker ACK、Eval 与回放让变更可验证、可回滚。
+
+这不是把企业软件卖给个人，而是把原本需要企业工程团队搭建的 Agent 执行与治理能力，做成每个开发者都能部署、
+组合和扩展的底座。
 
 ## 为什么是 JoyhouseBot
 
-大多数 Agent 工具解决“这一次怎样回答或调用工具”；JoyhouseBot 解决“一个目标如何在数小时、数天甚至更长时间内，安全地推进到可验证结果”。它的价值不来自接入更多模型，而来自把执行过程本身变成长期、可治理的系统。
+大多数 Agent 工具解决“这一次怎样回答或调用工具”；JoyhouseBot 解决“一个目标如何在数小时、数天甚至更长时间内，安全地推进到可验证结果”。它的价值不来自接入更多模型，而来自把企业级执行治理能力变成开发者可直接复用的长期系统。
 
 | 能力 | Runtime 机制 | 用户得到的结果 |
 | --- | --- | --- |

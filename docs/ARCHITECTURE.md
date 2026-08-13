@@ -1,10 +1,14 @@
-# Joyhousebot 个人数据与智能执行底座架构
+# JoyhouseBot 企业级 Agent 执行与治理 Runtime 架构
 
-本文是当前代码唯一有效的总体架构说明。Joyhousebot 是以个人资源归属为核心、同时支持本地一体化与云端多用户并发部署的智能执行底座。它不是本地单 Agent 聊天客户端；多用户并发是 Runtime 能力，当前产品不预设企业租户模型。
+本文是当前代码唯一有效的总体架构说明。JoyhouseBot 是面向开发者的开源企业级 Agent 执行与治理 Runtime：
+它以个人资源归属为核心，同时支持本地一体化与云端多用户并发部署。它不是本地单 Agent 聊天客户端，也不是
+企业租户 SaaS；多用户并发是 Runtime 能力，当前产品不预设企业租户模型。
 
 ## 核心价值来自执行治理
 
-Joyhousebot 的差异不在模型数量或聊天界面，而在于把 Agent 的长期执行做成可恢复、可约束、可验证的基础设施：
+JoyhouseBot 的差异不在模型数量或聊天界面，而在于把原本需要企业工程团队建设的 Agent 长期执行做成可恢复、
+可约束、可验证的开源基础设施。开发者可以直接复用这条执行链，而不必在业务 App 中再造调度、状态机、
+审批、幂等、审计和恢复：
 
 - **持久与恢复**：`Run / Task / Event` 写入 PostgreSQL；Worker 通过 lease、fencing 与 `SKIP LOCKED` 接管中断工作。
 - **受治理的副作用**：Capability 调用经过版本目录、allowlist、权限、审批、配额、冻结的 `action_id`/`idempotency_key` 与对账链路。

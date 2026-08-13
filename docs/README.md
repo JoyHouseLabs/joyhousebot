@@ -1,6 +1,8 @@
 # Joyhousebot 文档
 
-这里只保留开源 Runtime 当前有效的权威文档。JoyHouse 产品与 JoyHouse Market 位于相邻私有仓库；本仓库只说明它们依赖的 Runtime 契约与开放协议。
+这里只保留开源企业级 Agent 执行与治理 Runtime 当前有效的权威文档。JoyhouseBot 将长程执行、恢复、权限、
+审批、审计和发布治理开放给开发者；JoyHouse 产品与 JoyHouse Market 位于相邻私有仓库，本仓库只说明它们
+依赖的 Runtime 契约与开放协议。
 
 ### 架构与部署
 

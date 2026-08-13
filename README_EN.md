@@ -1,14 +1,25 @@
 # Joyhousebot
 
-## Durable, governed execution for Agent applications
+## Open-source, enterprise-grade execution and governance for Agent applications
 
-Joyhousebot is not a single-agent chat client or a model-vendor SDK. It is an open-source, PostgreSQL-first Agent Runtime for local or cloud deployment. It turns goals into durable Runs and Tasks with governed capabilities, recovery, human confirmation, evidence, audit, and replay.
+JoyhouseBot is an open-source, PostgreSQL-first Agent execution and governance Runtime for local or cloud deployment. It gives independent developers, small teams, and vertical Apps enterprise-grade long-running execution, recovery, permissions, approvals, audit, and release governance. Goals become durable Runs and Tasks with governed capabilities, human confirmation, evidence, audit, and replay.
 
-It provides one execution control plane for building, publishing, operating, and governing Agent applications without making a product, model, or business domain a Core dependency.
+It is not a chat client, model SDK, or enterprise SaaS suite. Developers do not need to rebuild scheduling, state machines, idempotency, approvals, permissions, audit, or failure recovery to turn an Agent demo into a deliverable application. It provides one execution control plane without making a product, model, or business domain a Core dependency.
+
+## The execution foundation for developers
+
+Calling a model is easy; delivering an Agent application that runs for days, acts safely in external systems, survives failures, and can explain what it did requires execution infrastructure. JoyhouseBot provides that infrastructure as an open-source Runtime:
+
+- **Do not rebuild reliable execution:** one Run/Task state machine, PostgreSQL truth, Worker leases, fencing, retries, wakeups, and takeover.
+- **Do not bypass governance for integrations:** Tools, Connectors, MCP, and Remote Capabilities share versioning, allowlists, permissions, approvals, `action_id`, idempotency, and receipts.
+- **Do not lock business code into the framework:** Apps keep their UI, identity, billing, and database while using the Runtime through HTTP/SSE, the App SDK, and signed Remote Capability.
+- **Do not turn upgrades into risk:** Agents, Skills, Scenarios, Workflows, Capabilities, and Extensions use immutable releases; Worker ACKs, Evals, and replay make change verifiable and reversible.
+
+This is not enterprise software repackaged for individuals. It makes the Agent execution and governance capabilities normally built by enterprise engineering teams deployable, composable, and extensible by every developer.
 
 ## Why Joyhousebot
 
-Most Agent tools answer a prompt or call a tool once. Joyhousebot makes a goal progress safely over hours, days, or longer. Its differentiation is not access to more models; it makes execution itself durable, governed, and reusable.
+Most Agent tools answer a prompt or call a tool once. JoyhouseBot makes a goal progress safely over hours, days, or longer. Its differentiation is not access to more models; it makes enterprise-grade execution governance durable, reusable, and directly available to developers.
 
 | Capability | Runtime mechanism | Result |
 | --- | --- | --- |
