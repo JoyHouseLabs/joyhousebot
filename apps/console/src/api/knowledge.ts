@@ -106,6 +106,19 @@ export interface KnowledgeBase {
   updated_at_ms: number
 }
 
+export interface KnowledgeReembeddingJob {
+  job_id: string
+  embedding_profile_id: string
+  knowledge_base_id?: string | null
+  doc_id?: string | null
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  total_items: number
+  completed_items: number
+  failed_items: number
+  created_at: string
+  updated_at: string
+}
+
 async function knowledgeFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   for (const [key, value] of Object.entries(getIdentityHeaders())) headers.set(key, value)
@@ -176,4 +189,26 @@ export function addKnowledgeDocumentToBase(knowledgeBaseId: string, docId: strin
 
 export function removeKnowledgeDocumentFromBase(knowledgeBaseId: string, docId: string) {
   return knowledgeFetch<void>(`/bases/${encodeURIComponent(knowledgeBaseId)}/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' })
+}
+
+export async function getKnowledgeReembeddingJobs() {
+  return (await knowledgeFetch<{ items: KnowledgeReembeddingJob[] }>('/reembedding-jobs')).items
+}
+
+export function createKnowledgeReembeddingJob(value: {
+  embedding_profile_id: string
+  knowledge_base_id?: string
+  doc_id?: string
+}, idempotencyKey: string) {
+  return knowledgeFetch<KnowledgeReembeddingJob>('/reembedding-jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify(value),
+  })
+}
+
+export function cancelKnowledgeReembeddingJob(jobId: string) {
+  return knowledgeFetch<void>(`/reembedding-jobs/${encodeURIComponent(jobId)}`, {
+    method: 'DELETE',
+  })
 }

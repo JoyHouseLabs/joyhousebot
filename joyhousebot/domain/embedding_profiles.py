@@ -27,6 +27,12 @@ def normalize_embedding_profile(profile_id: str, value: dict[str, Any]) -> dict[
         "batch_size",
         "max_input_tokens",
         "max_cost_usd",
+        "requests_per_minute",
+        "tokens_per_minute",
+        "ann_min_rows",
+        "hnsw_m",
+        "hnsw_ef_construction",
+        "hnsw_ef_search",
     }
     unknown = sorted(set(value) - allowed)
     if unknown:
@@ -59,6 +65,24 @@ def normalize_embedding_profile(profile_id: str, value: dict[str, Any]) -> dict[
     max_cost_usd = float(value.get("max_cost_usd") or 0)
     if not 0 <= max_cost_usd <= 10_000:
         raise ValueError("embedding profile max_cost_usd is invalid")
+    requests_per_minute = int(value.get("requests_per_minute") or 60)
+    if not 1 <= requests_per_minute <= 100_000:
+        raise ValueError("embedding profile requests_per_minute is invalid")
+    tokens_per_minute = int(value.get("tokens_per_minute") or 1_000_000)
+    if not 1 <= tokens_per_minute <= 1_000_000_000:
+        raise ValueError("embedding profile tokens_per_minute is invalid")
+    ann_min_rows = int(value.get("ann_min_rows") or 10_000)
+    if not 100 <= ann_min_rows <= 100_000_000:
+        raise ValueError("embedding profile ann_min_rows is invalid")
+    hnsw_m = int(value.get("hnsw_m") or 16)
+    if not 2 <= hnsw_m <= 100:
+        raise ValueError("embedding profile hnsw_m is invalid")
+    hnsw_ef_construction = int(value.get("hnsw_ef_construction") or 64)
+    if not 4 <= hnsw_ef_construction <= 1000:
+        raise ValueError("embedding profile hnsw_ef_construction is invalid")
+    hnsw_ef_search = int(value.get("hnsw_ef_search") or 40)
+    if not 1 <= hnsw_ef_search <= 1000:
+        raise ValueError("embedding profile hnsw_ef_search is invalid")
     return {
         "provider_id": provider_id,
         "provider_revision_id": provider_revision_id,
@@ -68,6 +92,12 @@ def normalize_embedding_profile(profile_id: str, value: dict[str, Any]) -> dict[
         "batch_size": batch_size,
         "max_input_tokens": max_input_tokens,
         "max_cost_usd": max_cost_usd,
+        "requests_per_minute": requests_per_minute,
+        "tokens_per_minute": tokens_per_minute,
+        "ann_min_rows": ann_min_rows,
+        "hnsw_m": hnsw_m,
+        "hnsw_ef_construction": hnsw_ef_construction,
+        "hnsw_ef_search": hnsw_ef_search,
     }
 
 

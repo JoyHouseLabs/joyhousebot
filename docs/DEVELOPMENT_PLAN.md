@@ -81,6 +81,13 @@
 - Agent revision 的 `monitor_policy` 是审计化 desired state。Runtime 按用户首次使用对账一个托管
   Schedule，revision 发布更新既有用户，仍保持 `user_id + agent_id + root_run_id` 数据边界。
 
+### 1.8 Knowledge K4 规模与质量闭环
+
+- Embedding Profile 冻结价格、成本预算、集群请求/Token 速率和 ANN 参数；所有执行写用量证据。
+- 小语料保持精确向量检索，大语料按 Profile 通过并发 DDL 构建 HNSW，索引状态由 Worker 定期对账。
+- 模型/维度迁移使用 owner-scoped 重嵌入作业，具备幂等提交、lease/fencing、重试、接管、取消和终态闭合。
+- Retrieval Eval 使用隔离语料和统一 Run/Task/Capability 链验证精确 Draft Profile，并可作为发布门禁。
+
 ## 2. 智能执行底座 V2 改进方案
 
 ### 2.1 目标与适用边界

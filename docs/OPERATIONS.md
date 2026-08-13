@@ -459,6 +459,38 @@ Graph API 同时支持全图和 Task 级 `max_input_tokens / max_output_tokens /
 产生费用，因此预算是 fail-closed 的完成门禁，不是供应商侧预付费额度；需要硬支付上限时仍应在模型
 供应商账户配置配额。
 
+### Knowledge K4：成本、重嵌入、ANN 与发布门禁
+
+Embedding 模型目录必须声明精确维度；远程付费模型还必须声明 `input_cost_per_million_tokens`。Embedding
+Profile 把单次操作成本、每分钟请求/Token 上限、`ann_min_rows` 和 HNSW 参数冻结进不可变 Revision。
+限额由 PostgreSQL 原子计数协调全部 Worker，失败调用也会写入 `knowledge_embedding_operations`，不得通过
+提高 API 副本数绕过。
+
+模型或维度变化时，在 Console **Models → Embedding Profiles** 选中已发布 Profile，确认当前代操作用户，
+再点击“为当前用户重建向量”。等价 API 为：
+
+```text
+POST   /v1/knowledge/reembedding-jobs       # 必须 Idempotency-Key
+GET    /v1/knowledge/reembedding-jobs
+GET    /v1/knowledge/reembedding-jobs/{job_id}
+DELETE /v1/knowledge/reembedding-jobs/{job_id}
+```
+
+作业长期停在 `running` 时先看 item 的 `lease_owner/lease_version/lease_expires_at/attempt/error`，再查 Agent
+Worker 日志与对应 `knowledge_embedding_operations`。Worker 死亡后 lease 过期即由其他 Worker 接管；不要
+手改状态。失败最多重试五次，最终父作业进入 `failed`。取消只阻止尚未完成的投影，不删除已经成功写入的
+不可变 Profile 投影。
+
+Agent Worker 每五分钟对账 `knowledge_vector_indexes`。小于阈值显示 `exact/not_required` 是正常状态；达到
+阈值后应进入 `hnsw/building → ready`。建索引使用并发 DDL和数据库 advisory lock。`failed` 时检查表中
+bounded error、pgvector 版本、数据库 DDL 权限和可用磁盘；修正后等待下次对账重试。检索结果 Trace 中的
+`vector_strategy` 是实际策略证据，不能只以 Profile 配置推断。
+
+生产 Profile 建议先创建 `embedding_profile` Eval Suite：每个 Case 的 `input` 含 `corpus`（1–100 个
+`{source_id,title,content}`）及 `arguments.query`，Scorer 针对 `result/tasks` 中的检索证据。把 Suite 绑定到
+精确 Draft Revision 的 release gate，并启用 `require_automated`；旧 Profile 或人工 observation 的成绩不能
+解锁候选 Revision。
+
 数据库协调演练会写入带唯一 `drill:*` 用户的合成 Run/Task，默认完成后精确清理：
 
 ```bash

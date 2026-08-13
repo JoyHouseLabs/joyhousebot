@@ -7,7 +7,10 @@ from typing import Literal
 from fastapi import APIRouter, Query, Response, status
 
 from joyhousebot.api.dependencies import ContainerDep, ContextDep
-from joyhousebot.api.knowledge_schemas import KnowledgeSourceSnapshotRequest
+from joyhousebot.api.knowledge_schemas import (
+    KnowledgeReembeddingRequest,
+    KnowledgeSourceSnapshotRequest,
+)
 from joyhousebot.api.schemas import (
     CreateKnowledgeBaseRequest,
     UpdateKnowledgeBaseRequest,
@@ -150,6 +153,49 @@ async def get_knowledge_index_health(
 ):
     """Return owner-scoped index readiness, latency, and failure aggregates."""
     return await container.knowledge_assets.health(context, window_days=window_days)
+
+
+@router.post("/reembedding-jobs", status_code=status.HTTP_202_ACCEPTED)
+async def enqueue_knowledge_reembedding(
+    body: KnowledgeReembeddingRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    """Queue an owner-scoped projection upgrade; parsing and active chunks are unchanged."""
+    return await container.knowledge_maintenance.enqueue_reembedding(
+        context,
+        embedding_profile_id=body.embedding_profile_id,
+        knowledge_base_id=body.knowledge_base_id,
+        doc_id=body.doc_id,
+    )
+
+
+@router.get("/reembedding-jobs")
+async def list_knowledge_reembedding_jobs(
+    context: ContextDep,
+    container: ContainerDep,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    return {
+        "items": await container.knowledge_maintenance.list_jobs(context, limit=limit)
+    }
+
+
+@router.get("/reembedding-jobs/{job_id}")
+async def get_knowledge_reembedding_job(
+    job_id: str, context: ContextDep, container: ContainerDep
+):
+    return await container.knowledge_maintenance.get_job(context, job_id)
+
+
+@router.delete(
+    "/reembedding-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def cancel_knowledge_reembedding_job(
+    job_id: str, context: ContextDep, container: ContainerDep
+):
+    await container.knowledge_maintenance.cancel_job(context, job_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/documents")

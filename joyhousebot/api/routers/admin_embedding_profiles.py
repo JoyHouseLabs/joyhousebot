@@ -20,6 +20,12 @@ def _configuration(body: EmbeddingProfileRevisionRequest) -> dict:
         "batch_size": body.batch_size,
         "max_input_tokens": body.max_input_tokens,
         "max_cost_usd": body.max_cost_usd,
+        "requests_per_minute": body.requests_per_minute,
+        "tokens_per_minute": body.tokens_per_minute,
+        "ann_min_rows": body.ann_min_rows,
+        "hnsw_m": body.hnsw_m,
+        "hnsw_ef_construction": body.hnsw_ef_construction,
+        "hnsw_ef_search": body.hnsw_ef_search,
         "is_default": body.is_default,
     }
 

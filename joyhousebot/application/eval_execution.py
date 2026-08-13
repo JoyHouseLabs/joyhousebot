@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from typing import Any
 
@@ -10,6 +11,7 @@ from joyhousebot.application.errors import ConflictError, NotFoundError, Validat
 from joyhousebot.application.evals import stable_observation_hash
 from joyhousebot.domain.capabilities.models import CapabilityRef
 from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
 _TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
 
@@ -142,6 +144,10 @@ class EvalExecutionService:
             return await self._execute_capability(
                 eval_run, case, timeout_seconds=timeout_seconds
             )
+        if target_type == "embedding_profile":
+            return await self._execute_embedding_profile(
+                eval_run, case, timeout_seconds=timeout_seconds
+            )
         raise ValidationError(f"unsupported evaluation target: {target_type}")
 
     async def _execute_agent(
@@ -263,6 +269,177 @@ class EvalExecutionService:
             final = await self.runtime.wait(record.run_id, timeout=5)
         return await self._runtime_evidence(final or record)
 
+    async def _execute_embedding_profile(
+        self,
+        eval_run: dict[str, Any],
+        case: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], str, str]:
+        profile = await asyncio.to_thread(
+            self.store.get_embedding_profile_execution_revision,
+            str(eval_run["target_revision_id"]),
+            allow_draft_evaluation=True,
+        )
+        if profile is None or profile["profile_id"] != str(eval_run["target_id"]):
+            raise ConflictError("exact embedding Profile revision is unavailable")
+        definitions = {
+            str(dict(item.get("ref") or {}).get("capability_id") or ""): item
+            for item in await asyncio.to_thread(self.store.list_capability_definitions)
+        }
+        if "retrieve" not in definitions or "knowledge.index" not in definitions:
+            raise ConflictError(
+                "published retrieve and knowledge.index capabilities are required "
+                "for retrieval Eval"
+            )
+        retrieve = CapabilityRef.from_dict(dict(definitions["retrieve"]["ref"]))
+        index = CapabilityRef.from_dict(dict(definitions["knowledge.index"]["ref"]))
+        runtime_profile = await asyncio.to_thread(self.store.get_agent_profile)
+        if runtime_profile is None:
+            raise ConflictError("default Agent is unavailable")
+        values = dict(case.get("input") or {})
+        arguments = dict(values.get("arguments") or values)
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ValidationError("retrieval Eval case requires input.query")
+        corpus = list(values.get("corpus") or [])
+        if not corpus or len(corpus) > 100:
+            raise ValidationError("retrieval Eval case requires 1-100 corpus documents")
+        eval_user_id = f"eval:{eval_run['eval_run_id']}"
+        tasks: list[GraphTaskSpec] = []
+        dependencies: list[str] = []
+        for position, raw_document in enumerate(corpus):
+            if not isinstance(raw_document, dict):
+                raise ValidationError("retrieval Eval corpus documents must be objects")
+            source_id = str(raw_document.get("source_id") or f"document-{position + 1}")
+            eval_source_id = f"{case['case_id']}:{source_id}"
+            title = str(raw_document.get("title") or source_id).strip()
+            content = str(raw_document.get("content") or "")
+            if not title or not content or len(content.encode("utf-8")) > 1_000_000:
+                raise ValidationError(
+                    "retrieval Eval corpus documents require bounded title and content"
+                )
+            task_id = f"index-{position + 1}"
+            dependencies.append(task_id)
+            tasks.append(
+                GraphTaskSpec(
+                    id=task_id,
+                    prompt="Index immutable retrieval Eval corpus",
+                    capability=index,
+                    capability_input={
+                        "source_system": "eval",
+                        "source_id": eval_source_id,
+                        "source_version": "1",
+                        "source_generation": 1,
+                        "source_status": "active",
+                        "source_type": "note",
+                        "title": title,
+                        "content": content,
+                        "source_url": "",
+                        "attachments": [],
+                        "tags": ["retrieval-eval"],
+                        "collection_refs": [],
+                        "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                        "index_profile_id": "semantic-text-v1",
+                        "embedding_profile_id": profile["revision_id"],
+                    },
+                    timeout_seconds=timeout_seconds,
+                    node_type="capability",
+                    metadata={
+                        "evaluation": True,
+                        "eval_run_id": eval_run["eval_run_id"],
+                        "eval_case_id": case["case_id"],
+                        "embedding_profile_id": profile["revision_id"],
+                    },
+                )
+            )
+        tasks.append(
+            GraphTaskSpec(
+                id="retrieve",
+                prompt="Evaluate governed private Knowledge retrieval",
+                dependencies=dependencies,
+                capability=retrieve,
+                capability_input={
+                    **arguments,
+                    "query": query,
+                    "scope": "knowledge",
+                },
+                timeout_seconds=timeout_seconds,
+                node_type="capability",
+                metadata={
+                    "evaluation": True,
+                    "eval_run_id": eval_run["eval_run_id"],
+                    "eval_case_id": case["case_id"],
+                    "embedding_profile_id": profile["revision_id"],
+                },
+            )
+        )
+        spec = TaskGraphSpec(
+            goal=f"Evaluate Knowledge retrieval with {profile['revision_id']}",
+            user_id=eval_user_id,
+            session_id=f"eval:{eval_run['eval_run_id']}:{case['case_id']}",
+            agent_id=runtime_profile.definition.agent_id,
+            max_concurrent=1,
+            fail_fast=True,
+            aggregate=False,
+            idempotency_key=f"eval:{eval_run['eval_run_id']}:{case['case_id']}",
+            authority_permissions=["context.read", "knowledge.write"],
+            metadata={
+                "eval_run_id": eval_run["eval_run_id"],
+                "evaluation": True,
+                "embedding_profile_id": profile["revision_id"],
+            },
+            tasks=tasks,
+        )
+        repository = getattr(self.store, "_knowledge_repository", None)
+        if repository is None:
+            repository = KnowledgeRepository(self.store)
+            self.store._knowledge_repository = repository
+        try:
+            record = await self.runtime.submit_graph(spec)
+            final = await self.runtime.wait(record.run_id, timeout=timeout_seconds + 5)
+            if final is None or final.status not in _TERMINAL:
+                await self.runtime.cancel(record.run_id, reason="retrieval Eval case timeout")
+                final = await self.runtime.wait(record.run_id, timeout=5)
+            evidence, status, source_run_id = await self._runtime_evidence(final or record)
+            tasks = list(evidence.get("tasks") or [])
+            evidence["retrieval"] = next(
+                (
+                    dict(item.get("result") or {}).get("capability_result")
+                    for item in tasks
+                    if str(item.get("task_id") or "").endswith(":retrieve")
+                ),
+                None,
+            )
+            cost = await asyncio.to_thread(
+                repository.embedding_eval_cost,
+                eval_run_id=eval_run["eval_run_id"],
+                eval_case_id=case["case_id"],
+            )
+            evidence["usage"] = {"cost_usd": cost}
+            return evidence, status, source_run_id
+        finally:
+            # Eval corpus is evidence input, not user Knowledge. Remove the
+            # synthetic namespace after scoring output is frozen in memory.
+            for position, raw_document in enumerate(corpus):
+                source_id = str(
+                    raw_document.get("source_id") or f"document-{position + 1}"
+                )
+                eval_source_id = f"{case['case_id']}:{source_id}"
+                document = await asyncio.to_thread(
+                    repository.get_document_by_source,
+                    user_id=eval_user_id,
+                    source_system="eval",
+                    source_id=eval_source_id,
+                )
+                if document is not None:
+                    await asyncio.to_thread(
+                        repository.delete_document,
+                        user_id=eval_user_id,
+                        doc_id=document["doc_id"],
+                        actor_id="eval-cleanup",
+                    )
+
     async def _runtime_evidence(self, record: Any) -> tuple[dict[str, Any], str, str]:
         events, artifacts, verifications = await asyncio.gather(
             asyncio.to_thread(self.store.list_runtime_events, record.run_id),
@@ -290,14 +467,26 @@ class EvalExecutionService:
                 for item in verifications
             ],
         }
+        tasks = await asyncio.to_thread(
+            self.store.list_runtime_tasks, run_id=record.run_id, limit=100
+        )
+        evidence["tasks"] = [
+            {
+                "task_id": item.task_id,
+                "status": item.status,
+                "result": item.result,
+                "error": item.error,
+            }
+            for item in tasks
+        ]
         return evidence, str(record.status), str(record.run_id)
 
     @staticmethod
     def _cost(output: dict[str, Any]) -> float | None:
         result = output.get("result")
-        if not isinstance(result, dict):
-            return None
-        usage = result.get("usage")
+        usage = output.get("usage")
+        if usage is None and isinstance(result, dict):
+            usage = result.get("usage")
         if not isinstance(usage, dict) or usage.get("cost_usd") is None:
             return None
         return float(usage["cost_usd"])

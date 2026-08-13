@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from joyhousebot.domain.embedding_profiles import (
@@ -120,6 +121,27 @@ class PostgresEmbeddingProfileStoreMixin:
     def publish_embedding_profile_revision(
         self, profile_id: str, revision_id: str, *, actor_id: str
     ) -> dict[str, Any]:
+        policy = self.get_release_gate_policy(
+            "embedding_profile", profile_id, revision_id
+        )
+        if policy is not None and policy["required"]:
+            decision = self.evaluate_release_gate(
+                target_type="embedding_profile",
+                target_id=profile_id,
+                target_revision_id=revision_id,
+                purpose="embedding_profile.publish",
+                actor_id=actor_id,
+                decision_id=(
+                    f"gate_embedding_profile_{revision_id}_{int(time.time() * 1000)}"
+                ),
+            )
+            if not decision["passed"]:
+                failed = [
+                    f"{item['suite_id']}@{item['suite_version']}:{item['status']}"
+                    for item in decision["requirements"]
+                    if not item["passed"]
+                ]
+                raise ValueError("release gate failed: " + ", ".join(failed))
         with self._pool.connection() as conn, conn.transaction():
             revision = conn.execute(
                 """SELECT * FROM embedding_profile_revisions
@@ -238,6 +260,21 @@ class PostgresEmbeddingProfileStoreMixin:
                 ).fetchone()
         return self._embedding_profile_revision_dict(row) if row else None
 
+    def get_embedding_profile_execution_revision(
+        self, revision_id: str, *, allow_draft_evaluation: bool = False
+    ) -> dict[str, Any] | None:
+        """Resolve an exact revision; Draft is executable only for frozen Eval Runs."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT * FROM embedding_profile_revisions
+                   WHERE revision_id=%s AND (
+                       status IN ('published','retired') OR
+                       (%s AND status='draft')
+                   )""",
+                (revision_id, allow_draft_evaluation),
+            ).fetchone()
+        return self._embedding_profile_revision_dict(row) if row else None
+
     def knowledge_vector_readiness(self) -> dict[str, Any]:
         with self._pool.connection() as conn:
             pgvector = conn.execute(
@@ -256,6 +293,18 @@ class PostgresEmbeddingProfileStoreMixin:
                    WHERE profile.is_default AND revision.status='published'
                    ORDER BY revision.published_at DESC LIMIT 1"""
             ).fetchone()
+            index_state = (
+                conn.execute(
+                    """SELECT * FROM knowledge_vector_indexes
+                       WHERE embedding_profile_id=%s""",
+                    (default_profile["revision_id"],),
+                ).fetchone()
+                if default_profile
+                and conn.execute(
+                    "SELECT to_regclass('knowledge_vector_indexes') AS value"
+                ).fetchone()["value"]
+                else None
+            )
         blockers = []
         if pgvector is None:
             blockers.append("pgvector extension is not installed")
@@ -278,7 +327,55 @@ class PostgresEmbeddingProfileStoreMixin:
                 if default_profile
                 else None
             ),
+            "vector_index": (
+                {
+                    "algorithm": str(index_state["algorithm"]),
+                    "status": str(index_state["status"]),
+                    "row_count": int(index_state["row_count"]),
+                    "min_rows": int(index_state["min_rows"]),
+                    "index_name": (
+                        str(index_state["index_name"])
+                        if index_state["index_name"]
+                        else None
+                    ),
+                }
+                if index_state
+                else None
+            ),
             "blockers": blockers,
+        }
+
+    def get_embedding_model_policy(
+        self, provider_id: str, provider_revision_id: str, model_id: str
+    ) -> dict[str, Any]:
+        """Read immutable pricing metadata without resolving provider credentials."""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT configuration FROM model_provider_revisions
+                   WHERE provider_id=%s AND revision_id=%s""",
+                (provider_id, provider_revision_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError("embedding provider revision not found")
+        configuration = dict(row["configuration"])
+        model = next(
+            (
+                dict(item)
+                for item in configuration.get("models") or ()
+                if str(item.get("model_id") or "") == model_id
+            ),
+            None,
+        )
+        if model is None or str(model.get("kind") or "") != "embedding":
+            raise ValueError("embedding model policy not found")
+        declared = model.get("input_cost_per_million_tokens")
+        if declared is None and str(configuration.get("credential_mode")) == "none":
+            declared = 0.0
+        return {
+            "input_cost_per_million_tokens": (
+                float(declared) if declared is not None else None
+            ),
+            "credential_mode": str(configuration.get("credential_mode") or "api_key"),
         }
 
     @staticmethod
@@ -310,6 +407,12 @@ class PostgresEmbeddingProfileStoreMixin:
         declared_dimensions = int(model.get("dimensions") or 0)
         if declared_dimensions and declared_dimensions != configuration["dimensions"]:
             raise ValueError("embedding profile dimensions do not match the model catalog")
+        declared_cost = model.get("input_cost_per_million_tokens")
+        credential_mode = str(revision["configuration"].get("credential_mode") or "api_key")
+        if require_published and declared_cost is None and credential_mode != "none":
+            raise ValueError(
+                "embedding model must declare input_cost_per_million_tokens before use"
+            )
 
     @staticmethod
     def _verify_pgvector(conn: Any) -> None:

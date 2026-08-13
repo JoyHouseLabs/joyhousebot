@@ -92,12 +92,13 @@ but are excluded from normal retrieval.
 
 ## Vector and hybrid retrieval
 
-PostgreSQL full-text search remains the zero-provider baseline. K3 adds an opt-in vector path without weakening that
-baseline:
+PostgreSQL full-text search remains the zero-provider baseline. K3 added the safe hybrid path; K4 makes it operable at
+large corpus scale without weakening that baseline:
 
 - the model catalog declares an exact `embedding` model and dimensions;
-- an immutable Embedding Profile revision freezes Provider revision, model ID, dimensions, normalization, batching and
-  declared per-index cost boundary; the mutable default selector lives on the Profile, outside the signed revision;
+- an immutable Embedding Profile revision freezes Provider revision, model ID, dimensions, normalization, batching,
+  operation cost, cluster request/token rates and HNSW build/search parameters; the mutable default selector lives on
+  the Profile, outside the signed revision;
 - publishing the profile fails closed unless the Provider revision is active and the operator has installed `pgvector`;
 - `knowledge.index` accepts a profile id, resolves it to an exact profile revision, stages every chunk embedding and
   verifies embedding count before the revision can become ready or active;
@@ -106,6 +107,27 @@ baseline:
 - retrieval embeds the query only when a default profile is published, fuses lexical and vector candidates with reciprocal
   rank fusion, and records the retrieval modes plus exact profile revision in evidence;
 - embedding or vector-query failure degrades to owner-scoped lexical retrieval, never to a process-local vector store.
+
+K4 adds four governed loops:
+
+1. `knowledge_embedding_operations` records every successful or failed index/query/re-embedding call with the exact
+   Profile revision, request count, provider token usage and calculated cost. Remote embedding models must declare
+   `input_cost_per_million_tokens`; admission fails closed when pricing, operation budget or cluster-wide per-minute
+   request/token quota is unavailable or exceeded.
+2. The Agent Worker reconciles each published/retired Profile every five minutes. Below `ann_min_rows` it records exact
+   search as the intentional strategy. At/above the threshold it elects one builder with a PostgreSQL advisory lock and
+   creates a Profile-specific partial HNSW index with `CREATE INDEX CONCURRENTLY`; invalid interrupted indexes are
+   discarded before retry. Search evidence reports `vector_strategy=exact|hnsw`.
+3. `POST /v1/knowledge/reembedding-jobs` creates an idempotent owner-scoped job for all documents, one Knowledge base or
+   one document. Items use database leases, fencing versions, bounded exponential retry and terminal parent closure.
+   Re-embedding attaches a second immutable Profile projection to existing chunks; it does not reparse content or switch
+   the active source revision. Console **Models → Embedding Profiles** exposes enqueue, progress, refresh and cancel for
+   the currently selected user.
+4. Eval suites may target `embedding_profile`. Each automated Case provides a bounded private corpus and query; Core
+   builds a synthetic isolated Knowledge projection, invokes published `knowledge.index` and `retrieve` through the
+   normal Run/Task/Capability chain, and scores returned evidence. A Draft Profile can execute only when the Capability
+   owner is exactly `eval:<eval_run_id>` and that running Eval targets the exact revision. A release-gate policy can then
+   block Profile publication until recent automated retrieval evidence passes.
 
 Core owns profile governance, revision completeness and PostgreSQL data. Provider Extensions implement the model API but
 cannot install database extensions or inject Runtime DDL. `GET /v1/admin/embedding-profiles/readiness` reports pgvector
@@ -116,16 +138,16 @@ Operator activation order:
 1. install `pgvector` in the target PostgreSQL instance (database-administrator action);
 2. in Console **Models → Provider 配置**, declare an enabled `embedding` model with its exact dimensions and publish the
    Provider revision through the normal Worker preload/ACK flow;
-3. in **Models → Embedding Profiles**, create a draft from that exact Provider revision, review readiness, then publish it;
+3. in **Models → Embedding Profiles**, create a Draft from that exact Provider revision; for a production Profile, attach
+   and pass an `embedding_profile` Eval release gate before publishing;
 4. submit Knowledge snapshots with `embedding_profile_id`. Submission resolves a profile name to its exact immutable
    revision before the Run is created. Omitting it keeps that document on the lexical baseline.
+5. after changing model or dimensions, enqueue a re-embedding job for the old corpus, wait for a terminal successful job,
+   inspect vector readiness/index state, and only then make the new Profile the default.
 
-Changing the default Profile does not silently rewrite existing embeddings. Old exact revisions remain resolvable only
-for already-frozen indexing work; new submissions use the current published revision. Re-embedding is an explicit
-follow-up job, not an implicit side effect of profile publication.
-
-K3 follow-up work should add large-corpus ANN index selection, re-embedding jobs for model/dimension changes, cost/rate
-enforcement and retrieval Eval gates. Those are deliberately separate from the first safe hybrid baseline.
+Changing the default Profile does not silently rewrite existing embeddings. Old exact revisions remain resolvable for
+frozen work, audit and rollback; new submissions use the current published revision. Re-embedding is always an explicit
+durable job, never an implicit side effect of profile publication.
 
 The `retrieve` capability and public search API accept an optional `collection_ref`. Activation projects frozen collection
 references into `knowledge_document_scopes`; retrieval no longer queries ad-hoc metadata JSON and still never reads Product

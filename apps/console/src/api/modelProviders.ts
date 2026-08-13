@@ -25,6 +25,7 @@ export interface ModelCatalogItem {
   default_temperature: number
   tags: string[]
   dimensions: number
+  input_cost_per_million_tokens?: number | null
 }
 
 export interface ModelProviderConfiguration {

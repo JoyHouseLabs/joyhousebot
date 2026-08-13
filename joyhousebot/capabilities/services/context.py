@@ -11,6 +11,9 @@ from typing import Any
 from joyhousebot.contracts.capabilities import CapabilityContext
 from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 from joyhousebot.services.memory import MemoryStore, MemoryWriteController
+from joyhousebot.services.retrieval.embedding_execution import (
+    execute_embedding_profile,
+)
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
 _logger = logging.getLogger(__name__)
@@ -27,6 +30,70 @@ class ContextPort:
         if self._store is None:
             raise RuntimeError("durable Runtime store is unavailable")
         return self._store
+
+    async def _resolve_embedding_profile(
+        self,
+        context: CapabilityContext,
+        revision_id: str | None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Resolve a frozen Profile without trusting caller-controlled metadata.
+
+        Draft revisions are executable only inside the synthetic owner namespace
+        of a currently running retrieval Eval for that exact target revision.
+        """
+        store = self._require_store()
+        if not revision_id:
+            return await asyncio.to_thread(store.get_published_embedding_profile), False
+        profile = await asyncio.to_thread(
+            store.get_embedding_profile_execution_revision,
+            revision_id,
+            allow_draft_evaluation=False,
+        )
+        if profile is not None:
+            return profile, False
+        eval_run_id, _ = await self._embedding_eval_scope(context, revision_id)
+        if eval_run_id is None:
+            return None, False
+        profile = await asyncio.to_thread(
+            store.get_embedding_profile_execution_revision,
+            revision_id,
+            allow_draft_evaluation=True,
+        )
+        return profile, profile is not None
+
+    async def _embedding_eval_scope(
+        self,
+        context: CapabilityContext,
+        revision_id: str,
+    ) -> tuple[str | None, str | None]:
+        """Return validated Eval correlation, never raw caller metadata."""
+        store = self._require_store()
+        eval_run_id = str(context.metadata.get("eval_run_id") or "").strip()
+        eval_case_id = str(context.metadata.get("eval_case_id") or "").strip()
+        if (
+            not eval_run_id
+            or not eval_case_id
+            or context.user_id != f"eval:{eval_run_id}"
+        ):
+            return None, None
+        eval_run = await asyncio.to_thread(store.get_eval_run, eval_run_id)
+        if (
+            eval_run is None
+            or str(eval_run.get("status")) != "running"
+            or str(eval_run.get("target_type")) != "embedding_profile"
+            or str(eval_run.get("target_revision_id")) != revision_id
+        ):
+            return None, None
+        suite = await asyncio.to_thread(
+            store.get_eval_suite,
+            str(eval_run["suite_id"]),
+            int(eval_run["suite_version"]),
+        )
+        if suite is None or eval_case_id not in {
+            str(item.get("case_id") or "") for item in suite.get("cases") or []
+        }:
+            return None, None
+        return eval_run_id, eval_case_id
 
     @staticmethod
     def _memory_scope(context: CapabilityContext) -> str:
@@ -55,25 +122,43 @@ class ContextPort:
 
         if scope == "knowledge" and self._embedding_provider_resolver is not None:
             store = self._require_store()
-            profile = await asyncio.to_thread(store.get_published_embedding_profile)
+            frozen_profile = str(
+                context.metadata.get("embedding_profile_id") or ""
+            ).strip()
+            profile, draft_evaluation = await self._resolve_embedding_profile(
+                context,
+                frozen_profile or None,
+            )
+            if frozen_profile and profile is None:
+                raise ValueError("frozen embedding profile revision is not executable")
             if profile is not None:
-                provider = None
                 try:
-                    provider = self._embedding_provider_resolver(profile["configuration"])
-                    if asyncio.iscoroutine(provider):
-                        provider = await provider
-                    response = await provider.embed(
-                        [query],
-                        model=profile["configuration"]["model_id"],
-                        dimensions=int(profile["configuration"]["dimensions"]),
+                    eval_run_id, eval_case_id = await self._embedding_eval_scope(
+                        context,
+                        profile["revision_id"],
                     )
-                    query_embedding = response.embeddings[0]
-                    if profile["configuration"]["normalization"] == "l2":
-                        query_embedding = self._l2_normalize(query_embedding)
                     repository = getattr(store, "_knowledge_repository", None)
                     if repository is None:
                         repository = KnowledgeRepository(store)
                         store._knowledge_repository = repository
+                    execution = await execute_embedding_profile(
+                        store=store,
+                        repository=repository,
+                        provider_resolver=self._embedding_provider_resolver,
+                        profile=profile,
+                        texts=[query],
+                        user_id=context.user_id,
+                        doc_id=None,
+                        revision_id=None,
+                        operation_type="query",
+                        run_id=context.run_id,
+                        task_id=context.task_id,
+                        eval_run_id=eval_run_id,
+                        eval_case_id=eval_case_id,
+                    )
+                    query_embedding = execution.embeddings[0]
+                    if profile["configuration"]["normalization"] == "l2":
+                        query_embedding = self._l2_normalize(query_embedding)
                     return await asyncio.to_thread(
                         repository.search_hybrid,
                         user_id=context.user_id,
@@ -85,16 +170,12 @@ class ContextPort:
                         collection_ref=collection_ref,
                     )
                 except Exception:
+                    if draft_evaluation:
+                        raise
                     # Retrieval stays available when the optional embedding path is unhealthy.
                     _logger.warning(
                         "hybrid Knowledge retrieval failed; using lexical fallback"
                     )
-                finally:
-                    close = getattr(provider, "close", None) if provider is not None else None
-                    if callable(close):
-                        closed = close()
-                        if asyncio.iscoroutine(closed):
-                            await closed
         return await search_async(
             query=query,
             top_k=top_k,
@@ -242,6 +323,15 @@ class ContextPort:
             store._knowledge_repository = repository
         resolved_source_id = source_id or source_url or title
         doc_id = self._knowledge_doc_id(context.user_id, source_system, resolved_source_id)
+        embedding_profile, draft_evaluation = await self._resolve_embedding_profile(
+            context,
+            embedding_profile_id,
+        ) if embedding_profile_id else (None, False)
+        eval_run_id, eval_case_id = (
+            await self._embedding_eval_scope(context, embedding_profile["revision_id"])
+            if embedding_profile is not None
+            else (None, None)
+        )
         await self._index_knowledge_revision(
             repository,
             doc_id=doc_id,
@@ -265,16 +355,12 @@ class ContextPort:
             embedding_profile_id=embedding_profile_id,
             run_id=context.run_id,
             actor_id=f"worker:{context.agent_id or 'default'}",
-            embedding_profile=(
-                await asyncio.to_thread(
-                    store.get_published_embedding_profile,
-                    profile_id=embedding_profile_id,
-                    allow_retired=True,
-                )
-                if embedding_profile_id
-                else None
-            ),
+            embedding_profile=embedding_profile,
             embedding_provider_resolver=self._embedding_provider_resolver,
+            allow_draft_evaluation=draft_evaluation,
+            task_id=context.task_id,
+            eval_run_id=eval_run_id,
+            eval_case_id=eval_case_id,
         )
         return doc_id
 
@@ -348,6 +434,10 @@ class ContextPort:
         actor_id: str,
         embedding_profile: dict[str, Any] | None,
         embedding_provider_resolver: Any,
+        allow_draft_evaluation: bool = False,
+        task_id: str | None = None,
+        eval_run_id: str | None = None,
+        eval_case_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         if kwargs.get("embedding_profile_id") and embedding_profile is None:
@@ -358,37 +448,35 @@ class ContextPort:
                 if embedding_provider_resolver is None:
                     raise RuntimeError("embedding provider resolver is unavailable")
                 configuration = dict(embedding_profile["configuration"])
-                provider = embedding_provider_resolver(configuration)
-                if asyncio.iscoroutine(provider):
-                    provider = await provider
-                try:
-                    embeddings: list[list[float]] = []
-                    texts = [str(chunk.get("text") or "") for chunk in kwargs["chunks"]]
-                    batch_size = int(configuration["batch_size"])
-                    for offset in range(0, len(texts), batch_size):
-                        result = await provider.embed(
-                            texts[offset : offset + batch_size],
-                            model=configuration["model_id"],
-                            dimensions=int(configuration["dimensions"]),
-                        )
-                        embeddings.extend(result.embeddings)
-                    if configuration["normalization"] == "l2":
-                        embeddings = [ContextPort._l2_normalize(item) for item in embeddings]
-                    await asyncio.to_thread(
-                        repository.stage_revision_embeddings,
-                        user_id=kwargs["user_id"],
-                        doc_id=kwargs["doc_id"],
-                        revision_id=revision_id,
-                        embedding_profile_id=embedding_profile["revision_id"],
-                        embeddings=embeddings,
-                        actor_id=actor_id,
-                    )
-                finally:
-                    close = getattr(provider, "close", None)
-                    if callable(close):
-                        closed = close()
-                        if asyncio.iscoroutine(closed):
-                            await closed
+                texts = [str(chunk.get("text") or "") for chunk in kwargs["chunks"]]
+                execution = await execute_embedding_profile(
+                    store=repository.store,
+                    repository=repository,
+                    provider_resolver=embedding_provider_resolver,
+                    profile=embedding_profile,
+                    texts=texts,
+                    user_id=kwargs["user_id"],
+                    doc_id=kwargs["doc_id"],
+                    revision_id=revision_id,
+                    operation_type="index",
+                    run_id=kwargs.get("run_id"),
+                    task_id=task_id,
+                    eval_run_id=eval_run_id,
+                    eval_case_id=eval_case_id,
+                )
+                embeddings = execution.embeddings
+                if configuration["normalization"] == "l2":
+                    embeddings = [ContextPort._l2_normalize(item) for item in embeddings]
+                await asyncio.to_thread(
+                    repository.stage_revision_embeddings,
+                    user_id=kwargs["user_id"],
+                    doc_id=kwargs["doc_id"],
+                    revision_id=revision_id,
+                    embedding_profile_id=embedding_profile["revision_id"],
+                    embeddings=embeddings,
+                    actor_id=actor_id,
+                    allow_draft_evaluation=allow_draft_evaluation,
+                )
             await asyncio.to_thread(
                 repository.mark_index_revision_ready,
                 user_id=kwargs["user_id"],

@@ -57,4 +57,16 @@ class KnowledgeSourceSnapshotRequest(BaseModel):
         return self
 
 
-__all__ = ["KnowledgeAttachmentSnapshot", "KnowledgeSourceSnapshotRequest"]
+class KnowledgeReembeddingRequest(BaseModel):
+    embedding_profile_id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9_-]{0,63}(:v[1-9][0-9]*)?$"
+    )
+    knowledge_base_id: str | None = Field(default=None, max_length=128)
+    doc_id: str | None = Field(default=None, max_length=128)
+
+
+__all__ = [
+    "KnowledgeAttachmentSnapshot",
+    "KnowledgeReembeddingRequest",
+    "KnowledgeSourceSnapshotRequest",
+]

@@ -1,8 +1,8 @@
 <template>
   <div class="page governance-page">
     <header class="page-heading">
-      <div><span class="eyebrow">QUALITY GOVERNANCE</span><h1>评测与发布门禁</h1><p>用版本化数据集验证 Agent、Scenario 和 Capability；只有精确 Revision 的有效证据可以通过发布门禁。</p></div>
-      <div class="heading-actions"><button class="secondary-button" @click="resetSuite">新建评测集</button><button class="secondary-button" @click="load">刷新</button></div>
+      <div><span class="eyebrow">QUALITY GOVERNANCE</span><h1>评测与发布门禁</h1><p>用版本化数据集验证 Agent、Scenario、Capability 和 Embedding Profile；只有精确 Revision 的有效证据可以通过发布门禁。</p></div>
+      <div class="heading-actions"><button class="secondary-button" @click="resetSuite">新建通用评测集</button><button class="secondary-button" @click="resetRetrievalSuite">载入 Retrieval 模板</button><button class="secondary-button" @click="load">刷新</button></div>
     </header>
     <div v-if="error" class="notice error-notice">{{ error }}</div>
 
@@ -26,7 +26,7 @@
         <section class="panel governance-section">
           <div class="section-title"><div><span class="eyebrow">EVIDENCE RUN</span><h2>生成 Revision 证据</h2></div><span class="status-badge" :class="activeRun?.status || 'draft'">{{ activeRun?.status || 'new' }}</span></div>
           <div class="form-grid three">
-            <label><span>目标类型</span><select v-model="runForm.target_type"><option value="agent">Agent</option><option value="scenario">Scenario</option><option value="capability">Capability</option></select></label>
+            <label><span>目标类型</span><select v-model="runForm.target_type"><option value="agent">Agent</option><option value="scenario">Scenario</option><option value="capability">Capability</option><option value="embedding_profile">Embedding Profile</option></select></label>
             <label><span>目标 ID</span><input v-model="runForm.target_id" placeholder="default" /></label>
             <label><span>Revision ID</span><input v-model="runForm.target_revision_id" placeholder="default:v2" /></label>
             <label><span>评测集</span><input v-model="runForm.suite_id" placeholder="quality.basic" /></label>
@@ -50,7 +50,7 @@
 
         <section class="panel governance-section">
           <div class="section-title"><div><span class="eyebrow">RELEASE GATE</span><h2>绑定发布门禁</h2></div><button class="primary-button" :disabled="saving" @click="saveGate">保存门禁</button></div>
-          <div class="form-grid three"><label><span>目标类型</span><select v-model="gateForm.target_type"><option value="agent">Agent</option><option value="scenario">Scenario</option><option value="capability">Capability</option></select></label><label><span>目标 ID</span><input v-model="gateForm.target_id" /></label><label><span>Revision ID</span><input v-model="gateForm.target_revision_id" /></label></div>
+          <div class="form-grid three"><label><span>目标类型</span><select v-model="gateForm.target_type"><option value="agent">Agent</option><option value="scenario">Scenario</option><option value="capability">Capability</option><option value="embedding_profile">Embedding Profile</option></select></label><label><span>目标 ID</span><input v-model="gateForm.target_id" /></label><label><span>Revision ID</span><input v-model="gateForm.target_revision_id" /></label></div>
           <textarea v-model="gateJson" rows="7" spellcheck="false" />
         </section>
       </main>
@@ -75,7 +75,8 @@ import { createEvalRun, executeEvalRun, finalizeEvalRun, listEvalRuns, listEvalS
 const toast = useMessage(); const suites = ref<EvalSuite[]>([]); const runs = ref<EvalRun[]>([]); const schedules = ref<EvalSchedule[]>([]); const activeRun = ref<EvalRun | null>(null); const saving = ref(false); const error = ref('')
 const runForm = reactive({ suite_id: 'quality.basic', suite_version: 1, target_type: 'agent', target_id: '', target_revision_id: '' })
 const gateForm = reactive({ target_type: 'agent', target_id: '', target_revision_id: '' })
-const suiteTemplate = { suite_id: 'quality.basic', version: 1, name: '核心质量与成本', description: '', status: 'active', target_types: ['agent', 'scenario', 'capability'], thresholds: { min_pass_rate: 1, min_average_score: 1, max_total_cost_usd: 0.1, max_p95_latency_ms: 30000, min_cost_coverage: 1 }, cases: [{ case_id: 'answer', name: '输出符合契约', input: { prompt: '示例目标' }, expected: null, min_score: 1, tags: ['regression'], scorers: [{ type: 'status', required: true, weight: 1, value: 'completed' }, { type: 'json_schema', required: true, weight: 1, schema: { type: 'object' } }] }] }
+const suiteTemplate = { suite_id: 'quality.basic', version: 1, name: '核心质量与成本', description: '', status: 'active', target_types: ['agent', 'scenario', 'capability', 'embedding_profile'], thresholds: { min_pass_rate: 1, min_average_score: 1, max_total_cost_usd: 0.1, max_p95_latency_ms: 30000, min_cost_coverage: 1 }, cases: [{ case_id: 'answer', name: '输出符合契约', input: { prompt: '示例目标' }, expected: null, min_score: 1, tags: ['regression'], scorers: [{ type: 'status', required: true, weight: 1, value: 'completed' }, { type: 'json_schema', required: true, weight: 1, schema: { type: 'object' } }] }] }
+const retrievalSuiteTemplate = { suite_id: 'knowledge.retrieval', version: 1, name: '知识检索证据', description: '用隔离语料验证精确 Embedding Profile Revision', status: 'active', target_types: ['embedding_profile'], thresholds: { min_pass_rate: 1, min_average_score: 1, max_total_cost_usd: 0.1, max_p95_latency_ms: 30000, min_cost_coverage: 1 }, cases: [{ case_id: 'joyhouse-positioning', name: '召回目标证据', input: { corpus: [{ source_id: 'positioning', title: 'JoyHouse 定位', content: 'JoyHouse 是用户自有的长期智能系统，帮助个人经营事业并持续成长。' }, { source_id: 'runtime', title: 'Runtime', content: 'JoyhouseBot Runtime 负责可恢复、可审计、可确认的长程任务执行。' }], arguments: { query: '什么系统帮助个人持续经营事业并成长？', top_k: 3 } }, expected: null, min_score: 1, tags: ['retrieval', 'regression'], scorers: [{ type: 'status', required: true, weight: 1, value: 'completed' }, { type: 'contains', required: true, weight: 1, path: 'retrieval.data.output.hits.0.content', value: 'JoyHouse' }] }] }
 const scheduleTemplate = { policy_id: 'quality-basic-nightly', suite_id: 'quality.basic', suite_version: 1, target_type: 'agent', target_id: 'default', target_revision_id: 'default:v1', cadence_seconds: 86400, enabled: true, execution_configuration: { max_concurrency: 4, case_timeout_seconds: 300 } }
 const suiteJson = ref(JSON.stringify(suiteTemplate, null, 2)); const observationJson = ref(JSON.stringify({ case_id: 'answer', output: {}, status: 'completed', latency_ms: 0, cost_usd: 0, metadata: {} }, null, 2)); const scheduleJson = ref(JSON.stringify(scheduleTemplate, null, 2)); const gateJson = ref(JSON.stringify({ required: true, requirements: [{ suite_id: 'quality.basic', suite_version: 1, min_pass_rate: 1, max_age_hours: 168, max_total_cost_usd: 0.1, max_p95_latency_ms: 30000, min_cost_coverage: 1 }] }, null, 2))
 function parse(text: string) { const value = JSON.parse(text); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('内容必须是 JSON 对象'); return value as Record<string, unknown> }
@@ -85,6 +86,7 @@ function money(value?: number) { return value == null ? '—' : `$${value.toFixe
 function duration(value?: number) { return value == null ? '—' : `${Math.round(value)}ms` }
 function formatDate(value?: string) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
 function resetSuite() { suiteJson.value = JSON.stringify(suiteTemplate, null, 2) }
+function resetRetrievalSuite() { suiteJson.value = JSON.stringify(retrievalSuiteTemplate, null, 2); Object.assign(runForm, { suite_id: retrievalSuiteTemplate.suite_id, suite_version: retrievalSuiteTemplate.version, target_type: 'embedding_profile' }); Object.assign(gateForm, { target_type: 'embedding_profile' }); gateJson.value = JSON.stringify({ required: true, requirements: [{ suite_id: retrievalSuiteTemplate.suite_id, suite_version: retrievalSuiteTemplate.version, min_pass_rate: 1, max_age_hours: 168, max_total_cost_usd: 0.1, max_p95_latency_ms: 30000, min_cost_coverage: 1, require_automated: true }] }, null, 2) }
 function selectSuite(value: EvalSuite) { suiteJson.value = JSON.stringify(value, null, 2); runForm.suite_id = value.suite_id; runForm.suite_version = value.version }
 function useRun(value: EvalRun) { activeRun.value = value; Object.assign(runForm, { suite_id: value.suite_id, suite_version: value.suite_version, target_type: value.target_type, target_id: value.target_id, target_revision_id: value.target_revision_id }); Object.assign(gateForm, { target_type: value.target_type, target_id: value.target_id, target_revision_id: value.target_revision_id }); gateJson.value = JSON.stringify({ required: true, requirements: [{ suite_id: value.suite_id, suite_version: value.suite_version, min_pass_rate: 1, max_age_hours: 168 }] }, null, 2) }
 function useSchedule(value: EvalSchedule) { scheduleJson.value = JSON.stringify(value, null, 2) }

@@ -329,7 +329,9 @@ class KnowledgeRevisionRepositoryMixin:
                       AND (
                           revision.embedding_profile_id IS NULL OR
                           (SELECT COUNT(*) FROM knowledge_revision_embeddings embedding
-                            WHERE embedding.revision_id=revision.revision_id)=
+                            WHERE embedding.revision_id=revision.revision_id
+                              AND embedding.embedding_profile_id=
+                                  revision.embedding_profile_id)=
                           (SELECT COUNT(*) FROM knowledge_revision_chunks chunk
                             WHERE chunk.revision_id=revision.revision_id)
                       )

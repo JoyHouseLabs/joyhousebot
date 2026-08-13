@@ -13,6 +13,7 @@ from joyhousebot.application.app_callbacks import AppCallbackDispatcher
 from joyhousebot.application.app_market import AppMarketService
 from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
+from joyhousebot.application.knowledge_maintenance import KnowledgeMaintenanceService
 from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.bootstrap.agent_catalog import default_agent_id
 from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
@@ -94,6 +95,7 @@ class ExecutionWorker:
     runtime: NativeAgentRuntime
     catalog: AgentRuntimeCatalog
     store: Any
+    knowledge_maintenance: KnowledgeMaintenanceService
 
     async def run(self) -> None:
         await self.catalog.start()
@@ -101,14 +103,99 @@ class ExecutionWorker:
         catalog_task = asyncio.create_task(
             self.catalog.watch(), name="agent-runtime-catalog"
         )
+        knowledge_task = asyncio.create_task(
+            self._knowledge_maintenance_loop(), name="knowledge-maintenance-worker"
+        )
         try:
             await asyncio.Event().wait()
         finally:
             catalog_task.cancel()
-            await asyncio.gather(catalog_task, return_exceptions=True)
+            knowledge_task.cancel()
+            await asyncio.gather(catalog_task, knowledge_task, return_exceptions=True)
             await self.catalog.close()
             await self.runtime.close()
             await asyncio.to_thread(self.store.close)
+
+    async def _knowledge_maintenance_loop(self) -> None:
+        lease_seconds = 120
+        reconcile_at = 0.0
+        while True:
+            try:
+                now = asyncio.get_running_loop().time()
+                if now >= reconcile_at:
+                    await asyncio.to_thread(
+                        self.knowledge_maintenance.repository.reconcile_vector_indexes,
+                        limit=20,
+                    )
+                    reconcile_at = now + 300
+                item = await asyncio.to_thread(
+                    self.knowledge_maintenance.repository.claim_reembedding_item,
+                    worker_id=self.runtime.worker_id,
+                    lease_seconds=lease_seconds,
+                )
+                if item is None:
+                    await asyncio.sleep(1.0)
+                    continue
+                heartbeat = asyncio.create_task(
+                    self._heartbeat_knowledge_item(item, lease_seconds),
+                    name=f"knowledge-heartbeat:{item['job_id']}:{item['doc_id']}",
+                )
+                try:
+                    await self.knowledge_maintenance.process_item(
+                        item, worker_id=self.runtime.worker_id
+                    )
+                    completed = await asyncio.to_thread(
+                        self.knowledge_maintenance.repository.complete_reembedding_item,
+                        item["job_id"],
+                        item["doc_id"],
+                        item["revision_id"],
+                        worker_id=self.runtime.worker_id,
+                        lease_version=int(item["lease_version"]),
+                    )
+                    if not completed:
+                        raise RuntimeError("Knowledge maintenance completion was fenced")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await asyncio.to_thread(
+                        self.knowledge_maintenance.repository.fail_reembedding_item,
+                        item["job_id"],
+                        item["doc_id"],
+                        item["revision_id"],
+                        worker_id=self.runtime.worker_id,
+                        lease_version=int(item["lease_version"]),
+                        error={"type": type(exc).__name__, "message": str(exc)[:1000]},
+                    )
+                    logger.exception(
+                        "Knowledge re-embedding failed job_id={} doc_id={}",
+                        item["job_id"],
+                        item["doc_id"],
+                    )
+                finally:
+                    heartbeat.cancel()
+                    await asyncio.gather(heartbeat, return_exceptions=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Knowledge maintenance worker loop failed; retrying")
+                await asyncio.sleep(1.0)
+
+    async def _heartbeat_knowledge_item(
+        self, item: dict[str, Any], lease_seconds: int
+    ) -> None:
+        while True:
+            await asyncio.sleep(max(10, lease_seconds // 3))
+            renewed = await asyncio.to_thread(
+                self.knowledge_maintenance.repository.heartbeat_reembedding_item,
+                item["job_id"],
+                item["doc_id"],
+                item["revision_id"],
+                worker_id=self.runtime.worker_id,
+                lease_version=int(item["lease_version"]),
+                lease_seconds=lease_seconds,
+            )
+            if not renewed:
+                raise RuntimeError("Knowledge maintenance lease was fenced")
 
 
 @dataclass(slots=True)
@@ -319,7 +406,15 @@ def build_execution_worker(config: Any | None = None) -> ExecutionWorker:
         monitor_reconciler=partial(reconcile_agent_monitor, schedules.repository),
     )
     catalog.set_runtime(runtime)
-    return ExecutionWorker(runtime=runtime, catalog=catalog, store=store)
+    return ExecutionWorker(
+        runtime=runtime,
+        catalog=catalog,
+        store=store,
+        knowledge_maintenance=KnowledgeMaintenanceService(
+            store,
+            embedding_provider_resolver=catalog.resolve_embedding_provider,
+        ),
+    )
 
 
 def build_scheduler_worker(config: Any | None = None) -> SchedulerWorker:

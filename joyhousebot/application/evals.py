@@ -15,7 +15,7 @@ from jsonschema import ValidationError as JsonSchemaError
 from joyhousebot.application.errors import ConflictError, NotFoundError, ValidationError
 from joyhousebot.runtime.action_identity import payload_hash
 
-_TARGET_TYPES = {"agent", "scenario", "capability"}
+_TARGET_TYPES = {"agent", "scenario", "capability", "embedding_profile"}
 _SCORER_TYPES = {
     "status",
     "exact_match",

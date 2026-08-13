@@ -270,6 +270,12 @@ class EmbeddingProfileRevisionRequest(BaseModel):
     batch_size: int = Field(default=32, ge=1, le=256)
     max_input_tokens: int = Field(default=8192, ge=1, le=1_000_000)
     max_cost_usd: float = Field(default=0, ge=0, le=10_000)
+    requests_per_minute: int = Field(default=60, ge=1, le=100_000)
+    tokens_per_minute: int = Field(default=1_000_000, ge=1, le=1_000_000_000)
+    ann_min_rows: int = Field(default=10_000, ge=100, le=100_000_000)
+    hnsw_m: int = Field(default=16, ge=2, le=100)
+    hnsw_ef_construction: int = Field(default=64, ge=4, le=1000)
+    hnsw_ef_search: int = Field(default=40, ge=1, le=1000)
     is_default: bool = False
 
 
@@ -373,8 +379,8 @@ class SaveEvalSuiteRequest(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     description: str = Field(default="", max_length=4000)
     status: Literal["draft", "active"] = "active"
-    target_types: list[Literal["agent", "scenario", "capability"]] = Field(
-        min_length=1, max_length=3
+    target_types: list[Literal["agent", "scenario", "capability", "embedding_profile"]] = Field(
+        min_length=1, max_length=4
     )
     thresholds: dict[str, Any] = Field(default_factory=dict)
     cases: list[EvalCaseRequest] = Field(min_length=1, max_length=1000)
@@ -383,7 +389,7 @@ class SaveEvalSuiteRequest(BaseModel):
 class CreateEvalRunRequest(BaseModel):
     suite_id: str = Field(pattern=_ID_PATTERN)
     suite_version: int = Field(ge=1)
-    target_type: Literal["agent", "scenario", "capability"]
+    target_type: Literal["agent", "scenario", "capability", "embedding_profile"]
     target_id: str = Field(pattern=_ID_PATTERN)
     target_revision_id: str = Field(pattern=_ID_PATTERN)
     idempotency_key: str | None = Field(default=None, max_length=256)
@@ -398,7 +404,7 @@ class SaveEvalScheduleRequest(BaseModel):
     policy_id: str = Field(pattern=_ID_PATTERN)
     suite_id: str = Field(pattern=_ID_PATTERN)
     suite_version: int = Field(ge=1)
-    target_type: Literal["agent", "scenario", "capability"]
+    target_type: Literal["agent", "scenario", "capability", "embedding_profile"]
     target_id: str = Field(pattern=_ID_PATTERN)
     target_revision_id: str = Field(pattern=_ID_PATTERN)
     cadence_seconds: int = Field(ge=60, le=31_536_000)

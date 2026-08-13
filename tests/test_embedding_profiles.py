@@ -40,6 +40,7 @@ def _provider_configuration() -> dict:
                 "enabled": True,
                 "input_modalities": ["text"],
                 "dimensions": 3,
+                "input_cost_per_million_tokens": 0,
             },
         ],
     }

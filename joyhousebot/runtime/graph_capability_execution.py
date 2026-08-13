@@ -105,6 +105,7 @@ async def execute_graph_capability(
             turn_index=task.attempt,
             action_index=0,
             metadata={
+                **dict(task.payload.get("metadata") or {}),
                 "scenario_id": str(getattr(scenario_state, "scenario_id", "") or ""),
                 "scenario_version": int(
                     getattr(scenario_state, "scenario_version", 0) or 0

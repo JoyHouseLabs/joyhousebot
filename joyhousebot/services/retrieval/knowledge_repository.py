@@ -14,6 +14,10 @@ from joyhousebot.services.retrieval.knowledge_base_repository import (
 from joyhousebot.services.retrieval.knowledge_health_repository import (
     KnowledgeHealthRepositoryMixin,
 )
+from joyhousebot.services.retrieval.knowledge_maintenance_repository import (
+    KNOWLEDGE_MAINTENANCE_DDL,
+    KnowledgeMaintenanceRepositoryMixin,
+)
 from joyhousebot.services.retrieval.knowledge_revision_repository import (
     KNOWLEDGE_REVISION_DDL,
     KnowledgeRevisionRepositoryMixin,
@@ -26,6 +30,7 @@ from joyhousebot.storage.json_codec import Jsonb
 
 
 class KnowledgeRepository(
+    KnowledgeMaintenanceRepositoryMixin,
     KnowledgeVectorRepositoryMixin,
     KnowledgeRevisionRepositoryMixin,
     KnowledgeHealthRepositoryMixin,
@@ -122,6 +127,7 @@ class KnowledgeRepository(
                 connection.execute(KNOWLEDGE_BASE_DDL)
                 connection.execute(KNOWLEDGE_REVISION_DDL)
                 connection.execute(KNOWLEDGE_VECTOR_DDL)
+                connection.execute(KNOWLEDGE_MAINTENANCE_DDL)
                 connection.execute(
                     """UPDATE knowledge_chunks active
                           SET revision_id=document.active_revision_id,

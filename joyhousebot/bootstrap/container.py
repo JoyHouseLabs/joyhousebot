@@ -23,6 +23,7 @@ from joyhousebot.application.graph_events import GraphEventService
 from joyhousebot.application.graph_patches import GraphPatchService
 from joyhousebot.application.input_assets import InputAssetService
 from joyhousebot.application.knowledge_assets import KnowledgeAssetService
+from joyhousebot.application.knowledge_maintenance import KnowledgeMaintenanceService
 from joyhousebot.application.memory_candidates import MemoryCandidateService
 from joyhousebot.application.model_providers import ModelProviderService
 from joyhousebot.application.platform import PlatformService
@@ -66,6 +67,7 @@ class ApplicationContainer:
     approvals: ApprovalService
     reconciliations: ReconciliationService
     knowledge_assets: KnowledgeAssetService
+    knowledge_maintenance: KnowledgeMaintenanceService
     input_assets: InputAssetService
     memory_candidates: MemoryCandidateService
     graph_events: GraphEventService
@@ -231,6 +233,7 @@ def build_api_container(
         approvals=ApprovalService(runtime, runs, store),
         reconciliations=ReconciliationService(runtime, runs, store),
         knowledge_assets=KnowledgeAssetService(store, runtime),
+        knowledge_maintenance=KnowledgeMaintenanceService(store),
         input_assets=InputAssetService(store),
         memory_candidates=MemoryCandidateService(store),
         graph_events=GraphEventService(runtime, runs, store),

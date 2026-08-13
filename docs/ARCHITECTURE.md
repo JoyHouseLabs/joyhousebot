@@ -108,7 +108,8 @@ Client ──HTTP/SSE──▶ API replicas ────────────
   心跳或转入 `running`，且在真正终态前仍以 `running` 身份阻塞同会话下一个顶层 Run 的 claim；
   owning Worker 死亡时由协调器的恢复扫描把标记 Run 推进到 `cancelled`，保证取消最终完成。
 - 不完整 Run 的恢复顺序按用户轮转，避免单个用户占满恢复队列。
-- Schedule occurrence、Channel lease/outbox、Provider profile health、Memory 和 Knowledge 都是集群共享的规范化状态。
+- Schedule occurrence、Channel lease/outbox、Provider profile health、Memory、Knowledge、重嵌入作业和向量索引
+  状态都是集群共享的规范化状态。
 - Channel 投递成功或失败会写 delivery audit；外部连接所有权由带续租的 channel lease 决定。
 - Channel 的 PG Outbox、Lease、`RunAdapter` 和 `ChannelRuntimeBridge` 属于 Core；供应商协议属于扩展。
   `ChannelRegistry` 默认为空，只发现 `joyhousebot.channels` entry point，并只启用
@@ -542,8 +543,9 @@ api / bootstrap / channel adapter
   Task 通过独立执行模块复用 Durable Turn/Action、审批、外部对账和 Verification。
 - `agent/`：共享 NativeAgentExecutor，拆分为模型调用、轮次引擎、Tool runtime、消息处理、记忆生命周期；每次执行状态来自不可变 `RunContext`。
 - `storage/`：PostgreSQL RuntimeStore；使用连接池、advisory migration lock、`SKIP LOCKED` 和 LISTEN/NOTIFY 唤醒。空闲 Worker 不做全量扫描：NOTIFY 命中立即扫描，poll 唤醒只做轻量 EXISTS 探测且间隔指数退避（0.2s 起步封顶 2s），另有 30s 深扫兜底防丢通知。
-- `scheduling/`、`channels/`、`services/retrieval/`：Schedule、Channel outbox/lease、Knowledge 的专用 Repository。
-- `bootstrap/`：分别组合 API、Agent Worker、Scheduler Worker 和 Channel Worker；AgentRuntimeCatalog 按不可变 revision 热加载，不共享进程内业务状态。
+- `scheduling/`、`channels/`、`services/retrieval/`：Schedule、Channel outbox/lease、Knowledge 的专用 Repository；
+  Knowledge 内部把不可变修订、Embedding 执行治理、重嵌入 lease/fencing 和 ANN 索引生命周期分别实现。
+- `bootstrap/`：分别组合 API、Agent Worker、Scheduler Worker 和 Channel Worker；AgentRuntimeCatalog 按不可变 revision 热加载，不共享进程内业务状态。Agent Worker 同时 claim 重嵌入 item 并定期对账 ANN 索引；API 只创建/查询/取消作业，不执行 Embedding 或索引 DDL。
 
 一次消息的真实路径是：浏览器提交 `POST /v1/runs` → API 写入 `runtime_runs` 并通知工作 → 任一 Agent Worker 原子 claim → NativeAgentExecutor 产生 Event/Log/Artifact/Task → PG 原子提交终态 → 浏览器按 sequence 通过 SSE 回放。Session 不是独立聊天进程，而是对同一 `user_id + agent_id + session_id` 下 Run 历史的投影。`conversation_sessions.state` 只是 consolidation 缓存：持久化副本最多保留最新 200 条且消息数组不超过 256 KiB（`last_consolidated` 随截断平移），事实源始终是 Run 历史。
 

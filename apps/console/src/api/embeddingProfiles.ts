@@ -18,6 +18,12 @@ export interface EmbeddingProfileConfiguration {
   batch_size: number
   max_input_tokens: number
   max_cost_usd: number
+  requests_per_minute: number
+  tokens_per_minute: number
+  ann_min_rows: number
+  hnsw_m: number
+  hnsw_ef_construction: number
+  hnsw_ef_search: number
 }
 
 export interface EmbeddingProfileRevision {
@@ -55,6 +61,13 @@ export interface EmbeddingReadiness {
     revision_id: string
     model_id: string
     dimensions: number
+  } | null
+  vector_index?: {
+    algorithm: 'exact' | 'hnsw'
+    status: string
+    row_count: number
+    min_rows: number
+    index_name?: string | null
   } | null
   blockers: string[]
 }
