@@ -27,9 +27,34 @@ def _client(tmp_path: Path) -> tuple[TestClient, PostgresTestStore]:
     return TestClient(create_app(container)), store
 
 
+def _route_paths(*, surface: str = "combined", container=None) -> set[str]:
+    """Return concrete HTTP route paths across supported FastAPI versions."""
+    app = (
+        create_app(container, surface=surface)
+        if container is not None
+        else create_app(surface=surface)
+    )
+
+    def collect(routes, prefix: str = "") -> set[str]:
+        paths: set[str] = set()
+        for route in routes:
+            path = getattr(route, "path", None)
+            if isinstance(path, str):
+                paths.add(f"{prefix}{path}")
+                continue
+            included = getattr(route, "original_router", None)
+            context = getattr(route, "include_context", None)
+            included_prefix = getattr(context, "prefix", "")
+            if included is not None:
+                paths.update(collect(included.routes, f"{prefix}{included_prefix}"))
+        return paths
+
+    return collect(app.routes)
+
+
 def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
-    public_paths = {route.path for route in create_app(surface="public").routes}
-    control_paths = {route.path for route in create_app(surface="control").routes}
+    public_paths = _route_paths(surface="public")
+    control_paths = _route_paths(surface="control")
     assert "/v1/runs" in public_paths
     assert "/v1/admin/overview" not in public_paths
     assert "/v1/admin/overview" in control_paths
@@ -355,9 +380,7 @@ def test_api_does_not_load_or_execute_extension_projections(tmp_path: Path) -> N
     store = PostgresTestStore(tmp_path / "projection.db")
     container = build_api_container(config=config, store=store)
     assert not hasattr(container, "plugins")
-    assert "/v1/runs/{run_id}/projection" not in {
-        route.path for route in create_app(container).routes
-    }
+    assert "/v1/runs/{run_id}/projection" not in _route_paths(container=container)
 
 
 def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Path) -> None:
