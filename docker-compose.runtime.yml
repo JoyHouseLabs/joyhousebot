@@ -28,7 +28,7 @@ services:
     build: *runtime_build
     command: ["api", "--surface", "public", "--host", "0.0.0.0", "--port", "18790"]
     environment: &runtime_env
-      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+      JOYHOUSE_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
       # Schema is owned by the one-shot migrate service below. Runtime roles
       # must never race DDL with another role's catalog bootstrap writes.
@@ -112,7 +112,7 @@ services:
     environment:
       # Channel worker only submits runs and never calls LLM providers, so it
       # must not inherit provider API keys from the runtime env anchor above.
-      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+      JOYHOUSE_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
       JOYHOUSEBOT_AUTO_MIGRATE: "false"
       JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
@@ -132,7 +132,7 @@ services:
     build: *runtime_build
     command: ["check"]
     environment:
-      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+      JOYHOUSE_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
       JOYHOUSEBOT_CONFIG_PATH: /app/config.json
       JOYHOUSEBOT_AUTO_MIGRATE: "true"
       JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
