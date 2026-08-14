@@ -10,6 +10,7 @@ from typing import Any
 from joyhousebot.application.errors import ConflictError, NotFoundError, ValidationError
 from joyhousebot.application.evals import stable_observation_hash
 from joyhousebot.domain.capabilities.models import CapabilityRef
+from joyhousebot.domain.prompts import render_prompt_document
 from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
 from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 
@@ -138,6 +139,10 @@ class EvalExecutionService:
         target_type = str(eval_run["target_type"])
         if target_type == "agent":
             return await self._execute_agent(eval_run, case, timeout_seconds=timeout_seconds)
+        if target_type == "prompt":
+            return await self._execute_prompt(eval_run, case, timeout_seconds=timeout_seconds)
+        if target_type == "skill":
+            return await self._execute_skill(eval_run, case, timeout_seconds=timeout_seconds)
         if target_type == "scenario":
             return await self._execute_scenario(eval_run, case)
         if target_type == "capability":
@@ -149,6 +154,105 @@ class EvalExecutionService:
                 eval_run, case, timeout_seconds=timeout_seconds
             )
         raise ValidationError(f"unsupported evaluation target: {target_type}")
+
+    async def _execute_prompt(
+        self,
+        eval_run: dict[str, Any],
+        case: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], str, str]:
+        prompt_revision = await asyncio.to_thread(
+            self.store.get_prompt_revision, str(eval_run["target_revision_id"])
+        )
+        if prompt_revision is None or prompt_revision["prompt_id"] != str(eval_run["target_id"]):
+            raise ConflictError("exact Prompt revision is unavailable")
+        values = dict(case.get("input") or {})
+        instruction = render_prompt_document(
+            prompt_revision, dict(values.get("variables") or {})
+        )
+        return await self._execute_instruction_asset(
+            eval_run,
+            case,
+            instruction=instruction,
+            instruction_ref={
+                "prompt_id": prompt_revision["prompt_id"],
+                "revision_id": prompt_revision["revision_id"],
+                "content_sha256": prompt_revision["content_sha256"],
+            },
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def _execute_skill(
+        self,
+        eval_run: dict[str, Any],
+        case: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], str, str]:
+        skill = await asyncio.to_thread(
+            self.store.get_skill_version,
+            str(eval_run["target_id"]),
+            str(eval_run["target_revision_id"]),
+        )
+        if skill is None:
+            raise ConflictError("exact Skill version is unavailable")
+        return await self._execute_instruction_asset(
+            eval_run,
+            case,
+            instruction=str(skill["instruction_content"]),
+            instruction_ref={
+                "skill_id": skill["skill_id"],
+                "version": skill["version"],
+                "content_sha256": skill["content_sha256"],
+            },
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def _execute_instruction_asset(
+        self,
+        eval_run: dict[str, Any],
+        case: dict[str, Any],
+        *,
+        instruction: str,
+        instruction_ref: dict[str, str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], str, str]:
+        """Evaluate a Prompt/Skill with an explicitly selected executor Agent."""
+        values = dict(case.get("input") or {})
+        prompt = str(values.get("prompt") or "").strip()
+        if not prompt:
+            raise ValidationError("instruction asset evaluation case requires input.prompt")
+        agent_id = str(values.get("agent_id") or "default")
+        revision_id = values.get("agent_revision_id")
+        bounded_timeout = min(timeout_seconds, float(values.get("timeout_seconds") or timeout_seconds))
+        record = await self.runtime.submit_run(
+            AgentOptions(
+                prompt=prompt,
+                user_id=f"eval:{eval_run['eval_run_id']}",
+                session_id=f"eval:{eval_run['eval_run_id']}:{case['case_id']}",
+                agent_id=agent_id,
+                agent_revision_id=str(revision_id) if revision_id else None,
+                model=values.get("model"),
+                system_prompt=instruction,
+                output_schema=(
+                    dict(values["output_schema"]) if values.get("output_schema") else None
+                ),
+                timeout_seconds=bounded_timeout,
+                metadata={
+                    "eval_run_id": eval_run["eval_run_id"],
+                    "eval_case_id": case["case_id"],
+                    "evaluation": True,
+                    "instruction_asset": instruction_ref,
+                },
+                idempotency_key=f"eval:{eval_run['eval_run_id']}:{case['case_id']}",
+            )
+        )
+        final = await self.runtime.wait(record.run_id, timeout=bounded_timeout + 5)
+        if final is None or final.status not in _TERMINAL:
+            await self.runtime.cancel(record.run_id, reason="evaluation case timeout")
+            final = await self.runtime.wait(record.run_id, timeout=5)
+        return await self._runtime_evidence(final or record)
 
     async def _execute_agent(
         self,

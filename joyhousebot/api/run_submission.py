@@ -71,6 +71,7 @@ async def submit_create_run(
             input=body.input.content,
             model=body.model,
             system_prompt=body.system_prompt,
+            experiment_id=body.experiment_id,
             allowed_tools=body.allowed_tools,
             output_schema=body.output_schema,
             verification_policy=body.verification_policy,

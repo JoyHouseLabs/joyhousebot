@@ -134,6 +134,41 @@ class AgentTerminalMixin:
             for prior_event in bundle[0]:
                 await self.events.fanout(prior_event)
             await self.events.fanout(persisted)
+            assignment = dict(
+                dict(record.options or {}).get("metadata") or {}
+            ).get("experiment_assignment")
+            experiment_id = (
+                str(assignment.get("experiment_id") or "")
+                if isinstance(assignment, dict)
+                else ""
+            )
+            if experiment_id:
+                try:
+                    guardrail = await asyncio.to_thread(
+                        self.store.enforce_experiment_guardrails, experiment_id
+                    )
+                    if guardrail.get("paused"):
+                        await self._log(
+                            run_id,
+                            "experiment.guardrail_paused",
+                            "Experiment was automatically paused by a guardrail",
+                            level="warning",
+                            data={
+                                "experiment_id": experiment_id,
+                                "violations": guardrail.get("violations") or [],
+                            },
+                        )
+                except Exception:
+                    # A governance summary must never invalidate an already
+                    # committed terminal Run. The next terminal Run or an
+                    # operator summary will retry the guardrail check.
+                    await self._log(
+                        run_id,
+                        "experiment.guardrail_check_failed",
+                        "Experiment guardrail check failed after terminal commit",
+                        level="warning",
+                        data={"experiment_id": experiment_id},
+                    )
         return persisted
 
     async def _ensure_run_owned(

@@ -18,6 +18,7 @@ from joyhousebot.application.embedding_profiles import EmbeddingProfileService
 from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
 from joyhousebot.application.event_triggers import EventTriggerService
+from joyhousebot.application.experiments import ExperimentService
 from joyhousebot.application.feedback import FeedbackService
 from joyhousebot.application.graph_events import GraphEventService
 from joyhousebot.application.graph_patches import GraphPatchService
@@ -27,6 +28,7 @@ from joyhousebot.application.knowledge_maintenance import KnowledgeMaintenanceSe
 from joyhousebot.application.memory_candidates import MemoryCandidateService
 from joyhousebot.application.model_providers import ModelProviderService
 from joyhousebot.application.platform import PlatformService
+from joyhousebot.application.prompts import PromptService
 from joyhousebot.application.reconciliations import ReconciliationService
 from joyhousebot.application.remote_connections import RemoteConnectionService
 from joyhousebot.application.replays import ReplayService
@@ -79,6 +81,7 @@ class ApplicationContainer:
     feedback: FeedbackService
     evals: EvalService
     eval_execution: EvalExecutionService
+    experiments: ExperimentService
     event_triggers: EventTriggerService
     scenarios: ScenarioStudioService
     works: WorkService
@@ -87,6 +90,7 @@ class ApplicationContainer:
     model_providers: ModelProviderService
     embedding_profiles: EmbeddingProfileService
     skills: SkillService
+    prompts: PromptService
     app_packs: AppPackService
     app_delegation: AppDelegationService
     app_callbacks: AppCallbackService
@@ -250,6 +254,7 @@ def build_api_container(
             evals=evals,
             scenarios=scenarios,
         ),
+        experiments=ExperimentService(store),
         event_triggers=EventTriggerService(
             runtime,
             store,
@@ -266,6 +271,7 @@ def build_api_container(
         model_providers=ModelProviderService(store),
         embedding_profiles=EmbeddingProfileService(store),
         skills=SkillService(store),
+        prompts=PromptService(store),
         app_packs=AppPackService(store),
         app_delegation=AppDelegationService(store),
         app_callbacks=AppCallbackService(store),

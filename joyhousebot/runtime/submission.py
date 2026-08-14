@@ -224,6 +224,16 @@ class SubmissionMixin(GraphMaterializationMixin):
                 options.agent_id,
                 revision_id=options.agent_revision_id,
             )
+            experiment_assignment = dict(options.metadata or {}).get("experiment_assignment")
+            if isinstance(experiment_assignment, dict) and experiment_assignment.get(
+                "experiment_id"
+            ):
+                await asyncio.to_thread(
+                    self.store.record_experiment_assignment,
+                    run_id=record.run_id,
+                    user_id=record.user_id,
+                    assignment=experiment_assignment,
+                )
             if (
                 profile is not None
                 and top_level

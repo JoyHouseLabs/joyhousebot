@@ -44,6 +44,27 @@ class RunService:
         decision = resolved.decision
         orchestration = resolved.orchestration
         effective_agent_id = resolved.agent_id
+        effective_agent_revision_id = (
+            team.coordinator.agent_revision_id if team is not None else resolved.agent_revision_id
+        )
+        experiment_assignment: dict[str, Any] | None = None
+        if command.experiment_id:
+            if command.execution.mode != "agent":
+                raise ValidationError("online experiments currently support direct Agent Runs only")
+            try:
+                experiment_assignment = await asyncio.to_thread(
+                    self.store.select_experiment_variant,
+                    experiment_id=command.experiment_id,
+                    subject_id=context.user_id,
+                    target_id=effective_agent_id,
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            if experiment_assignment is not None:
+                effective_agent_id = str(experiment_assignment["target_id"])
+                effective_agent_revision_id = str(
+                    experiment_assignment["target_revision_id"]
+                )
         if scenario is not None:
             try:
                 self.clarifications.validate_inputs(scenario, decision.extracted_inputs)
@@ -75,6 +96,8 @@ class RunService:
             # structured coordinator turn merely because no Scenario matched.
             "coordinator_required": coordinator_required,
         }
+        if experiment_assignment is not None:
+            metadata["experiment_assignment"] = experiment_assignment
         if team is not None:
             metadata.update(
                 {
@@ -124,9 +147,7 @@ class RunService:
             user_id=context.user_id,
             agent_id=effective_agent_id,
             agent_revision_id=(
-                team.coordinator.agent_revision_id
-                if team is not None
-                else resolved.agent_revision_id
+                effective_agent_revision_id
             ),
             session_id=session_id,
             model=command.model,
@@ -230,7 +251,7 @@ class RunService:
                         user_id=context.user_id,
                         session_id=session_id,
                         agent_id=effective_agent_id,
-                        agent_revision_id=resolved.agent_revision_id,
+                        agent_revision_id=effective_agent_revision_id,
                         idempotency_key=context.idempotency_key,
                         request_id=context.request_id,
                         tracker_id=context.tracker_id,

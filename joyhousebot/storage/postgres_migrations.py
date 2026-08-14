@@ -183,6 +183,8 @@ class PostgresMigrationMixin:
             self.migrate_graph_sagas()
             self.migrate_graph_patches()
             self.migrate_evals()
+            self.migrate_experiments()
+            self.migrate_prompts()
             self.migrate_works()
             self.migrate_graph_event_waits()
             self.migrate_execution_loop()

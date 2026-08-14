@@ -450,6 +450,13 @@ class PostgresAgentStoreMixin:
             revision = profile.revision
             resolved_agent_id = profile.definition.agent_id
         bindings = tuple(self.list_agent_skill_bindings(revision.revision_id))
+        prompt_bindings = tuple(
+            self.list_active_prompt_bindings(
+                target_type="agent",
+                target_id=resolved_agent_id,
+                target_revision_id=revision.revision_id,
+            )
+        )
         capability_policy = resolve_capability_policy(
             revision.capability_policy,
             self.list_capability_definitions(),
@@ -466,6 +473,7 @@ class PostgresAgentStoreMixin:
             "monitor_policy": revision.monitor_policy,
             "plugin_requirements": [item.to_dict() for item in revision.plugin_requirements],
             "skill_bindings": list(bindings),
+            "prompt_bindings": list(prompt_bindings),
         }
         with self._pool.connection() as conn, conn.transaction():
             row = conn.execute(
@@ -518,6 +526,7 @@ class PostgresAgentStoreMixin:
                 for item in value.get("plugin_requirements") or ()
             ),
             skill_bindings=tuple(value.get("skill_bindings") or ()),
+            prompt_bindings=tuple(value.get("prompt_bindings") or ()),
             created_at=value.get("created_at"),
         )
 

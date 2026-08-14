@@ -158,10 +158,15 @@ class AgentExecutionSnapshot:
     monitor_policy: dict[str, Any] = field(default_factory=dict)
     plugin_requirements: tuple[PluginReleaseRequirement, ...] = ()
     skill_bindings: tuple[dict[str, Any], ...] = ()
+    # Prompt revisions are copied as text plus a content digest when the Run
+    # is accepted.  Later edits, unbindings, or a new published Prompt can
+    # therefore never change an already accepted execution.
+    prompt_bindings: tuple[dict[str, Any], ...] = ()
     created_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["skill_bindings"] = list(self.skill_bindings)
+        value["prompt_bindings"] = list(self.prompt_bindings)
         value["plugin_requirements"] = [item.to_dict() for item in self.plugin_requirements]
         return value

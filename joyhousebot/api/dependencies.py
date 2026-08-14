@@ -330,6 +330,15 @@ SkillsWriterDep = Annotated[
 SkillsPublisherDep = Annotated[
     Principal, Depends(_permission_dependency("skills.publish", "Skill publish permission required"))
 ]
+PromptsReaderDep = Annotated[
+    Principal, Depends(_permission_dependency("prompts.read", "Prompt read permission required"))
+]
+PromptsWriterDep = Annotated[
+    Principal, Depends(_permission_dependency("prompts.write", "Prompt write permission required"))
+]
+PromptsPublisherDep = Annotated[
+    Principal, Depends(_permission_dependency("prompts.publish", "Prompt publish permission required"))
+]
 AppsReaderDep = Annotated[
     Principal, Depends(_permission_dependency("apps.read", "App Pack read permission required"))
 ]

@@ -44,6 +44,7 @@ class CreateRunCommand:
     interaction_mode: str = "auto"
     model: str | None = None
     system_prompt: str | None = None
+    experiment_id: str | None = None
     allowed_tools: list[str] | None = None
     output_schema: dict[str, Any] | None = None
     verification_policy: dict[str, Any] = field(default_factory=dict)

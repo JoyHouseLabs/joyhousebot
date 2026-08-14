@@ -161,13 +161,15 @@ export const consoleCenters: ConsoleCenter[] = [
     navItems: [
       { to: '/overview', label: '运行概览', icon: 'O' },
       { to: '/evaluations', label: '评测门禁', icon: 'E' },
+      { to: '/prompt-governance', label: 'Prompt 与实验', icon: 'P' },
       { to: '/platform', label: '平台治理', icon: 'P' },
       { to: '/security', label: '安全', icon: 'G' },
     ],
-    routePrefixes: ['/overview', '/evaluations', '/platform', '/security'],
+    routePrefixes: ['/overview', '/evaluations', '/prompt-governance', '/platform', '/security'],
     modules: [
       { name: '运行概览', description: '观察 API、PostgreSQL、Worker、Provider、Run 和 Schedule。', icon: 'O', status: 'available', statusLabel: '可用', to: '/overview' },
       { name: '评测门禁', description: '用评测结果决定版本是否具备发布和切换资格。', icon: 'E', status: 'available', statusLabel: '可用', to: '/evaluations' },
+      { name: 'Prompt 与实验', description: '评审 Prompt 资产，并用稳定分桶和护栏验证版本。', icon: 'P', status: 'available', statusLabel: '可用', to: '/prompt-governance' },
       { name: '平台治理', description: '管理运行时策略、资源限制和控制面公共配置。', icon: 'P', status: 'available', statusLabel: '可用', to: '/platform' },
       { name: '安全与审计', description: '检查身份、权限、密钥引用和高风险操作边界。', icon: 'G', status: 'available', statusLabel: '可用', to: '/security' },
       { name: '执行回放', description: '沿 Run 还原 Task、Event、Trace、Artifact 和错误恢复过程。', icon: 'R', status: 'connected', statusLabel: '跨中心', to: '/runs' },

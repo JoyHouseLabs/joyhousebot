@@ -474,6 +474,30 @@ class AgentExecutionMixin(AgentTerminalMixin):
 
         runtime_record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
         stored_options = dict(runtime_record.options or {}) if runtime_record else {}
+        snapshot_reader = getattr(self.store, "get_run_execution_snapshot", None)
+        execution_snapshot = (
+            await asyncio.to_thread(snapshot_reader, run_id)
+            if snapshot_reader is not None
+            else None
+        )
+        # Prompt content is copied into the accepted Run snapshot.  Resolve it
+        # here, rather than consulting mutable control-plane bindings during a
+        # Worker retry, so replay and lease takeover execute the same policy.
+        frozen_prompt_bindings = (
+            tuple(getattr(execution_snapshot, "prompt_bindings", ()) or ())
+            if execution_snapshot is not None
+            and agent_id in {"default", execution_snapshot.agent_id}
+            else ()
+        )
+        frozen_prompt_content = [
+            str(item.get("content") or "").strip()
+            for item in frozen_prompt_bindings
+            if isinstance(item, dict) and str(item.get("content") or "").strip()
+        ]
+        if frozen_prompt_content:
+            system_prompt = "\n\n---\n\n".join(
+                [*frozen_prompt_content, *([system_prompt] if system_prompt else [])]
+            )
         request_id, tracker_id = ensure_tracking_ids(
             request_id=stored_options.get("request_id") or f"req_{run_id}",
             tracker_id=stored_options.get("tracker_id"),
@@ -499,6 +523,19 @@ class AgentExecutionMixin(AgentTerminalMixin):
             scenario_state=scenario_state,
             scenario_execution_policy=scenario_execution_policy,
         )
+        if frozen_prompt_bindings:
+            # Tool/connector metadata carries only immutable identifiers and
+            # digests, never full Prompt text.
+            execution_metadata["prompt_revisions"] = [
+                {
+                    "prompt_id": str(item.get("prompt_id") or ""),
+                    "revision_id": str(item.get("revision_id") or ""),
+                    "content_sha256": str(item.get("content_sha256") or ""),
+                    "purpose": str(item.get("purpose") or "system_instruction"),
+                }
+                for item in frozen_prompt_bindings
+                if isinstance(item, dict)
+            ]
         context = RunContext(
             run_id=run_id,
             task_id=task_id,

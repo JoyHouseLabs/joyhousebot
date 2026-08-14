@@ -41,6 +41,7 @@ from joyhousebot.storage.postgres_embedding_profiles import (
 from joyhousebot.storage.postgres_evals import PostgresEvalStoreMixin
 from joyhousebot.storage.postgres_event_triggers import PostgresEventTriggerStoreMixin
 from joyhousebot.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
+from joyhousebot.storage.postgres_experiments import PostgresExperimentStoreMixin
 from joyhousebot.storage.postgres_extension_inventory import (
     PostgresExtensionInventoryStoreMixin,
 )
@@ -66,6 +67,7 @@ from joyhousebot.storage.postgres_operational_metrics import (
 )
 from joyhousebot.storage.postgres_operations import PostgresOperationsStoreMixin
 from joyhousebot.storage.postgres_plugins import PostgresPluginStoreMixin
+from joyhousebot.storage.postgres_prompts import PostgresPromptStoreMixin
 from joyhousebot.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
 from joyhousebot.storage.postgres_reconciliations import PostgresReconciliationStoreMixin
 from joyhousebot.storage.postgres_remote_connections import (
@@ -123,6 +125,8 @@ class PostgresRuntimeStore(
     PostgresGraphSubrunStoreMixin,
     PostgresGraphPatchStoreMixin,
     PostgresEvalStoreMixin,
+    PostgresExperimentStoreMixin,
+    PostgresPromptStoreMixin,
     PostgresWorkStoreMixin,
     PostgresGraphWaitEventStoreMixin,
     PostgresAdminStoreMixin,

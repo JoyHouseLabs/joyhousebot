@@ -58,6 +58,7 @@ class CreateRunRequest(StrictRunModel):
     input: RunInput
     model: str | None = None
     system_prompt: str | None = None
+    experiment_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     allowed_tools: list[Annotated[str, Field(pattern=_ID_PATTERN)]] | None = Field(
         default=None, max_length=128
     )

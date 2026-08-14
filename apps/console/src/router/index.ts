@@ -39,6 +39,7 @@ const router = createRouter({
         { path: 'platform', name: 'Platform', component: () => import('../views/Platform.vue') },
         { path: 'security', name: 'Security', component: () => import('../views/Security.vue') },
         { path: 'evaluations', name: 'Evaluations', component: () => import('../views/Evaluations.vue') },
+        { path: 'prompt-governance', name: 'PromptGovernance', component: () => import('../views/PromptGovernance.vue') },
         { path: 'extensions', name: 'Extensions', component: () => import('../views/Plugins.vue') },
         { path: 'models', name: 'ModelProviders', component: () => import('../views/ModelProviders.vue') },
         { path: 'extensions/:pluginId', name: 'ExtensionDetail', component: () => import('../views/PluginDetail.vue') },

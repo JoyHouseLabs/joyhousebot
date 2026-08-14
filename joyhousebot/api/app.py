@@ -27,9 +27,11 @@ from joyhousebot.api.routers import (
     admin_catalog,
     admin_embedding_profiles,
     admin_evals,
+    admin_experiments,
     admin_model_providers,
     admin_platform,
     admin_plugins,
+    admin_prompts,
     admin_remote_connections,
     admin_scenarios,
     admin_skills,
@@ -318,7 +320,9 @@ def create_app(
         app.include_router(admin_evals.router, prefix=prefix)
         app.include_router(admin_model_providers.router, prefix=prefix)
         app.include_router(admin_embedding_profiles.router, prefix=prefix)
+        app.include_router(admin_experiments.router, prefix=prefix)
         app.include_router(admin_plugins.router, prefix=prefix)
+        app.include_router(admin_prompts.router, prefix=prefix)
         app.include_router(admin_remote_connections.router, prefix=prefix)
         app.include_router(admin_scenarios.router, prefix=prefix)
         app.include_router(admin_skills.router, prefix=prefix)
