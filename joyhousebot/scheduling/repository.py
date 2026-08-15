@@ -13,6 +13,7 @@ from joyhousebot.scheduling.row_mapper import (
     schedule_job_from_row,
 )
 from joyhousebot.scheduling.schema import (
+    SCHEDULE_CURRENT_SCHEMA_V4_DDL,
     SCHEDULE_DDL,
     SCHEDULE_DROP_RUN_IDS_V3_DDL,
     SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
@@ -51,7 +52,7 @@ class ScheduleRepository:
                 schedule_description = (
                     "durable schedules, occurrences, monitor state, and delivery"
                 )
-                schedule_recorded = self.store._migration_is_recorded(
+                self.store._migration_is_recorded(
                     connection,
                     name="scheduling",
                     version=1,
@@ -61,7 +62,19 @@ class ScheduleRepository:
                 schedule_table = connection.execute(
                     "SELECT to_regclass('public.schedule_occurrences') AS name"
                 ).fetchone()
-                if not schedule_recorded or not (schedule_table and schedule_table["name"]):
+                # Do not replay the immutable v1 script merely because a
+                # migration-history row was removed. v1 contains the legacy
+                # ``run_ids`` column, which v3 deliberately drops. Repeating
+                # that add/drop cycle leaks PostgreSQL attribute slots.
+                schedules_table = connection.execute(
+                    "SELECT to_regclass('public.schedules') AS name"
+                ).fetchone()
+                if not (
+                    schedule_table
+                    and schedule_table["name"]
+                    and schedules_table
+                    and schedules_table["name"]
+                ):
                     connection.execute(SCHEDULE_DDL)
                 self.store._record_migration(
                     connection,
@@ -71,7 +84,7 @@ class ScheduleRepository:
                     description=schedule_description,
                 )
                 relation_description = "normalized occurrence-to-Run submission history"
-                relation_recorded = self.store._migration_is_recorded(
+                self.store._migration_is_recorded(
                     connection,
                     name="scheduling",
                     version=2,
@@ -81,7 +94,7 @@ class ScheduleRepository:
                 relation_table = connection.execute(
                     "SELECT to_regclass('public.schedule_occurrence_runs') AS name"
                 ).fetchone()
-                if not relation_recorded or not (relation_table and relation_table["name"]):
+                if not (relation_table and relation_table["name"]):
                     connection.execute(SCHEDULE_OCCURRENCE_RUNS_V2_DDL)
                 self.store._record_migration(
                     connection,
@@ -91,7 +104,7 @@ class ScheduleRepository:
                     description=relation_description,
                 )
                 drop_description = "remove legacy JSON occurrence-to-Run history"
-                drop_recorded = self.store._migration_is_recorded(
+                self.store._migration_is_recorded(
                     connection,
                     name="scheduling",
                     version=3,
@@ -104,7 +117,7 @@ class ScheduleRepository:
                          AND table_name='schedule_occurrences'
                          AND column_name='run_ids'"""
                 ).fetchone()
-                if not drop_recorded or legacy_column:
+                if legacy_column:
                     connection.execute(SCHEDULE_DROP_RUN_IDS_V3_DDL)
                 self.store._record_migration(
                     connection,
@@ -112,6 +125,23 @@ class ScheduleRepository:
                     version=3,
                     ddl=SCHEDULE_DROP_RUN_IDS_V3_DDL,
                     description=drop_description,
+                )
+                current_description = "repair current schedule schema without legacy run_ids"
+                current_recorded = self.store._migration_is_recorded(
+                    connection,
+                    name="scheduling",
+                    version=4,
+                    ddl=SCHEDULE_CURRENT_SCHEMA_V4_DDL,
+                    description=current_description,
+                )
+                if not current_recorded:
+                    connection.execute(SCHEDULE_CURRENT_SCHEMA_V4_DDL)
+                self.store._record_migration(
+                    connection,
+                    name="scheduling",
+                    version=4,
+                    ddl=SCHEDULE_CURRENT_SCHEMA_V4_DDL,
+                    description=current_description,
                 )
 
     def create(self, job: CronJob) -> CronJob:

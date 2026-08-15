@@ -20,6 +20,7 @@
 - [SKILLS.md](SKILLS.md)：声明式 Skill 的资产、发布与分发模型。
 - [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)：Knowledge Core/扩展边界、版本索引和乱序保护。
 - [MULTIMODAL_RETRIEVAL_EXTENSION_CONTRACT.md](MULTIMODAL_RETRIEVAL_EXTENSION_CONTRACT.md)：文档、视觉、Embedding 与 Rerank 的 Extension 契约。
+- [WORK_ASSET_CLOSED_LOOP.md](WORK_ASSET_CLOSED_LOOP.md)：Artifact 成果化、Work 版本、App 交接、结果回流与审计闭环设计。
 - [mcp-gateway.md](mcp-gateway.md)：Streamable HTTP MCP 网关、调用语义与部署 Origin 配置。
 
 ### App 与生态协议

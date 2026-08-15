@@ -68,6 +68,11 @@ JoyhouseBot 不复制这些表和逻辑，也不将 App 的业务数据库变为
 
 App 只能保存 `run_id` 等外部引用和适合自身展示的投影，不能复制 Run/Task 状态机再自行判定最终状态。
 
+当 App 需要把一个用户确认过的成果作为业务输入时，不应扫描 Artifact 或读取 Runtime 表。App Pack 先声明
+`work_consumers`；用户在 Work 页面选择 App 和用途，Runtime 固定 `work_id + work_version + content_sha256`
+创建 Handoff。目标安装的委托 Token 只能读取这一冻结输入，并以幂等 receipt 回写业务对象引用、Run 和验证
+摘要。完整协议见 [Work 成果资产闭环](WORK_ASSET_CLOSED_LOOP.md)。
+
 ## 5. App 调用 Runtime
 
 App 后端使用版本化 HTTP 数据面提交执行：

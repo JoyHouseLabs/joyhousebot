@@ -50,6 +50,7 @@ def normalize_app_manifest(value: dict[str, Any]) -> dict[str, Any]:
     triggers = _object_list(value.get("triggers"), field="triggers", maximum=64)
     evaluations = _object_list(value.get("evaluations"), field="evaluations", maximum=64)
     entrypoints = _normalize_entrypoints(value.get("entrypoints"))
+    work_consumers = _normalize_work_consumers(value.get("work_consumers"))
     if entrypoints and not any(
         permission_granted(item, "runs.submit") for item in permissions
     ):
@@ -81,6 +82,8 @@ def normalize_app_manifest(value: dict[str, Any]) -> dict[str, Any]:
     # and cannot be launched from the public App data plane.
     if entrypoints:
         result["entrypoints"] = entrypoints
+    if work_consumers:
+        result["work_consumers"] = work_consumers
     if schema_version == 2:
         result.update(
             {
@@ -253,6 +256,59 @@ def _normalize_entrypoint_execution(value: Any) -> dict[str, Any]:
             f"App {mode} entrypoint execution contains unsupported fields: {sorted(unknown)}"
         )
     return result
+
+
+def _normalize_work_consumers(value: Any) -> list[dict[str, Any]]:
+    """Normalize explicit declarations for Apps that can receive a Work version.
+
+    A consumer is a capability declaration, not an implicit entitlement to read
+    the user's whole library. Runtime matches one Work to one installed App and
+    issues a separately auditable, version-pinned handoff.
+    """
+    rows = _object_list(value, field="work_consumers", maximum=32)
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    classifications = {"public", "internal", "confidential", "restricted"}
+    for row in rows:
+        unknown = set(row) - {
+            "consumer_id",
+            "name",
+            "description",
+            "purposes",
+            "media_types",
+            "max_data_classification",
+            "input_schema",
+        }
+        if unknown:
+            raise ValueError(f"Work consumer contains unsupported fields: {sorted(unknown)}")
+        consumer_id = _stable_id(row.get("consumer_id"), field="consumer_id")
+        if consumer_id in seen:
+            raise ValueError(f"duplicate Work consumer: {consumer_id}")
+        seen.add(consumer_id)
+        purposes = _string_list(row.get("purposes"), field="work_consumer.purposes", maximum=32)
+        media_types = _string_list(
+            row.get("media_types"), field="work_consumer.media_types", maximum=32
+        )
+        if not purposes or not media_types:
+            raise ValueError("Work consumer requires purposes and media_types")
+        maximum = str(row.get("max_data_classification") or "internal")
+        if maximum not in classifications:
+            raise ValueError("Work consumer max_data_classification is invalid")
+        name = str(row.get("name") or consumer_id).strip()
+        if not name or len(name) > 160:
+            raise ValueError("Work consumer name must be between 1 and 160 characters")
+        result.append(
+            {
+                "consumer_id": consumer_id,
+                "name": name,
+                "description": str(row.get("description") or "").strip()[:1000],
+                "purposes": purposes,
+                "media_types": media_types,
+                "max_data_classification": maximum,
+                "input_schema": _object(row.get("input_schema")),
+            }
+        )
+    return sorted(result, key=lambda item: item["consumer_id"])
 
 
 def validate_install_configuration(value: Any) -> None:

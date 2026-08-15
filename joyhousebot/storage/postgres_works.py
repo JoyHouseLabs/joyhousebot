@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from joyhousebot.storage.json_codec import Jsonb
+from joyhousebot.storage.postgres_work_handoffs import PostgresWorkHandoffStoreMixin
 from joyhousebot.storage.postgres_work_records import PostgresWorkRecordStoreMixin
 from joyhousebot.storage.postgres_work_rows import share_row
 
 
-class PostgresWorkStoreMixin(PostgresWorkRecordStoreMixin):
+class PostgresWorkStoreMixin(PostgresWorkHandoffStoreMixin, PostgresWorkRecordStoreMixin):
     def migrate_works(self) -> None:
         ddl = """
         CREATE TABLE IF NOT EXISTS works (
@@ -118,6 +119,7 @@ class PostgresWorkStoreMixin(PostgresWorkRecordStoreMixin):
                 ddl=evidence_ddl,
                 description="freeze Artifact provenance and execution evidence per Work version",
             )
+        self.migrate_work_handoffs()
 
     def create_work_from_artifact(self, *, value: dict[str, Any]) -> dict[str, Any]:
         with self._pool.connection() as conn, conn.transaction():

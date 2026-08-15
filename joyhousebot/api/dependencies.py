@@ -54,9 +54,18 @@ def required_api_scope(request: Request) -> str:
         return f"apps.{operation}"
     if path == "/v1/action-items" or path.startswith("/v1/action-items/"):
         return f"runs.{operation}"
-    for namespace in ("runs", "memory", "sessions", "schedules", "works", "workflows"):
+    for namespace in (
+        "runs",
+        "memory",
+        "sessions",
+        "schedules",
+        "works",
+        "workflows",
+    ):
         if path == f"/v1/{namespace}" or path.startswith(f"/v1/{namespace}/"):
             return f"{namespace}.{operation}"
+    if path == "/v1/work-handoffs" or path.startswith("/v1/work-handoffs/"):
+        return f"work_handoffs.{operation}"
     if path == "/v1/event-triggers" or path.startswith("/v1/event-triggers/"):
         return f"automation.{operation}"
     if path == "/v1/event-trigger-deliveries":

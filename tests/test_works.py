@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from joyhousebot.api.app import create_app
+from joyhousebot.application.app_packs import AppPackService
 from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.config.schema import Config
 from tests.support.postgres_store import PostgresTestStore
@@ -46,6 +49,35 @@ def _artifact(
         media_type="application/json",
         content=content,
     )
+
+
+def _consumer_manifest() -> dict:
+    return {
+        "schema_version": 1,
+        "app_id": "app.content-studio",
+        "version": "1.0.0",
+        "name": "Content Studio",
+        "description": "Turns approved research into a content production plan.",
+        "publisher": "Joyhouse",
+        "core": {"min_version": "0.1.2"},
+        "extensions": [],
+        "capabilities": [],
+        "assets": {"agents": [], "teams": [], "skills": [], "workflows": [], "scenarios": []},
+        "integrations": [],
+        "permissions": ["work_handoffs.read", "work_handoffs.write"],
+        "secrets": [],
+        "work_consumers": [
+            {
+                "consumer_id": "content-plan",
+                "name": "内容生产计划",
+                "description": "将资料包转化为待确认的内容生产计划。",
+                "purposes": ["create_content_plan"],
+                "media_types": ["application/json"],
+                "max_data_classification": "internal",
+                "input_schema": {"type": "object"},
+            }
+        ],
+    }
 
 
 def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) -> None:
@@ -259,6 +291,174 @@ def test_uri_artifact_requires_content_digest_and_object_version_for_work(
         )
     assert response.status_code == 422
     assert "object_version" in response.text
+
+
+@pytest.mark.asyncio
+async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "work-handoff.db")
+    app_packs = AppPackService(store)
+    await app_packs.save_draft(_consumer_manifest(), actor_id="admin")
+    await app_packs.publish(
+        "app.content-studio", "1.0.0", actor_id="admin", user_id="handoff-owner"
+    )
+    installation = await app_packs.install(
+        "app.content-studio",
+        "1.0.0",
+        user_id="handoff-owner",
+        actor_id="admin",
+        configuration={},
+        granted_permissions=["work_handoffs.read", "work_handoffs.write"],
+    )
+    installation = await app_packs.transition(
+        installation["installation_id"],
+        user_id="handoff-owner",
+        actor_id="admin",
+        action="activate",
+    )
+    owner = _user(store, "handoff-owner")
+    _artifact(
+        store,
+        user_id="handoff-owner",
+        run_id="handoff-run",
+        artifact_id="handoff-artifact",
+        content={"opportunity": "Create an AI writing workshop", "sources": ["meeting"]},
+    )
+    container = build_api_container(config=Config(), store=store)
+    with TestClient(create_app(container)) as client:
+        work = client.post(
+            "/v1/works",
+            headers={**owner, "Idempotency-Key": "handoff-work"},
+            json={
+                "run_id": "handoff-run",
+                "artifact_id": "handoff-artifact",
+                "title": "Workshop opportunity",
+            },
+        )
+        assert work.status_code == 201, work.text
+        work_id = work.json()["work_id"]
+
+        consumers = client.get(f"/v1/works/{work_id}/consumers", headers=owner)
+        assert consumers.status_code == 200, consumers.text
+        assert consumers.json()["items"] == [
+            {
+                "installation_id": installation["installation_id"],
+                "app_id": "app.content-studio",
+                "app_version": "1.0.0",
+                "app_name": "Content Studio",
+                "consumer_id": "content-plan",
+                "name": "内容生产计划",
+                "description": "将资料包转化为待确认的内容生产计划。",
+                "purposes": ["create_content_plan"],
+                "media_types": ["application/json"],
+                "input_schema": {"type": "object"},
+            }
+        ]
+        payload = {
+            "installation_id": installation["installation_id"],
+            "consumer_id": "content-plan",
+            "purpose": "create_content_plan",
+        }
+        handoff = client.post(
+            f"/v1/works/{work_id}/handoffs",
+            headers={**owner, "Idempotency-Key": "handoff-once"},
+            json=payload,
+        )
+        assert handoff.status_code == 201, handoff.text
+        handoff_value = handoff.json()
+        assert handoff_value["status"] == "authorized"
+        assert handoff_value["work_version"] == 1
+        duplicate = client.post(
+            f"/v1/works/{work_id}/handoffs",
+            headers={**owner, "Idempotency-Key": "handoff-once"},
+            json=payload,
+        )
+        assert duplicate.status_code == 201
+        assert duplicate.json()["handoff_id"] == handoff_value["handoff_id"]
+
+        app_client, app_secret = store.create_app_client(
+            app_id="app.content-studio",
+            name="Content Studio service",
+            allowed_scopes=["work_handoffs.read", "work_handoffs.write"],
+            actor_id="admin",
+        )
+        grant = store.create_app_delegation_grant(
+            client_id=app_client["client_id"],
+            installation_id=installation["installation_id"],
+            user_id="handoff-owner",
+            scopes=["work_handoffs.read", "work_handoffs.write"],
+            expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            actor_id="handoff-owner",
+        )
+        issued = store.issue_app_delegated_token(
+            client_id=app_client["client_id"],
+            client_secret=app_secret,
+            grant_id=grant["grant_id"],
+            requested_scopes=["work_handoffs.read", "work_handoffs.write"],
+            ttl_seconds=900,
+        )
+        assert issued is not None
+        _, access_token = issued
+        app_headers = {"Authorization": f"Bearer {access_token}"}
+        assert client.get("/v1/works", headers=app_headers).status_code == 403
+        assert client.get(
+            f"/v1/works/{work_id}/handoffs", headers=app_headers
+        ).status_code == 403
+        assert client.post(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipt",
+            headers={**owner, "Idempotency-Key": "owner-cannot-receipt"},
+            json={"status": "accepted"},
+        ).status_code == 422
+        frozen_input = client.get(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/input", headers=app_headers
+        )
+        assert frozen_input.status_code == 200, frozen_input.text
+        assert frozen_input.json()["work"]["version"]["content"] == {
+            "opportunity": "Create an AI writing workshop",
+            "sources": ["meeting"],
+        }
+
+        accepted = client.post(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipt",
+            headers={**app_headers, "Idempotency-Key": "handoff-receipt"},
+            json={
+                "status": "accepted",
+                "external_reference": "content-plan-42",
+                "summary": "Content Studio accepted the source material.",
+            },
+        )
+        assert accepted.status_code == 201, accepted.text
+        receipt = client.post(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipt",
+            headers={**app_headers, "Idempotency-Key": "handoff-verified"},
+            json={
+                "status": "verified",
+                "external_reference": "content-plan-42",
+                "summary": "Created a reviewed content plan.",
+            },
+        )
+        assert receipt.status_code == 201, receipt.text
+        assert receipt.json()["handoff"]["status"] == "verified"
+        assert receipt.json()["receipt"]["external_reference"] == "content-plan-42"
+        receipts = client.get(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipts", headers=owner
+        )
+        assert receipts.status_code == 200
+        assert receipts.json()["items"][0]["status"] == "verified"
+        app_receipts = client.get(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipts", headers=app_headers
+        )
+        assert app_receipts.status_code == 200
+        assert app_receipts.json()["items"][0]["status"] == "verified"
+        assert client.get(
+            f"/v1/work-handoffs/{handoff_value['handoff_id']}/input", headers=app_headers
+        ).status_code == 404
+        audit = client.get(f"/v1/works/{work_id}/audit", headers=owner)
+        assert {item["event_type"] for item in audit.json()["items"]} >= {
+            "handoff.authorized",
+            "handoff.input_accessed",
+            "handoff.verified",
+        }
+    store.close()
 
 
 def test_archived_work_is_not_public_and_cannot_be_reopened(tmp_path: Path) -> None:

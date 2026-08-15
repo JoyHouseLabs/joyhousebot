@@ -238,7 +238,7 @@ def test_schedule_run_history_is_normalized_without_legacy_json_column(
     assert repository is not None
     assert legacy is None
     assert relation == "schedule_occurrence_runs"
-    assert [row["version"] for row in history] == [1, 2, 3]
+    assert [row["version"] for row in history] == [1, 2, 3, 4]
 
 
 def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(

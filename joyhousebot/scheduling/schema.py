@@ -162,8 +162,52 @@ SCHEDULE_DROP_RUN_IDS_V3_DDL = """
     ALTER TABLE schedule_occurrences DROP COLUMN IF EXISTS run_ids;
 """
 
+# Keep the original v1 DDL immutable: existing installations validate its
+# checksum from ``schema_migration_history``.  New repairs must not replay v1,
+# because v1 reintroduces the v3-removed ``run_ids`` column. PostgreSQL keeps
+# a dropped column's physical attribute slot, so repeated add/drop cycles can
+# eventually hit its 1600-column table limit.
+SCHEDULE_CURRENT_SCHEMA_V4_DDL = """
+    ALTER TABLE schedules
+        ADD COLUMN IF NOT EXISTS policy JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS name TEXT;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS agent_id TEXT;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS schedule JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS policy JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS submit_attempt INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS next_attempt_at_ms BIGINT;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS lease_owner TEXT;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS lease_until_ms BIGINT;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'not_requested';
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS delivery_outbound_id TEXT;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS delivery_error TEXT;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS delivered_at_ms BIGINT;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS delete_after_run BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS monitor_scratch_revision BIGINT;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS monitor_observation_hash TEXT;
+    ALTER TABLE schedule_occurrences
+        ADD COLUMN IF NOT EXISTS monitor_observation JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE schedule_occurrences ADD COLUMN IF NOT EXISTS monitor_preflight_status TEXT;
+    CREATE INDEX IF NOT EXISTS ix_schedule_occurrences_retry
+        ON schedule_occurrences(next_attempt_at_ms, occurrence_id)
+        WHERE status='retry_wait' AND next_attempt_at_ms IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_schedule_occurrences_run
+        ON schedule_occurrences(run_id) WHERE run_id IS NOT NULL;
+"""
+
 __all__ = [
     "SCHEDULE_DDL",
+    "SCHEDULE_CURRENT_SCHEMA_V4_DDL",
     "SCHEDULE_DROP_RUN_IDS_V3_DDL",
     "SCHEDULE_OCCURRENCE_RUNS_V2_DDL",
 ]

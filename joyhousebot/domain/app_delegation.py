@@ -7,7 +7,14 @@ from typing import Iterable
 from joyhousebot.utils.permissions import permission_granted
 
 DELEGATABLE_APP_SCOPES = frozenset(
-    {"apps.read", "apps.launch", "runs.read", "runs.write"}
+    {
+        "apps.read",
+        "apps.launch",
+        "runs.read",
+        "runs.write",
+        "work_handoffs.read",
+        "work_handoffs.write",
+    }
 )
 
 

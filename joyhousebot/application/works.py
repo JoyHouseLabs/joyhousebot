@@ -44,8 +44,9 @@ def _bounded(value: Any, *, label: str, maximum: int = _MAX_SNAPSHOT_BYTES) -> N
 
 
 class WorkService:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, *, app_packs: Any | None = None) -> None:
         self.store = store
+        self.app_packs = app_packs
 
     async def _source_artifact(
         self, context: RequestContext, run_id: str, artifact_id: str
@@ -232,6 +233,188 @@ class WorkService:
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
         return {**share, "token": token, "path": f"/v1/public/shares/{token}"}
+
+    @staticmethod
+    def _classification_allowed(current: str, maximum: str) -> bool:
+        levels = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3}
+        return levels[current] <= levels[maximum]
+
+    @staticmethod
+    def _media_type_allowed(media_type: str, declared: list[str]) -> bool:
+        return "*/*" in declared or media_type in declared or any(
+            item.endswith("/*") and media_type.startswith(item[:-1]) for item in declared
+        )
+
+    async def list_consumers(
+        self, context: RequestContext, work_id: str
+    ) -> list[dict[str, Any]]:
+        if context.principal.app_client_id:
+            raise ValidationError("delegated App credentials cannot discover Work consumers")
+        work = await self.get(context, work_id)
+        if self.app_packs is None:
+            return []
+        installations = await self.app_packs.list_installed(
+            user_id=context.user_id, active_only=True
+        )
+        media_type = str((work.get("version") or {}).get("media_type") or "")
+        consumers: list[dict[str, Any]] = []
+        for installation in installations:
+            for consumer in list(installation.get("work_consumers") or []):
+                supported_media_types = [str(item) for item in consumer.get("media_types") or []]
+                maximum = str(consumer.get("max_data_classification") or "internal")
+                if not self._media_type_allowed(media_type, supported_media_types):
+                    continue
+                if not self._classification_allowed(work["data_classification"], maximum):
+                    continue
+                consumers.append(
+                    {
+                        "installation_id": installation["installation_id"],
+                        "app_id": installation["app_id"],
+                        "app_version": installation["version"],
+                        "app_name": installation["name"],
+                        "consumer_id": str(consumer["consumer_id"]),
+                        "name": str(consumer["name"]),
+                        "description": str(consumer.get("description") or ""),
+                        "purposes": list(consumer.get("purposes") or []),
+                        "media_types": supported_media_types,
+                        "input_schema": dict(consumer.get("input_schema") or {}),
+                    }
+                )
+        return consumers
+
+    async def create_handoff(
+        self, context: RequestContext, work_id: str, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        if context.principal.app_client_id:
+            raise ValidationError("delegated App credentials cannot authorize a Work handoff")
+        if not context.idempotency_key:
+            raise ValidationError("Work handoff requires an Idempotency-Key")
+        work = await self.get(context, work_id)
+        if work["owner_user_id"] != context.user_id:
+            raise NotFoundError("owner Work not found")
+        if work["status"] == "archived":
+            raise ValidationError("archived Works cannot be handed off")
+        requested_version = int(value.get("work_version") or work["current_version"])
+        if requested_version != int(work["current_version"]):
+            raise ValidationError("select the current Work version before creating a handoff")
+        consumer = next(
+            (
+                item
+                for item in await self.list_consumers(context, work_id)
+                if item["installation_id"] == value["installation_id"]
+                and item["consumer_id"] == value["consumer_id"]
+            ),
+            None,
+        )
+        if consumer is None:
+            raise ValidationError("installed App does not declare a compatible Work consumer")
+        purpose = str(value["purpose"])
+        if purpose not in consumer["purposes"]:
+            raise ValidationError("Work handoff purpose is not declared by the selected App")
+        try:
+            return await asyncio.to_thread(
+                self.store.create_work_handoff,
+                value={
+                    "handoff_id": f"handoff_{uuid4().hex}",
+                    "work_id": work_id,
+                    "work_version": requested_version,
+                    "owner_user_id": context.user_id,
+                    "installation_id": consumer["installation_id"],
+                    "app_id": consumer["app_id"],
+                    "app_version": consumer["app_version"],
+                    "consumer_id": consumer["consumer_id"],
+                    "purpose": purpose,
+                    "idempotency_key": context.idempotency_key,
+                    "created_by": context.principal.subject,
+                    "audit_id": _audit_id(),
+                },
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    async def list_handoffs(
+        self, context: RequestContext, work_id: str
+    ) -> list[dict[str, Any]]:
+        if context.principal.app_client_id:
+            raise ValidationError("delegated App credentials cannot list a Work's handoffs")
+        await self.get(context, work_id)
+        return await asyncio.to_thread(
+            self.store.list_work_handoffs, work_id, expected_user_id=context.user_id
+        )
+
+    async def handoff_input(
+        self, context: RequestContext, handoff_id: str
+    ) -> dict[str, Any]:
+        installation_id = context.principal.app_installation_id
+        if not context.principal.app_client_id or not installation_id:
+            raise ValidationError("Work handoff input requires a delegated App credential")
+        value = await asyncio.to_thread(
+            self.store.read_work_handoff_input,
+            handoff_id,
+            expected_user_id=context.user_id,
+            installation_id=installation_id,
+            actor_id=context.principal.subject,
+            audit_id=_audit_id(),
+        )
+        if value is None:
+            raise NotFoundError("active Work handoff input not found")
+        return value
+
+    async def add_handoff_receipt(
+        self, context: RequestContext, handoff_id: str, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not context.idempotency_key:
+            raise ValidationError("Work handoff receipt requires an Idempotency-Key")
+        if (
+            not context.principal.app_client_id
+            or not context.principal.app_installation_id
+        ):
+            raise ValidationError("Work handoff receipts require a delegated App credential")
+        try:
+            result = await asyncio.to_thread(
+                self.store.add_work_handoff_receipt,
+                value={
+                    "receipt_id": f"handoffrcpt_{uuid4().hex}",
+                    "handoff_id": handoff_id,
+                    "owner_user_id": context.user_id,
+                    "installation_id": context.principal.app_installation_id,
+                    "idempotency_key": context.idempotency_key,
+                    "created_by": context.principal.subject,
+                    "audit_id": _audit_id(),
+                    **value,
+                },
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        if result is None:
+            raise NotFoundError("active Work handoff not found")
+        return result
+
+    async def cancel_handoff(
+        self, context: RequestContext, handoff_id: str
+    ) -> dict[str, Any]:
+        if context.principal.app_client_id:
+            raise ValidationError("delegated App credentials cannot cancel a Work handoff")
+        value = await asyncio.to_thread(
+            self.store.cancel_work_handoff,
+            handoff_id,
+            expected_user_id=context.user_id,
+            actor_id=context.principal.subject,
+            audit_id=_audit_id(),
+        )
+        if value is None:
+            raise NotFoundError("active owner Work handoff not found")
+        return value
+
+    async def list_handoff_receipts(
+        self, context: RequestContext, handoff_id: str
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self.store.list_work_handoff_receipts,
+            handoff_id,
+            expected_user_id=context.user_id,
+            installation_id=context.principal.app_installation_id,
+        )
 
     async def list_shares(
         self, context: RequestContext, work_id: str

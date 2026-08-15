@@ -63,6 +63,16 @@ App Pack 不在 API 进程中加载业务代码，也不能引入第二套任务
   ],
   "integrations": [],
   "permissions": ["runs.submit"],
+  "work_consumers": [
+    {
+      "consumer_id": "opportunity-tracking",
+      "name": "建立机会跟进",
+      "purposes": ["track_opportunity"],
+      "media_types": ["application/json", "text/markdown"],
+      "max_data_classification": "internal",
+      "input_schema": {"type": "object"}
+    }
+  ],
   "secrets": [{"name": "SEARCH_API_KEY", "required": true}],
   "triggers": [],
   "evaluations": [],
@@ -80,6 +90,11 @@ Entry Point 是 App 对外稳定的业务动作，不是第五种执行模式。
 Runtime 在每次启动前重新校验安装依赖锁，并把安装、清单摘要和 Entry Point 身份冻结进 Run metadata。
 Scenario Entry Point 除 `scenario_id + version` 外还必须声明 `agent_id + agent_revision_id`；固定 Scenario
 生成的 Graph 顶层快照和每个 Agent Task 都使用该 Revision，不能在启动时重新选择当前 Agent。
+
+`work_consumers` 是可选的成果输入声明，不是对用户所有成果的读取许可。安装处于 `active` 时，Runtime
+才会按 Work 的 `media_type` 与数据分级匹配消费者；用户从 Work 页面确认交接后，App 才能以绑定安装的
+委托 Token 读取该版本的最小投影。完整状态机与 HTTP 契约见
+[Work 成果资产闭环](WORK_ASSET_CLOSED_LOOP.md)。
 
 ## 3. 发布和安装状态机
 

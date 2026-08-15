@@ -40,6 +40,35 @@ export interface WorkShare {
   path?: string
 }
 
+export interface WorkConsumer {
+  installation_id: string
+  app_id: string
+  app_version: string
+  app_name: string
+  consumer_id: string
+  name: string
+  description: string
+  purposes: string[]
+  media_types: string[]
+  input_schema: Record<string, unknown>
+}
+
+export interface WorkHandoff {
+  handoff_id: string
+  work_id: string
+  work_version: number
+  installation_id: string
+  app_id: string
+  app_version: string
+  consumer_id: string
+  purpose: string
+  status: 'authorized' | 'accepted' | 'executing' | 'verified' | 'failed' | 'cancelled'
+  content_sha256: string
+  created_at: string
+  updated_at: string
+  completed_at?: string | null
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   Object.entries(getIdentityHeaders()).forEach(([key, value]) => headers.set(key, value))
@@ -60,6 +89,12 @@ export async function updateWork(id: string, value: Record<string, unknown>): Pr
 export async function createWorkVersion(id: string, value: Record<string, unknown>): Promise<Work> {
   return request(`/works/${encodeURIComponent(id)}/versions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
 }
+export async function listWorkConsumers(id: string): Promise<WorkConsumer[]> { return (await request<{ items: WorkConsumer[] }>(`/works/${encodeURIComponent(id)}/consumers`)).items }
+export async function listWorkHandoffs(id: string): Promise<WorkHandoff[]> { return (await request<{ items: WorkHandoff[] }>(`/works/${encodeURIComponent(id)}/handoffs`)).items }
+export async function createWorkHandoff(id: string, value: Record<string, unknown>): Promise<WorkHandoff> {
+  return request(`/works/${encodeURIComponent(id)}/handoffs`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(value) })
+}
+export async function cancelWorkHandoff(id: string): Promise<WorkHandoff> { return request(`/work-handoffs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }) }
 export async function listWorkShares(id: string): Promise<WorkShare[]> { return (await request<{ items: WorkShare[] }>(`/works/${encodeURIComponent(id)}/shares`)).items }
 export async function createWorkShare(id: string, value: Record<string, unknown>): Promise<WorkShare> {
   return request(`/works/${encodeURIComponent(id)}/shares`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })

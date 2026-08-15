@@ -225,6 +225,7 @@ def build_api_container(
     runs = RunService(runtime, store)
     evals = EvalService(store)
     scenarios = ScenarioStudioService(store)
+    app_packs = AppPackService(store)
     platform = PlatformService(
         store,
         monitor_reconciler=partial(
@@ -264,7 +265,7 @@ def build_api_container(
             default_agent_id=default_agent_id(store),
         ),
         scenarios=scenarios,
-        works=WorkService(store),
+        works=WorkService(store, app_packs=app_packs),
         workflows=WorkflowService(
             runtime,
             store,
@@ -275,7 +276,7 @@ def build_api_container(
         embedding_profiles=EmbeddingProfileService(store),
         skills=SkillService(store),
         prompts=PromptService(store),
-        app_packs=AppPackService(store),
+        app_packs=app_packs,
         app_delegation=AppDelegationService(store),
         app_callbacks=AppCallbackService(store),
         app_market=AppMarketService(store),

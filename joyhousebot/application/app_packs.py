@@ -508,6 +508,7 @@ class AppPackService:
             "description": value["description"],
             "status": value["status"],
             "entrypoints": list(manifest.get("entrypoints") or []),
+            "work_consumers": list(manifest.get("work_consumers") or []),
             "ui": dict(manifest.get("ui") or {}),
             "manifest_sha256": value["manifest_sha256"],
             "updated_at": value["updated_at"],
