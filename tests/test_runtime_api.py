@@ -56,9 +56,11 @@ def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
     public_paths = _route_paths(surface="public")
     control_paths = _route_paths(surface="control")
     assert "/v1/runs" in public_paths
+    assert "/v1/action-items" in public_paths
     assert "/v1/admin/overview" not in public_paths
     assert "/v1/admin/overview" in control_paths
     assert "/v1/runs" not in control_paths
+    assert "/v1/action-items" not in control_paths
 
 
 def test_production_rejects_combined_or_insecure_api_surfaces(
@@ -94,6 +96,7 @@ def test_scoped_service_token_attenuates_user_api_access(tmp_path: Path) -> None
     headers = {"Authorization": f"Bearer {token}"}
     with client:
         assert client.get("/v1/runs", headers=headers).status_code == 200
+        assert client.get("/v1/action-items", headers=headers).status_code == 200
         denied = client.post(
             "/v1/runs",
             headers=headers,

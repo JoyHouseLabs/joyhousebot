@@ -169,6 +169,26 @@ class PostgresApprovalStoreMixin:
             ).fetchall()
         return [self._approval_request(row) for row in rows]
 
+    def list_pending_user_approval_requests(
+        self, *, user_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Project pending approvals with their owning Run for the action view."""
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT approval.*,run.status AS run_status,
+                          run.status_summary,run.prompt AS run_prompt,
+                          run.agent_id,run.updated_at AS run_updated_at,
+                          run.options AS run_options
+                   FROM approval_requests AS approval
+                   JOIN runtime_runs AS run ON run.run_id=approval.run_id
+                   WHERE approval.user_id=%s AND approval.status='pending'
+                     AND run.status='waiting_approval'
+                   ORDER BY approval.requested_at ASC,approval.approval_id ASC
+                   LIMIT %s""",
+                (user_id, max(1, min(500, limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def suspend_run_for_approval(
         self,
         *,

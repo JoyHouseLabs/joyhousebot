@@ -23,6 +23,7 @@ from joyhousebot.api.dependencies import _bearer_token
 from joyhousebot.api.mcp_gateway import MCPGateway
 from joyhousebot.api.rate_limit import RateLimitMiddleware
 from joyhousebot.api.routers import (
+    action_items,
     admin_apps,
     admin_catalog,
     admin_embedding_profiles,
@@ -331,6 +332,7 @@ def create_app(
         app.include_router(graph_events.router, prefix=prefix)
         app.include_router(apps.router, prefix=prefix)
         app.include_router(event_triggers.router, prefix=prefix)
+        app.include_router(action_items.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)
         app.include_router(input_assets.router, prefix=prefix)
         app.include_router(knowledge.router, prefix=prefix)

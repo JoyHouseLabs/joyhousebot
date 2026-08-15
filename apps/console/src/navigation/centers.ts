@@ -55,7 +55,7 @@ export const consoleCenters: ConsoleCenter[] = [
       { name: 'Agent 工作台', description: '提交真实任务，持续查看消息、会话和执行时间线。', icon: '✦', status: 'available', statusLabel: '可用', to: '/chat' },
       { name: 'Run 与 Task', description: '查询状态、事件、Trace、日志、产物和恢复过程。', icon: 'R', status: 'available', statusLabel: '可用', to: '/runs' },
       { name: '成果交付', description: '将执行产物沉淀为可版本化、可分享、可撤销的 Work。', icon: 'W', status: 'connected', statusLabel: '跨中心', to: '/works' },
-      { name: '统一待办与审批', description: '汇总需要用户确认、补充信息或审批的运行节点。', icon: 'A', status: 'planned', statusLabel: '规划中' },
+      { name: '统一待办与审批', description: '汇总需要用户确认、补充信息或审批的运行节点。', icon: 'A', status: 'available', statusLabel: '可用', to: '/action-items' },
     ],
     flow: ['明确目标', '提交 Run', '协作与反馈', '验证结果', '沉淀 Work'],
   },
@@ -83,7 +83,7 @@ export const consoleCenters: ConsoleCenter[] = [
     routePrefixes: ['/apps', '/agents', '/teams', '/workflows', '/scenarios', '/skills', '/tools'],
     modules: [
       { name: 'App', description: '定义可独立交付和售卖的业务产品，以及它与 Runtime 的双向协作契约。', icon: 'P', status: 'available', statusLabel: '架构', to: '/apps' },
-      { name: 'Task Pack', description: '把目标、节奏、确认点、成本与成果结构打包为可安装的持续任务产品。', icon: 'T', status: 'planned', statusLabel: '规划中' },
+      { name: 'Task Pack', description: '把目标、节奏、确认点、成本与成果结构打包为可安装的持续任务产品。', icon: 'T', status: 'available', statusLabel: '可用', to: '/apps' },
       { name: 'Agent', description: '配置模型、提示、能力准入、Monitor 策略和发布版本。', icon: 'A', status: 'available', statusLabel: '可用', to: '/agents' },
       { name: 'AgentTeam', description: '冻结成员 Revision、委派边界、共享 Workspace 和协作预算。', icon: 'T', status: 'available', statusLabel: '可用', to: '/teams' },
       { name: 'Scenario', description: '定义路由、追问、DAG 编排和场景级能力边界。', icon: 'S', status: 'available', statusLabel: '可用', to: '/scenarios' },

@@ -465,6 +465,10 @@ class RuntimeStore(AgentTeamStore, AppPackStore, ExternalConfigurationStore, Pro
         self, run_id: str, *, expected_user_id: str
     ) -> list[InputRequestRecord]: ...
 
+    def list_pending_user_input_requests(
+        self, *, user_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]: ...
+
     def resolve_input_request(self, **kwargs: Any) -> bool: ...
 
     def resolve_dynamic_input_request(self, **kwargs: Any) -> bool: ...
@@ -475,6 +479,10 @@ class RuntimeStore(AgentTeamStore, AppPackStore, ExternalConfigurationStore, Pro
 
     def get_input_asset(
         self, asset_id: str, *, expected_user_id: str
+    ) -> InputAssetRecord | None: ...
+
+    def delete_input_asset(
+        self, asset_id: str, *, expected_user_id: str, actor_id: str
     ) -> InputAssetRecord | None: ...
 
     def get_bound_input_asset(
@@ -597,6 +605,10 @@ class RuntimeStore(AgentTeamStore, AppPackStore, ExternalConfigurationStore, Pro
     def list_run_approval_requests(
         self, run_id: str, *, expected_user_id: str
     ) -> list[ApprovalRequestRecord]: ...
+
+    def list_pending_user_approval_requests(
+        self, *, user_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]: ...
 
     def suspend_run_for_approval(self, **kwargs: Any) -> bool: ...
 

@@ -131,6 +131,31 @@ class PostgresClarificationStoreMixin:
             ).fetchall()
         return [self._input_request(row) for row in rows]
 
+    def list_pending_user_input_requests(
+        self, *, user_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Project actionable clarification requests without creating an Inbox table.
+
+        The request and its owning Run remain the only state.  ``run_options``
+        is returned for application-principal visibility filtering and is never
+        exposed from the public API.
+        """
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT request.*,run.status AS run_status,
+                          run.status_summary,run.prompt AS run_prompt,
+                          run.agent_id,run.updated_at AS run_updated_at,
+                          run.options AS run_options
+                   FROM run_input_requests AS request
+                   JOIN runtime_runs AS run ON run.run_id=request.run_id
+                   WHERE request.user_id=%s AND request.status='pending'
+                     AND run.status='waiting_input'
+                   ORDER BY request.created_at ASC,request.input_request_id ASC
+                   LIMIT %s""",
+                (user_id, max(1, min(500, limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_input_request(
         self, input_request_id: str, *, expected_user_id: str
     ) -> InputRequestRecord | None:

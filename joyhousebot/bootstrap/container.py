@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from joyhousebot.application.action_items import ActionItemService
 from joyhousebot.application.agent_teams import AgentTeamService
 from joyhousebot.application.app_callbacks import AppCallbackService
 from joyhousebot.application.app_delegation import AppDelegationService
@@ -67,6 +68,7 @@ class ApplicationContainer:
     runtime: NativeAgentRuntime
     runs: RunService
     approvals: ApprovalService
+    action_items: ActionItemService
     reconciliations: ReconciliationService
     knowledge_assets: KnowledgeAssetService
     knowledge_maintenance: KnowledgeMaintenanceService
@@ -235,6 +237,7 @@ def build_api_container(
         runtime=runtime,
         runs=runs,
         approvals=ApprovalService(runtime, runs, store),
+        action_items=ActionItemService(store),
         reconciliations=ReconciliationService(runtime, runs, store),
         knowledge_assets=KnowledgeAssetService(store, runtime),
         knowledge_maintenance=KnowledgeMaintenanceService(store),
