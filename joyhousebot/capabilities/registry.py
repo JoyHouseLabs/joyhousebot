@@ -145,6 +145,21 @@ class _PluginTool(Tool):
         metadata["capability_configuration"] = settings["configuration"]
         metadata["channel"] = getattr(tool_context, "channel", "")
         metadata["chat_id"] = getattr(tool_context, "chat_id", "")
+        # Nested, Core-owned composition (for example retrieval followed by a
+        # configured reranker) must preserve the exact Run tool policy.  This
+        # is provenance, not an extension-controlled permission grant: every
+        # value is overwritten from the original ToolExecutionContext here.
+        metadata["_joyhousebot_tool_policy"] = {
+            "permission_mode": tool_context.permission_mode,
+            "allowed_tools": sorted(tool_context.allowed_tools),
+            "disallowed_tools": sorted(tool_context.disallowed_tools),
+            "worker_id": tool_context.worker_id,
+            "turn_id": tool_context.turn_id,
+            "turn_index": tool_context.turn_index,
+            "action_index": tool_context.action_index,
+            "request_id": tool_context.request_id,
+            "tracker_id": tool_context.tracker_id,
+        }
         return CapabilityContext(
             user_id=tool_context.user_id,
             session_id=tool_context.session_id,
@@ -219,6 +234,8 @@ class CapabilityRegistry:
         )
         self.dispatcher = CapabilityDispatcher(store)
         self.plugins = CapabilityPluginRegistry()
+        if self._runtime_services is not None:
+            self._runtime_services.context.set_rerank_executor(self._invoke_rerank)
         self.plugins.load_entry_points(enabled=enabled_plugins)
         self._sync_registered_capabilities()
 
@@ -299,6 +316,66 @@ class CapabilityRegistry:
 
     async def invoke_capability(self, name: str, params: dict[str, Any], *, context: Any, version: str | None = None):
         return await self.plugins.invoke(name, params, context=context, version=version)
+
+    async def _invoke_rerank(
+        self,
+        capability_context: CapabilityContext,
+        *,
+        capability_id: str,
+        version: str,
+        input: dict[str, Any],
+    ) -> CapabilityResult:
+        """Dispatch a retrieval rerank through the same durable tool boundary.
+
+        Context Assets never imports a reranking implementation. It asks this
+        narrow callback to invoke an exact, published capability and this
+        method reconstructs the original Run policy before dispatching it.
+        """
+        if capability_id != "retrieval.rerank":
+            raise ValueError("only retrieval.rerank may be nested by Context Assets")
+        adapter = self._resolve_adapter(capability_id, version)
+        if adapter is None or not self._enabled(capability_id, version):
+            raise ValueError("configured rerank capability is not loaded and enabled")
+        policy = dict(capability_context.metadata.get("_joyhousebot_tool_policy") or {})
+        nested_context = ToolExecutionContext(
+            run_id=capability_context.run_id,
+            session_key=capability_context.session_id or capability_context.run_id,
+            channel=str(capability_context.metadata.get("channel") or "runtime"),
+            chat_id=str(capability_context.metadata.get("chat_id") or "runtime"),
+            user_id=capability_context.user_id,
+            agent_id=capability_context.agent_id or "default",
+            session_id=capability_context.session_id,
+            memory_scope=capability_context.memory_scope,
+            memory_policy=dict(capability_context.memory_policy or {}),
+            task_id=capability_context.task_id,
+            root_run_id=capability_context.root_run_id,
+            request_id=str(policy.get("request_id") or "") or None,
+            tracker_id=str(policy.get("tracker_id") or "") or None,
+            permission_mode=str(policy.get("permission_mode") or "default"),
+            allowed_tools=frozenset(str(item) for item in policy.get("allowed_tools") or ()),
+            disallowed_tools=frozenset(str(item) for item in policy.get("disallowed_tools") or ()),
+            granted_permissions=frozenset(
+                str(item) for item in capability_context.metadata.get("permissions") or ()
+            ),
+            worker_id=str(policy.get("worker_id") or "") or None,
+            turn_id=str(policy.get("turn_id") or "") or None,
+            turn_index=policy.get("turn_index"),
+            action_index=policy.get("action_index"),
+            metadata={
+                **{
+                    key: value
+                    for key, value in capability_context.metadata.items()
+                    if not key.startswith("_joyhousebot_")
+                },
+                "nested_capability": "retrieval.rerank",
+            },
+        )
+        return await self.dispatcher.invoke_tool(
+            adapter,
+            input,
+            context=nested_context,
+            tool_call_id=f"nested-rerank:{capability_context.task_id or capability_context.run_id}",
+        )
 
     def register_tool(
         self,

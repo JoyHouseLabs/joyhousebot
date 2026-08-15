@@ -578,6 +578,12 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 for item in (metadata or {}).get("skill_refs", [])
                 if isinstance(item, dict)
             ),
+            # Retrieval policy is part of the Agent revision snapshot.  It
+            # must reach CapabilityContext unchanged so optional rerank
+            # choices cannot be supplied or changed by a model tool call.
+            memory_policy=dict(
+                getattr(execution_snapshot, "memory_policy", {}) or {}
+            ),
             metadata=execution_metadata,
         )
         conversation_key = context.session_key

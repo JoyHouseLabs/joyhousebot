@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import math
+import re
 from typing import Any
 
 from joyhousebot.contracts.capabilities import CapabilityContext
@@ -25,6 +26,11 @@ class ContextPort:
     ) -> None:
         self._store = runtime_store
         self._embedding_provider_resolver = embedding_provider_resolver
+        self._rerank_executor: Any = None
+
+    def set_rerank_executor(self, executor: Any) -> None:
+        """Install the Core dispatcher callback after registry composition."""
+        self._rerank_executor = executor
 
     def _require_store(self) -> Any:
         if self._store is None:
@@ -159,7 +165,7 @@ class ContextPort:
                     query_embedding = execution.embeddings[0]
                     if profile["configuration"]["normalization"] == "l2":
                         query_embedding = self._l2_normalize(query_embedding)
-                    return await asyncio.to_thread(
+                    hits = await asyncio.to_thread(
                         repository.search_hybrid,
                         user_id=context.user_id,
                         query=query,
@@ -176,7 +182,11 @@ class ContextPort:
                     _logger.warning(
                         "hybrid Knowledge retrieval failed; using lexical fallback"
                     )
-        return await search_async(
+                else:
+                    return await self._apply_rerank(
+                        context, query=query, hits=hits, scope=scope
+                    )
+        hits = await search_async(
             query=query,
             top_k=top_k,
             source_type=source_type,
@@ -186,6 +196,137 @@ class ContextPort:
             runtime_store=self._require_store(),
             user_id=context.user_id,
         )
+        return await self._apply_rerank(context, query=query, hits=hits, scope=scope)
+
+    async def _apply_rerank(
+        self,
+        context: CapabilityContext,
+        *,
+        query: str,
+        hits: list[dict[str, Any]],
+        scope: str,
+    ) -> list[dict[str, Any]]:
+        """Optionally rerank authorized hits through an exact Agent policy ref.
+
+        The reference comes from the Agent's frozen memory/retrieval policy,
+        never from the model tool-call input. The nested call stays in the
+        Capability Dispatcher and therefore writes normal invocation/Trace
+        evidence. A profile may opt into fail-closed behavior; otherwise the
+        original retrieval ordering remains available and the fallback reason
+        is returned to the calling capability.
+        """
+        policy = self._rerank_policy(context.memory_policy, scope=scope)
+        if policy is None or not hits:
+            return hits
+        if self._rerank_executor is None:
+            return self._rerank_fallback(
+                context, hits, "rerank_executor_unavailable", policy
+            )
+        candidates = [
+            {
+                "candidate_id": self._candidate_id(hit),
+                "text": str(hit.get("content") or "")[:20_000],
+            }
+            for hit in hits[: policy["candidate_limit"]]
+        ]
+        by_id = {self._candidate_id(hit): hit for hit in hits}
+        try:
+            result = await self._rerank_executor(
+                context,
+                capability_id=policy["capability_id"],
+                version=policy["version"],
+                input={
+                    "query": query,
+                    "candidates": candidates,
+                    "top_k": min(len(candidates), policy["top_k"]),
+                },
+            )
+            if not result.ok:
+                message = str(
+                    getattr(getattr(result, "error", None), "code", "rerank_failed")
+                )
+                return self._rerank_fallback(context, hits, message, policy)
+            output = dict(getattr(result, "data", {}) or {}).get("output") or {}
+            ranked = list(dict(output).get("ranked") or [])
+            ordered: list[dict[str, Any]] = []
+            for item in ranked:
+                candidate_id = str(dict(item).get("candidate_id") or "")
+                hit = by_id.pop(candidate_id, None)
+                if hit is None:
+                    continue
+                value = dict(hit)
+                value["rerank_score"] = float(dict(item).get("score") or 0.0)
+                value["rerank_rank"] = int(dict(item).get("rank") or len(ordered) + 1)
+                ordered.append(value)
+            ordered.extend(by_id.values())
+            context.metadata["retrieval_rerank"] = {
+                "applied": True,
+                "capability_id": policy["capability_id"],
+                "version": policy["version"],
+                "fallback": False,
+            }
+            return ordered
+        except Exception as exc:  # defensive: retrieval policy decides degradation
+            return self._rerank_fallback(context, hits, type(exc).__name__, policy)
+
+    @staticmethod
+    def _candidate_id(hit: dict[str, Any]) -> str:
+        return ":".join(
+            (
+                str(hit.get("doc_id") or ""),
+                str(hit.get("revision_id") or ""),
+                str(hit.get("chunk_index") or 0),
+            )
+        )
+
+    @staticmethod
+    def _rerank_policy(
+        memory_policy: dict[str, Any], *, scope: str
+    ) -> dict[str, Any] | None:
+        if scope != "knowledge":
+            return None
+        retrieval = dict(EffectiveMemoryPolicy.from_dict(memory_policy).retrieval or {})
+        raw = retrieval.get("rerank")
+        if not isinstance(raw, dict) or not raw.get("enabled"):
+            return None
+        capability_id = str(raw.get("capability_id") or "retrieval.rerank").strip()
+        version = str(raw.get("version") or "").strip()
+        if capability_id != "retrieval.rerank" or not re.fullmatch(
+            r"[A-Za-z0-9_.:-]{1,128}", version
+        ):
+            raise ValueError("invalid frozen retrieval rerank policy")
+        candidate_limit = max(1, min(50, int(raw.get("candidate_limit") or 20)))
+        top_k = max(1, min(candidate_limit, int(raw.get("top_k") or candidate_limit)))
+        fallback = str(raw.get("failure_mode") or "fallback")
+        if fallback not in {"fallback", "fail_closed"}:
+            raise ValueError("rerank failure_mode must be fallback or fail_closed")
+        return {
+            "capability_id": capability_id,
+            "version": version,
+            "candidate_limit": candidate_limit,
+            "top_k": top_k,
+            "failure_mode": fallback,
+        }
+
+    @staticmethod
+    def _rerank_fallback(
+        context: CapabilityContext,
+        hits: list[dict[str, Any]],
+        reason: str,
+        policy: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if policy["failure_mode"] == "fail_closed":
+            raise RuntimeError(f"configured rerank failed: {reason}")
+        context.metadata["retrieval_rerank"] = {
+            "applied": False,
+            "capability_id": policy["capability_id"],
+            "version": policy["version"],
+            "fallback": True,
+            "reason": reason,
+        }
+        for hit in hits:
+            hit["rerank_fallback"] = reason
+        return hits
 
     async def read_input_asset(
         self,

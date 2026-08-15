@@ -63,7 +63,13 @@ class RetrieveHandler:
             return _failure("RETRIEVE_FAILED", sanitize_error_message(str(exc)), retryable=True)
         return CapabilityResult(
             success=True,
-            output={"query": query, "scope": scope, "count": len(hits), "hits": hits},
+            output={
+                "query": query,
+                "scope": scope,
+                "count": len(hits),
+                "hits": hits,
+                "rerank": dict(context.metadata.get("retrieval_rerank") or {}),
+            },
         )
 
 

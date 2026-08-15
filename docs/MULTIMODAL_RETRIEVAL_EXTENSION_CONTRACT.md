@@ -21,7 +21,9 @@ OCR、图像/视频理解、Embedding Provider 与 Reranker 都不是 Runtime Co
 | `capability-rerank-*` | `retrieval.rerank` | query 与最多 N 个已授权候选 | 排序、相关性分数、模型/version、降级标志 | 越权检索；把候选内容留存为供应商训练数据 |
 
 `capability-context-assets` 继续拥有 Knowledge 的范围校验、版本 staging 与检索编排；它可以选择一个已发布的
-Embedding Profile 或 Reranker，但不拥有任何供应商 SDK 或密钥。
+Embedding Profile 或 Agent Revision 冻结的 Rerank ref，但不拥有任何供应商 SDK 或密钥。当前 Rerank ref 位于
+Agent `memory_policy.retrieval.rerank`：必须显式启用、固定 `retrieval.rerank` 的精确版本，并可选择
+`fallback` 或 `fail_closed`。嵌套重排仍经 Core Dispatcher，产生独立的 Capability invocation/Trace。
 
 ## `vision.*` 结果契约
 
