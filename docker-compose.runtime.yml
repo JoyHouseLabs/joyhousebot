@@ -5,7 +5,10 @@ x-runtime-build: &runtime_build
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # Embedding profiles and HNSW indexes are supported Runtime features, so
+    # the standard deployment image must provide pgvector rather than relying
+    # on an operator to install a server-side package after boot.
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: joyhousebot
       POSTGRES_USER: joyhousebot
@@ -21,6 +24,7 @@ services:
       - "127.0.0.1:${JOYHOUSEBOT_POSTGRES_PORT:-15432}:5432"
     volumes:
       - joyhousebot_pg_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init/10-enable-pgvector.sql:/docker-entrypoint-initdb.d/10-enable-pgvector.sql:ro
 
   # Public data plane only: runs/sessions/schedules + MCP. Admin routes and
   # the console UI are served by the separate `control` service below.

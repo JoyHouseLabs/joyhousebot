@@ -50,6 +50,17 @@ export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_'
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
+Runtime Compose 使用 `pgvector/pgvector:pg17`，并会在**新建**数据目录时创建 `vector` 扩展。已有
+PostgreSQL 数据卷升级镜像后不会重跑 init 脚本，需由数据库管理员在确认目标库后执行一次：
+
+```bash
+docker compose -f docker-compose.runtime.yml exec -T postgres \
+  psql -U joyhousebot -d joyhousebot -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+```
+
+若目标 PostgreSQL 不提供 `vector` 扩展，全文检索仍可用，但 Embedding Profile 发布和 HNSW 索引会明确
+失败关闭；不要在生产 Runtime 启动后再临时编译数据库扩展。
+
 Compose 默认挂载 `deploy/config.runtime.json`（`allowInsecureAuth=false`）；它是容器部署的生产安全基线。
 本机开发改用 `config.dev.json`（开启 insecure auth，仅限本机，不要对外暴露）：
 

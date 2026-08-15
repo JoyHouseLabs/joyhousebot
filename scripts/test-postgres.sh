@@ -11,4 +11,5 @@ if command -v pg_isready >/dev/null 2>&1; then
 fi
 
 cd "${ROOT_DIR}"
+bash scripts/ensure-test-pgvector.sh
 uv run --frozen python -m pytest -m postgres "$@"
