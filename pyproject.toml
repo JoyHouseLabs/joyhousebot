@@ -103,6 +103,7 @@ testpaths = ["tests"]
 pythonpath = [
     "extensions/channel-dingtalk/src",
     "extensions/capability-context-assets/src",
+    "extensions/capability-document-processing/src",
     "extensions/capability-filesystem/src",
     "extensions/capability-groq-transcription/src",
     "extensions/capability-media-generation/src",

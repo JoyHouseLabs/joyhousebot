@@ -2,6 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "${ROOT_DIR}/.env.local" ]]; then
+  set -a
+  # Local secrets stay outside version control but must reach every Runtime role.
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/.env.local"
+  set +a
+fi
 CONFIG_PATH="${JOYHOUSEBOT_CONFIG_PATH:-${ROOT_DIR}/config.json}"
 # Local development only: fall back to the insecure-auth dev template when no
 # real config.json exists. Production deployments must pass an explicit path.

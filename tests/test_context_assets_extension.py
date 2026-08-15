@@ -70,7 +70,7 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
     ]
     assert "runtime_input" in attachment_schema["properties"]["reference_kind"]["enum"]
     assert "asset_id" in attachment_schema["properties"]
-    assert registry.manifests()[0].version == "1.5.0"
+    assert registry.manifests()[0].version == "1.6.0"
     assert registry.manifests()[0].runtime_contract_version == 2
 
 

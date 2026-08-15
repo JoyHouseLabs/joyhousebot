@@ -2,6 +2,10 @@
 
 Optional durable context capabilities for JoyhouseBot:
 
+Document parsing primitives are supplied by the independently installable
+`capability-document-processing` package. Knowledge indexing reuses those parsers;
+private one-off extraction uses `document.extract` and does not create Knowledge.
+
 - `retrieve`: search user-scoped knowledge or Agent memory;
 - `memory_get`: read a document from the current Run's memory scope;
 - `fetch_url_to_knowledgebase`: fetch a public URL and index its readable content.

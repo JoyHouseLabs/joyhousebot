@@ -6,7 +6,7 @@ import io
 import zipfile
 
 import pytest
-from joyhousebot_capability_context_assets.ingest import source_parsers
+from joyhousebot_capability_document_processing.ingest import source_parsers
 
 
 def _archive(files: dict[str, str]) -> bytes:

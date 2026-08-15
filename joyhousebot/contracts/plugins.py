@@ -130,7 +130,7 @@ class PluginManifest:
             raise ValueError("plugin runtime_contract_version must be positive")
         if self.runtime_api_version != "v1":
             raise ValueError("unsupported plugin runtime_api_version")
-        if self.execution_isolation not in {"in_process", "container", "mcp"}:
+        if self.execution_isolation not in {"in_process", "subprocess", "container", "mcp"}:
             raise ValueError("plugin execution_isolation is invalid")
         if self.signature and not self.signing_key_id:
             raise ValueError("signed plugin manifests require signing_key_id")

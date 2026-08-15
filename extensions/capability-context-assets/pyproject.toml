@@ -1,11 +1,12 @@
 [project]
 name = "joyhousebot-capability-context-assets"
-version = "0.3.0"
+version = "0.4.0"
 description = "Optional durable context, memory, and knowledge capabilities for JoyhouseBot"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [
     "joyhousebot>=0.1.2,<0.2",
+    "joyhousebot-capability-document-processing>=0.2.0,<0.3",
     "httpx>=0.25.0",
     "pypdf>=5.0.0,<7",
     "readability-lxml>=0.8.0",

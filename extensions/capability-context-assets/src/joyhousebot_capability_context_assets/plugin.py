@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from joyhousebot_capability_document_processing.ingest.source_parsers import (
+    DEFAULT_SOURCE_PARSERS,
+    SourceParseError,
+)
+from joyhousebot_capability_document_processing.ingest.url_ingest import fetch_and_ingest_url
+
 from joyhousebot.extension_sdk import (
     CapabilityContext,
     CapabilityDefinition,
@@ -15,9 +21,6 @@ from joyhousebot.extension_sdk import (
 )
 from joyhousebot.extension_sdk.manifest import source_tree_digest
 from joyhousebot.extension_sdk.network import DEFAULT_MAX_BYTES, sanitize_error_message
-
-from .ingest.source_parsers import DEFAULT_SOURCE_PARSERS, SourceParseError
-from .ingest.url_ingest import fetch_and_ingest_url
 
 
 def _relative_memory_path(path: str) -> str:
@@ -37,9 +40,7 @@ def _services(context: CapabilityContext) -> Any:
 
 
 class RetrieveHandler:
-    async def execute(
-        self, context: CapabilityContext, input: dict[str, Any]
-    ) -> CapabilityResult:
+    async def execute(self, context: CapabilityContext, input: dict[str, Any]) -> CapabilityResult:
         query = str(input.get("query") or "").strip()
         if not query:
             return _failure("INVALID_PARAMETERS", "query is required")
@@ -74,9 +75,7 @@ class RetrieveHandler:
 
 
 class MemoryGetHandler:
-    async def execute(
-        self, context: CapabilityContext, input: dict[str, Any]
-    ) -> CapabilityResult:
+    async def execute(self, context: CapabilityContext, input: dict[str, Any]) -> CapabilityResult:
         path = str(input.get("path") or "")
         relative = _relative_memory_path(path)
         if not relative:
@@ -98,9 +97,7 @@ class MemoryGetHandler:
 
 
 class FetchUrlToKnowledgebaseHandler:
-    async def execute(
-        self, context: CapabilityContext, input: dict[str, Any]
-    ) -> CapabilityResult:
+    async def execute(self, context: CapabilityContext, input: dict[str, Any]) -> CapabilityResult:
         url = str(input.get("url") or "").strip()
         if not url:
             return _failure("INVALID_PARAMETERS", "url is required")
@@ -129,7 +126,9 @@ class FetchUrlToKnowledgebaseHandler:
                 metadata={"trace": document.trace},
             )
         except Exception as exc:
-            return _failure("KNOWLEDGE_WRITE_FAILED", sanitize_error_message(str(exc)), retryable=True)
+            return _failure(
+                "KNOWLEDGE_WRITE_FAILED", sanitize_error_message(str(exc)), retryable=True
+            )
         return CapabilityResult(
             success=True,
             output={
@@ -149,9 +148,7 @@ class FetchUrlToKnowledgebaseHandler:
 
 
 class IndexKnowledgeHandler:
-    async def execute(
-        self, context: CapabilityContext, input: dict[str, Any]
-    ) -> CapabilityResult:
+    async def execute(self, context: CapabilityContext, input: dict[str, Any]) -> CapabilityResult:
         if not context.action_id or not context.idempotency_key:
             return _failure(
                 "ACTION_IDENTITY_REQUIRED",
@@ -164,6 +161,7 @@ class IndexKnowledgeHandler:
         except RuntimeError as exc:
             return _failure("CONTEXT_REQUIRED", str(exc))
         try:
+
             async def load_input_asset(asset_id: str) -> dict[str, Any]:
                 return await services.read_input_asset(
                     context,
@@ -375,7 +373,7 @@ INDEX_KNOWLEDGE_SCHEMA = {
 
 class ContextAssetsPlugin:
     plugin_id = "capability-context-assets"
-    version = "1.5.0"
+    version = "1.6.0"
 
     def manifest(self) -> PluginManifest:
         return PluginManifest(

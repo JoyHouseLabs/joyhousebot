@@ -31,9 +31,7 @@ def test_provider_factory_rejects_non_ascii_api_key() -> None:
 
 
 def test_openrouter_keeps_vendor_qualified_model_name() -> None:
-    config = Config(
-        extensions=ExtensionsConfig(enabled=["provider-openai-compatible"])
-    )
+    config = Config(extensions=ExtensionsConfig(enabled=["provider-openai-compatible"]))
     config.providers.default_provider = "openrouter"
     config.providers.settings["openrouter"] = ProviderConfig(api_key="gateway-key")
     provider = create_model_provider(
@@ -67,6 +65,47 @@ def test_openrouter_strips_gateway_prefix_and_sends_reasoning_policy() -> None:
         )
         assert payload["model"] == "deepseek/deepseek-v4-flash"
         assert payload["reasoning"] == {"effort": "none"}
+    finally:
+        asyncio.run(provider.close())
+
+
+@pytest.mark.parametrize(
+    ("reasoning_effort", "thinking_type", "provider_effort"),
+    [
+        ("none", "disabled", None),
+        ("low", "enabled", "high"),
+        ("medium", "enabled", "high"),
+        ("high", "enabled", "high"),
+        ("xhigh", "enabled", "max"),
+        ("max", "enabled", "max"),
+    ],
+)
+def test_deepseek_maps_runtime_reasoning_policy(
+    reasoning_effort: str,
+    thinking_type: str,
+    provider_effort: str | None,
+) -> None:
+    provider = OpenAICompatibleProvider(
+        api_key="deepseek-key",
+        api_base="https://api.deepseek.com/v1",
+        default_model="deepseek/deepseek-v4-flash",
+        provider_name="deepseek",
+        reasoning_options={"reasoning_effort": reasoning_effort},
+    )
+    try:
+        payload, _ = provider._payload(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            model=None,
+            max_tokens=4096,
+            temperature=0.2,
+            stream=True,
+        )
+        assert payload["thinking"] == {"type": thinking_type}
+        if provider_effort is None:
+            assert "reasoning_effort" not in payload
+        else:
+            assert payload["reasoning_effort"] == provider_effort
     finally:
         asyncio.run(provider.close())
 
@@ -475,9 +514,7 @@ async def test_openai_stream_failure_retains_partial_provider_usage() -> None:
         )
         chunks = [
             item
-            async for item in provider.chat_stream(
-                messages=[{"role": "user", "content": "run"}]
-            )
+            async for item in provider.chat_stream(messages=[{"role": "user", "content": "run"}])
         ]
 
     final = chunks[-1][1]

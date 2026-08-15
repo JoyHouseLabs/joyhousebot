@@ -45,7 +45,7 @@ Core 不选择供应商或默认模型。空 Agent 目录只接受 `runtime.boot
 
 - Channel 协议、供应商 SDK、Webhook、OAuth、轮询、媒体转换和 sidecar；
 - Anthropic、OpenAI-compatible 等模型协议和供应商端点元数据；
-- Shell、Filesystem、Research、Context Assets、Runtime Control 等具体模型能力；
+- Shell、Filesystem、Research、Document Processing、Context Assets、Runtime Control 等具体模型能力；
 - 外部 MCP Client、CRM、日历、GitHub、文档、表单、支付和内容平台连接；
 - 由技术制品提供的可复用 Skill、Scenario、Workflow 和 Capability；业务 App 与可售卖 Task Pack 不作为
   Python Extension 加载；
@@ -111,6 +111,9 @@ PostgreSQL 控制面，通过 Console/API 创建连接 Revision。数据库只�
 Model Provider 同样使用两层配置：`provider-*` 扩展的安装/启用属于部署边界；具体 Provider Endpoint、
 密钥/Header 环境引用、超时和模型目录属于 PostgreSQL `model_provider` Revision。Console 不写入
 `config.json`，不接触密钥值；Worker 预热精确扩展构建并解析环境引用，全部 ACK 后才切换当前配置。
+`provider-openai-compatible` 也提供本机 `ollama` Provider：只允许免凭据的回环 HTTP Endpoint，模型完整 ID
+使用 `ollama/<model-tag>`。Ollama 模型仍须进入版本化 Provider Revision 和 Agent Revision，不能由业务应用
+绕过模型目录直接调用本机端口。
 
 ## 6. 唯一配置结构
 
@@ -167,6 +170,9 @@ Email 与其他 Channel 均为可卸载的独立 distribution；Console 不把�
 - Shell 扩展只能调用 Core 的 fail-closed container sandbox，容器不可用时失败；
 - Filesystem 扩展只能访问当前 Run 的隔离 scratch，不能把 `memory/` 当宿主文件；
 - Context Assets 通过窄服务访问用户 Memory/Knowledge，写入必须携带冻结 Action 和回执；
+- Document Processing 只读取当前 Run 已冻结绑定的私有 Input Asset，默认在受限 Python 子进程生成文本 Artifact，
+  生产部署可显式选择无网络容器；禁止在 Worker 进程内解析，显式选择的隔离后端不可用时失败关闭且不得自动降级，
+  也不得借用 `knowledge.index` 保存一次性私有文档；
 - Runtime Control 通过窄服务管理 Schedule、Outbox、Monitor scratch 和 child Run；
 - Media Generation 以 `image.generate`、`image.edit`、`video.generate` 提供稳定协议，Seedream、
   Seedance、即梦等供应商只存在于独立适配器；有成本的生成请求进入审批、Action、Artifact 和对账链；

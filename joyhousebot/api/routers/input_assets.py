@@ -44,4 +44,13 @@ async def get_input_asset(
     return input_asset_public_dict(await container.input_assets.get(context, asset_id))
 
 
+@router.delete("/{asset_id}")
+async def delete_input_asset(
+    asset_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    return input_asset_public_dict(await container.input_assets.delete(context, asset_id))
+
+
 __all__ = ["router"]

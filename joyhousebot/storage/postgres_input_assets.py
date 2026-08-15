@@ -82,6 +82,29 @@ class PostgresInputAssetStoreMixin:
                 ddl=event_ddl,
                 description="auditable Input Asset lifecycle events",
             )
+        event_deletion_ddl = """
+        ALTER TABLE runtime_input_asset_events
+            DROP CONSTRAINT IF EXISTS runtime_input_asset_events_event_type_check;
+        ALTER TABLE runtime_input_asset_events
+            ADD CONSTRAINT runtime_input_asset_events_event_type_check
+            CHECK (event_type IN ('created', 'bound', 'read', 'deleted'));
+        """
+        with self._pool.connection() as conn, conn.transaction():
+            if not self._migration_is_recorded(
+                conn,
+                name="runtime_input_asset_events",
+                version=2,
+                ddl=event_deletion_ddl,
+                description="owner deletion event for Runtime Input Assets",
+            ):
+                conn.execute(event_deletion_ddl)
+                self._record_migration(
+                    conn,
+                    name="runtime_input_asset_events",
+                    version=2,
+                    ddl=event_deletion_ddl,
+                    description="owner deletion event for Runtime Input Assets",
+                )
 
     @staticmethod
     def _input_asset(row: dict[str, Any]) -> InputAssetRecord:
@@ -166,6 +189,51 @@ class PostgresInputAssetStoreMixin:
                 (asset_id, expected_user_id),
             ).fetchone()
         return self._input_asset(row) if row else None
+
+    def delete_input_asset(
+        self, asset_id: str, *, expected_user_id: str, actor_id: str
+    ) -> InputAssetRecord | None:
+        """Soft-delete one owner's asset after every bound Run is terminal."""
+        with self._pool.connection() as conn, conn.transaction():
+            row = conn.execute(
+                """SELECT * FROM runtime_input_assets
+                   WHERE asset_id=%s AND user_id=%s FOR UPDATE""",
+                (asset_id, expected_user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            if str(row["status"]) == "deleted":
+                return self._input_asset(row)
+            active = conn.execute(
+                """SELECT run.run_id FROM runtime_run_input_assets binding
+                   JOIN runtime_runs run ON run.run_id=binding.run_id
+                   WHERE binding.asset_id=%s AND binding.user_id=%s
+                     AND run.user_id=%s
+                     AND run.status NOT IN ('completed','failed','cancelled','timed_out')
+                   LIMIT 1""",
+                (asset_id, expected_user_id, expected_user_id),
+            ).fetchone()
+            if active is not None:
+                raise ValueError("Input Asset is still bound to an active Run")
+            deleted = conn.execute(
+                """UPDATE runtime_input_assets
+                   SET status='deleted',deleted_at=clock_timestamp()
+                   WHERE asset_id=%s AND user_id=%s AND status='ready'
+                   RETURNING *""",
+                (asset_id, expected_user_id),
+            ).fetchone()
+            assert deleted is not None
+            conn.execute(
+                """INSERT INTO runtime_input_asset_events
+                       (asset_id,user_id,event_type,data)
+                   VALUES (%s,%s,'deleted',%s)""",
+                (
+                    asset_id,
+                    expected_user_id,
+                    Jsonb({"actor_id": actor_id}),
+                ),
+            )
+            return self._input_asset(deleted)
 
     def get_bound_input_asset(
         self, asset_id: str, *, run_id: str, expected_user_id: str

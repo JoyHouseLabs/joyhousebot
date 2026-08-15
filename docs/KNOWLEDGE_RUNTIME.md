@@ -55,8 +55,15 @@ permissions.
 
 ## Runtime Input Assets
 
+Worker 的普通运行日志只允许记录 channel、opaque sender/run 标识和内容长度，不得记录输入正文、模型响应预览或解析后的
+私有文档内容；正文只存在于受权限控制的 Session、Run、Trace Blob 或 Artifact 链。
+
 - `POST /v1/input-assets` requires `Idempotency-Key`, `Content-Length` and `X-Content-SHA256`, streams to a private
   content-addressed object store and returns only immutable metadata;
+- `DELETE /v1/input-assets/{asset_id}` is owner-scoped and idempotent. It returns `404` for another owner and `409` while
+  any bound Run is non-terminal; success records a `deleted` lifecycle event and makes later reads/bindings return `404`.
+  The content-addressed object is removed by two-phase GC only after no ready asset references it. Deleting an Input Asset
+  does not by itself erase historical Run Artifacts derived from it;
 - `POST /v1/runs`, `POST /v1/runs/graphs` and Workflow execution accept up to 20 `input_asset_ids`; binding occurs in the
   same PostgreSQL transaction as Run creation and idempotent replay must name the same set;
 - `runtime_input_asset_events` records create/bind/read lifecycle events while `runtime_logs` records Run-scoped reads;

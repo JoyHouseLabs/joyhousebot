@@ -37,7 +37,7 @@ from joyhousebot.extension_sdk.models import (
 
 OPENAI_COMPATIBLE_EXTENSION_MANIFEST = ExtensionManifest(
     extension_id="provider-openai-compatible",
-    version="0.1.3",
+    version="0.1.5",
     name="JoyhouseBot OpenAI-compatible Provider",
     extension_types=("model_provider",),
     description="OpenAI-compatible chat completions, streaming, tools and reasoning adapter.",
@@ -78,9 +78,7 @@ OPENAI_COMPATIBLE_PROVIDER_SPECS = (
         "https://api.openai.com/v1",
         "OPENAI_API_KEY",
     ),
-    ModelProviderSpec(
-        "deepseek", ("deepseek",), "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"
-    ),
+    ModelProviderSpec("deepseek", ("deepseek",), "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
     ModelProviderSpec(
         "gemini",
         ("gemini",),
@@ -102,10 +100,15 @@ OPENAI_COMPATIBLE_PROVIDER_SPECS = (
     ModelProviderSpec(
         "moonshot", ("moonshot", "kimi"), "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"
     ),
-    ModelProviderSpec(
-        "minimax", ("minimax",), "https://api.minimax.io/v1", "MINIMAX_API_KEY"
-    ),
+    ModelProviderSpec("minimax", ("minimax",), "https://api.minimax.io/v1", "MINIMAX_API_KEY"),
     ModelProviderSpec("vllm", ("vllm",), "", "", is_local=True),
+    ModelProviderSpec(
+        "ollama",
+        ("ollama",),
+        "http://127.0.0.1:11434/v1",
+        "",
+        is_local=True,
+    ),
     ModelProviderSpec("groq", ("groq",), "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
 )
 
@@ -199,6 +202,18 @@ class OpenAICompatibleProvider(LLMProvider):
         reasoning_effort = str(self.reasoning_options.get("reasoning_effort") or "").strip()
         if reasoning_effort and self.provider_name == "openai":
             payload["reasoning_effort"] = reasoning_effort
+        if self.provider_name == "deepseek":
+            if reasoning_effort == "none":
+                payload["thinking"] = {"type": "disabled"}
+            elif reasoning_effort:
+                # DeepSeek V4 supports only high/max. Keep the Runtime's
+                # provider-neutral low/medium/xhigh names deterministic.
+                payload["thinking"] = {"type": "enabled"}
+                payload["reasoning_effort"] = {
+                    "low": "high",
+                    "medium": "high",
+                    "xhigh": "max",
+                }.get(reasoning_effort, reasoning_effort)
         if self.provider_name == "openrouter" and reasoning_effort:
             # OpenRouter uses one vendor-neutral object for reasoning.  The
             # explicit `none` default keeps Flash turns on the low-latency
@@ -548,17 +563,19 @@ class OpenAICompatibleProvider(LLMProvider):
         output_tokens = int(value.get("completion_tokens") or value.get("output_tokens") or 0)
         raw_prompt_details = value.get("prompt_tokens_details")
         raw_completion_details = value.get("completion_tokens_details")
-        prompt_details = (
-            dict(raw_prompt_details) if isinstance(raw_prompt_details, dict) else {}
-        )
+        prompt_details = dict(raw_prompt_details) if isinstance(raw_prompt_details, dict) else {}
         completion_details = (
-            dict(raw_completion_details)
-            if isinstance(raw_completion_details, dict)
-            else {}
+            dict(raw_completion_details) if isinstance(raw_completion_details, dict) else {}
         )
         has_counts = any(
             key in value
-            for key in ("prompt_tokens", "input_tokens", "completion_tokens", "output_tokens", "total_tokens")
+            for key in (
+                "prompt_tokens",
+                "input_tokens",
+                "completion_tokens",
+                "output_tokens",
+                "total_tokens",
+            )
         )
         return normalized_usage(
             input_tokens=input_tokens,
@@ -573,9 +590,7 @@ class OpenAICompatibleProvider(LLMProvider):
             audio_output_tokens=completion_details.get("audio_tokens", 0),
             usage_source="provider" if has_counts else "missing",
             usage_status="exact" if has_counts else "missing",
-            provider_cost_usd=value.get(
-                "cost", value.get("cost_usd", value.get("total_cost"))
-            ),
+            provider_cost_usd=value.get("cost", value.get("cost_usd", value.get("total_cost"))),
             pricing=self.usage_pricing,
         )
 

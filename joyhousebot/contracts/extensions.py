@@ -53,7 +53,7 @@ class ExtensionManifest:
             raise ValueError("unsupported extension runtime_api_version")
         if self.sdk_version != EXTENSION_SDK_VERSION:
             raise ValueError("unsupported extension sdk_version")
-        if self.execution_isolation not in {"in_process", "container", "mcp"}:
+        if self.execution_isolation not in {"in_process", "subprocess", "container", "mcp"}:
             raise ValueError("extension execution_isolation is invalid")
         if any(not str(item).strip() for item in self.required_permissions):
             raise ValueError("extension required permissions must be non-empty")

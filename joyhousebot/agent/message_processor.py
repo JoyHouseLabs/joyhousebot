@@ -110,10 +110,12 @@ class MessageProcessorMixin:
         if msg.channel == "system":
             return await self._process_system_message(msg, run_context=run_context)
 
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        # Escape newlines so user-controlled content cannot forge log lines.
-        preview = preview.replace("\n", "\\n").replace("\r", "\\r")
-        logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
+        logger.info(
+            "Processing message: channel={} sender={} content_chars={}",
+            msg.channel,
+            msg.sender_id,
+            len(msg.content),
+        )
 
         key = session_key or msg.session_key
         session = await asyncio.to_thread(self.sessions.get_or_create, key)
@@ -287,8 +289,12 @@ class MessageProcessorMixin:
                 if prefix:
                     final_content = prefix + "\n" + final_content
 
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
+        logger.info(
+            "Agent response ready: channel={} sender={} content_chars={}",
+            msg.channel,
+            msg.sender_id,
+            len(final_content),
+        )
 
         session.add_message("user", msg.content)
         usage_kw: dict[str, Any] = {"tools_used": tools_used if tools_used else None}

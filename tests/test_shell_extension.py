@@ -93,9 +93,7 @@ async def test_core_sandbox_service_rejects_network_enablement(tmp_path, monkeyp
     async def available():
         return True
 
-    monkeypatch.setattr(
-        "joyhousebot.capabilities.services.sandbox.is_docker_available", available
-    )
+    monkeypatch.setattr("joyhousebot.capabilities.services.sandbox.is_docker_available", available)
     services = CapabilityServiceBroker(None, scratch_root=tmp_path)
     result = await services.sandbox.execute(
         _context(services),
@@ -104,3 +102,53 @@ async def test_core_sandbox_service_rejects_network_enablement(tmp_path, monkeyp
     )
     assert result["success"] is False
     assert result["code"] == "SANDBOX_MISCONFIGURED"
+
+
+@pytest.mark.asyncio
+async def test_core_sandbox_file_job_is_bounded_and_cleans_workspace(tmp_path, monkeypatch) -> None:
+    services = CapabilityServiceBroker(None, scratch_root=tmp_path)
+    context = _context(services)
+
+    async def execute(_context, **kwargs):  # noqa: ANN001
+        workspace = services.scratch.resolve(context, kwargs["working_dir"])
+        assert (workspace / "input.bin").read_bytes() == b"private"
+        (workspace / "result.json").write_bytes(b'{"ok":true}')
+        return {"success": True, "output": "ok", "exit_code": 0}
+
+    monkeypatch.setattr(services.sandbox, "execute", execute)
+    result = await services.sandbox.execute_job(
+        context,
+        command="document-parser",
+        input_files={"input.bin": b"private"},
+        output_files=("result.json",),
+    )
+
+    assert result["files"] == {"result.json": b'{"ok":true}'}
+    job_root = tmp_path / ".scratch"
+    assert not any(
+        path.name == ".sandbox-jobs" and any(path.iterdir())
+        for path in job_root.rglob(".sandbox-jobs")
+    )
+
+
+@pytest.mark.asyncio
+async def test_core_sandbox_file_job_rejects_traversal_without_execution(
+    tmp_path, monkeypatch
+) -> None:
+    services = CapabilityServiceBroker(None, scratch_root=tmp_path)
+    called = False
+
+    async def execute(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(services.sandbox, "execute", execute)
+    result = await services.sandbox.execute_job(
+        _context(services),
+        command="document-parser",
+        input_files={"../outside.bin": b"private"},
+        output_files=("result.json",),
+    )
+
+    assert result["code"] == "SANDBOX_JOB_INVALID"
+    assert called is False

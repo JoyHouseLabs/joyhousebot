@@ -213,7 +213,15 @@ class NativeAgentRuntime(
                 revision_key = snapshot.agent_revision_id
         if self.agent_resolver is None:
             return self.agent
-        return await asyncio.to_thread(self.agent_resolver, revision_key)
+        resolved = await asyncio.to_thread(self.agent_resolver, revision_key)
+        connect = getattr(resolved, "_connect_tool_connectors", None)
+        if callable(connect):
+            # AgentRuntimeCatalog.resolve() is intentionally synchronous, so a
+            # newly lazy-loaded Agent cannot connect async Tool Connectors there.
+            # Ensure its registry is ready before a direct Graph Capability node
+            # uses it; AgentLoop owns the idempotent connection lock.
+            await connect()
+        return resolved
 
     async def _execution_permissions(
         self,

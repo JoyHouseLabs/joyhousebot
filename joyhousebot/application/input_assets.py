@@ -72,5 +72,19 @@ class InputAssetService:
             raise NotFoundError("Input Asset not found")
         return record
 
+    async def delete(self, context: RequestContext, asset_id: str) -> Any:
+        try:
+            record = await asyncio.to_thread(
+                self.store.delete_input_asset,
+                asset_id,
+                expected_user_id=context.user_id,
+                actor_id=context.principal.subject,
+            )
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+        if record is None:
+            raise NotFoundError("Input Asset not found")
+        return record
+
 
 __all__ = ["InputAssetService"]
