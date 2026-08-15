@@ -1,9 +1,9 @@
 # Joyhousebot
 
-## 开源企业级 Agent 执行与治理 Runtime
+## 开源 Agent 执行与治理 Runtime
 
-JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可本地或云端部署。它把企业级的
-长程执行、恢复、权限、审批、审计与发布治理，交给独立开发者、小团队和垂直 App：自然语言目标被转化为
+JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可本地或云端部署。它把原本需要企业工程
+投入的长程执行、恢复、权限、审批、审计与发布治理，交给个人、独立开发者、小团队和垂直 App：自然语言目标被转化为
 持久 Run/Task，并经由能力准入、定时或事件唤醒、人工确认、验证与回放，形成可积累的 Artifact 与 Work。
 
 它不是聊天客户端、模型 SDK 或企业 SaaS 套件。开发者无需自行重写调度、状态机、幂等、审批、权限、审计和
@@ -262,19 +262,32 @@ export JOYHOUSE_DATABASE_URL="postgresql://joyhousebot:joyhousebot-dev@127.0.0.1
 
 `config.dev.json` 开启了 `allowInsecureAuth`（仅凭 `X-User-ID` 头即可认证），仅限本机开发，不要用于任何可对外访问的部署；`config.example.json` 是生产安全基线模板。
 
-Core 默认不安装或启动任何渠道。需要邮件入口时，可按需安装 Email 官方扩展：
+Core 默认不安装或启动任何渠道。需要邮件入口或单纯的可靠邮件投递时，可按需安装 Email 官方扩展：
 
 ```bash
 uv pip install -e extensions/channel-email
 ```
 
 然后把 `channel-email` 加入部署配置的 `extensions.allowedIds`，执行 `joyhousebot
-discover-extensions`，再到 Console“扩展中心”激活。IMAP/SMTP 凭据仍只使用
+discover-extensions`，再到 Console“扩展中心”激活。IMAP 入站和 SMTP 出站可以独立配置；凭据仍只使用
 `env://VARIABLE` 引用。其他渠道按需安装，不属于默认产品组合。
 
-Resend 作为该 Email Extension 的 SMTP 服务商接入：`smtp_host=smtp.resend.com`、用户名 `resend`、
-密码为 `env://RESEND_API_KEY`。完整配置与入站边界见
+Resend 作为该 Email Extension 的 SMTP 服务商接入：`smtpHost=smtp.resend.com`、用户名 `resend`、
+密码为 `env://RESEND_API_KEY`，并需显式提供已验证的 `fromAddress`。完整配置与入站边界见
 [Email Extension README](extensions/channel-email/README.md)。
+
+需要从已冻结的 PDF/DOCX Input Asset 生成私有文本 Artifact 时，安装独立的文档处理扩展：
+
+```bash
+uv pip install -e extensions/capability-document-processing
+uv run joyhousebot discover-extensions --config config.json
+```
+
+将 `capability-document-processing` 放入 `extensions.allowedIds` 后，在 Console 激活其
+`document.extract` Capability。默认使用受限子进程；生产环境应构建扩展自己的无网络容器镜像并将
+`isolationBackend=container` 写入 Capability 配置。原文件不进入模型上下文或普通日志，解析结果只以私有
+Artifact 返回。完整隔离与输入边界见
+[`extensions/capability-document-processing/README.md`](extensions/capability-document-processing/README.md)。
 
 独立企业程序通过唯一的通用远程业务连接器接入：
 
@@ -326,6 +339,8 @@ docker compose -f docker-compose.runtime.yml up --build
 Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`（管理面与控制台 UI，默认只绑 `127.0.0.1:18791`，不要暴露公网）。
 
 详细部署和故障排查见 [运行手册](docs/OPERATIONS.md)，完整边界和数据模型见 [架构文档](docs/ARCHITECTURE.md)。
+使用 systemd 部署时，遵循 [systemd 安装说明](deploy/systemd/README.md)；对外发行前运行
+`./scripts/release-candidate-check.sh`，它会拒绝脏工作区并验证完整构建、wheel 与 Compose 配置。
 
 ## API 示例
 

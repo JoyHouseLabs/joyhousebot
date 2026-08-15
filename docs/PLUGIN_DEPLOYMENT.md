@@ -13,8 +13,10 @@ Core、官方扩展和业务扩展遵守同一套安装、启用和发布规则�
 capability-market-research = "market_research:create_plugin"
 ```
 
-扩展只能 import `joyhousebot.extension_sdk`，不能 import `api`、`application`、`runtime`、`storage`
-或其他 Core 内部模块。Core-only CI 会在不安装任何扩展的隔离环境中运行。
+扩展从 Core 只能 import `joyhousebot.extension_sdk`，不能 import `api`、`application`、`runtime`、`storage`
+或其他 Core 内部模块。若 Extension 复用另一个技术 Extension 的纯解析库，必须声明精确的 distribution
+依赖（如 `capability-context-assets` 对 `capability-document-processing`），不能依赖未声明的目录顺序或进程
+内全局注册表。Core-only CI 会在不安装任何扩展的隔离环境中运行。
 
 ## 2. 不可变发布身份
 
@@ -83,6 +85,10 @@ Channel release 只等待 Channel Worker；Provider、Capability 和 Connector r
 回滚同样创建新的 rollout，不能直接改数据库中的 active 标记。Agent Revision 引用 Capability 扩展时，
 还必须固定 extension ID、版本和 build digest。
 
+`execution_isolation` 可为 `in_process`、`subprocess`、`container` 或 `mcp`。处理不可信二进制输入的
+`capability-document-processing` 使用 `subprocess` 作为本地默认，并允许部署者选择 fail-closed 的无网络
+`container` 后端；它只能读取当前 Run 已冻结的 Input Asset，输出只能是私有 Artifact。
+
 ## 6. 数据与副作用
 
 扩展不会收到 RuntimeStore、数据库连接或任意 Core Service Locator。Capability 只能使用 SDK 中按职责
@@ -104,3 +110,5 @@ uv sync --extra dev --frozen
 
 生产环境应分别构建 Core wheel 与所需扩展 wheel，记录各自 SHA-256、签名和 SBOM，再以明确组合构建
 Runtime 镜像。Docker 可用 `JOYHOUSEBOT_EXTENSIONS` build arg 选择扩展，空值生成 Core-only 镜像。
+正式发布使用 `./scripts/release-candidate-check.sh`：该命令额外要求工作区无改动，从精确 Git commit 构建
+wheel 并验证 Compose 插值；它不能替代 staging 的 Eval、故障演练和备份恢复验收。

@@ -81,6 +81,14 @@ Compose 把 API 拆成两个角色：`api` 以 `--surface public` 只承载公�
 `/v1/admin/*` 与控制台 UI，默认只绑定 `127.0.0.1:18791`，不要暴露公网，通过
 SSH 隧道或内网访问。
 
+### systemd 部署
+
+非 Docker 环境可使用仓库提供的 `deploy/systemd/` units。它们先运行一次 `joyhousebot-migrate.service`，
+再启动 Public API、Worker 和 Scheduler；迁移 unit 使用 `RemainAfterExit=yes`，因此升级时必须显式重启迁移
+unit，然后重启各长运行角色。`deploy/config.runtime.json` 已把 scratch、Blob 和 Input Asset 目录放在
+`/var/lib/joyhousebot`，与 unit 的 `ProtectHome=true`、`ReadWritePaths` 一致。安装顺序、目录权限和环境文件
+位置见 [systemd README](../deploy/systemd/README.md)。
+
 启用外部 Channel 时，Channel Worker 还必须显式注入对应的 Channel 凭据环境变量；不要把
 Token、App Secret、SMTP 密码写入 JSON。当前 Channel 配置由进程启动时读取，修改凭据后需要重启
 Channel Worker；控制台的 Channels 页面当前提供安全状态查看，数据库化热加载属于后续计划。

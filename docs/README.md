@@ -1,7 +1,7 @@
 # Joyhousebot 文档
 
-这里只保留开源企业级 Agent 执行与治理 Runtime 当前有效的权威文档。JoyhouseBot 将长程执行、恢复、权限、
-审批、审计和发布治理开放给开发者；JoyHouse 产品与 JoyHouse Market 位于相邻私有仓库，本仓库只说明它们
+这里只保留开源 Agent 执行与治理 Runtime 当前有效的权威文档。JoyhouseBot 将长程执行、恢复、权限、
+审批、审计和发布治理开放给个人、开发者和产品团队；JoyHouse 产品与 JoyHouse Market 位于相邻私有仓库，本仓库只说明它们
 依赖的 Runtime 契约与开放协议。
 
 ### 架构与部署
@@ -11,6 +11,7 @@
 - [DATA_AND_ECOSYSTEM_BOUNDARIES.md](DATA_AND_ECOSYSTEM_BOUNDARIES.md)：统一数据库连接、表所有权、迁移与未来拆分边界。
 - [OPERATIONS.md](OPERATIONS.md)：PostgreSQL 优先的本地启动、角色扩容、健康检查与故障排查。
 - [PRODUCTION_ACCEPTANCE.md](PRODUCTION_ACCEPTANCE.md)：Eval、SLO、规模压测与故障恢复验收。
+- [../deploy/systemd/README.md](../deploy/systemd/README.md)：systemd 角色拆分、目录权限与升级顺序。
 
 ### 执行与能力协议
 
@@ -18,6 +19,7 @@
 - [AGENT_TEAMS.md](AGENT_TEAMS.md)：多 Agent Team 的版本、委派、共享 Workspace 与预算边界。
 - [SKILLS.md](SKILLS.md)：声明式 Skill 的资产、发布与分发模型。
 - [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)：Knowledge Core/扩展边界、版本索引和乱序保护。
+- [MULTIMODAL_RETRIEVAL_EXTENSION_CONTRACT.md](MULTIMODAL_RETRIEVAL_EXTENSION_CONTRACT.md)：文档、视觉、Embedding 与 Rerank 的 Extension 契约。
 - [mcp-gateway.md](mcp-gateway.md)：Streamable HTTP MCP 网关、调用语义与部署 Origin 配置。
 
 ### App 与生态协议
@@ -27,5 +29,9 @@
 - [APP_MARKET_GOVERNANCE.md](APP_MARKET_GOVERNANCE.md)：可替换 Market Registry 的签名、授权与分发协议。
 - [REMOTE_CAPABILITY_PROTOCOL.md](REMOTE_CAPABILITY_PROTOCOL.md)：签名 HTTP Remote Capability 的发布、调用与对账协议。
 - [PLUGIN_DEPLOYMENT.md](PLUGIN_DEPLOYMENT.md)：Extension 的安装、发现、发布和 Worker ACK 流程。
+
+### 研究与演进
+
+- [HARNESS_PAPER_INSIGHTS_FOR_JOYHOUSEBOT.md](HARNESS_PAPER_INSIGHTS_FOR_JOYHOUSEBOT.md)：从 DeepSeek Harness/Cordis 研究得到的 Extension 生命周期演进方向；它不是当前 Runtime 契约。
 
 代码、接口或部署方式发生变化时，应直接更新对应的权威文档，不再新增兼容旧架构的平行说明。
