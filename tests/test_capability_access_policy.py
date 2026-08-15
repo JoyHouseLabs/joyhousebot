@@ -98,6 +98,50 @@ def test_empty_frozen_allowlist_denies_every_tool() -> None:
     assert "run allowlist" in decision.reason
 
 
+def test_enabled_rerank_policy_requires_exact_published_capability_and_grant(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "rerank-policy.db")
+    store.publish_capability(_definition("retrieval.rerank", permissions=("context.read",)))
+    rerank = store.list_capability_definitions()[0]
+    service = PlatformService(store)
+    revision = AgentRevision(
+        revision_id="agent:v1",
+        agent_id="agent",
+        version=1,
+        model_policy={"primary": "test/model"},
+        capability_policy={"mode": "allowlist", "allowed": ["retrieval.rerank"]},
+        memory_policy={
+            "retrieval": {
+                "rerank": {
+                    "enabled": True,
+                    "capability_id": "retrieval.rerank",
+                    "version": "1.0.0",
+                    "candidate_limit": 20,
+                    "top_k": 10,
+                    "failure_mode": "fallback",
+                }
+            }
+        },
+    )
+    policy = resolve_capability_policy(revision.capability_policy, [rerank], strict=True)
+
+    service._validate_retrieval_rerank_policy(revision, [rerank], policy)
+
+    revision.memory_policy["retrieval"]["rerank"]["version"] = "0.9.0"
+    with pytest.raises(ValueError, match="not published and active"):
+        service._validate_retrieval_rerank_policy(revision, [rerank], policy)
+
+    revision.memory_policy["retrieval"]["rerank"]["version"] = "1.0.0"
+    without_rerank = resolve_capability_policy(
+        {"mode": "allowlist", "allowed": []}, [rerank], strict=True
+    )
+    with pytest.raises(ValueError, match="must authorize retrieval.rerank"):
+        service._validate_retrieval_rerank_policy(
+            revision, [rerank], without_rerank
+        )
+
+
 def test_run_snapshot_freezes_effective_catalog(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "capability-policy-snapshot.db")
     safe = _definition("safe.read")

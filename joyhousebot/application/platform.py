@@ -73,6 +73,7 @@ class PlatformService:
             definitions,
             strict=True,
         )
+        self._validate_retrieval_rerank_policy(revision, definitions, policy)
         by_id = {
             str(item.get("ref", {}).get("capability_id") or ""): item
             for item in definitions
@@ -125,6 +126,7 @@ class PlatformService:
             definitions,
             strict=True,
         )
+        self._validate_retrieval_rerank_policy(revision, definitions, policy)
         resolved = set(policy["resolved"])
         required_permissions = {
             str(permission).strip()
@@ -193,6 +195,60 @@ class PlatformService:
                 # transactional failure to the administrator.
                 logger.exception("Managed Agent Monitor publish reconciliation failed")
         return profile.to_dict()
+
+    def _validate_retrieval_rerank_policy(
+        self,
+        revision: AgentRevision,
+        definitions: list[dict[str, Any]],
+        capability_policy: dict[str, Any],
+    ) -> None:
+        """Validate the frozen Rerank reference before an Agent is saved.
+
+        Retrieval is composed by Core, so it cannot accept a model-supplied
+        capability choice.  An enabled policy must pin the active published
+        Rerank capability and must be covered by the Agent's resolved
+        capability policy; otherwise it would fail at the Dispatcher boundary
+        only after a Run has already started.
+        """
+        retrieval = dict(revision.memory_policy.get("retrieval") or {})
+        raw = retrieval.get("rerank")
+        if raw is None:
+            return
+        if not isinstance(raw, dict):
+            raise ValueError("memory_policy.retrieval.rerank must be an object")
+        if not raw.get("enabled"):
+            return
+        capability_id = str(raw.get("capability_id") or "").strip()
+        version = str(raw.get("version") or "").strip()
+        if capability_id != "retrieval.rerank" or not version:
+            raise ValueError(
+                "enabled retrieval rerank must pin retrieval.rerank and an exact version"
+            )
+        try:
+            candidate_limit = int(raw.get("candidate_limit") or 20)
+            top_k = int(raw.get("top_k") or candidate_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rerank candidate_limit and top_k must be integers") from exc
+        if not 1 <= candidate_limit <= 50 or not 1 <= top_k <= candidate_limit:
+            raise ValueError("rerank candidate_limit/top_k must be within 1..50")
+        if str(raw.get("failure_mode") or "fallback") not in {
+            "fallback",
+            "fail_closed",
+        }:
+            raise ValueError("rerank failure_mode must be fallback or fail_closed")
+        definition = self.store.get_capability_definition(capability_id, version)
+        if definition is None:
+            raise ValueError("configured Rerank capability is not published and active")
+        if not any(
+            str(dict(item.get("ref") or {}).get("capability_id") or "")
+            == capability_id
+            for item in definitions
+        ):
+            raise ValueError("configured Rerank capability is not available to this Agent")
+        if capability_id not in set(capability_policy.get("resolved") or ()):
+            raise ValueError(
+                "Agent capability policy must authorize retrieval.rerank when rerank is enabled"
+            )
 
     async def bind_agent_skill(self, **kwargs: Any) -> None:
         await asyncio.to_thread(self.store.bind_agent_skill, **kwargs)

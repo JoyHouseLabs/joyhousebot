@@ -225,6 +225,22 @@
               <label><span>写入方式</span><select v-model="draft.memory_write" :disabled="!draft.memory_enabled"><option value="candidate">候选写入（推荐）</option><option value="direct">允许工具直接写入</option><option value="none">禁止写入</option></select></label>
               <label><span>检索 Top K</span><input v-model.number="draft.memory_top_k" type="number" min="1" max="50" :disabled="!draft.memory_enabled" /></label>
               <label><span>注入上限 Tokens</span><input v-model.number="draft.memory_max_tokens" type="number" min="256" max="20000" :disabled="!draft.memory_enabled" /></label>
+              <div class="rerank-policy wide">
+                <div class="rerank-policy-heading">
+                  <div><strong>Knowledge Rerank</strong><small>仅重排本次检索已获授权的候选片段；不会自行访问知识库或把候选内容持久化。</small></div>
+                  <label class="switch-label"><input :checked="draft.rerank_enabled" type="checkbox" @change="setRerankEnabled(($event.target as HTMLInputElement).checked)" /><span><strong>{{ draft.rerank_enabled ? '已启用' : '未启用' }}</strong><small>随版本冻结</small></span></label>
+                </div>
+                <template v-if="draft.rerank_enabled">
+                  <div class="form-grid rerank-fields">
+                    <label class="wide"><span>已发布 Rerank Capability</span><select v-model="draft.rerank_version"><option value="" disabled>选择已启用的精确版本</option><option v-for="item in rerankCapabilities" :key="`${item.ref.capability_id}@${item.ref.version}`" :value="item.ref.version">{{ item.name }} · {{ item.ref.capability_id }}@{{ item.ref.version }}{{ item.execution_ready ? '' : '（未就绪）' }}</option></select></label>
+                    <label><span>候选上限</span><input v-model.number="draft.rerank_candidate_limit" type="number" min="1" max="50" /></label>
+                    <label><span>返回 Top K</span><input v-model.number="draft.rerank_top_k" type="number" min="1" :max="draft.rerank_candidate_limit" /></label>
+                    <label class="wide"><span>失败策略</span><select v-model="draft.rerank_failure_mode"><option value="fallback">Fallback：保留原检索排序并记录原因</option><option value="fail_closed">Fail closed：重排不可用时终止本次检索</option></select></label>
+                  </div>
+                  <p v-if="rerankPolicyProblem" class="field-error">{{ rerankPolicyProblem }}</p>
+                  <p v-else class="field-hint">运行时会通过统一 Capability Dispatcher 调用，并写入独立 Invocation / Trace。{{ draft.capability_mode === 'allowlist' ? '已自动加入当前 Agent 的能力白名单。' : '目录模式下会随安全能力目录获得授权。' }}</p>
+                </template>
+              </div>
             </div>
           </section>
         </div>
@@ -416,6 +432,8 @@ const blankDraft = () => ({
   max_fan_out: 10, tool_execution_mode: 'sequential', max_parallel_calls: 4, memory_enabled: false, memory_mode: 'task_only', memory_scope: 'user_agent',
   memory_episodic: false, memory_profile: false, memory_long_term: false, memory_agent: false,
   memory_read_mode: 'none', memory_write: 'none', memory_top_k: 10, memory_max_tokens: 6000,
+  rerank_enabled: false, rerank_version: '', rerank_candidate_limit: 20, rerank_top_k: 20,
+  rerank_failure_mode: 'fallback',
   monitor_enabled: false, monitor_every_minutes: 30, monitor_context_mode: 'light',
   monitor_preflight_mode: 'runtime_attention', monitor_session_mode: 'isolated',
   monitor_delivery: 'none', monitor_message: 'Review Runtime attention and act if needed.',
@@ -437,6 +455,8 @@ const activeRevision = computed(() => revisions.value.find((item) => item.revisi
 const filteredAgents = computed(() => { const term = search.value.toLowerCase(); return agents.value.filter((item) => !term || `${item.name} ${item.agent_id} ${item.description}`.toLowerCase().includes(term)) })
 const skillCapabilities = computed(() => skills.value.filter((item) => item.status === 'active' && item.current))
 const executableCapabilities = computed(() => capabilities.value)
+const rerankCapabilities = computed(() => capabilities.value.filter((item) => item.ref.capability_id === 'retrieval.rerank'))
+const selectedRerankCapability = computed(() => rerankCapabilities.value.find((item) => item.ref.version === draft.rerank_version))
 const safeCatalogCapabilities = computed(() => executableCapabilities.value.filter((item) => !item.requires_explicit_grant))
 const protectedCapabilities = computed(() => executableCapabilities.value.filter((item) => item.requires_explicit_grant))
 const selectedProtectedCapabilities = computed(() => protectedCapabilities.value.filter((item) => draft.allowed_capabilities.includes(item.ref.capability_id)))
@@ -460,7 +480,15 @@ const permissionEntries = computed(() => [...new Set([...requiredPermissionIds.v
   required: requiredPermissionIds.value.includes(permission),
   capabilities: effectiveCapabilities.value.filter((item) => (item.permissions || []).includes(permission)).map((item) => item.name),
 })))
-const releaseBlocked = computed(() => selectedBlockedCapabilities.value.length > 0 || missingCapabilityPermissions.value.length > 0)
+const rerankPolicyProblem = computed(() => {
+  if (!draft.rerank_enabled) return ''
+  const capability = selectedRerankCapability.value
+  if (!capability) return '请选择一个当前已发布的 Rerank Capability 精确版本。'
+  if (!capability.execution_ready) return `Rerank Capability 未就绪：${capability.execution_blockers.join('；') || '请在扩展中心激活并等待 Worker 加载'}`
+  if (draft.capability_mode === 'allowlist' && !draft.allowed_capabilities.includes('retrieval.rerank')) return '严格白名单尚未授予 retrieval.rerank。'
+  return ''
+})
+const releaseBlocked = computed(() => selectedBlockedCapabilities.value.length > 0 || missingCapabilityPermissions.value.length > 0 || Boolean(rerankPolicyProblem.value))
 const catalogGroups = computed(() => {
   const values = new Map<string, number>()
   for (const item of safeCatalogCapabilities.value) {
@@ -499,6 +527,7 @@ function runUnitTest() {
     checks.push(`缺少执行权限：${missingCapabilityPermissions.value.join(', ')}`)
     ok = false
   } else checks.push('能力声明的执行权限均已显式授予')
+  if (rerankPolicyProblem.value) { checks.push(rerankPolicyProblem.value); ok = false } else if (draft.rerank_enabled) checks.push('Rerank 精确版本、运行就绪状态与能力授权均有效')
   unitTest.value = { ok, checks }
 }
 function splitList(value: string) { return value.split(',').map((item) => item.trim()).filter(Boolean) }
@@ -544,6 +573,11 @@ function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | unde
     memory_write: String(memory.write_mode || (memory.write === false ? 'none' : 'candidate')),
     memory_top_k: numberValue((memory.retrieval as any)?.top_k, 10),
     memory_max_tokens: numberValue((memory.retrieval as any)?.max_tokens, 6000),
+    rerank_enabled: Boolean((memory.retrieval as any)?.rerank?.enabled),
+    rerank_version: String((memory.retrieval as any)?.rerank?.version || ''),
+    rerank_candidate_limit: numberValue((memory.retrieval as any)?.rerank?.candidate_limit, 20),
+    rerank_top_k: numberValue((memory.retrieval as any)?.rerank?.top_k, 20),
+    rerank_failure_mode: String((memory.retrieval as any)?.rerank?.failure_mode || 'fallback'),
     monitor_enabled: monitor.enabled === true,
     monitor_every_minutes: Math.max(1, numberValue((monitor.schedule as any)?.every_ms, 1800000) / 60000),
     monitor_context_mode: String(monitor.context_mode || 'light'),
@@ -593,6 +627,16 @@ function createAgent() {
 
 function resetDraft() { if (selectedAgentId.value) void selectAgent(selectedAgentId.value); else createAgent() }
 
+function setRerankEnabled(enabled: boolean) {
+  draft.rerank_enabled = enabled
+  if (!enabled) return
+  const available = rerankCapabilities.value.find((item) => item.execution_ready) || rerankCapabilities.value[0]
+  if (!draft.rerank_version && available) draft.rerank_version = available.ref.version
+  if (draft.capability_mode === 'allowlist' && !draft.allowed_capabilities.includes('retrieval.rerank')) {
+    draft.allowed_capabilities.push('retrieval.rerank')
+  }
+}
+
 function payload() {
   return {
     revision_id: draft.revision_id, version: draft.version, name: draft.name, description: draft.description,
@@ -625,7 +669,20 @@ function payload() {
         long_term: { read: draft.memory_enabled && draft.memory_long_term, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
         agent: { read: draft.memory_enabled && draft.memory_agent, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
       },
-      retrieval: { top_k: draft.memory_top_k, max_tokens: draft.memory_max_tokens },
+      retrieval: {
+        top_k: draft.memory_top_k,
+        max_tokens: draft.memory_max_tokens,
+        ...(draft.rerank_enabled ? {
+          rerank: {
+            enabled: true,
+            capability_id: 'retrieval.rerank',
+            version: draft.rerank_version,
+            candidate_limit: Math.max(1, Math.min(50, Number(draft.rerank_candidate_limit) || 20)),
+            top_k: Math.max(1, Math.min(Number(draft.rerank_candidate_limit) || 20, Number(draft.rerank_top_k) || 20)),
+            failure_mode: draft.rerank_failure_mode,
+          },
+        } : {}),
+      },
     },
     monitor_policy: {
       ...policyBase.monitor,
@@ -783,11 +840,12 @@ watch(editorTab, (tab) => { if (tab === 'memoryData') void loadMemoryData() })
 .role-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-strong); }.role-card-top small { color: var(--text-muted); font-size: 10px; }.role-card>span:last-child { font-size: 12px; line-height: 1.45; }
 .role-detail { grid-column: 1/-1; padding: 11px 13px; border-left: 3px solid var(--accent); border-radius: 5px; background: var(--surface-raised); }.role-detail p { margin: 5px 0; color: var(--text-muted); font-size: 12px; line-height: 1.55; }.role-detail small { color: var(--text-muted); font-size: 11px; }
 .memory-guide { display: grid; gap: 5px; padding: 11px 13px; color: var(--text-muted); background: var(--surface-raised); border-left: 3px solid var(--accent); border-radius: 5px; font-size: 11px; line-height: 1.55; }.memory-guide strong { color: var(--text-strong); font-size: 11px; }
+.rerank-policy{display:grid;gap:13px;padding:15px 18px;background:color-mix(in srgb,var(--accent-subtle) 52%,var(--surface-raised));border:1px solid var(--accent-border);border-radius:11px}.rerank-policy-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.rerank-policy-heading>div{display:grid;gap:4px}.rerank-policy-heading strong{color:var(--text-strong);font-size:12px}.rerank-policy-heading small{color:var(--text-muted);font-size:10px;line-height:1.5}.rerank-policy .switch-label{min-height:0;padding:7px 9px;background:var(--surface)}.rerank-fields{padding:0}.field-error{margin:0;color:var(--danger);font-size:10px;line-height:1.5}.field-hint{margin:0;color:var(--text-muted);font-size:10px;line-height:1.5}
 .memory-data-pane { padding: 22px; }.memory-summary-grid { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 8px; padding: 16px 18px; border-bottom: 1px solid var(--border); }.memory-summary-grid button,.memory-summary-grid>div { display: grid; gap: 3px; padding: 11px 12px; color: var(--text-muted); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 9px; text-align: left; }.memory-summary-grid button { cursor: pointer; }.memory-summary-grid button:hover,.memory-summary-grid button.active { background: var(--accent-subtle); border-color: var(--accent-border); }.memory-summary-grid strong { color: var(--text-strong); font: 600 18px var(--font-mono); }.memory-summary-grid span { font-size: 10px; }.memory-data-toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border); }.memory-data-toolbar input { min-width: 180px; flex: 1; }.memory-data-toolbar input,.memory-data-toolbar select { padding: 9px 10px; color: var(--text); background: var(--input); border: 1px solid var(--border-strong); border-radius: 9px; }.segmented-control { display: flex; padding: 3px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 9px; }.segmented-control button { padding: 7px 10px; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; cursor: pointer; white-space: nowrap; }.segmented-control button.active { color: var(--text-strong); background: var(--surface); box-shadow: var(--shadow-sm); }.memory-error { margin: 12px 18px 0; }
 .memory-browser { display: grid; grid-template-columns: minmax(250px,.8fr) minmax(0,1.3fr); min-height: 440px; }.memory-document-list { max-height: 580px; overflow: auto; border-right: 1px solid var(--border); }.memory-document-list>button { display: grid; width: 100%; gap: 5px; padding: 13px 16px; color: var(--text-muted); background: transparent; border: 0; border-bottom: 1px solid var(--border); text-align: left; cursor: pointer; }.memory-document-list>button:hover,.memory-document-list>button.active { background: var(--surface-hover); }.memory-document-list>button.active { box-shadow: inset 3px 0 var(--accent); }.memory-document-list strong { color: var(--text-strong); font: 600 11px var(--font-mono); }.memory-document-list p { display: -webkit-box; overflow: hidden; margin: 0; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 10px; white-space: pre-wrap; }.memory-document-list small { font-size: 8px; }.memory-layer-tag { width: max-content; padding: 2px 6px; color: var(--accent); background: var(--accent-subtle); border-radius: 99px; font-size: 8px; }
 .memory-document-detail { min-width: 0; background: var(--surface-raised); }.memory-document-detail>header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }.memory-document-detail>header>div { min-width: 0; display: flex; align-items: center; gap: 8px; }.memory-document-detail h4 { overflow: hidden; margin: 0; color: var(--text-strong); font: 600 12px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }.memory-document-detail>header small { color: var(--text-muted); font-size: 9px; white-space: nowrap; }.memory-document-detail pre,.memory-candidate-list pre { overflow: auto; margin: 0; color: var(--text); font: 11px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }.memory-document-detail pre { min-height: 330px; max-height: 500px; padding: 18px; }.memory-document-detail>footer { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; color: var(--text-muted); border-top: 1px solid var(--border); font-size: 8px; }.memory-document-detail>footer code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .memory-candidate-list { display: grid; gap: 10px; padding: 16px 18px 18px; }.memory-candidate-list article { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }.memory-candidate-list article>header,.memory-candidate-list article>footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: var(--surface-raised); }.memory-candidate-list article>header>div { display: flex; align-items: center; gap: 8px; }.memory-candidate-list article>header strong { color: var(--text-strong); font: 600 10px var(--font-mono); }.memory-candidate-list pre { max-height: 240px; padding: 13px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }.memory-candidate-list article>footer { color: var(--text-muted); font-size: 8px; }.memory-candidate-list article>footer code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1120px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 280px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.memory-browser { grid-template-columns: minmax(230px,.75fr) minmax(0,1.25fr); } }
 @media (max-width: 900px) { .agent-workspace { grid-template-columns: 1fr; }.agent-directory { position: static; max-height: 300px; }.capability-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.skill-bind-form { grid-template-columns: 1fr 1fr; }.memory-summary-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }.memory-browser { grid-template-columns: 1fr; }.memory-document-list { max-height: 300px; border-right: 0; border-bottom: 1px solid var(--border); } }
-@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide,.memory-summary-grid,.permission-grants>div { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane,.memory-data-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; }.memory-data-toolbar { align-items: stretch; flex-direction: column; }.memory-candidate-list article>footer { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 650px) { .editor-header { align-items: flex-start; flex-direction: column; }.editor-actions { width: 100%; flex-wrap: wrap; }.form-grid,.capability-grid,.ability-toolbar,.skill-bind-form,.role-guide,.memory-summary-grid,.permission-grants>div { grid-template-columns: 1fr; }.abilities-pane,.agent-form,.skills-pane,.revision-pane,.memory-data-pane { padding: 14px; }.form-section>header { flex-direction: column; }.form-section>header p { text-align: left; }.revision-list article { grid-template-columns: 12px minmax(0,1fr) auto; }.revision-list article button,.current-label { grid-column: 2/-1; justify-self: start; }.memory-data-toolbar,.rerank-policy-heading { align-items: stretch; flex-direction: column; }.memory-candidate-list article>footer { align-items: flex-start; flex-direction: column; } }
 </style>
