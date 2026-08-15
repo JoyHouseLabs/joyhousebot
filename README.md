@@ -272,6 +272,10 @@ uv pip install -e extensions/channel-email
 discover-extensions`，再到 Console“扩展中心”激活。IMAP/SMTP 凭据仍只使用
 `env://VARIABLE` 引用。其他渠道按需安装，不属于默认产品组合。
 
+Resend 作为该 Email Extension 的 SMTP 服务商接入：`smtp_host=smtp.resend.com`、用户名 `resend`、
+密码为 `env://RESEND_API_KEY`。完整配置与入站边界见
+[Email Extension README](extensions/channel-email/README.md)。
+
 独立企业程序通过唯一的通用远程业务连接器接入：
 
 ```bash

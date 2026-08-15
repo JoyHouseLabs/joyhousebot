@@ -160,6 +160,38 @@ async def test_start_returns_immediately_without_consent(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_supports_smtp_outbound_only_without_imap() -> None:
+    config = _make_config()
+    config.pop("imap_host")
+    config.pop("imap_username")
+    config.pop("imap_password")
+    plugin = _make_plugin(config)
+
+    await plugin.start()
+
+    assert plugin.is_running is True
+    assert plugin._poll_task is None
+    await plugin.stop()
+
+
+@pytest.mark.asyncio
+async def test_resend_requires_verified_from_address() -> None:
+    config = _make_config()
+    config.update(
+        {
+            "smtp_host": "smtp.resend.com",
+            "smtp_username": "resend",
+            "smtp_password": "secret",
+        }
+    )
+    plugin = _make_plugin(config)
+
+    await plugin.start()
+
+    assert plugin.is_running is False
+
+
+@pytest.mark.asyncio
 async def test_send_uses_smtp_and_reply_subject(monkeypatch) -> None:
     class FakeSMTP:
         def __init__(self, _host: str, _port: int, timeout: int = 30) -> None:

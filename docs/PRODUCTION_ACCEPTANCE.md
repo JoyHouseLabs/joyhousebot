@@ -31,12 +31,12 @@ App 数据面在上述 Runtime 门禁之外使用独立目标。以下是发布 
 ## 阶段一：构建与静态门禁
 
 ```bash
-./scripts/pre_release_check.sh
-uv build --wheel
-docker compose -f docker-compose.runtime.yml config --quiet
+./scripts/release-candidate-check.sh
 ```
 
-记录 wheel 和镜像 SHA-256。生产变量中必须有 `JOYHOUSEBOT_ENVIRONMENT=production`，API 分别以
+该脚本拒绝任何未提交/未跟踪文件，并依次执行完整 Runtime、Extension、Console 和数据库前置检查；它还会
+从精确 Git commit 构建临时 wheel、输出 SHA-256，并验证 Compose 配置。不要用仅通过
+`pre_release_check.sh` 的脏工作区发布。记录脚本输出的 commit、wheel SHA-256 和镜像 SHA-256。生产变量中必须有 `JOYHOUSEBOT_ENVIRONMENT=production`，API 分别以
 `--surface public`、`--surface control` 启动。先确认 Prometheus、Grafana 和 OTLP Collector 都能接收数据，
 并验证 `/metrics` 未配置 token 时为 404；配置 token 后，无 token 或错误 token 为 401、正确 token 为 200。
 

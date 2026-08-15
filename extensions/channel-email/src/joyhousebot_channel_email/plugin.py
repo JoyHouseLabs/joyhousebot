@@ -38,18 +38,19 @@ EMAIL_EXTENSION_MANIFEST = ExtensionManifest(
     build_digest=source_tree_digest(__file__),
     required_permissions=("channel.email.read", "channel.email.send"),
     dependencies=(
-        {"id": "imap", "kind": "service", "required": True},
+        {"id": "imap", "kind": "service", "required": False},
         {"id": "smtp", "kind": "service", "required": True},
         {"id": "email-credentials", "kind": "credential", "required": True},
     ),
     configuration_schema={
         "type": "object",
-        "required": ["consent_granted", "imap_host", "smtp_host"],
+        "required": ["consent_granted", "smtp_host"],
         "properties": {
             "enabled": {"type": "boolean"},
             "consent_granted": {"type": "boolean"},
             "imap_host": {"type": "string"},
             "smtp_host": {"type": "string"},
+            "from_address": {"type": "string"},
         },
     },
 )
@@ -103,11 +104,14 @@ class EmailChannelPlugin(BaseChannelPlugin):
             )
             return
 
-        if not self._validate_config():
+        if not self._validate_outbound_config():
             return
 
         self._set_running(True)
         self._log_start()
+        if not self._inbound_configured():
+            logger.info("Email channel started in SMTP outbound-only mode")
+            return
 
         poll_seconds = max(5, int(self._config.get("poll_interval_seconds", 60)))
         self._poll_task = asyncio.create_task(self._poll_loop(poll_seconds))
@@ -200,25 +204,33 @@ class EmailChannelPlugin(BaseChannelPlugin):
             self._log_error(f"Error sending email to {to_addr}: {e}")
             return SendResult(success=False, error=str(e))
 
-    def _validate_config(self) -> bool:
+    def _validate_outbound_config(self) -> bool:
         missing = []
-        if not self._config.get("imap_host"):
-            missing.append("imap_host")
-        if not self._config.get("imap_username"):
-            missing.append("imap_username")
-        if not self._config.get("imap_password"):
-            missing.append("imap_password")
         if not self._config.get("smtp_host"):
             missing.append("smtp_host")
         if not self._config.get("smtp_username"):
             missing.append("smtp_username")
         if not self._config.get("smtp_password"):
             missing.append("smtp_password")
+        if (
+            str(self._config.get("smtp_host") or "").strip().lower()
+            == "smtp.resend.com"
+            and not self._config.get("from_address")
+        ):
+            missing.append("from_address")
 
         if missing:
-            logger.error(f"Email channel not configured, missing: {', '.join(missing)}")
+            logger.error(
+                f"Email channel outbound delivery is not configured, missing: {', '.join(missing)}"
+            )
             return False
         return True
+
+    def _inbound_configured(self) -> bool:
+        return all(
+            self._config.get(key)
+            for key in ("imap_host", "imap_username", "imap_password")
+        )
 
     def _smtp_send(self, msg: EmailMessage) -> None:
         timeout = 30
