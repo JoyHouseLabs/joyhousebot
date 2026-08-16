@@ -1,6 +1,6 @@
 # Porthouse Runtime Console
 
-控制台用于 HappyHousebot 的平台运行、管理、监控与配置，同时提供 Agent 在线试用。它只消费版本化 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE。
+控制台用于 Porthouse 的平台运行、管理、监控与配置，同时提供 Agent 在线试用。它只消费版本化 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE。
 
 ## 页面
 

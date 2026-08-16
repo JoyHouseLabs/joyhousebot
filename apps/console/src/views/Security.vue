@@ -150,7 +150,7 @@ async function turnOffTotp() {
 async function copySecret() { if (setup.value) await navigator.clipboard.writeText(setup.value.secret); success.value = '设置密钥已复制。' }
 async function copyRecoveryCodes() { await navigator.clipboard.writeText(recoveryCodes.value.join('\n')); success.value = '恢复码已复制。' }
 function downloadRecoveryCodes() {
-  const blob = new Blob([`Porthousebot recovery codes\n${recoveryCodes.value.join('\n')}\n`], { type: 'text/plain;charset=utf-8' })
+  const blob = new Blob([`Porthouse recovery codes\n${recoveryCodes.value.join('\n')}\n`], { type: 'text/plain;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'porthouse-recovery-codes.txt'; anchor.click()
   URL.revokeObjectURL(url)

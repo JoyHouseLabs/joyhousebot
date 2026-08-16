@@ -1,4 +1,4 @@
-# HappyHousebot
+# Porthouse
 
 ## 开源 Agent 执行与治理 Runtime
 
@@ -227,7 +227,7 @@ Core 注入自定义 DDL。完整规范见
 
 ## 控制台示例
 
-HappyHousebot 自带用于试用、运维和问题定位的管理控制台：
+Porthouse 自带用于试用、运维和问题定位的管理控制台：
 
 - **运行监控**：查看 API、PostgreSQL、Worker 集群、运行数量和资源用量。
 - **运行中心**：分页查看 Run，按状态、Agent、Session 或摘要筛选，并进入独立详情页。

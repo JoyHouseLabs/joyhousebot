@@ -1,4 +1,4 @@
-# HappyHousebot
+# Porthouse
 
 ## Open-source, enterprise-grade execution and governance for Agent applications
 
@@ -17,7 +17,7 @@ Calling a model is easy; delivering an Agent application that runs for days, act
 
 This is not enterprise software repackaged for individuals. It makes the Agent execution and governance capabilities normally built by enterprise engineering teams deployable, composable, and extensible by every developer.
 
-## Why HappyHousebot
+## Why Porthouse
 
 Most Agent tools answer a prompt or call a tool once. Porthouse makes a goal progress safely over hours, days, or longer. Its differentiation is not access to more models; it makes enterprise-grade execution governance durable, reusable, and directly available to developers.
 
@@ -208,4 +208,4 @@ cd apps/console && npm run build
 
 ## License
 
-HappyHousebot is released under the Apache License 2.0. Commercial use is permitted; redistributions must retain the license, copyright notices, and comply with the Apache 2.0 patent and NOTICE terms.
+Porthouse is released under the Apache License 2.0. Commercial use is permitted; redistributions must retain the license, copyright notices, and comply with the Apache 2.0 patent and NOTICE terms.

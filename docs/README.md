@@ -1,4 +1,4 @@
-# HappyHousebot 文档
+# Porthouse 文档
 
 这里只保留开源 Agent 执行与治理 Runtime 当前有效的权威文档。Porthouse 将长程执行、恢复、权限、
 审批、审计和发布治理开放给个人、开发者和产品团队；HappyHouse 产品与 HappyHouse Market 位于相邻私有仓库，本仓库只说明它们

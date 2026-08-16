@@ -156,7 +156,7 @@ def generate_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
 
 
-def totp_uri(*, secret: str, user_id: str, issuer: str = "Porthousebot") -> str:
+def totp_uri(*, secret: str, user_id: str, issuer: str = "Porthouse") -> str:
     label = quote(f"{issuer}:{user_id}", safe="")
     return (
         f"otpauth://totp/{label}?secret={quote(secret, safe='')}"

@@ -91,9 +91,9 @@ class MCPGateway:
 
     def __init__(self, *, cors_origins: list[str] | tuple[str, ...] = ()) -> None:
         self.server = FastMCP(
-            "Porthousebot Capability Gateway",
+            "Porthouse Capability Gateway",
             instructions=(
-                "Published Porthousebot capabilities. Every call creates a durable Run and Task. "
+                "Published Porthouse capabilities. Every call creates a durable Run and Task. "
                 "Results are user-scoped and may be asynchronous."
             ),
             streamable_http_path="/",
@@ -144,7 +144,7 @@ class MCPGateway:
         self.server.add_tool(
             invoke,
             name=name,
-            description=f"{description} (durable Porthousebot Run)",
+            description=f"{description} (durable Porthouse Run)",
             structured_output=True,
         )
         # FastMCP derives validation models from the Python signature.  Keep

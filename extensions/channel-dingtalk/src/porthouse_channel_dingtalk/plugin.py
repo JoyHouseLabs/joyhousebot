@@ -66,7 +66,7 @@ except ImportError:
     ChatbotMessage = None
 
 
-class PorthousebotDingTalkHandler(CallbackHandler):
+class PorthouseDingTalkHandler(CallbackHandler):
     """DingTalk Stream SDK Callback Handler."""
 
     def __init__(self, plugin: "DingTalkChannelPlugin"):
@@ -167,7 +167,7 @@ class DingTalkChannelPlugin(BaseChannelPlugin):
         credential = Credential(client_id, client_secret)
         self._client = DingTalkStreamClient(credential)
 
-        handler = PorthousebotDingTalkHandler(self)
+        handler = PorthouseDingTalkHandler(self)
         self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
 
         self._set_connected(True)
@@ -215,7 +215,7 @@ class DingTalkChannelPlugin(BaseChannelPlugin):
             "msgParam": json.dumps(
                 {
                     "text": msg.content,
-                    "title": "Porthousebot Reply",
+                    "title": "Porthouse Reply",
                 }
             ),
         }

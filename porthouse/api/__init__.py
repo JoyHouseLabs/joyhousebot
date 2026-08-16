@@ -1,4 +1,4 @@
-"""Public HTTP/SSE API for the Porthousebot cloud platform."""
+"""Public HTTP/SSE API for the Porthouse cloud platform."""
 
 from porthouse.api.app import create_app
 

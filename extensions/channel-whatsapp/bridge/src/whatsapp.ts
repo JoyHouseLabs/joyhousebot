@@ -1,6 +1,6 @@
 /**
  * WhatsApp client wrapper using Baileys.
- * Uses Baileys directly behind Porthousebot's local bridge protocol.
+ * Uses Baileys directly behind Porthouse's local bridge protocol.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

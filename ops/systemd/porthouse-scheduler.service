@@ -1,5 +1,5 @@
 [Unit]
-Description=Porthousebot distributed scheduler
+Description=Porthouse distributed scheduler
 After=network-online.target docker.service
 Wants=network-online.target
 

@@ -144,7 +144,7 @@ def test_clarification_resumes_same_run_after_all_answers(tmp_path: Path) -> Non
     )
     second_step, second = engine.resolve(
         run_id="run-tts", user_id="user-a", input_request_id=first.input_request_id,
-        answers={"text": "欢迎使用 Porthousebot"},
+        answers={"text": "欢迎使用 Porthouse"},
     )
     assert second_step.missing_inputs == ("voice",)
     assert second is not None and second.node_id == "voice"

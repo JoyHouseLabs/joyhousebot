@@ -1,1 +1,1 @@
-"""Pure domain contracts for the Porthousebot cloud platform."""
+"""Pure domain contracts for the Porthouse cloud platform."""

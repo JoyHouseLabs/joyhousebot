@@ -1,7 +1,7 @@
 <template>
   <main class="login-page">
     <section class="login-card">
-      <div class="login-brand"><img :src="logoSrc" alt="Porthousebot" /><div><strong>Porthousebot</strong><span>AGENT CLOUD</span></div></div>
+      <div class="login-brand"><img :src="logoSrc" alt="Porthouse" /><div><strong>Porthouse</strong><span>AGENT CLOUD</span></div></div>
       <span class="eyebrow">CONTROL PLANE</span>
       <h1>登录控制台</h1>
       <p class="login-lead">验证管理员身份，并选择本次要管理的个人 user_id。</p>

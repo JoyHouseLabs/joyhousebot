@@ -177,7 +177,7 @@ def create_app(
             await active.close()
 
     app = FastAPI(
-        title=f"Porthousebot {surface.title()} API",
+        title=f"Porthouse {surface.title()} API",
         version="1.0.0",
         description="Multi-user distributed Agent runtime",
         lifespan=lifespan,

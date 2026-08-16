@@ -2,8 +2,8 @@
   <div class="app-shell" :class="{ 'chat-active': route.path === '/chat', 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="app-sidebar">
       <router-link class="brand" to="/work">
-        <img :src="logoSrc" alt="Porthousebot" />
-        <div><strong>Porthousebot</strong><span>AI Work Center</span></div>
+        <img :src="logoSrc" alt="Porthouse" />
+        <div><strong>Porthouse</strong><span>AI Work Center</span></div>
       </router-link>
 
       <div class="sidebar-scroll">
@@ -37,7 +37,7 @@
 
     <section class="app-stage" :class="{ 'chat-active': route.path === '/chat' }">
       <header class="app-topbar">
-        <div class="mobile-brand"><img :src="logoSrc" alt="" /><strong>Porthousebot</strong></div>
+        <div class="mobile-brand"><img :src="logoSrc" alt="" /><strong>Porthouse</strong></div>
         <button class="sidebar-toggle" type="button" :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSidebar">
           {{ sidebarCollapsed ? '›' : '‹' }}
         </button>

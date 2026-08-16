@@ -1,5 +1,5 @@
 [Unit]
-Description=Porthousebot API gateway
+Description=Porthouse API gateway
 After=network-online.target docker.service
 Wants=network-online.target
 

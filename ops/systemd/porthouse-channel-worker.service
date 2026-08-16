@@ -1,5 +1,5 @@
 [Unit]
-Description=Porthousebot channel worker (external channel connections)
+Description=Porthouse channel worker (external channel connections)
 After=network-online.target docker.service
 Wants=network-online.target
 

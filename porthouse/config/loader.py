@@ -1,4 +1,4 @@
-"""Native Porthousebot configuration loading utilities.
+"""Native Porthouse configuration loading utilities.
 
 Configuration is deployment input.  The cloud API never mutates it at runtime
 and no foreign-client configuration formats are accepted.
@@ -48,7 +48,7 @@ def load_config(config_path: Path | None = None) -> Config:
         config = Config.model_validate(converted)
     except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(
-            f"Failed to load current Porthousebot config from {path}: {exc}. "
+            f"Failed to load current Porthouse config from {path}: {exc}. "
             "Legacy client/standalone fields are intentionally unsupported; "
             "start from config.example.json and select it with --config or "
             f"{CONFIG_PATH_ENV}."
