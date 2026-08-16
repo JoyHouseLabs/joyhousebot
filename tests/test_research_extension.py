@@ -1,8 +1,8 @@
 import pytest
-from joyhousebot_capability_research import ResearchCapabilityPlugin
+from porthouse_capability_research import ResearchCapabilityPlugin
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.contracts import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.contracts import CapabilityContext
 
 
 def test_research_extension_registers_versioned_capabilities() -> None:

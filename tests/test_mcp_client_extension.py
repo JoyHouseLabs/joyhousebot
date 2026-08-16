@@ -2,11 +2,11 @@ from contextlib import AsyncExitStack
 from types import SimpleNamespace
 
 import pytest
-from joyhousebot_connector_mcp_client import MCPToolWrapper, create_extension
-from joyhousebot_connector_mcp_client import connector as mcp_connector
+from porthouse_connector_mcp_client import MCPToolWrapper, create_extension
+from porthouse_connector_mcp_client import connector as mcp_connector
 
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.connectors import ToolConnectorRegistry
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.connectors import ToolConnectorRegistry
 
 
 def _tool_def(name: str = "read.file"):

@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.capabilities.services import CapabilityServiceBroker
-from joyhousebot.config.loader import load_config
-from joyhousebot.extension_sdk import CapabilityContext
-from joyhousebot.extension_sdk.network import validate_url
+from porthouse.capabilities.services import CapabilityServiceBroker
+from porthouse.config.loader import load_config
+from porthouse.extension_sdk import CapabilityContext
+from porthouse.extension_sdk.network import validate_url
 
 
 @pytest.mark.asyncio

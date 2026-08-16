@@ -1,6 +1,6 @@
 # Host Model Gateway 与 Tool Broker
 
-JoyhouseBot 允许 Pi、OpenCLI 及其他 Node Agent loop 复用模型和 Runtime Capability，但不把 Provider
+Porthouse 允许 Pi、OpenCLI 及其他 Node Agent loop 复用模型和 Runtime Capability，但不把 Provider
 密钥、Device token、PostgreSQL 或内部 Python 对象交给 Host。
 
 ## 两类短期授权
@@ -32,13 +32,13 @@ Host 不能提交未冻结版本，也不能增加权限。副作用 Capability 
 下传给被调用 Tool，因此动态 Tool 调用只有一层；若未来需要多层协同，必须显式设计新的父子 Run 和预算，
 不能放宽当前 grant。
 
-Node Extension 可使用 `@joyhousebot/extension-sdk` 的 `HostToolBrokerClient`。轮询是正确性基线；未来可在
+Node Extension 可使用 `@porthouse/extension-sdk` 的 `HostToolBrokerClient`。轮询是正确性基线；未来可在
 不改变状态机的前提下增加 SSE 唤醒。
 
 ## 本地运行
 
 ```bash
-JOYHOUSEBOT_START_MODEL_GATEWAY=true ./scripts/start-local.sh
+PORTHOUSE_START_MODEL_GATEWAY=true ./scripts/start-local.sh
 ```
 
 Model Gateway 默认监听 `127.0.0.1:18794`。Node Host 生产发行必须使用

@@ -4,15 +4,15 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
-from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from joyhousebot.runtime.action_identity import durable_action_id
-from joyhousebot.runtime.context import ActionOutcomeUnknownError, RunContext
-from joyhousebot.runtime.models import AgentOptions
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.contracts.tools import Tool
+from porthouse.domain.capabilities import CapabilityKind, CapabilityRef
+from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from porthouse.runtime.action_identity import durable_action_id
+from porthouse.runtime.context import ActionOutcomeUnknownError, RunContext
+from porthouse.runtime.models import AgentOptions
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 

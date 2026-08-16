@@ -2,7 +2,7 @@ import type {
   InvocationRequest,
   OperationProgressEvent,
   RemoteCapabilityResponse,
-} from "@joyhousebot/extension-sdk";
+} from "@porthouse/extension-sdk";
 
 export interface DeviceHostConfig {
   runtimeBaseUrl: string;

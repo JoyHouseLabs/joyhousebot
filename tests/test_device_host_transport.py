@@ -7,15 +7,15 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.bootstrap.host_tool_worker import HostToolBrokerWorker
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
-from joyhousebot.capabilities.tool_adapter import ToolOutput
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.runtime.context import ActionOutcomeUnknownError
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.bootstrap.host_tool_worker import HostToolBrokerWorker
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.capabilities.dispatcher import CapabilityDispatcher
+from porthouse.capabilities.tool_adapter import ToolOutput
+from porthouse.config.schema import Config
+from porthouse.contracts.tools import Tool
+from porthouse.runtime.context import ActionOutcomeUnknownError
 from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 from tests.test_operation_reconciliation import (
@@ -142,7 +142,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
 
         device_headers = {
             "Authorization": f"Bearer {device_token}",
-            "X-Joyhouse-Device-ID": "macbook-a",
+            "X-Porthouse-Device-ID": "macbook-a",
         }
         heartbeat = client.post(
             "/v1/device-host/heartbeat",

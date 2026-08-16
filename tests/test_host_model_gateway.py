@@ -5,16 +5,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
-from joyhousebot.config.schema import Config
-from joyhousebot.model_gateway.app import create_model_gateway_app
-from joyhousebot.model_gateway.service import HostModelGatewayService
-from joyhousebot.providers.base import LLMResponse
-from joyhousebot.providers.usage import normalized_usage
-from joyhousebot.runtime.context import ActionOutcomeUnknownError
-from joyhousebot.storage.json_codec import Jsonb
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities.dispatcher import CapabilityDispatcher
+from porthouse.config.schema import Config
+from porthouse.model_gateway.app import create_model_gateway_app
+from porthouse.model_gateway.service import HostModelGatewayService
+from porthouse.providers.base import LLMResponse
+from porthouse.providers.usage import normalized_usage
+from porthouse.runtime.context import ActionOutcomeUnknownError
+from porthouse.storage.json_codec import Jsonb
 from tests.support.postgres_store import PostgresTestStore
 from tests.test_operation_reconciliation import (
     _adapter,
@@ -139,7 +139,7 @@ async def test_host_model_gateway_pins_scope_budgets_and_replays_response(
         assert registration.status_code == 201, registration.text
         device_headers = {
             "Authorization": f"Bearer {registration.json()['device_token']}",
-            "X-Joyhouse-Device-ID": "host-model-device",
+            "X-Porthouse-Device-ID": "host-model-device",
         }
         delivery_response = runtime_client.post(
             f"/v1/runs/{execution.run_id}/operations/"

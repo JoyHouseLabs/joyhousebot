@@ -1,10 +1,10 @@
-const USER_STORAGE_KEY = 'joyhousebot_user_id'
-const IMPERSONATE_STORAGE_KEY = 'joyhousebot_impersonate_user_id'
+const USER_STORAGE_KEY = 'porthouse_user_id'
+const IMPERSONATE_STORAGE_KEY = 'porthouse_impersonate_user_id'
 
 let volatileUserId: string | null = null
 let volatileImpersonateUserId: string | null = null
 
-const DEFAULT_TEST_USER_ID = String(import.meta.env.VITE_DEFAULT_USER_ID || 'joyhousebot')
+const DEFAULT_TEST_USER_ID = String(import.meta.env.VITE_DEFAULT_USER_ID || 'porthouse')
 const LEGACY_LOCAL_USER_IDS = new Set(['local-dev', 'browser-qa-admin'])
 
 /**

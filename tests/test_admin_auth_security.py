@@ -5,11 +5,11 @@ import time
 
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.api.routers import auth as auth_router
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.security.admin_auth import (
+from porthouse.api.app import create_app
+from porthouse.api.routers import auth as auth_router
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.security.admin_auth import (
     _hotp,
     decrypt_totp_secret,
     encrypt_totp_secret,
@@ -45,12 +45,12 @@ def test_password_hash_and_totp_primitives() -> None:
 
 
 def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
-    bootstrap_password = "joyhousebot-bootstrap-password"
-    new_password = "joyhousebot-secure-password-2026"
-    monkeypatch.setenv("JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER", "platform-admin")
-    monkeypatch.setenv("JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD", bootstrap_password)
+    bootstrap_password = "porthouse-bootstrap-password"
+    new_password = "porthouse-secure-password-2026"
+    monkeypatch.setenv("PORTHOUSE_BOOTSTRAP_ADMIN_USER", "platform-admin")
+    monkeypatch.setenv("PORTHOUSE_BOOTSTRAP_ADMIN_PASSWORD", bootstrap_password)
     monkeypatch.setenv(
-        "JOYHOUSEBOT_AUTH_ENCRYPTION_KEY",
+        "PORTHOUSE_AUTH_ENCRYPTION_KEY",
         base64.urlsafe_b64encode(b"a" * 32).decode("ascii"),
     )
     fixed_recovery_codes = [

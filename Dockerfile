@@ -4,21 +4,21 @@ WORKDIR /app
 
 # Install Python dependencies first (cached layer)
 COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p joyhousebot evals/suites && touch joyhousebot/__init__.py && \
+RUN mkdir -p porthouse evals/suites && touch porthouse/__init__.py && \
     uv pip install --system --no-cache '.[observability]' && \
-    rm -rf joyhousebot
+    rm -rf porthouse
 
 # Copy the full source and install
-COPY joyhousebot/ joyhousebot/
+COPY porthouse/ porthouse/
 COPY evals/suites/ evals/suites/
 RUN uv pip install --system --no-cache '.[observability]'
 
 # Compose an explicit runtime image from independently installable extensions.
 # The default Docker image remains Core-only when the build arg is empty.
-ARG JOYHOUSEBOT_EXTENSIONS=""
+ARG PORTHOUSE_EXTENSIONS=""
 COPY extensions/ extensions/
 RUN set -eu; \
-    for extension_id in ${JOYHOUSEBOT_EXTENSIONS}; do \
+    for extension_id in ${PORTHOUSE_EXTENSIONS}; do \
       case "${extension_id}" in *[!a-z0-9-]*|'') exit 2;; esac; \
       test -f "extensions/${extension_id}/pyproject.toml"; \
       uv pip install --system --no-cache "./extensions/${extension_id}"; \
@@ -32,13 +32,13 @@ RUN set -eu; \
 # (`docker run --user root ...` / compose `user: root`) or grant the
 # container the host docker group via compose `group_add`. The default CMD
 # (api) does not need the socket and stays unprivileged.
-RUN useradd --create-home --uid 1000 joyhousebot && \
-    mkdir -p /home/joyhousebot/.joyhousebot && \
-    chown -R joyhousebot:joyhousebot /app /home/joyhousebot/.joyhousebot
-USER joyhousebot
+RUN useradd --create-home --uid 1000 porthouse && \
+    mkdir -p /home/porthouse/.porthouse && \
+    chown -R porthouse:porthouse /app /home/porthouse/.porthouse
+USER porthouse
 
 # Cloud API default port
 EXPOSE 18790
 
-ENTRYPOINT ["joyhousebot"]
+ENTRYPOINT ["porthouse"]
 CMD ["api"]

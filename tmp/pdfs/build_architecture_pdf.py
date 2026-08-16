@@ -25,7 +25,7 @@ from reportlab.platypus import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "output/pdf/joyhousebot-architecture.pdf"
+OUT = ROOT / "output/pdf/porthouse-architecture.pdf"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
 # macOS ships a TrueType Chinese font collection that ReportLab can embed.
@@ -49,7 +49,7 @@ GREEN = colors.HexColor("#18A874")
 class ArchitectureDoc(BaseDocTemplate):
     def __init__(self, filename: str):
         super().__init__(filename, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
-                         topMargin=18 * mm, bottomMargin=17 * mm, title="Joyhousebot 当前架构与实现说明")
+                         topMargin=18 * mm, bottomMargin=17 * mm, title="Porthouse 当前架构与实现说明")
         frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id="main")
         self.addPageTemplates([PageTemplate(id="normal", frames=frame, onPage=draw_page)])
 
@@ -61,7 +61,7 @@ def draw_page(canvas, doc):
     canvas.line(doc.leftMargin, 12 * mm, PAGE_W - doc.rightMargin, 12 * mm)
     canvas.setFont("NotoSC", 7.5)
     canvas.setFillColor(MUTED)
-    canvas.drawString(doc.leftMargin, 7 * mm, "Joyhousebot | 当前架构与实现说明 | 2026-08")
+    canvas.drawString(doc.leftMargin, 7 * mm, "Porthouse | 当前架构与实现说明 | 2026-08")
     canvas.drawRightString(PAGE_W - doc.rightMargin, 7 * mm, f"{doc.page}")
     canvas.restoreState()
 
@@ -137,7 +137,7 @@ def table(rows, widths=None, header=True):
 story = []
 
 # Cover
-story += [Spacer(1, 28 * mm), P("JOYHOUSEBOT", "Kicker"), P("当前架构与实现说明", "CoverTitle"),
+story += [Spacer(1, 28 * mm), P("PORTHOUSE", "Kicker"), P("当前架构与实现说明", "CoverTitle"),
           P("面向多用户、分布式 Agent 云服务的 PG-first 运行时框架", "CoverSub"),
           HRFlowable(width="100%", thickness=1.2, color=ORANGE, spaceBefore=8, spaceAfter=18),
           P("本文档基于当前代码库与线上部署形态整理，描述实际已经存在的组件、数据流、职责边界、扩展方式和已知边界。它不是理想化设计稿，而是当前实现的架构基线。", "Bodyx"),
@@ -150,13 +150,13 @@ story += [Spacer(1, 28 * mm), P("JOYHOUSEBOT", "Kicker"), P("当前架构与实�
 
 # 1
 story += [P("01 设计定位与核心原则", "H1x"),
-          P("Joyhousebot 已从单机 Agent 形态收敛为一个可承载多个用户、多个会话、多个并发任务的 Agent 服务框架。核心不是某一个具体业务 Agent，而是把请求接入、意图协调、能力调用、异步执行、状态持久化和全过程追踪标准化。", "Bodyx"),
+          P("Porthouse 已从单机 Agent 形态收敛为一个可承载多个用户、多个会话、多个并发任务的 Agent 服务框架。核心不是某一个具体业务 Agent，而是把请求接入、意图协调、能力调用、异步执行、状态持久化和全过程追踪标准化。", "Bodyx"),
           table([[P("原则", "Smallx"), P("当前实现", "Smallx")],
                  [P("PG-first", "Bodyx"), P("PostgreSQL 是 Run、Task、事件、Trace、记忆、租约和 Channel Outbox 的共享权威。", "Bodyx")],
                  [P("单一运行模型", "Bodyx"), P("HTTP、Web UI、Channel 最终都转换为统一 Run，不维护两套 Agent 执行链。", "Bodyx")],
                  [P("主 Agent 协调", "Bodyx"), P("Coordinator 负责意图、场景、追问和计划；具体业务能力由 Tool、Skill、Plugin 承担。", "Bodyx")],
                  [P("可解释执行", "Bodyx"), P("阶段事件、决策摘要、工具调用、耗时和产物均可查询与回放。", "Bodyx")],
-                 [P("业务解耦", "Bodyx"), P("dinq-discover 作为 dinq-plugin 接入，不把业务代码写入 Joyhousebot 核心。", "Bodyx")]], widths=[37 * mm, 130 * mm]),
+                 [P("业务解耦", "Bodyx"), P("dinq-discover 作为 dinq-plugin 接入，不把业务代码写入 Porthouse 核心。", "Bodyx")]], widths=[37 * mm, 130 * mm]),
           P("当前系统的主要取舍", "H2x"),
           *bullets(["优先保证可恢复、可观测和可扩展，再优化单次请求的最低延迟。", "所有长任务使用持久化 Run，短任务也沿用同一模型，以降低系统复杂度。", "模型原始隐藏推理不作为公共接口契约；对外展示结构化思考摘要和执行事件。"]), PageBreak()]
 
@@ -168,11 +168,11 @@ story += [P("02 总体分层与组件职责", "H1x"),
                        [('Admin API', BLUE), ('Capability Registry', ORANGE), ('Tool / Skill / Plugin', GREEN)]]),
           Spacer(1, 4 * mm),
           table([[P("层", "Smallx"), P("职责", "Smallx"), P("主要代码区域", "Smallx")],
-                 [P("接入层", "Bodyx"), P("用户认证、会话、Run 提交、SSE、Channel 消息接入。", "Bodyx"), P("joyhousebot/api、joyhousebot/channels", "CodeX")],
-                 [P("协调层", "Bodyx"), P("意图识别、场景匹配、追问判断、能力选择、执行计划。", "Bodyx"), P("joyhousebot/runtime/request_coordination.py", "CodeX")],
-                 [P("调度层", "Bodyx"), P("入队、领取、Lease、重试、超时、恢复、通知唤醒。", "Bodyx"), P("joyhousebot/runtime、joyhousebot/storage", "CodeX")],
-                 [P("能力层", "Bodyx"), P("工具、Skill、Scenario、Plugin 的发现、校验、调用和结果规范化。", "Bodyx"), P("joyhousebot/capabilities、dinq-plugin", "CodeX")],
-                 [P("状态层", "Bodyx"), P("PostgreSQL 表、事件、Trace Blob、Memory、Outbox。", "Bodyx"), P("joyhousebot/storage、joyhousebot/agent", "CodeX")],
+                 [P("接入层", "Bodyx"), P("用户认证、会话、Run 提交、SSE、Channel 消息接入。", "Bodyx"), P("porthouse/api、porthouse/channels", "CodeX")],
+                 [P("协调层", "Bodyx"), P("意图识别、场景匹配、追问判断、能力选择、执行计划。", "Bodyx"), P("porthouse/runtime/request_coordination.py", "CodeX")],
+                 [P("调度层", "Bodyx"), P("入队、领取、Lease、重试、超时、恢复、通知唤醒。", "Bodyx"), P("porthouse/runtime、porthouse/storage", "CodeX")],
+                 [P("能力层", "Bodyx"), P("工具、Skill、Scenario、Plugin 的发现、校验、调用和结果规范化。", "Bodyx"), P("porthouse/capabilities、dinq-plugin", "CodeX")],
+                 [P("状态层", "Bodyx"), P("PostgreSQL 表、事件、Trace Blob、Memory、Outbox。", "Bodyx"), P("porthouse/storage、porthouse/agent", "CodeX")],
                  [P("控制台", "Bodyx"), P("运行监控、配置、Agent 试用、场景模拟和插件运维。", "Bodyx"), P("frontend/", "CodeX")]], widths=[27 * mm, 86 * mm, 54 * mm]), PageBreak()]
 
 # 3
@@ -214,7 +214,7 @@ story += [P("05 Channel 外部消息接入层", "H1x"),
                  [P("ChannelRuntimeBridge", "Bodyx"), P("将入站消息转换为 Run，并将终态结果路由回原消息。", "Bodyx")],
                  [P("channel_outbox", "Bodyx"), P("持久化出站消息，支持重试、幂等和多进程投递。", "Bodyx")],
                  [P("RunAdapter", "Bodyx"), P("定义 Channel 与 Runtime 之间的统一适配契约。", "Bodyx")]], widths=[50 * mm, 117 * mm]),
-          P("当前状态", "H2x"), P("Channel 是可选能力。配置为空时 API 和 Web UI 仍可正常工作，日志中的 No channels enabled 只表示没有启动外部消息连接器。当前适配器仍随核心包内置，但 ChannelPlugin、RunAdapter 和 ChannelRuntimeBridge 已形成独立边界；未来可拆成 joyhousebot-channel-* 包，不改变统一 Run/Task 契约。", "Bodyx"), PageBreak()]
+          P("当前状态", "H2x"), P("Channel 是可选能力。配置为空时 API 和 Web UI 仍可正常工作，日志中的 No channels enabled 只表示没有启动外部消息连接器。当前适配器仍随核心包内置，但 ChannelPlugin、RunAdapter 和 ChannelRuntimeBridge 已形成独立边界；未来可拆成 porthouse-channel-* 包，不改变统一 Run/Task 契约。", "Bodyx"), PageBreak()]
 
 # 6
 story += [P("06 Memory 记忆层", "H1x"),
@@ -233,7 +233,7 @@ story += [P("06 Memory 记忆层", "H1x"),
 
 # 7
 story += [P("07 Capability Plugin、Tool 与 Skill", "H1x"),
-          P("能力注册表把框架执行机制与业务实现隔离。Joyhousebot 只负责发现、授权、调用、超时、重试、记录和结果规范化；dinq-discover 的搜索逻辑放在独立 dinq-plugin 中。", "Bodyx"),
+          P("能力注册表把框架执行机制与业务实现隔离。Porthouse 只负责发现、授权、调用、超时、重试、记录和结果规范化；dinq-discover 的搜索逻辑放在独立 dinq-plugin 中。", "Bodyx"),
           FlowDiagram([[('Registry', BLUE), ('Scenario', ORANGE), ('Coordinator', GREEN)],
                        [('Tool', BLUE), ('Skill', ORANGE), ('Sub-agent', GREEN)],
                        [('Input Schema', BLUE), ('Execution', ORANGE), ('Normalized Result', GREEN)]]),
@@ -274,7 +274,7 @@ story += [P("10 部署与运行拓扑", "H1x"),
           [('Web UI', BLUE), ('Scheduler', ORANGE), ('Worker x N', GREEN)],
           [('Channel', BLUE), ('Plugin / MCP', ORANGE), ('LLM Provider', GREEN)]]),
           P("当前线上形态", "H2x"),
-          *bullets(["域名：dinq.smartjob.top，公网入口由反向代理转发至本机 API。", "API、Scheduler、Worker 使用独立 systemd 服务，工作目录为 /opt/joyhousebot。", "配置通过 config.json 和环境文件提供；运行时状态在已有 PostgreSQL 中。", "前端构建产物发布到 joyhousebot/static/ui，由 API 或反向代理提供。", "可以在同一台服务器运行多个 Worker，也可以扩展到多节点，只要连接同一 PostgreSQL。"]),
+          *bullets(["域名：porthouse.happayhouselabs.com，公网入口由反向代理转发至本机 API。", "API、Scheduler、Worker 使用独立 systemd 服务，工作目录为 /opt/porthouse。", "配置通过 config.json 和环境文件提供；运行时状态在已有 PostgreSQL 中。", "前端构建产物发布到 porthouse/static/ui，由 API 或反向代理提供。", "可以在同一台服务器运行多个 Worker，也可以扩展到多节点，只要连接同一 PostgreSQL。"]),
           P("启动与健康检查", "H2x"), P("服务启动后检查 /healthz 和 /readyz；控制台顶部同时展示 API / PostgreSQL 状态。部署前应备份代码、配置和静态资源，重启后验证 systemd 状态、端口、数据库连接和公网页面。", "Bodyx"),
           P("安全注意", "H2x"), P("当前开发部署仍可能启用 allow_insecure_auth=true。生产环境必须关闭该选项，使用数据库 API Token、管理员表和最小权限；Channel Secret、LLM Key 和数据库连接串只能来自安全环境变量或密钥管理系统。", "Bodyx"), PageBreak()]
 
@@ -289,7 +289,7 @@ story += [P("11 当前优势、边界与演进方向", "H1x"),
                  [P("入口", "Bodyx"), P("HTTP、UI、Channel 统一进入 Run。", "Bodyx"), P("需完善各 Channel 的生产级限流、重连和监控。", "Bodyx")]], widths=[25 * mm, 67 * mm, 75 * mm]),
           P("推荐演进顺序", "H2x"),
           *bullets(["先完成 API Token、管理员权限、密钥保护和生产安全基线。", "以 dinq-plugin 建立工具、Skill、Scenario 的契约测试和回放样例。", "增加 PG NOTIFY 延迟、队列深度、Worker 利用率、LLM 成本和失败率指标。", "建立压测矩阵：单用户长任务、多用户短任务、工具慢响应、Worker 重启和数据库故障。", "再引入可选缓存、模型路由和跨节点弹性伸缩，不改变统一 Run 契约。"]),
-          Spacer(1, 6 * mm), P("结论", "H2x"), P("Joyhousebot 当前最重要的架构特征是：以 PostgreSQL 为共享状态中心，以 Coordinator 为统一协调入口，以 Worker 集群执行持久化任务，以 Plugin 隔离业务能力，以事件和 Trace 提供全过程可解释性，并通过 Channel、Memory 和 Web 控制台扩展服务边界。", "Bodyx"), PageBreak()]
+          Spacer(1, 6 * mm), P("结论", "H2x"), P("Porthouse 当前最重要的架构特征是：以 PostgreSQL 为共享状态中心，以 Coordinator 为统一协调入口，以 Worker 集群执行持久化任务，以 Plugin 隔离业务能力，以事件和 Trace 提供全过程可解释性，并通过 Channel、Memory 和 Web 控制台扩展服务边界。", "Bodyx"), PageBreak()]
 
 # Appendix
 story += [P("附录 A 关键概念速查", "H1x"),
@@ -306,7 +306,7 @@ story += [P("附录 A 关键概念速查", "H1x"),
                  [P("Trace", "Bodyx"), P("模型、工具、阶段和结果的可回放诊断记录。", "Bodyx")],
                  [P("Lease", "Bodyx"), P("任务或 Channel 所有权的带过期时间租约。", "Bodyx")]], widths=[40 * mm, 127 * mm]),
           Spacer(1, 10 * mm), P("附录 B 代码导航", "H2x"),
-          P("API：joyhousebot/api/；运行时：joyhousebot/runtime/；PostgreSQL：joyhousebot/storage/；记忆：joyhousebot/agent/memory*.py；Channel：joyhousebot/channels/；前端：frontend/；业务插件：独立 dinq-plugin 项目。", "Bodyx"),
+          P("API：porthouse/api/；运行时：porthouse/runtime/；PostgreSQL：porthouse/storage/；记忆：porthouse/agent/memory*.py；Channel：porthouse/channels/；前端：frontend/；业务插件：独立 dinq-plugin 项目。", "Bodyx"),
           P("本文档描述当前实现基线。代码演进后，应同步更新本文件并重新执行部署和验证流程。", "Smallx")]
 
 

@@ -4,20 +4,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from joyhousebot.bus.events import OutboundMessage
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.channels.plugins import (
+from porthouse.bus.events import OutboundMessage
+from porthouse.channels.manager import ChannelManager
+from porthouse.channels.plugins import (
     ChannelRegistry,
 )
-from joyhousebot.channels.plugins.base import BaseChannelPlugin
-from joyhousebot.channels.plugins.types import (
+from porthouse.channels.plugins.base import BaseChannelPlugin
+from porthouse.channels.plugins.types import (
     ChannelCapabilities,
     ChannelMeta,
     ChatType,
     SendResult,
 )
-from joyhousebot.config.schema import Config, ExtensionsConfig
-from joyhousebot.contracts.extensions import ExtensionManifest
+from porthouse.config.schema import Config, ExtensionsConfig
+from porthouse.contracts.extensions import ExtensionManifest
 
 TEST_BUILD_DIGEST = f"sha256:{'0' * 64}"
 
@@ -96,12 +96,12 @@ def test_registry_discovers_entry_point(monkeypatch):
 
     class Entries(list):
         def select(self, *, group):
-            assert group == "joyhousebot.channels"
+            assert group == "porthouse.channels"
             return self
 
     entry = SimpleNamespace(name="channel-mail-test", load=lambda: lambda: plugin)
     monkeypatch.setattr(
-        "joyhousebot.extension_discovery.importlib_metadata.entry_points",
+        "porthouse.extension_discovery.importlib_metadata.entry_points",
         lambda: Entries([entry]),
     )
 

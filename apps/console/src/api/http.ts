@@ -11,7 +11,7 @@
 
 import { getIdentityHeaders } from './identity'
 
-const CONTROL_TOKEN_STORAGE_KEY = 'joyhousebot_control_token'
+const CONTROL_TOKEN_STORAGE_KEY = 'porthouse_control_token'
 
 let volatileControlToken: string | null = null
 

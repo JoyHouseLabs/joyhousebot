@@ -30,7 +30,7 @@
         </footer>
       </article>
     </section>
-    <section v-else-if="!loading" class="panel empty-state"><span>◇</span><strong>扩展目录为空</strong><p>在 extensions.catalogDirectories 中配置目录，或安装带 JoyhouseBot entry point 的 wheel。</p></section>
+    <section v-else-if="!loading" class="panel empty-state"><span>◇</span><strong>扩展目录为空</strong><p>在 extensions.catalogDirectories 中配置目录，或安装带 Porthouse entry point 的 wheel。</p></section>
     <section v-else class="panel empty-state"><span>…</span><strong>正在读取扩展目录</strong></section>
   </div>
 </template>
@@ -48,7 +48,7 @@ const installedCount = computed(() => extensions.value.filter((item) => item.ins
 const desiredCount = computed(() => extensions.value.filter((item) => item.desired_active).length)
 const activeCount = computed(() => extensions.value.filter((item) => item.effective_active).length)
 
-function initial(value: string) { return value.trim().replace(/^joyhousebot-/i, '').slice(0, 1).toUpperCase() || 'X' }
+function initial(value: string) { return value.trim().replace(/^porthouse-/i, '').slice(0, 1).toUpperCase() || 'X' }
 function stateLabel(value: ExtensionInventoryItem['state']) { return ({ active: '已生效', activating: '生效中', installed: '已安装', available: '可安装', unavailable: '不可用' })[value] }
 function visibleBlockers(item: ExtensionInventoryItem) { return item.activation_blockers.slice(0, 2) }
 function canActivate(item: ExtensionInventoryItem) { return consoleActivationAllowed.value && item.installed && item.deployment_allowed && !!item.release && !item.metadata.source_conflict }

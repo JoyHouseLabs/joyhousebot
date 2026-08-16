@@ -7,18 +7,18 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.agent.context import ContextBuilder
-from joyhousebot.agent.context_budget import allocate_context, context_candidate
-from joyhousebot.agent.context_manifest import source_entry, stable_hash
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from joyhousebot.runtime.context import RunContext
-from joyhousebot.runtime.models import AgentOptions
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.services.memory.store import MemoryStore
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.agent.context import ContextBuilder
+from porthouse.agent.context_budget import allocate_context, context_candidate
+from porthouse.agent.context_manifest import source_entry, stable_hash
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.contracts.tools import Tool
+from porthouse.domain.agents import AgentRevision
+from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from porthouse.runtime.context import RunContext
+from porthouse.runtime.models import AgentOptions
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.services.memory.store import MemoryStore
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 

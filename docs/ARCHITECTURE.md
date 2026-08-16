@@ -1,12 +1,12 @@
-# JoyhouseBot 企业级 Agent 执行与治理 Runtime 架构
+# Porthouse 企业级 Agent 执行与治理 Runtime 架构
 
-本文是当前代码唯一有效的总体架构说明。JoyhouseBot 是面向开发者的开源企业级 Agent 执行与治理 Runtime：
+本文是当前代码唯一有效的总体架构说明。Porthouse 是面向开发者的开源企业级 Agent 执行与治理 Runtime：
 它以个人资源归属为核心，同时支持本地一体化与云端多用户并发部署。它不是本地单 Agent 聊天客户端，也不是
 企业租户 SaaS；多用户并发是 Runtime 能力，当前产品不预设企业租户模型。
 
 ## 核心价值来自执行治理
 
-JoyhouseBot 的差异不在模型数量或聊天界面，而在于把原本需要企业工程团队建设的 Agent 长期执行做成可恢复、
+Porthouse 的差异不在模型数量或聊天界面，而在于把原本需要企业工程团队建设的 Agent 长期执行做成可恢复、
 可约束、可验证的开源基础设施。开发者可以直接复用这条执行链，而不必在业务 App 中再造调度、状态机、
 审批、幂等、审计和恢复：
 
@@ -31,7 +31,7 @@ JoyhouseBot 的差异不在模型数量或聊天界面，而在于把原本需�
 - PostgreSQL 是所有环境的唯一事实源，不提供文件型存储回退。
 - Redis 不是必选组件；只能作为可拔插广播/缓存加速层，不能成为 Run/Task 事实源。
 - Shell、filesystem、MCP 和外部 URL 等高风险能力均为显式扩展，默认不安装/不启用；启用后仍必须经过 Capability allowlist、权限、配额和审计。Shell 的容器隔离与 fail-closed 策略由 Core 强制。
-- 外部 MCP Client 由 `joyhousebot-connector-mcp-client` 提供；HTTP 连接经过 Core SSRF
+- 外部 MCP Client 由 `porthouse-connector-mcp-client` 提供；HTTP 连接经过 Core SSRF
   校验与 DNS pinning，stdio 默认关闭。Core 只保留对外 `/mcp/` 协议网关和通用 Tool
   Connector 生命周期。
 - 每类业务状态使用专用表，禁止恢复通用 JSON `shared_state`。
@@ -128,12 +128,12 @@ Client ──HTTP/SSE──▶ API replicas ────────────
   状态都是集群共享的规范化状态。
 - Channel 投递成功或失败会写 delivery audit；外部连接所有权由带续租的 channel lease 决定。
 - Channel 的 PG Outbox、Lease、`RunAdapter` 和 `ChannelRuntimeBridge` 属于 Core；供应商协议属于扩展。
-  `ChannelRegistry` 默认为空，只发现 `joyhousebot.channels` entry point，并只启用
+  `ChannelRegistry` 默认为空，只发现 `porthouse.channels` entry point，并只启用
   `extensions.allowedIds` 明确准入且 PostgreSQL desired state 已启用的扩展。Email 与其他供应商均为独立 distribution，Core 不保留旧
   适配器、旧配置或任意模块加载入口。完整边界见 `CORE_AND_EXTENSIONS.md`。
 - Memory/Knowledge 的 PostgreSQL 事实源、权限策略和隔离服务属于 Core；模型可调用的
   `retrieve`、`memory_get` 和 URL 入库属于可卸载的
-  `joyhousebot-capability-context-assets`。扩展只收到当前 Run 的窄服务，不能持有 Repository
+  `porthouse-capability-context-assets`。扩展只收到当前 Run 的窄服务，不能持有 Repository
   或自行选择 `user_id/agent_id`。
 
 ### 定时任务闭环
@@ -204,7 +204,7 @@ Runtime 以 `user_id + agent_id` 的稳定散列对账一个 `managed_by=agent_r
 下一次 Run 时修复。托管 Schedule 不能从普通 Schedule API 修改或删除，应通过新 Agent revision 禁用或
 调整；`delivery=origin` 只记住真实外部 Channel 来源，API/CLI 来源不会变成投递目标。
 
-安装并授权 `joyhousebot-capability-runtime-control` 后，Agent 可以通过 `cron` Capability 的
+安装并授权 `porthouse-capability-runtime-control` 后，Agent 可以通过 `cron` Capability 的
 `monitor=true` 创建 Monitor，并选择 `session_mode=isolated|main` 与
 `preflight_mode=always|runtime_attention`、`context_mode=full|light` 和可选 active hours。内置预检刻意只覆盖 Runtime attention；业务数据变化应由
 版本化 Connector/Capability 提供，不允许定时脚本绕过权限层，也不允许 Scheduler 直接执行 Tool。
@@ -219,7 +219,7 @@ Occurrence 快照的手动触发并提交 Run，模型和 Tool 仍由 Worker 执
 在创建或轮换时只返回一次，数据库只保存 SHA-256 摘要。公开接收端点
 `POST /v1/hooks/{trigger_id}` 必须同时携带：
 
-- `X-Joyhouse-Webhook-Secret`：验证入口归属，错误密钥统一返回 404；
+- `X-HappyHouse-Webhook-Secret`：验证入口归属，错误密钥统一返回 404；
 - `Idempotency-Key`：外部系统稳定事件 ID，缺失时拒绝；
 - `{event_type, payload}`：事件类型必须匹配规则，Payload 最大 64 KiB。
 
@@ -229,15 +229,15 @@ Payload；实际 Run 仍由 PostgreSQL Runtime 创建，并进入统一 Worker�
 
 ## 身份与认证
 
-普通用户和自动化请求的 `user_id` 只能来自数据库签发的 Bearer Token。`api_access_tokens` 只保存 SHA-256 指纹，明文仅在签发响应中返回一次；吊销在所有 API 副本即时生效。普通用户不能通过 Header 或请求体指定资源归属。环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 是紧急 operator 凭据，代用户操作必须显式发送 `X-Impersonate-User-ID`（每次代操作都会写 warning 级审计日志）。认证 fail-closed：没有有效 token 时默认拒绝（401）；仅当显式设置 `gateway.allowInsecureAuth=true` 的开发模式下，`X-User-ID`/`JOYHOUSEBOT_DEV_USER_ID` 才生效，默认用户为 `joyhousebot`，启动时会打印 INSECURE DEV MODE 警告。
+普通用户和自动化请求的 `user_id` 只能来自数据库签发的 Bearer Token。`api_access_tokens` 只保存 SHA-256 指纹，明文仅在签发响应中返回一次；吊销在所有 API 副本即时生效。普通用户不能通过 Header 或请求体指定资源归属。环境变量 `PORTHOUSE_CONTROL_TOKEN` 是紧急 operator 凭据，代用户操作必须显式发送 `X-Impersonate-User-ID`（每次代操作都会写 warning 级审计日志）。认证 fail-closed：没有有效 token 时默认拒绝（401）；仅当显式设置 `gateway.allowInsecureAuth=true` 的开发模式下，`X-User-ID`/`PORTHOUSE_DEV_USER_ID` 才生效，默认用户为 `porthouse`，启动时会打印 INSECURE DEV MODE 警告。
 
 控制台管理员另有密码登录链路。`admin_login_credentials` 只保存带随机盐的 Scrypt 哈希，连续失败会在
 PostgreSQL 中跨 API 副本锁定；`admin_auth_sessions` 和 MFA challenge 也只保存 Token 指纹并有明确过期时间。
 Google Authenticator 使用 RFC 6238 的 30 秒 TOTP、最多前后一个时间窗，并以已接受 counter 阻止同码重放。
-TOTP shared secret 用 `JOYHOUSEBOT_AUTH_ENCRYPTION_KEY` 做 AES-256-GCM 加密；恢复码只保存哈希、单次消费，
+TOTP shared secret 用 `PORTHOUSE_AUTH_ENCRYPTION_KEY` 做 AES-256-GCM 加密；恢复码只保存哈希、单次消费，
 明文只在激活响应出现一次。管理员会话、密码、TOTP 与恢复码操作全部写入 `platform_admin_events`。
 
-`user_id` 只表达业务资源归属，管理权限来自独立的 `platform_admins` 表。权限按 `runs.read/runs.cancel`、`agents.write/agents.publish`、`tokens.write` 等操作拆分，不存在“只读管理员可以取消 Run”的隐式升级。最后一个拥有 `admins.write` 的启用管理员由数据库事务和 PG advisory lock 保护，不能被并发删除或降权。开发模式首次启动会把默认 `joyhousebot` 显式登记为 `is_test_user=true` 的平台管理员并创建必须修改的本地初始密码；生产仅在同时提供 `JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER` 与 `JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD` 时执行一次性引导，仓库内没有生产固定密码。
+`user_id` 只表达业务资源归属，管理权限来自独立的 `platform_admins` 表。权限按 `runs.read/runs.cancel`、`agents.write/agents.publish`、`tokens.write` 等操作拆分，不存在“只读管理员可以取消 Run”的隐式升级。最后一个拥有 `admins.write` 的启用管理员由数据库事务和 PG advisory lock 保护，不能被并发删除或降权。开发模式首次启动会把默认 `porthouse` 显式登记为 `is_test_user=true` 的平台管理员并创建必须修改的本地初始密码；生产仅在同时提供 `PORTHOUSE_BOOTSTRAP_ADMIN_USER` 与 `PORTHOUSE_BOOTSTRAP_ADMIN_PASSWORD` 时执行一次性引导，仓库内没有生产固定密码。
 
 JSON 配置不接受明文 token、API key、password 或 database URL；敏感值只能来自进程环境或 `env://VARIABLE` 引用。Agent、Capability、Scenario 和权限是数据库业务配置，进程配置只保留数据库连接、进程角色和本地执行参数。
 
@@ -273,7 +273,7 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
   `approve_high_risk=true`。
 - `GET /v1/runs/{run_id}/event-waits` 查询 owner 可见的外部事件等待；
   `POST /v1/runs/{run_id}/event-waits/{wait_id}/token` 轮换并仅返回一次投递 token。外部系统使用
-  `POST /v1/run-events/{wait_id}` 和 `X-Joyhouse-Event-Token` 投递；数据库只保存 token SHA-256，Payload
+  `POST /v1/run-events/{wait_id}` 和 `X-HappyHouse-Event-Token` 投递；数据库只保存 token SHA-256，Payload
   必须通过冻结 Schema，重复投递只有在事件类型和 Payload hash 相同时才幂等成功。
 - `GET/DELETE /v1/sessions`。
 - `GET/POST/PATCH/DELETE /v1/schedules`；`GET /v1/schedules/runs` 返回 Occurrence 的 Run
@@ -341,7 +341,7 @@ supersedes。接受候选时，候选状态转换与文档写入位于同一个�
 replace 使用提议时的文档 version/hash 做乐观检查，目标已变化时进入 `conflicted` 而不覆盖新内容。
 候选可拒绝、过期，重复同一决议保持幂等。
 
-同一代码可以用 `joyhousebot api --surface public|control|combined` 部署为公网数据面、私有控制面或本地一体化进程。`public` 不注册 `/v1/admin/*`，`control` 不注册用户 Run/Session/Schedule 写接口；`combined` 供内网控制台和本地试用。
+同一代码可以用 `porthouse api --surface public|control|combined` 部署为公网数据面、私有控制面或本地一体化进程。`public` 不注册 `/v1/admin/*`，`control` 不注册用户 Run/Session/Schedule 写接口；`combined` 供内网控制台和本地试用。
 
 ## 配置发布状态机
 
@@ -479,7 +479,7 @@ purge 覆盖执行、事件、日志、产物、Invocation、Schedule occurrence
 `runtime_events`/`runtime_logs` 被清理前，对应 Run 会在 metadata 写入 `events_purged` tombstone；
 SSE 回放命中 tombstone 时先产出 `run.history_purged` 事件向调用方明示，而不是静默缺失时间线。
 推理类表（`trace_blobs`、`model_reasoning_segments`、`model_invocations`、`execution_spans`）使用独立的
-`JOYHOUSEBOT_DIAGNOSTICS_RETENTION_DAYS` 保留周期（缺省回退到全局 `JOYHOUSEBOT_RETENTION_DAYS`）；
+`PORTHOUSE_DIAGNOSTICS_RETENTION_DAYS` 保留周期（缺省回退到全局 `PORTHOUSE_RETENTION_DAYS`）；
 `trace_blobs.expires_at` 是生效字段，purge 优先删除已过期 Blob，读取侧过期即视为不存在。
 
 Trace Blob 和 Runtime Artifact 超过 `runtime.store.blobInlineThresholdBytes` 时，可把不可变正文写入
@@ -492,7 +492,7 @@ Runtime Input Asset 使用独立的二进制内容寻址存储 `runtime.store.in
 `inputAssetMaxBytes` 控制。普通保留清理只会软删除已超过周期、且所有绑定 Run 都已终态的输入；对象文件在
 失去全部 ready 引用后采用相同的两阶段 24 小时宽限回收。数据库快照和 Input Asset 目录必须作为同一恢复点。
 
-`JOYHOUSEBOT_DESTRUCTIVE_MIGRATE` 是仅限开发重置的逃生口：只有取值精确等于 `DROP_ALL_TABLES`
+`PORTHOUSE_DESTRUCTIVE_MIGRATE` 是仅限开发重置的逃生口：只有取值精确等于 `DROP_ALL_TABLES`
 才生效（`=1` 等真值不再触发），执行前会以 critical 级日志列出将删除的 runtime 表；生产环境
 绝不应设置该变量。
 
@@ -533,7 +533,7 @@ partial 保存；完全未收到时明确保存 missing。
 保存为带 SHA-256 与大小的 Trace Blob；认证 Header/API Key 从不进入 Blob。诊断台按权限按需读取，
 读取行为写审计日志。当前开发/测试配置默认开启
 供应商推理参数；生产管理员应将这些表、备份和数据库访问视为最高敏感级别。诊断类数据的保留周期由
-`JOYHOUSEBOT_DIAGNOSTICS_RETENTION_DAYS` 独立配置（见"PostgreSQL 数据模型"一节）。
+`PORTHOUSE_DIAGNOSTICS_RETENTION_DAYS` 独立配置（见"PostgreSQL 数据模型"一节）。
 
 回放分为四类：`offline` 对现有存档重新做解析/对比，`frozen` 固定使用已保存结果，`branch` 从源 Run
 创建有父子关联的新 Run，`live` 使用当前外部依赖重新执行。每次回放保存发起人、覆盖项、新 Run ID 和

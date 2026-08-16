@@ -6,16 +6,16 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.agent_teams import AgentTeamService
-from joyhousebot.application.workflows import WorkflowService
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.domain.scenarios import ScenarioField, ScenarioVersion
-from joyhousebot.runtime.models import TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.api.app import create_app
+from porthouse.application.agent_teams import AgentTeamService
+from porthouse.application.workflows import WorkflowService
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from porthouse.domain.agents import AgentRevision
+from porthouse.domain.scenarios import ScenarioField, ScenarioVersion
+from porthouse.runtime.models import TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 

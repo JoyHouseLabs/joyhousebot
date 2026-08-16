@@ -28,20 +28,20 @@
           <div v-if="!messages.length && !running" class="playground-welcome">
             <img :src="assistantAvatarUrl" alt="" />
             <span class="eyebrow">READY</span>
-            <h2>把真实任务交给 Joyhousebot</h2>
+            <h2>把真实任务交给 Porthousebot</h2>
             <p>支持工具调用、持久记忆、子 Agent 和并行 Task。执行过程会以安全摘要公开，不展示模型隐藏思维链。</p>
             <div class="prompt-suggestions"><button v-for="prompt in suggestions" :key="prompt" @click="input = prompt">{{ prompt }}</button></div>
           </div>
 
           <article v-for="messageItem in messages" :key="messageItem.id" class="message-block" :class="messageItem.role">
             <div class="message-author"><img v-if="messageItem.role === 'assistant'" :src="assistantAvatarUrl" alt="" /><span v-else>YOU</span></div>
-            <div class="message-content"><strong>{{ messageItem.role === 'assistant' ? currentAgent?.name || 'Joyhousebot' : '你' }}</strong><MarkdownContent :content="messageItem.content" /><div v-if="messageItem.runId" class="message-feedback-toolbar"><button type="button" class="feedback-trigger" :class="{ submitted: feedbackSubmitted[messageItem.runId] }" @click="toggleFeedback(messageItem.runId)">{{ feedbackSubmitted[messageItem.runId] ? '✓ 已提交反馈' : '对这条输出反馈' }}</button><small>Run {{ shortId(messageItem.runId) }}</small></div><form v-if="messageItem.runId && feedbackOpen[messageItem.runId] && !feedbackSubmitted[messageItem.runId]" class="message-feedback-form" @submit.prevent="submitFeedback(messageItem)"><div class="feedback-type-list"><button v-for="item in feedbackTypes" :key="item.value" type="button" :class="{ selected: (feedbackType[messageItem.runId] || 'other') === item.value }" @click="feedbackType[messageItem.runId] = item.value">{{ item.label }}</button></div><textarea v-model="feedbackComment[messageItem.runId]" rows="3" required placeholder="指出不对的地方、缺少的数据或希望优化的方向…" /><div class="feedback-form-footer"><span>反馈会绑定到此 Run，并进入运行中心</span><button class="primary-button" type="submit" :disabled="feedbackSaving[messageItem.runId]">{{ feedbackSaving[messageItem.runId] ? '提交中…' : '提交反馈' }}</button></div></form></div>
+            <div class="message-content"><strong>{{ messageItem.role === 'assistant' ? currentAgent?.name || 'Porthousebot' : '你' }}</strong><MarkdownContent :content="messageItem.content" /><div v-if="messageItem.runId" class="message-feedback-toolbar"><button type="button" class="feedback-trigger" :class="{ submitted: feedbackSubmitted[messageItem.runId] }" @click="toggleFeedback(messageItem.runId)">{{ feedbackSubmitted[messageItem.runId] ? '✓ 已提交反馈' : '对这条输出反馈' }}</button><small>Run {{ shortId(messageItem.runId) }}</small></div><form v-if="messageItem.runId && feedbackOpen[messageItem.runId] && !feedbackSubmitted[messageItem.runId]" class="message-feedback-form" @submit.prevent="submitFeedback(messageItem)"><div class="feedback-type-list"><button v-for="item in feedbackTypes" :key="item.value" type="button" :class="{ selected: (feedbackType[messageItem.runId] || 'other') === item.value }" @click="feedbackType[messageItem.runId] = item.value">{{ item.label }}</button></div><textarea v-model="feedbackComment[messageItem.runId]" rows="3" required placeholder="指出不对的地方、缺少的数据或希望优化的方向…" /><div class="feedback-form-footer"><span>反馈会绑定到此 Run，并进入运行中心</span><button class="primary-button" type="submit" :disabled="feedbackSaving[messageItem.runId]">{{ feedbackSaving[messageItem.runId] ? '提交中…' : '提交反馈' }}</button></div></form></div>
           </article>
 
           <article v-if="running" class="message-block assistant active-run">
             <div class="message-author"><img :src="assistantAvatarUrl" alt="" /></div>
             <div class="message-content">
-              <div class="active-run-heading"><strong>{{ currentAgent?.name || 'Joyhousebot' }}</strong><span>{{ latestRunSummary }}</span></div>
+              <div class="active-run-heading"><strong>{{ currentAgent?.name || 'Porthousebot' }}</strong><span>{{ latestRunSummary }}</span></div>
               <ExecutionTimeline :events="events" :active="true" />
               <div v-if="streaming !== null" class="streaming-answer"><span class="streaming-label">{{ streamingLabel }}</span><MarkdownContent :content="streaming" /><span class="cursor">▋</span></div>
               <div class="run-controls"><code v-if="runId">{{ runId }}</code><button type="button" @click="cancelRun">取消执行</button></div>
@@ -107,7 +107,7 @@ import MarkdownContent from '../components/MarkdownContent.vue'
 
 interface ChatMessage { id: string; role: 'user' | 'assistant'; content: string; runId?: string }
 const route = useRoute(); const router = useRouter(); const toast = useMessage()
-const assistantAvatarUrl = `${import.meta.env.BASE_URL}joyhouse.png`
+const assistantAvatarUrl = `${import.meta.env.BASE_URL}porthouse.png`
 const agents = ref<AgentListItem[]>([]); const teams = ref<AgentTeamRevision[]>([]); const sessions = ref<(SessionItem & { latest_status?: string })[]>([]); const agentId = ref(''); const teamId = ref(''); const sessionId = ref('ui:default')
 const messages = ref<ChatMessage[]>([]); const input = ref(''); const running = ref(false); const streaming = ref<string | null>(null); const events = ref<RuntimeEvent[]>([]); const runId = ref<string | null>(null); const activeRun = ref<RuntimeRun | null>(null); const messageContainer = ref<HTMLElement | null>(null); const followLatest = ref(true); const pendingScenarioId = ref<string | null>(null); const pendingScenarioVersion = ref<number | null>(null); const pendingScenarioInputs = ref<Record<string, unknown>>({})
 const pendingInputs = ref<PendingRunInput[]>([]); const answerValues = ref<Record<string, any>>({}); const otherValues = ref<Record<string, string>>({}); const answering = ref(false)
@@ -124,7 +124,7 @@ const latestRunSummary = computed(() => visibleEvents.value[0]?.summary || activ
 const busy = computed(() => running.value || pendingInputs.value.length > 0)
 const streamingLabel = computed(() => events.value.some((event) => event.type === 'plan.created') ? '执行回复 · 实时输出' : '协调计划 · 实时输出')
 
-function storageKey() { return `joyhousebot_active_run:${teamId.value || agentId.value}:${sessionId.value}` }
+function storageKey() { return `porthouse_active_run:${teamId.value || agentId.value}:${sessionId.value}` }
 function syncRoute() { void router.replace({ query: { agent: agentId.value, ...(teamId.value ? { team: teamId.value } : {}), session: sessionId.value, ...(!teamId.value && pendingScenarioId.value ? { scenario: pendingScenarioId.value, scenarioVersion: pendingScenarioVersion.value || undefined } : {}) } }) }
 async function loadAgents() { const [response, teamItems] = await Promise.all([getAgents(), listAgentTeams().catch(() => [])]); agents.value = response.agents; teams.value = teamItems.filter(item => item.status === 'published'); const requested = typeof route.query.agent === 'string' ? route.query.agent : ''; agentId.value = agents.value.some((agent) => agent.id === requested) ? requested : (agents.value[0]?.id || ''); const requestedTeam = typeof route.query.team === 'string' ? route.query.team : ''; teamId.value = teams.value.some(item => item.team_id === requestedTeam) ? requestedTeam : '' }
 async function loadSessions() { const response = await getSessions(agentId.value); sessions.value = response.sessions as (SessionItem & { latest_status?: string })[] }

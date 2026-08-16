@@ -7,15 +7,15 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.app_callbacks import AppCallbackDispatcher
-from joyhousebot.application.app_packs import AppPackService
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts.events import AgentEvent, EventType
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.domain.app_callbacks import callback_signature
-from joyhousebot.domain.app_packs import app_manifest_sha256, normalize_app_manifest
+from porthouse.api.app import create_app
+from porthouse.application.app_callbacks import AppCallbackDispatcher
+from porthouse.application.app_packs import AppPackService
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.contracts.events import AgentEvent, EventType
+from porthouse.domain.agents import AgentRevision
+from porthouse.domain.app_callbacks import callback_signature
+from porthouse.domain.app_packs import app_manifest_sha256, normalize_app_manifest
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -26,7 +26,7 @@ def _manifest(version: str = "1.0.0") -> dict:
         "version": version,
         "name": "Market Radar",
         "description": "A continuously running opportunity research application.",
-        "publisher": "Joyhouse",
+        "publisher": "Porthouse",
         "core": {"min_version": "0.1.2"},
         "extensions": [],
         "capabilities": [],
@@ -336,7 +336,7 @@ async def test_app_delegation_is_short_lived_scope_attenuated_and_installation_b
     )
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner_headers = {"Authorization": "Bearer opc-owner-token"}
-    monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "app-control-token")
+    monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "app-control-token")
     operator_headers = {
         "Authorization": "Bearer app-control-token",
         "X-Impersonate-User-ID": "opc-user",
@@ -482,7 +482,7 @@ async def test_app_completion_callback_is_transactional_signed_and_auditable(
             f"/v1/apps/{installation['installation_id']}/callbacks",
             headers=headers,
             json={
-                "endpoint": "https://callbacks.example.com/joyhousebot",
+                "endpoint": "https://callbacks.example.com/porthouse",
                 "secret_ref": "env://TEST_APP_CALLBACK_SECRET",
                 "events": ["run.completed"],
                 "max_attempts": 3,
@@ -550,9 +550,9 @@ async def test_app_completion_callback_is_transactional_signed_and_auditable(
     assert delivered[0]["attempt"] == 2
     request = captured[1]
     payload = json.loads(request.content)
-    timestamp = request.headers["X-Joyhouse-Timestamp"]
+    timestamp = request.headers["X-Porthouse-Timestamp"]
     assert request.headers["Idempotency-Key"] == payload["event_id"]
-    assert request.headers["X-Joyhouse-Signature"] == callback_signature(
+    assert request.headers["X-Porthouse-Signature"] == callback_signature(
         secret.encode(), timestamp=timestamp, body=request.content
     )
     query_client = TestClient(

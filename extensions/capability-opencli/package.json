@@ -1,8 +1,8 @@
 {
-  "name": "@joyhousebot/capability-opencli",
+  "name": "@porthouse/capability-opencli",
   "version": "0.1.0",
   "private": true,
-  "description": "Governed OpenCLI capabilities for the JoyhouseBot Node Extension Host",
+  "description": "Governed OpenCLI capabilities for the Porthouse Node Extension Host",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@jackwener/opencli": "1.8.6",
-    "@joyhousebot/extension-sdk": "file:../../sdks/node"
+    "@porthouse/extension-sdk": "file:../../sdks/node"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

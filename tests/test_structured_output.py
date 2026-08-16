@@ -1,6 +1,6 @@
 import pytest
 
-from joyhousebot.runtime.structured import (
+from porthouse.runtime.structured import (
     StructuredOutputError,
     parse_structured_output,
     validate_json_schema,

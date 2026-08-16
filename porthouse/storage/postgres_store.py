@@ -1,0 +1,326 @@
+"""PostgreSQL-first durable runtime store.
+
+PostgreSQL is the coordination plane: row locks serialize transitions,
+``SKIP LOCKED`` distributes work, database time owns leases, lease versions
+fence stale workers, JSONB keeps structured context queryable, and NOTIFY
+wakes idle workers after the creating transaction commits.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from datetime import datetime
+from typing import Any
+
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+from porthouse.storage.binary_objects import LocalBinaryObjectStore
+from porthouse.storage.content_blobs import LocalContentBlobStore
+from porthouse.storage.json_codec import Jsonb
+from porthouse.storage.postgres_admins import PostgresAdminStoreMixin
+from porthouse.storage.postgres_agent_skills import PostgresAgentSkillStoreMixin
+from porthouse.storage.postgres_agent_teams import PostgresAgentTeamStoreMixin
+from porthouse.storage.postgres_agents import PostgresAgentStoreMixin
+from porthouse.storage.postgres_app_callbacks import PostgresAppCallbackStoreMixin
+from porthouse.storage.postgres_app_delegation import PostgresAppDelegationStoreMixin
+from porthouse.storage.postgres_app_market import PostgresAppMarketStoreMixin
+from porthouse.storage.postgres_app_packs import PostgresAppPackStoreMixin
+from porthouse.storage.postgres_app_updates import PostgresAppUpdateStoreMixin
+from porthouse.storage.postgres_app_usage import PostgresAppUsageStoreMixin
+from porthouse.storage.postgres_approvals import PostgresApprovalStoreMixin
+from porthouse.storage.postgres_artifact_uploads import PostgresArtifactUploadStoreMixin
+from porthouse.storage.postgres_cancel import PostgresRunCancelMixin
+from porthouse.storage.postgres_capabilities import PostgresCapabilityStoreMixin
+from porthouse.storage.postgres_clarifications import PostgresClarificationStoreMixin
+from porthouse.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
+from porthouse.storage.postgres_device_hosts import PostgresDeviceHostStoreMixin
+from porthouse.storage.postgres_embedding_profiles import (
+    PostgresEmbeddingProfileStoreMixin,
+)
+from porthouse.storage.postgres_evals import PostgresEvalStoreMixin
+from porthouse.storage.postgres_event_triggers import PostgresEventTriggerStoreMixin
+from porthouse.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
+from porthouse.storage.postgres_experiments import PostgresExperimentStoreMixin
+from porthouse.storage.postgres_extension_inventory import (
+    PostgresExtensionInventoryStoreMixin,
+)
+from porthouse.storage.postgres_graph_actions import PostgresGraphActionStoreMixin
+from porthouse.storage.postgres_graph_branches import PostgresGraphBranchStoreMixin
+from porthouse.storage.postgres_graph_control_nodes import PostgresGraphControlNodeStoreMixin
+from porthouse.storage.postgres_graph_foreach import PostgresGraphForeachStoreMixin
+from porthouse.storage.postgres_graph_loops import PostgresGraphLoopStoreMixin
+from porthouse.storage.postgres_graph_patches import PostgresGraphPatchStoreMixin
+from porthouse.storage.postgres_graph_revisions import PostgresGraphRevisionStoreMixin
+from porthouse.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
+from porthouse.storage.postgres_graph_subruns import PostgresGraphSubrunStoreMixin
+from porthouse.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
+from porthouse.storage.postgres_graphs import PostgresGraphStoreMixin
+from porthouse.storage.postgres_host_tools import PostgresHostToolStoreMixin
+from porthouse.storage.postgres_input_assets import PostgresInputAssetStoreMixin
+from porthouse.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
+from porthouse.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
+from porthouse.storage.postgres_migrations import PostgresMigrationMixin
+from porthouse.storage.postgres_model_gateway import PostgresModelGatewayStoreMixin
+from porthouse.storage.postgres_model_providers import PostgresModelProviderStoreMixin
+from porthouse.storage.postgres_observability import PostgresObservabilityStoreMixin
+from porthouse.storage.postgres_operational_metrics import (
+    PostgresOperationalMetricsStoreMixin,
+)
+from porthouse.storage.postgres_operations import PostgresOperationsStoreMixin
+from porthouse.storage.postgres_plugins import PostgresPluginStoreMixin
+from porthouse.storage.postgres_prompts import PostgresPromptStoreMixin
+from porthouse.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
+from porthouse.storage.postgres_reconciliations import PostgresReconciliationStoreMixin
+from porthouse.storage.postgres_remote_connections import (
+    PostgresRemoteConnectionStoreMixin,
+)
+from porthouse.storage.postgres_rollouts import PostgresRolloutStoreMixin
+from porthouse.storage.postgres_run_listing import PostgresRunListingStoreMixin
+from porthouse.storage.postgres_runs import PostgresRunStoreMixin
+from porthouse.storage.postgres_scenarios import PostgresScenarioStoreMixin
+from porthouse.storage.postgres_skills import PostgresSkillStoreMixin
+from porthouse.storage.postgres_tasks import PostgresTaskStoreMixin
+from porthouse.storage.postgres_verifications import PostgresVerificationStoreMixin
+from porthouse.storage.postgres_workflows import PostgresWorkflowStoreMixin
+from porthouse.storage.postgres_works import PostgresWorkStoreMixin
+from porthouse.storage.runtime_store import (
+    RuntimeRunRecord,
+    RuntimeTaskRecord,
+)
+
+_CHANNEL = "porthouse_runtime_work"
+_TERMINAL = ("completed", "failed", "cancelled", "timed_out")
+_TASK_TERMINAL = (*_TERMINAL, "skipped")
+
+_logger = logging.getLogger(__name__)
+
+
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+class PostgresRuntimeStore(
+    PostgresMigrationMixin,
+    PostgresAppCallbackStoreMixin,
+    PostgresAppDelegationStoreMixin,
+    PostgresAppMarketStoreMixin,
+    PostgresAppPackStoreMixin,
+    PostgresAppUpdateStoreMixin,
+    PostgresAppUsageStoreMixin,
+    PostgresAgentTeamStoreMixin,
+    PostgresWorkflowStoreMixin,
+    PostgresGraphRevisionStoreMixin,
+    PostgresGraphSagaStoreMixin,
+    PostgresGraphSubrunStoreMixin,
+    PostgresGraphPatchStoreMixin,
+    PostgresEvalStoreMixin,
+    PostgresExperimentStoreMixin,
+    PostgresPromptStoreMixin,
+    PostgresWorkStoreMixin,
+    PostgresGraphWaitEventStoreMixin,
+    PostgresAdminStoreMixin,
+    PostgresAgentSkillStoreMixin,
+    PostgresAgentStoreMixin,
+    PostgresSkillStoreMixin,
+    PostgresCapabilityStoreMixin,
+    PostgresExecutionLoopStoreMixin,
+    PostgresContextManifestStoreMixin,
+    PostgresMemoryCandidateStoreMixin,
+    PostgresEventTriggerStoreMixin,
+    PostgresLoopDecisionStoreMixin,
+    PostgresVerificationStoreMixin,
+    PostgresApprovalStoreMixin,
+    PostgresArtifactUploadStoreMixin,
+    PostgresDeviceHostStoreMixin,
+    PostgresReconciliationStoreMixin,
+    PostgresClarificationStoreMixin,
+    PostgresScenarioStoreMixin,
+    PostgresGraphStoreMixin,
+    PostgresGraphBranchStoreMixin,
+    PostgresGraphForeachStoreMixin,
+    PostgresGraphLoopStoreMixin,
+    PostgresGraphControlNodeStoreMixin,
+    PostgresGraphActionStoreMixin,
+    PostgresRunListingStoreMixin,
+    PostgresInputAssetStoreMixin,
+    PostgresRunStoreMixin,
+    PostgresRunCancelMixin,
+    PostgresTaskStoreMixin,
+    PostgresRateLimitStoreMixin,
+    PostgresObservabilityStoreMixin,
+    PostgresOperationalMetricsStoreMixin,
+    PostgresRolloutStoreMixin,
+    PostgresModelProviderStoreMixin,
+    PostgresModelGatewayStoreMixin,
+    PostgresHostToolStoreMixin,
+    PostgresEmbeddingProfileStoreMixin,
+    PostgresRemoteConnectionStoreMixin,
+    PostgresOperationsStoreMixin,
+    PostgresExtensionInventoryStoreMixin,
+    PostgresPluginStoreMixin,
+):
+    """Production runtime store backed by a psycopg connection pool."""
+
+    backend_name = "postgres"
+
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        min_pool_size: int = 1,
+        max_pool_size: int = 10,
+        application_name: str = "porthouse-runtime",
+        auto_migrate: bool = True,
+        bootstrap_model: str = "unconfigured/model",
+        blob_directory: str = "",
+        blob_inline_threshold_bytes: int = 65536,
+        input_asset_directory: str = "~/.porthouse/input-assets",
+        input_asset_max_bytes: int = 25 * 1024 * 1024,
+        artifact_upload_directory: str = "~/.porthouse/artifact-uploads",
+        artifact_upload_max_bytes: int = 250 * 1024 * 1024,
+    ) -> None:
+        if not database_url.strip():
+            raise ValueError("PostgreSQL database_url is required")
+        self.database_url = database_url
+        self.application_name = application_name
+        self.bootstrap_model = str(bootstrap_model).strip() or "unconfigured/model"
+        self.blob_store = (
+            LocalContentBlobStore(blob_directory) if str(blob_directory).strip() else None
+        )
+        self.blob_inline_threshold_bytes = max(0, int(blob_inline_threshold_bytes))
+        self.input_asset_store = (
+            LocalBinaryObjectStore(input_asset_directory)
+            if str(input_asset_directory).strip()
+            else None
+        )
+        self.input_asset_max_bytes = max(1, int(input_asset_max_bytes))
+        self.artifact_upload_store = (
+            LocalBinaryObjectStore(
+                artifact_upload_directory, scheme="porthouse-artifact"
+            )
+            if str(artifact_upload_directory).strip()
+            else None
+        )
+        self.artifact_upload_max_bytes = max(1, int(artifact_upload_max_bytes))
+        self._pool = ConnectionPool(
+            conninfo=database_url,
+            min_size=max(0, min_pool_size),
+            max_size=max(1, max_pool_size),
+            kwargs={"row_factory": dict_row, "application_name": application_name},
+            open=True,
+        )
+        self._listener = None
+        self._listener_lock = threading.Lock()
+        self._closed = False
+        try:
+            self._pool.wait(timeout=10)
+            if auto_migrate:
+                self._migrate_all()
+        except BaseException:
+            self._closed = True
+            self._pool.close()
+            raise
+
+    @staticmethod
+    def _run(row: dict[str, Any]) -> RuntimeRunRecord:
+        return RuntimeRunRecord(
+            run_id=str(row["run_id"]),
+            user_id=str(row["user_id"]),
+            session_id=str(row["session_id"]),
+            agent_id=str(row["agent_id"]),
+            kind=str(row["kind"]),
+            status=str(row["status"]),
+            prompt=str(row["prompt"]),
+            options=dict(_json(row["options"], {})),
+            result=_json(row["result"]),
+            error=_json(row["error"]),
+            idempotency_key=row["idempotency_key"],
+            created_at=_iso(row["created_at"]) or "",
+            started_at=_iso(row["started_at"]),
+            finished_at=_iso(row["finished_at"]),
+            updated_at=_iso(row["updated_at"]) or "",
+            lease_owner=row["lease_owner"],
+            lease_expires_at=_iso(row["lease_expires_at"]),
+            lease_version=int(row["lease_version"] or 0),
+            root_run_id=row.get("root_run_id"),
+            parent_run_id=row.get("parent_run_id"),
+            parent_task_id=row.get("parent_task_id"),
+            current_phase=row.get("current_phase"),
+            status_summary=row.get("status_summary"),
+            status_reason=row.get("status_reason"),
+            next_action=row.get("next_action"),
+            waiting_on=row.get("waiting_on"),
+            active_turn_id=row.get("active_turn_id"),
+            active_span_count=int(row.get("active_span_count") or 0),
+            completed_task_count=int(row.get("completed_task_count") or 0),
+            total_task_count=int(row.get("total_task_count") or 0),
+            last_event_sequence=int(row.get("last_event_sequence") or 0),
+            last_progress_at=_iso(row.get("last_progress_at")),
+            cancel_requested_at=_iso(row.get("cancel_requested_at")),
+            cancel_reason=row.get("cancel_reason"),
+            graph_revision_id=row.get("graph_revision_id"),
+        )
+
+    @staticmethod
+    def _task(row: dict[str, Any]) -> RuntimeTaskRecord:
+        return RuntimeTaskRecord(
+            task_id=str(row["task_id"]),
+            run_id=str(row["run_id"]),
+            agent_id=str(row["agent_id"]),
+            parent_task_id=row["parent_task_id"],
+            name=str(row["name"]),
+            status=str(row["status"]),
+            payload=dict(_json(row["payload"], {})),
+            result=_json(row["result"]),
+            error=_json(row["error"]),
+            priority=int(row["priority"]),
+            attempt=int(row["attempt"]),
+            max_attempts=int(row["max_attempts"]),
+            available_at=_iso(row["available_at"]) or "",
+            lease_owner=row["lease_owner"],
+            lease_expires_at=_iso(row["lease_expires_at"]),
+            created_at=_iso(row["created_at"]) or "",
+            started_at=_iso(row["started_at"]),
+            finished_at=_iso(row["finished_at"]),
+            updated_at=_iso(row["updated_at"]) or "",
+            lease_version=int(row["lease_version"] or 0),
+        )
+
+    @staticmethod
+    def _notify(conn: Any, run_id: str | None = None) -> None:
+        conn.execute("SELECT pg_notify(%s, %s)", (_CHANNEL, run_id or "*"))
+
+    @staticmethod
+    def _audit(
+        conn: Any,
+        *,
+        run_id: str,
+        stage: str,
+        message: str,
+        task_id: str | None = None,
+        worker_id: str | None = None,
+        level: str = "info",
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Write a state-machine audit record in the caller's transaction."""
+        conn.execute(
+            """INSERT INTO runtime_logs
+                   (run_id,task_id,worker_id,level,stage,message,data)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (run_id, task_id, worker_id, level, stage, message, Jsonb(data or {})),
+        )

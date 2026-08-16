@@ -31,9 +31,9 @@
             <label><span>显示名称</span><input v-model.trim="draft.name" required placeholder="客户线索服务" /></label>
             <label class="wide"><span>说明</span><input v-model.trim="draft.description" placeholder="业务系统边界与负责人" /></label>
             <label><span>服务类型</span><select v-model="draft.service_profile"><option value="business">独立业务服务</option><option value="extension_host">Extension Host</option></select><small>Host 必须发布签名 Manifest 并通过精确摘要预检</small></label>
-            <label class="wide"><span>Base URL</span><input v-model.trim="draft.base_url" required placeholder="https://crm.internal.example/joyhousebot/v1" /></label>
-            <label><span>Key ID</span><input v-model.trim="draft.key_id" required placeholder="joyhousebot-prod-2026-01" /></label>
-            <label><span>签名密钥引用</span><input v-model.trim="draft.signing_secret_ref" required placeholder="env://CRM_JOYHOUSEBOT_SIGNING_SECRET" /><small>只保存环境变量名，不保存密钥</small></label>
+            <label class="wide"><span>Base URL</span><input v-model.trim="draft.base_url" required placeholder="https://crm.internal.example/porthouse/v1" /></label>
+            <label><span>Key ID</span><input v-model.trim="draft.key_id" required placeholder="porthouse-prod-2026-01" /></label>
+            <label><span>签名密钥引用</span><input v-model.trim="draft.signing_secret_ref" required placeholder="env://CRM_PORTHOUSE_SIGNING_SECRET" /><small>只保存环境变量名，不保存密钥</small></label>
             <label><span>请求超时（秒）</span><input v-model.number="draft.timeout_seconds" type="number" min="1" max="3600" /></label>
             <label><span>最大响应（Bytes）</span><input v-model.number="draft.max_response_bytes" type="number" min="1024" max="52428800" /></label>
             <template v-if="isExtensionHost"><label><span>Host Protocol</span><input v-model.trim="draft.host_protocol_version" required readonly /></label><label class="wide"><span>预期 Host Manifest Digest</span><input v-model.trim="draft.expected_host_manifest_digest" required pattern="sha256:[0-9a-f]{64}" placeholder="sha256:…" /><small>来自已安装、已签名的 Host release；Worker 会重新计算并逐项核对</small></label></template>

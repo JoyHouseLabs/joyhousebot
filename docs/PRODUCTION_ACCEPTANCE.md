@@ -1,4 +1,4 @@
-# JoyhouseBot 生产验收与规模演练
+# Porthouse 生产验收与规模演练
 
 这份手册回答一个严格的问题：当前 build 是否有足够证据作为下一代智能执行底座上线，而不只是功能看起来
 完整。所有验收必须绑定 Git commit、镜像 digest、配置 checksum、Agent revision、插件 build digest 和
@@ -36,7 +36,7 @@ App 数据面在上述 Runtime 门禁之外使用独立目标。以下是发布 
 
 该脚本拒绝任何未提交/未跟踪文件，并依次执行完整 Runtime、Extension、Console 和数据库前置检查；它还会
 从精确 Git commit 构建临时 wheel、输出 SHA-256，并验证 Compose 配置。不要用仅通过
-`pre_release_check.sh` 的脏工作区发布。记录脚本输出的 commit、wheel SHA-256 和镜像 SHA-256。生产变量中必须有 `JOYHOUSEBOT_ENVIRONMENT=production`，API 分别以
+`pre_release_check.sh` 的脏工作区发布。记录脚本输出的 commit、wheel SHA-256 和镜像 SHA-256。生产变量中必须有 `PORTHOUSE_ENVIRONMENT=production`，API 分别以
 `--surface public`、`--surface control` 启动。先确认 Prometheus、Grafana 和 OTLP Collector 都能接收数据，
 并验证 `/metrics` 未配置 token 时为 404；配置 token 后，无 token 或错误 token 为 401、正确 token 为 200。
 
@@ -44,7 +44,7 @@ App 数据面在上述 Runtime 门禁之外使用独立目标。以下是发布 
 
 1. 安装 `evals/suites/` 的三个不可变 suite。
 2. 为精确候选 revision 分别创建 Eval run，不得用“latest”。
-3. 运行 `joyhousebot eval-execute`。中断后执行相同命令会跳过已有 observation 并继续。
+3. 运行 `porthouse eval-execute`。中断后执行相同命令会跳过已有 observation 并继续。
 4. 检查每个 case 的 `source_run_id`、execution snapshot、事件、验证、Artifact、成本和延迟。
 5. 将三个 suite 写入 exact revision 的 release gate，`max_age_hours` 设为 24，并设置
    `require_automated=true`，禁止人工 observation 冒充自动回归。
@@ -57,7 +57,7 @@ App 数据面在上述 Runtime 门禁之外使用独立目标。以下是发布 
 先在与生产同规格的 staging 执行 500–5000 Task：
 
 ```bash
-joyhousebot durability-drill \
+porthouse durability-drill \
   --confirm WRITE_SYNTHETIC_RUNTIME_DATA \
   --tasks 1000 --claim-concurrency 32 \
   --config ./staging.json
@@ -70,8 +70,8 @@ owner 无法提交，并检查幂等 Run 只创建一次。生产环境只在低
 ## 阶段四：API 与 Worker 规模矩阵
 
 使用专门的服务账号和仅包含 `runs.read`、`runs.write` 的短期令牌。默认每用户并发/每分钟提交配额会有意阻止
-大规模单账号施压；演练环境应按目标负载调整 `JOYHOUSEBOT_MAX_RUNS_PER_USER` 和
-`JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE`，或使用多个真实租户分片，不要把 429 当成运行时吞吐缺陷。
+大规模单账号施压；演练环境应按目标负载调整 `PORTHOUSE_MAX_RUNS_PER_USER` 和
+`PORTHOUSE_RUN_SUBMIT_PER_MINUTE`，或使用多个真实租户分片，不要把 429 当成运行时吞吐缺陷。
 
 | 阶段 | Run 数 | 并发 | 目的 |
 |---|---:|---:|---|
@@ -83,13 +83,13 @@ owner 无法提交，并检查幂等 Run 只创建一次。生产环境只在低
 每阶段开始前记录 Worker 数和数据库连接数，结束后等待队列清空。示例：
 
 ```bash
-export JOYHOUSEBOT_LOAD_TOKEN='short-lived-scoped-token'
-joyhousebot load-test --base-url https://api.example.com \
+export PORTHOUSE_LOAD_TOKEN='short-lived-scoped-token'
+porthouse load-test --base-url https://api.example.com \
   --count 1000 --concurrency 32 --wait \
   --min-accept-rate 0.995 --min-completion-rate 0.99 \
   --min-success-rate 0.95 --max-submit-p95-ms 1000 \
   --max-e2e-p95-ms 120000
-unset JOYHOUSEBOT_LOAD_TOKEN
+unset PORTHOUSE_LOAD_TOKEN
 ```
 
 ## 阶段五：进程与依赖故障
@@ -105,7 +105,7 @@ unset JOYHOUSEBOT_LOAD_TOKEN
 4. **Provider 429/timeout**：在 staging 的测试 Provider/网关注入 429、5xx 和超时。确认 bounded retry、fallback、
    成本上限和 `provider_error_ratio` 告警；不得对真实外部写操作重试。
 5. **PostgreSQL 短暂不可用**：仅在 staging 执行 30–60 秒连接中断。API readiness 应为 503、metrics 保留
-   `joyhousebot_up 0`，恢复后队列继续；不得出现两个终态或丢失已接受 Run。
+   `porthouse_up 0`，恢复后队列继续；不得出现两个终态或丢失已接受 Run。
 6. **OTLP/Prometheus 不可用**：执行链路必须继续，遥测缓冲不得拖垮 Worker；恢复后新 Trace 正常上报。
 
 ## 阶段六：独立 App 边界演练
@@ -114,16 +114,16 @@ unset JOYHOUSEBOT_LOAD_TOKEN
 Grant 和无外部副作用的 Entry Point 执行真实链路：
 
 ```bash
-export JOYHOUSEBOT_APP_CLIENT_ID='appclient_staging'
-export JOYHOUSEBOT_APP_CLIENT_SECRET='read-from-secret-manager'
-export JOYHOUSEBOT_APP_GRANT_ID='appgrant_staging'
-export JOYHOUSEBOT_APP_INSTALLATION_ID='appinst_staging'
+export PORTHOUSE_APP_CLIENT_ID='appclient_staging'
+export PORTHOUSE_APP_CLIENT_SECRET='read-from-secret-manager'
+export PORTHOUSE_APP_GRANT_ID='appgrant_staging'
+export PORTHOUSE_APP_INSTALLATION_ID='appinst_staging'
 python scripts/app-integration-smoke.py \
   --confirm LAUNCH_APP_SMOKE_RUN \
   --base-url https://staging-runtime.example.com \
   --entrypoint-id safe-smoke
-unset JOYHOUSEBOT_APP_CLIENT_ID JOYHOUSEBOT_APP_CLIENT_SECRET \
-  JOYHOUSEBOT_APP_GRANT_ID JOYHOUSEBOT_APP_INSTALLATION_ID
+unset PORTHOUSE_APP_CLIENT_ID PORTHOUSE_APP_CLIENT_SECRET \
+  PORTHOUSE_APP_GRANT_ID PORTHOUSE_APP_INSTALLATION_ID
 ```
 
 然后逐项执行并归档证据：

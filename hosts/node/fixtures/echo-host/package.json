@@ -1,8 +1,8 @@
 {
-  "name": "@joyhousebot/echo-host-fixture",
+  "name": "@porthouse/echo-host-fixture",
   "version": "0.1.0",
   "private": true,
-  "description": "Contract fixture for JoyhouseBot Node Extension Host",
+  "description": "Contract fixture for Porthouse Node Extension Host",
   "type": "module",
   "main": "dist/server.js",
   "engines": {
@@ -14,7 +14,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@joyhousebot/extension-sdk": "file:../../../../sdks/node"
+    "@porthouse/extension-sdk": "file:../../../../sdks/node"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

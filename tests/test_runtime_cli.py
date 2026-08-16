@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from joyhousebot.cli.runtime import _release_worker_presence, _run_service_until_stopped
+from porthouse.cli.runtime import _release_worker_presence, _run_service_until_stopped
 
 
 @pytest.mark.asyncio

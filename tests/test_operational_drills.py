@@ -3,8 +3,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from joyhousebot.operations.durability_drill import DurabilityDrill
-from joyhousebot.operations.load_test import LoadTestOptions, percentile, run_api_load_test
+from porthouse.operations.durability_drill import DurabilityDrill
+from porthouse.operations.load_test import LoadTestOptions, percentile, run_api_load_test
 from tests.support.postgres_store import PostgresTestStore
 
 

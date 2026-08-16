@@ -111,7 +111,7 @@ function integer(value: unknown, minimum: number, maximum: number, field: string
 }
 
 function basePath(value: unknown): string {
-  const normalized = String(value ?? "/joyhousebot/v1").trim().replace(/\/$/, "");
+  const normalized = String(value ?? "/porthouse/v1").trim().replace(/\/$/, "");
   if (!normalized.startsWith("/") || normalized.includes("..")) {
     throw new Error("local_host.base_path is invalid");
   }

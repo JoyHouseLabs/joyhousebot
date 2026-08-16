@@ -1,15 +1,15 @@
-# 独立 App 与 JoyhouseBot 协作契约
+# 独立 App 与 Porthouse 协作契约
 
 状态：Accepted（2026-08-10）
-适用范围：独立业务 App、Joyhouse、JoyhouseBot Runtime、Console 与商业交付
+适用范围：独立业务 App、HappyHouse、Porthouse Runtime、Console 与商业交付
 
 ## 1. 决策
 
-App 是解决完整业务问题、可以独立部署和售卖的产品；JoyhouseBot 是 App 可选择使用的长期任务执行引擎。
+App 是解决完整业务问题、可以独立部署和售卖的产品；Porthouse 是 App 可选择使用的长期任务执行引擎。
 两者不是父子系统，也不通过把 App 的 Python 代码加载进 Runtime 来集成。
 
 ```text
-Business App                                      JoyhouseBot
+Business App                                      Porthouse
 UI / Users / Subscription / Domain DB             Run / Task / Schedule
 Domain rules / Transactions / Product analytics   Agent / Workflow / Approval
             │                                          │
@@ -22,7 +22,7 @@ Domain rules / Transactions / Product analytics   Agent / Workflow / Approval
 App 可以拥有自己的品牌、用户系统、定价、会员、订单、许可证、数据库、领域逻辑和发布节奏。Runtime
 只负责把需要长期、异步、可恢复和可审计的工作可靠执行，并返回 Run、事件、确认点、Artifact 和 Work。
 
-官方 App 可与 Product、Runtime 和 Market 共用 `JOYHOUSE_DATABASE_URL`，业务表使用 `app_<id>_*` 前缀并
+官方 App 可与 Product、Runtime 和 Market 共用 `PORTHOUSE_DATABASE_URL`，业务表使用 `app_<id>_*` 前缀并
 保留独立 migration chain。远程或独立售卖的 App 仍可使用自己的数据库。无论物理部署方式如何，App 都不能
 直接读写 Runtime、Product 或 Market 表。
 
@@ -55,7 +55,7 @@ Skill 默认是声明式、低权限资产。它可以声明需要哪些 Capabil
 - 产品埋点、商业分析、定价、品牌和发布节奏；
 - App 用户与 Runtime 主体之间的稳定映射。
 
-JoyhouseBot 不复制这些表和逻辑，也不将 App 的业务数据库变为 Runtime 的内部 repository。
+Porthouse 不复制这些表和逻辑，也不将 App 的业务数据库变为 Runtime 的内部 repository。
 
 ## 4. Runtime 必须统一承担的职责
 
@@ -98,9 +98,9 @@ App 后端用 `client_id + client_secret + grant_id` 在 `/v1/app-auth/token` �
 `POST /v1/admin/apps/clients/{client_id}/rotate-secret` 会立即撤销该 Client 的全部存量 Token，但不会替用户
 撤销 Grant。App 必须先把新 Secret 写入秘密管理系统，再重新交换 Token，不能并行长期保留两把 Secret。
 
-App 传给 Runtime 的 `user_id` 应是稳定、无 PII 的主体标识。未关联 Joyhouse 账号时，建议使用 App
+App 传给 Runtime 的 `user_id` 应是稳定、无 PII 的主体标识。未关联 HappyHouse 账号时，建议使用 App
 命名空间下的不透明映射，例如 `app:<app_id>:<opaque_subject>`；映射关系由 App 保存。用户主动关联
-Joyhouse 账号时，必须通过明确授权流程合并主体，不能按邮箱自动合并。
+HappyHouse 账号时，必须通过明确授权流程合并主体，不能按邮箱自动合并。
 
 ## 6. Runtime 调用 App
 
@@ -130,12 +130,12 @@ Run 完成通知与业务 Capability 是两个不同契约。App 可为自己的
   带 `replay_of_event_id` 和递增 `replay_sequence` 的新投递，原始 sent/dead 记录不可修改；相同请求键
   只产生一次新投递。
 
-Python App 可以直接使用 `joyhousebot.app_sdk.AppRuntimeClient` 完成 Token 交换、安装查询、幂等启动和
+Python App 可以直接使用 `porthouse.app_sdk.AppRuntimeClient` 完成 Token 交换、安装查询、幂等启动和
 终态等待；`verify_app_callback` 负责 canonical JSON、时间戳、签名和事件身份校验。单元测试使用
 `AppRuntimeSimulator` 的 `httpx.MockTransport`，它不启动数据库，也不能代替真实 Runtime 集成测试：
 
 ```python
-from joyhousebot.app_sdk import AppRuntimeClient, AppRuntimeSimulator
+from porthouse.app_sdk import AppRuntimeClient, AppRuntimeSimulator
 
 simulator = AppRuntimeSimulator()
 async with AppRuntimeClient(
@@ -157,7 +157,7 @@ async with AppRuntimeClient(
 
 App 与 Runtime 解耦后可以采用三种模式：
 
-1. **独立 SaaS**：App 自己获客、收费和托管，后端调用官方托管或自有 JoyhouseBot Runtime；
+1. **独立 SaaS**：App 自己获客、收费和托管，后端调用官方托管或自有 Porthouse Runtime；
 2. **Runtime 随产品交付**：App 套餐包含托管 Runtime，最终用户只感知 App 品牌和价值；
 3. **Bring Your Own Runtime**：客户提供自己的 Runtime 地址和授权，App 只销售业务产品与持续任务。
 

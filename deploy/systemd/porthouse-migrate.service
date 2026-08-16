@@ -1,0 +1,23 @@
+[Unit]
+Description=Porthouse PostgreSQL schema migration
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# API/Worker/Scheduler declare Requires=porthouse-migrate.service. Keep a
+# successfully completed migration unit active so those long-running units do
+# not lose their required dependency immediately after schema validation.
+RemainAfterExit=yes
+User=porthouseruntime
+Group=porthouseruntime
+WorkingDirectory=/opt/porthouse/current
+EnvironmentFile=/etc/porthouse.env
+Environment=PORTHOUSE_AUTO_MIGRATE=true
+ExecStart=/opt/porthouse/venv/bin/porthouse check --config /etc/porthouse/config.json
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/porthouse

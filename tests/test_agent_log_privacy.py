@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from joyhousebot.agent.message_processor import MessageProcessorMixin
+from porthouse.agent.message_processor import MessageProcessorMixin
 
 
 def test_message_processor_logs_only_content_shape() -> None:

@@ -10,18 +10,18 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
-from joyhousebot.providers.base import LLMProvider, LLMResponse
-from joyhousebot.runtime.context import RunContext, ToolExecutionContext
-from joyhousebot.services.memory.store import MemoryStore
-from joyhousebot.services.memory.writes import MemoryWriteController
-from joyhousebot.session.models import Session
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.domain.agents import AgentRevision
+from porthouse.domain.memory_policy import EffectiveMemoryPolicy
+from porthouse.providers.base import LLMProvider, LLMResponse
+from porthouse.runtime.context import RunContext, ToolExecutionContext
+from porthouse.services.memory.store import MemoryStore
+from porthouse.services.memory.writes import MemoryWriteController
+from porthouse.session.models import Session
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 

@@ -1,15 +1,15 @@
 [project]
-name = "joyhousebot"
+name = "porthouse"
 version = "0.1.2"
 description = "PostgreSQL-first personal Agent runtime for durable, governed execution"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "Joyhouse Team"}
+    {name = "Porthouse Team"}
 ]
 maintainers = [
-    {name = "Joyhouse Team"}
+    {name = "Porthouse Team"}
 ]
 keywords = ["ai", "agent", "runtime", "personal", "opc", "automation"]
 classifiers = [
@@ -53,40 +53,40 @@ observability = [
     "opentelemetry-instrumentation-psycopg>=0.48b0",
 ]
 [project.urls]
-Homepage = "https://joyhousebot.com"
-Repository = "https://github.com/JoyHouseLabs/joyhousebot"
-Documentation = "https://github.com/JoyHouseLabs/joyhousebot/tree/main/docs"
-Issues = "https://github.com/JoyHouseLabs/joyhousebot/issues"
+Homepage = "https://porthouse.happayhouselabs.com/"
+Repository = "https://github.com/HappyHouseLabs/porthouse"
+Documentation = "https://github.com/HappyHouseLabs/porthouse/tree/main/docs"
+Issues = "https://github.com/HappyHouseLabs/porthouse/issues"
 
 [project.scripts]
-joyhousebot = "joyhousebot.cli.runtime:app"
+porthouse = "porthouse.cli.runtime:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["joyhousebot"]
+packages = ["porthouse"]
 
 [tool.hatch.build.targets.wheel.sources]
-"joyhousebot" = "joyhousebot"
+"porthouse" = "porthouse"
 
 [tool.hatch.build]
 include = [
-    "joyhousebot/**/*.py",
-    "joyhousebot/static/**",
+    "porthouse/**/*.py",
+    "porthouse/static/**",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "joyhousebot/",
+    "porthouse/",
     "evals/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"evals/suites" = "joyhousebot/eval_suites"
+"evals/suites" = "porthouse/eval_suites"
 
 [tool.ruff]
 line-length = 100
@@ -125,5 +125,5 @@ pythonpath = [
     "extensions/provider-openai-compatible/src",
 ]
 markers = [
-    "postgres: requires JOYHOUSEBOT_TEST_POSTGRES_URL",
+    "postgres: requires PORTHOUSE_TEST_POSTGRES_URL",
 ]

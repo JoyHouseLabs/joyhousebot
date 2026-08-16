@@ -2,9 +2,9 @@
 
 import pytest
 
-from joyhousebot.agent.context import ContextBuilder
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.services.memory.store import MemoryStore
+from porthouse.agent.context import ContextBuilder
+from porthouse.domain.agents import AgentRevision
+from porthouse.services.memory.store import MemoryStore
 from tests.support.postgres_store import PostgresTestStore
 
 

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.agent.skills import SkillsLoader
-from joyhousebot.domain.capabilities import (
+from porthouse.agent.skills import SkillsLoader
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityKind,

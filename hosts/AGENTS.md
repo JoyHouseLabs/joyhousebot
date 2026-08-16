@@ -1,4 +1,4 @@
-# JoyhouseBot Extension Host 协作说明
+# Porthouse Extension Host 协作说明
 
 本目录保存独立语言运行环境的通用 Host、Supervisor 和契约测试 Fixture。
 

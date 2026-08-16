@@ -1,11 +1,11 @@
 # Polyglot Extension Host 开发计划
 
 状态：Runtime Baseline Complete；D0-D10 已完成，D11 协议基线完成，D12 Runtime/Console/部署基线完成；
-JoyHouse Desktop 打包与具体生态 Driver 在各自仓库继续实施（2026-08-16）
+HappyHouse Desktop 打包与具体生态 Driver 在各自仓库继续实施（2026-08-16）
 
 ## 1. 复核结论
 
-JoyhouseBot 不需要从零建设第二套异步执行框架。当前代码已经具备：
+Porthouse 不需要从零建设第二套异步执行框架。当前代码已经具备：
 
 | 能力 | 当前状态 | 可复用实现 |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ hosts/
 `- node/                         # 通用 Node Host Supervisor，不含具体供应商逻辑
 
 sdks/
-`- node/                         # @joyhousebot/extension-sdk 与协议测试向量
+`- node/                         # @porthouse/extension-sdk 与协议测试向量
 
 extensions/
 |- capability-opencli/           # OpenCLI 浏览器与网站命令适配器
@@ -159,10 +159,10 @@ Node Host、SDK 和每个 Extension 是独立制品。生产 Extension 不共享
 
 ### Runtime 修改点
 
-- `joyhousebot/domain/remote_connections.py`
-- `joyhousebot/api/schemas.py`
-- `joyhousebot/application/remote_connections.py`
-- `joyhousebot/bootstrap/agent_runtime_catalog.py`
+- `porthouse/domain/remote_connections.py`
+- `porthouse/api/schemas.py`
+- `porthouse/application/remote_connections.py`
+- `porthouse/bootstrap/agent_runtime_catalog.py`
 - `extensions/connector-http-capability/.../connector.py`
 - `apps/console/src/api/remoteConnections.ts`
 - `apps/console/src/views/RemoteConnections.vue`
@@ -303,7 +303,7 @@ X 搜索和需审批的 X 发帖。Catalog compiler、严格 Schema/argv、显�
 
 目标：用一个真实、已有广泛 Node 生态依赖的项目验证 Host，而不是把通用 Playwright 封装当作业务成果。
 [OpenCLI](https://github.com/jackwener/opencli) 已提供结构化命令 Manifest、JSON 输出、明确退出码和
-Browser Bridge，可连接用户已登录的 Chrome；JoyhouseBot 只负责把准入命令变成受治理 Capability。
+Browser Bridge，可连接用户已登录的 Chrome；Porthouse 只负责把准入命令变成受治理 Capability。
 
 ### 新增范围
 
@@ -327,7 +327,7 @@ opencli.twitter.post@1.0.0
 
 编译映射如下：
 
-| OpenCLI 字段 | JoyhouseBot 投影 |
+| OpenCLI 字段 | Porthouse 投影 |
 | --- | --- |
 | `site + name` | Capability ID 与 display name |
 | `args` | 严格 input JSON Schema |
@@ -365,7 +365,7 @@ Manifest digest、Extension build、lockfile、SBOM 和允许命令集合；上�
 - Server 使用签名 OCI image 或不可变 bundle；
 - 不执行 `plugin update --all`，不扫描用户任意目录作为生产 Capability；
 - 第三方 OpenCLI plugin 必须由 Market/部署者固定来源、commit、依赖锁和签名后单独发布；
-- OpenCLI Skill 可以转换为 JoyhouseBot Skill，但 Skill 不能携带或绕过 Capability 权限。
+- OpenCLI Skill 可以转换为 Porthouse Skill，但 Skill 不能携带或绕过 Capability 权限。
 
 ### 验收
 
@@ -395,7 +395,7 @@ OpenCLI、浏览器和未来本地 Node 能力。
 Cloud Runtime -> fixed Device Relay -> durable delivery reference
                                       ^
                                       | outbound authenticated HTTPS claim/result
-                              JoyHouse Device Host -> OpenCLI -> local Chrome
+                              HappyHouse Device Host -> OpenCLI -> local Chrome
 ```
 
 - Device Host 使用设备密钥或 mTLS 主动注册、心跳和领取任务；服务器不能任意扫描本机；
@@ -427,7 +427,7 @@ Cloud Runtime -> fixed Device Relay -> durable delivery reference
 - 重复 delivery、SSE 重连和结果重投不产生重复副作用或重复 Artifact；
 - stale claim version 不能推进 delivery cursor 或写入 operation 终态；
 - Cloud 数据库和日志中不存在 Cookie、Chrome Profile 内容或 OpenCLI 本地凭据；
-- 本地 Runtime 模式不依赖 Device Relay，Relay 故障不影响纯本地 JoyHouse。
+- 本地 Runtime 模式不依赖 Device Relay，Relay 故障不影响纯本地 HappyHouse。
 
 ## 12. D8：Host Model Gateway 与预算
 
@@ -451,7 +451,7 @@ deadline。Gateway 每次调用前事务性保留预算，完成后按真实 usa
 
 ### 修改范围
 
-- 新 `joyhousebot/model_gateway/` application/runtime/storage；
+- 新 `porthouse/model_gateway/` application/runtime/storage；
 - 新 CLI role、systemd/Compose、本地启动和 readiness；
 - 复用 Provider Registry、observability 和 `model_invocations`；
 - Console 只展示状态、预算和用量，不显示密钥。
@@ -561,7 +561,7 @@ Driver 故障不能影响 Invocation Extension。
 ## 16. D12：Console、安装器与分发
 
 状态：Runtime 基线完成。Console 已提供 Device Host 治理，Model Gateway 已有本地、systemd 与 Compose
-启动方式，发行包固定 Node v24.19.0 LTS 并校验 OpenCLI 锁。JoyHouse Desktop 将这些制品复制到应用私有
+启动方式，发行包固定 Node v24.19.0 LTS 并校验 OpenCLI 锁。HappyHouse Desktop 将这些制品复制到应用私有
 资源目录、写入 Keychain 和实现安装修复 UI，属于相邻闭源产品仓库，不进入 Runtime Core。
 
 ### Console
@@ -669,6 +669,6 @@ Desktop/Server 打包和 Market 分发具备稳定契约。
 
 Node 生态支持完成的标准不是“Pi 或 WhatsApp 能启动”，而是：
 
-> 在不修改 JoyhouseBot Core 业务逻辑的情况下，可以部署 OpenCLI 或另一个精确签名的 Node Extension；它在独立
+> 在不修改 Porthouse Core 业务逻辑的情况下，可以部署 OpenCLI 或另一个精确签名的 Node Extension；它在独立
 > 故障域中运行，使用 Runtime 的身份、权限、预算、审批、Artifact、审计和恢复机制，并能安全升级、
 > 禁用和回滚。

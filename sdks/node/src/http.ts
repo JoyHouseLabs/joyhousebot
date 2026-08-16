@@ -13,15 +13,15 @@ function header(headers: IncomingHttpHeaders, name: string, required = true): st
 }
 
 export function requestMetadata(request: IncomingMessage): SignedRequestMetadata {
-  const actionId = header(request.headers, "X-Joyhouse-Action-ID", false);
+  const actionId = header(request.headers, "X-Porthouse-Action-ID", false);
   return {
     method: request.method ?? "POST",
     path: request.url ?? "/",
-    timestamp: header(request.headers, "X-Joyhouse-Timestamp"),
-    nonce: header(request.headers, "X-Joyhouse-Nonce"),
-    signature: header(request.headers, "X-Joyhouse-Signature"),
-    keyId: header(request.headers, "X-Joyhouse-Key-ID"),
-    protocolVersion: header(request.headers, "X-Joyhouse-Capability-Protocol"),
+    timestamp: header(request.headers, "X-Porthouse-Timestamp"),
+    nonce: header(request.headers, "X-Porthouse-Nonce"),
+    signature: header(request.headers, "X-Porthouse-Signature"),
+    keyId: header(request.headers, "X-Porthouse-Key-ID"),
+    protocolVersion: header(request.headers, "X-Porthouse-Capability-Protocol"),
     idempotencyKey: header(request.headers, "Idempotency-Key"),
     ...(actionId ? {actionId} : {}),
   };

@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from joyhousebot_connector_http_capability import (
+from porthouse_connector_http_capability import (
     HTTP_CAPABILITY_CONNECTOR_MANIFEST,
     RemoteCapabilityTool,
     connect_remote_capabilities,
@@ -17,10 +17,10 @@ from joyhousebot_connector_http_capability import (
     sign_response_body,
 )
 
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.config.loader import load_config
-from joyhousebot.connectors import ToolConnectorRegistry
-from joyhousebot.extension_sdk.tools import InvocationStatus, ToolInvocationError
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.config.loader import load_config
+from porthouse.connectors import ToolConnectorRegistry
+from porthouse.extension_sdk.tools import InvocationStatus, ToolInvocationError
 
 SECRET = "test-signing-secret-that-is-at-least-32-bytes"
 DIGEST = f"sha256:{'1' * 64}"
@@ -56,7 +56,7 @@ def _capability(**overrides: Any) -> dict[str, Any]:
 def _service(*, capabilities: list[dict[str, Any]] | None = None, **overrides: Any):
     value = {
         "service_profile": "business",
-        "base_url": "https://crm.example.test/joyhousebot/v1",
+        "base_url": "https://crm.example.test/porthouse/v1",
         "key_id": "test-key",
         "signing_secret": SECRET,
         "capabilities": capabilities or [_capability()],
@@ -86,7 +86,7 @@ def _signed_response(request: httpx.Request, payload: dict[str, Any], status: in
     body = connector._canonical_json(payload)
     signature = sign_response_body(
         status_code=status,
-        nonce=request.headers["X-Joyhouse-Nonce"],
+        nonce=request.headers["X-Porthouse-Nonce"],
         body=body,
         secret=SECRET,
     )
@@ -95,7 +95,7 @@ def _signed_response(request: httpx.Request, payload: dict[str, Any], status: in
         content=body,
         headers={
             "Content-Type": "application/json",
-            "X-Joyhouse-Response-Signature": signature,
+            "X-Porthouse-Response-Signature": signature,
         },
     )
 
@@ -131,9 +131,9 @@ def test_remote_write_must_be_idempotent_and_plain_http_is_loopback_only():
             ]
         )
     with pytest.raises(ValueError, match="requires HTTPS"):
-        _service(base_url="http://crm.internal/joyhousebot/v1", allow_insecure_http=True)
+        _service(base_url="http://crm.internal/porthouse/v1", allow_insecure_http=True)
     loopback = _service(
-        base_url="http://127.0.0.1:9000/joyhousebot/v1", allow_insecure_http=True
+        base_url="http://127.0.0.1:9000/porthouse/v1", allow_insecure_http=True
     )
     assert loopback.base_url.startswith("http://127.0.0.1:9000/")
 
@@ -164,13 +164,13 @@ async def test_signed_read_invocation_uses_fixed_endpoint_and_frozen_identity():
         expected = sign_request_body(
             method="POST",
             path=request.url.path,
-            timestamp=request.headers["X-Joyhouse-Timestamp"],
-            nonce=request.headers["X-Joyhouse-Nonce"],
+            timestamp=request.headers["X-Porthouse-Timestamp"],
+            nonce=request.headers["X-Porthouse-Nonce"],
             body=body,
             secret=SECRET,
         )
-        assert request.headers["X-Joyhouse-Signature"] == expected
-        assert request.url.path == "/joyhousebot/v1/capabilities/crm.lead.read:invoke"
+        assert request.headers["X-Porthouse-Signature"] == expected
+        assert request.url.path == "/porthouse/v1/capabilities/crm.lead.read:invoke"
         payload = json.loads(body)
         assert payload["subject"]["user_id"] == "user-1"
         assert payload["execution"]["run_id"] == "run-1"
@@ -310,8 +310,8 @@ async def test_accepted_write_reconciles_without_resubmitting():
     assert reconciled.events[0].event_id == "event-2"
     assert reconcile_requests[0]["operation"]["cursor"] == "cursor-1"
     assert calls == [
-        "/joyhousebot/v1/capabilities/crm.lead.update:invoke",
-        "/joyhousebot/v1/operations:reconcile",
+        "/porthouse/v1/capabilities/crm.lead.update:invoke",
+        "/porthouse/v1/operations:reconcile",
     ]
 
 
@@ -436,7 +436,7 @@ async def test_tool_connector_registry_connects_extension():
 def connector_settings_for_test() -> dict[str, Any]:
     return {
         "service_profile": "business",
-        "base_url": "https://crm.example.test/joyhousebot/v1",
+        "base_url": "https://crm.example.test/porthouse/v1",
         "key_id": "test-key",
         "signing_secret": SECRET,
         "capabilities": [_capability()],

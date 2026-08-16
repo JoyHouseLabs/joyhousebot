@@ -103,7 +103,7 @@
     <div v-if="formOpen" class="modal-backdrop" @click.self="closeForm">
       <form class="base-modal panel" @submit.prevent="saveBase">
         <header><div><span class="eyebrow">{{ editingBase ? 'EDIT LIBRARY' : 'NEW LIBRARY' }}</span><h2>{{ editingBase ? '编辑知识库' : '新建知识库' }}</h2></div><button type="button" @click="closeForm">×</button></header>
-        <label><span>名称</span><input v-model.trim="baseForm.name" maxlength="120" required placeholder="例如：JoyhouseBot 架构" /></label>
+        <label><span>名称</span><input v-model.trim="baseForm.name" maxlength="120" required placeholder="例如：Porthouse 架构" /></label>
         <label><span>说明</span><textarea v-model.trim="baseForm.description" maxlength="1000" rows="4" placeholder="这个知识库解决什么问题，包含哪些可信资料？" /></label>
         <label v-if="editingBase"><span>状态</span><select v-model="baseForm.status"><option value="active">使用中</option><option value="archived">已归档</option></select></label>
         <div class="modal-note"><strong>资产边界</strong><p>知识库负责归类，知识源仍是独立资产。删除知识库不会删除其中的知识源。</p></div>

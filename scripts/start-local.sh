@@ -9,29 +9,29 @@ if [[ -f "${ROOT_DIR}/.env.local" ]]; then
   source "${ROOT_DIR}/.env.local"
   set +a
 fi
-CONFIG_PATH="${JOYHOUSEBOT_CONFIG_PATH:-${ROOT_DIR}/config.json}"
+CONFIG_PATH="${PORTHOUSE_CONFIG_PATH:-${ROOT_DIR}/config.json}"
 # Local development only: fall back to the insecure-auth dev template when no
 # real config.json exists. Production deployments must pass an explicit path.
-if [[ -z "${JOYHOUSEBOT_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
+if [[ -z "${PORTHOUSE_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
   CONFIG_PATH="${ROOT_DIR}/config.dev.json"
 fi
-API_HOST="${JOYHOUSEBOT_LOCAL_HOST:-127.0.0.1}"
-API_PORT="${JOYHOUSEBOT_LOCAL_PORT:-18790}"
-MODEL_GATEWAY_PORT="${JOYHOUSEBOT_MODEL_GATEWAY_PORT:-18794}"
-START_MODEL_GATEWAY="${JOYHOUSEBOT_START_MODEL_GATEWAY:-false}"
-NODE_HOST_CONFIG="${JOYHOUSEBOT_NODE_HOST_CONFIG:-}"
-DEVICE_HOST_CONFIG="${JOYHOUSEBOT_DEVICE_HOST_CONFIG:-}"
-WORKER_COUNT="${JOYHOUSEBOT_LOCAL_WORKERS:-2}"
-LOG_ROOT="${JOYHOUSEBOT_LOCAL_LOG_ROOT:-${HOME}/.joyhousebot/logs/local}"
+API_HOST="${PORTHOUSE_LOCAL_HOST:-127.0.0.1}"
+API_PORT="${PORTHOUSE_LOCAL_PORT:-18790}"
+MODEL_GATEWAY_PORT="${PORTHOUSE_MODEL_GATEWAY_PORT:-18794}"
+START_MODEL_GATEWAY="${PORTHOUSE_START_MODEL_GATEWAY:-false}"
+NODE_HOST_CONFIG="${PORTHOUSE_NODE_HOST_CONFIG:-}"
+DEVICE_HOST_CONFIG="${PORTHOUSE_DEVICE_HOST_CONFIG:-}"
+WORKER_COUNT="${PORTHOUSE_LOCAL_WORKERS:-2}"
+LOG_ROOT="${PORTHOUSE_LOCAL_LOG_ROOT:-${HOME}/.porthouse/logs/local}"
 RUN_STAMP="$(date '+%Y%m%d-%H%M%S')"
 LOG_DIR="${LOG_ROOT}/${RUN_STAMP}"
 
-LOCAL_PG_HOST="${JOYHOUSEBOT_LOCAL_PG_HOST:-127.0.0.1}"
-LOCAL_PG_PORT="${JOYHOUSEBOT_LOCAL_PG_PORT:-15432}"
-LOCAL_PG_USER="${JOYHOUSEBOT_LOCAL_PG_USER:-joyhousebot}"
-LOCAL_PG_PASSWORD="${JOYHOUSEBOT_LOCAL_PG_PASSWORD:-joyhousebot-dev}"
-LOCAL_PG_DATABASE="${JOYHOUSEBOT_LOCAL_PG_DATABASE:-joyhousebot}"
-LOCAL_EXTENSION_PACKAGES="${JOYHOUSEBOT_LOCAL_EXTENSION_PACKAGES:-}"
+LOCAL_PG_HOST="${PORTHOUSE_LOCAL_PG_HOST:-127.0.0.1}"
+LOCAL_PG_PORT="${PORTHOUSE_LOCAL_PG_PORT:-15432}"
+LOCAL_PG_USER="${PORTHOUSE_LOCAL_PG_USER:-porthouse}"
+LOCAL_PG_PASSWORD="${PORTHOUSE_LOCAL_PG_PASSWORD:-porthouse-dev}"
+LOCAL_PG_DATABASE="${PORTHOUSE_LOCAL_PG_DATABASE:-porthouse}"
+LOCAL_EXTENSION_PACKAGES="${PORTHOUSE_LOCAL_EXTENSION_PACKAGES:-}"
 
 CHILD_PIDS=()
 CHILD_NAMES=()
@@ -74,14 +74,14 @@ trap cleanup INT TERM EXIT
 
 prepare_database() {
   local database_exists=""
-  if [[ -n "${JOYHOUSE_DATABASE_URL:-}" ]]; then
-    export JOYHOUSEBOT_DATABASE_URL="${JOYHOUSE_DATABASE_URL}"
-    info "PostgreSQL: using shared JOYHOUSE_DATABASE_URL"
+  if [[ -n "${HAPPYHOUSE_DATABASE_URL:-}" ]]; then
+    export PORTHOUSE_DATABASE_URL="${HAPPYHOUSE_DATABASE_URL}"
+    info "PostgreSQL: using shared HAPPYHOUSE_DATABASE_URL"
     return
   fi
-  if [[ -n "${JOYHOUSEBOT_DATABASE_URL:-}" ]]; then
-    export JOYHOUSE_DATABASE_URL="${JOYHOUSEBOT_DATABASE_URL}"
-    info "PostgreSQL: using JOYHOUSEBOT_DATABASE_URL as shared connection"
+  if [[ -n "${PORTHOUSE_DATABASE_URL:-}" ]]; then
+    export PORTHOUSE_DATABASE_URL="${PORTHOUSE_DATABASE_URL}"
+    info "PostgreSQL: using PORTHOUSE_DATABASE_URL as Runtime connection"
     return
   fi
 
@@ -103,8 +103,8 @@ prepare_database() {
       -U "${LOCAL_PG_USER}" \
       "${LOCAL_PG_DATABASE}"
   fi
-  export JOYHOUSEBOT_DATABASE_URL="postgresql://${LOCAL_PG_USER}:${LOCAL_PG_PASSWORD}@${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
-  export JOYHOUSE_DATABASE_URL="${JOYHOUSEBOT_DATABASE_URL}"
+  export PORTHOUSE_DATABASE_URL="postgresql://${LOCAL_PG_USER}:${LOCAL_PG_PASSWORD}@${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
+  export HAPPYHOUSE_DATABASE_URL="${PORTHOUSE_DATABASE_URL}"
   unset PGPASSWORD
   info "PostgreSQL: ${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
 }
@@ -184,16 +184,16 @@ main() {
   require_command lsof
 
   [[ -f "${CONFIG_PATH}" ]] || fail "config file not found: ${CONFIG_PATH}"
-  [[ "${WORKER_COUNT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_WORKERS must be a positive integer"
-  [[ "${WORKER_COUNT}" -le 32 ]] || fail "JOYHOUSEBOT_LOCAL_WORKERS must not exceed 32"
-  [[ "${API_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PORT must be a valid port"
-  [[ "${API_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_LOCAL_PORT must not exceed 65535"
-  [[ "${MODEL_GATEWAY_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_MODEL_GATEWAY_PORT must be a valid port"
-  [[ "${MODEL_GATEWAY_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_MODEL_GATEWAY_PORT must not exceed 65535"
-  [[ "${LOCAL_PG_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_PORT must be a valid port"
-  [[ "${LOCAL_PG_DATABASE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_DATABASE contains unsupported characters"
-  [[ "${LOCAL_PG_USER}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_USER contains unsupported characters"
-  [[ "${LOCAL_PG_PASSWORD}" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "set JOYHOUSE_DATABASE_URL when the local PostgreSQL password requires URL encoding"
+  [[ "${WORKER_COUNT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_LOCAL_WORKERS must be a positive integer"
+  [[ "${WORKER_COUNT}" -le 32 ]] || fail "PORTHOUSE_LOCAL_WORKERS must not exceed 32"
+  [[ "${API_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_LOCAL_PORT must be a valid port"
+  [[ "${API_PORT}" -le 65535 ]] || fail "PORTHOUSE_LOCAL_PORT must not exceed 65535"
+  [[ "${MODEL_GATEWAY_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_MODEL_GATEWAY_PORT must be a valid port"
+  [[ "${MODEL_GATEWAY_PORT}" -le 65535 ]] || fail "PORTHOUSE_MODEL_GATEWAY_PORT must not exceed 65535"
+  [[ "${LOCAL_PG_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_LOCAL_PG_PORT must be a valid port"
+  [[ "${LOCAL_PG_DATABASE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "PORTHOUSE_LOCAL_PG_DATABASE contains unsupported characters"
+  [[ "${LOCAL_PG_USER}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "PORTHOUSE_LOCAL_PG_USER contains unsupported characters"
+  [[ "${LOCAL_PG_PASSWORD}" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "set PORTHOUSE_DATABASE_URL when the local PostgreSQL password requires URL encoding"
   if lsof -nP -iTCP:"${API_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
     fail "TCP port ${API_PORT} is already in use"
   fi
@@ -211,22 +211,22 @@ main() {
   # Apply schema changes once before any runtime role starts. Starting every
   # role with auto-migration enabled can interleave DDL from a later process
   # with catalog bootstrap writes from an earlier one.
-  JOYHOUSEBOT_AUTO_MIGRATE=true uv run joyhousebot check --config "${CONFIG_PATH}"
-  uv run joyhousebot discover-extensions --config "${CONFIG_PATH}"
-  export JOYHOUSEBOT_AUTO_MIGRATE=false
+  PORTHOUSE_AUTO_MIGRATE=true uv run porthouse check --config "${CONFIG_PATH}"
+  uv run porthouse discover-extensions --config "${CONFIG_PATH}"
+  export PORTHOUSE_AUTO_MIGRATE=false
 
-  start_role api uv run joyhousebot api \
+  start_role api uv run porthouse api \
     --surface combined --config "${CONFIG_PATH}" --host "${API_HOST}" --port "${API_PORT}"
-  start_role scheduler uv run joyhousebot scheduler --config "${CONFIG_PATH}"
+  start_role scheduler uv run porthouse scheduler --config "${CONFIG_PATH}"
   for worker_index in $(seq 1 "${WORKER_COUNT}"); do
-    start_role "worker-${worker_index}" uv run joyhousebot worker --config "${CONFIG_PATH}"
+    start_role "worker-${worker_index}" uv run porthouse worker --config "${CONFIG_PATH}"
   done
-  start_role channel-worker uv run joyhousebot channel-worker --config "${CONFIG_PATH}"
+  start_role channel-worker uv run porthouse channel-worker --config "${CONFIG_PATH}"
   if [[ "${START_MODEL_GATEWAY}" == "true" ]]; then
     if lsof -nP -iTCP:"${MODEL_GATEWAY_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
       fail "TCP port ${MODEL_GATEWAY_PORT} is already in use"
     fi
-    start_role model-gateway uv run joyhousebot model-gateway \
+    start_role model-gateway uv run porthouse model-gateway \
       --config "${CONFIG_PATH}" --host 127.0.0.1 --port "${MODEL_GATEWAY_PORT}"
   fi
   if [[ -n "${NODE_HOST_CONFIG}" || -n "${DEVICE_HOST_CONFIG}" ]]; then
@@ -238,13 +238,13 @@ main() {
   if [[ -n "${NODE_HOST_CONFIG}" ]]; then
     [[ -f "${NODE_HOST_CONFIG}" ]] || fail "Node Host config not found: ${NODE_HOST_CONFIG}"
     (cd "${ROOT_DIR}/hosts/node/supervisor" && npm run build --silent)
-    start_role node-host env JOYHOUSE_NODE_HOST_CONFIG="${NODE_HOST_CONFIG}" \
+    start_role node-host env PORTHOUSE_NODE_HOST_CONFIG="${NODE_HOST_CONFIG}" \
       node "${ROOT_DIR}/hosts/node/supervisor/dist/cli.js"
   fi
   if [[ -n "${DEVICE_HOST_CONFIG}" ]]; then
     [[ -f "${DEVICE_HOST_CONFIG}" ]] || fail "Device Host config not found: ${DEVICE_HOST_CONFIG}"
     (cd "${ROOT_DIR}/hosts/node/device-host" && npm run build --silent)
-    start_role device-host env JOYHOUSE_DEVICE_HOST_CONFIG="${DEVICE_HOST_CONFIG}" \
+    start_role device-host env PORTHOUSE_DEVICE_HOST_CONFIG="${DEVICE_HOST_CONFIG}" \
       node "${ROOT_DIR}/hosts/node/device-host/dist/cli.js"
   fi
 

@@ -4,18 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.application.platform import PlatformService
-from joyhousebot.contracts.plugins import PluginManifest
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.domain.capabilities import (
+from porthouse.application.platform import PlatformService
+from porthouse.contracts.plugins import PluginManifest
+from porthouse.domain.agents import AgentDefinition, AgentRevision
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
     requires_explicit_grant,
     resolve_capability_policy,
 )
-from joyhousebot.runtime.context import ToolExecutionContext
-from joyhousebot.runtime.permissions import permission_engine
+from porthouse.runtime.context import ToolExecutionContext
+from porthouse.runtime.permissions import permission_engine
 from tests.support.postgres_store import PostgresTestStore
 
 _DIGEST = "sha256:" + "a" * 64

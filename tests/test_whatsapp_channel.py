@@ -2,14 +2,14 @@ import asyncio
 import json
 
 import pytest
-from joyhousebot_channel_whatsapp import (
+from porthouse_channel_whatsapp import (
     WHATSAPP_EXTENSION_MANIFEST,
     WhatsAppChannelPlugin,
 )
 
-from joyhousebot.bus.events import OutboundMessage
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config, ExtensionsConfig
+from porthouse.bus.events import OutboundMessage
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config, ExtensionsConfig
 
 
 class RecordingAdapter:
@@ -37,7 +37,7 @@ def _configured_plugin(adapter=None) -> WhatsAppChannelPlugin:
 def test_whatsapp_extension_has_versioned_channel_manifest() -> None:
     assert WHATSAPP_EXTENSION_MANIFEST.extension_id == "channel-whatsapp"
     assert WHATSAPP_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert WHATSAPP_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-whatsapp"
+    assert WHATSAPP_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-whatsapp"
     assert WhatsAppChannelPlugin().extension_manifest is WHATSAPP_EXTENSION_MANIFEST
 
 
@@ -61,7 +61,7 @@ def test_channel_manager_loads_explicit_whatsapp_extension_entry_point() -> None
 
 @pytest.mark.asyncio
 async def test_whatsapp_extension_fails_closed_without_websocket_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("joyhousebot_channel_whatsapp.plugin.WHATSAPP_BRIDGE_AVAILABLE", False)
+    monkeypatch.setattr("porthouse_channel_whatsapp.plugin.WHATSAPP_BRIDGE_AVAILABLE", False)
     plugin = _configured_plugin()
     await plugin.start()
     assert plugin.is_running is False

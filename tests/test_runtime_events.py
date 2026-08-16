@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.runtime.events import EventBroker
-from joyhousebot.runtime.models import AgentEvent
+from porthouse.runtime.events import EventBroker
+from porthouse.runtime.models import AgentEvent
 from tests.support.postgres_store import PostgresTestStore
 
 

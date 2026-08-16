@@ -7,7 +7,7 @@
 
     <div v-if="error" class="notice error-notice">{{ error }}</div>
     <section class="summary-grid">
-      <article class="panel"><span>已登记设备</span><strong>{{ devices.length }}</strong><small>由 JoyHouse Desktop 完成首次配对</small></article>
+      <article class="panel"><span>已登记设备</span><strong>{{ devices.length }}</strong><small>由 Porthouse Desktop 完成首次配对</small></article>
       <article class="panel"><span>当前在线</span><strong>{{ onlineCount }}</strong><small>最近 90 秒内完成心跳</small></article>
       <article class="panel"><span>Node 能力</span><strong>{{ capabilityCount }}</strong><small>精确版本与实现摘要</small></article>
       <article class="panel"><span>Host 模型授权</span><strong>{{ activeGrantCount }}</strong><small>短期预算凭证，不展示密钥</small></article>
@@ -25,7 +25,7 @@
         <div class="capabilities"><span v-for="item in device.capabilities" :key="`${item.capability_id}:${item.version}`"><strong>{{ item.capability_id }}</strong><code>v{{ item.version }} · {{ item.portable ? 'portable' : 'local' }}</code></span><small v-if="!device.capabilities.length">尚未上报能力</small></div>
         <footer><button class="secondary-button" type="button" :disabled="device.status === 'revoked' || rotating === device.device_id" @click="rotate(device)">{{ rotating === device.device_id ? '轮换中…' : '轮换设备 Token' }}</button><button class="secondary-button danger-text" type="button" :disabled="device.status === 'revoked' || revoking === device.device_id" @click="revoke(device)">{{ revoking === device.device_id ? '撤销中…' : '撤销设备' }}</button></footer>
       </article>
-      <article v-if="!devices.length && !loading" class="panel empty-state"><strong>尚未登记 Device Host</strong><p>在 JoyHouse Desktop 的“本机执行环境”中完成配对；控制台不会生成或保存本机配置文件。</p></article>
+      <article v-if="!devices.length && !loading" class="panel empty-state"><strong>尚未登记 Device Host</strong><p>在 Porthouse Desktop 的“本机执行环境”中完成配对；控制台不会生成或保存本机配置文件。</p></article>
     </section>
 
     <section v-if="rotatedToken" class="notice token-notice"><strong>新设备 Token 只显示一次</strong><code>{{ rotatedToken }}</code><button class="secondary-button" type="button" @click="copyToken">复制后关闭</button></section>

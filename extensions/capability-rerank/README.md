@@ -1,4 +1,4 @@
-# JoyhouseBot Rerank Capability
+# Porthouse Rerank Capability
 
 `capability-rerank` is an optional, provider-neutral capability for reordering
 **already authorized** retrieval candidates. It never searches a knowledge base,

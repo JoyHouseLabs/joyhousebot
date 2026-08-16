@@ -7,16 +7,16 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
-from joyhousebot.orchestration.clarification import ClarificationEngine
-from joyhousebot.orchestration.task_graph import validate_and_order_graph
-from joyhousebot.runtime.context import CancellationToken
-from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.runtime.schema_limits import MAX_STRUCTURED_CONTRACT_BYTES
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.contracts.tools import Tool
+from porthouse.domain.agents import AgentDefinition, AgentRevision
+from porthouse.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
+from porthouse.orchestration.clarification import ClarificationEngine
+from porthouse.orchestration.task_graph import validate_and_order_graph
+from porthouse.runtime.context import CancellationToken
+from porthouse.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.runtime.schema_limits import MAX_STRUCTURED_CONTRACT_BYTES
 from tests.support.capabilities import register_tool_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
 

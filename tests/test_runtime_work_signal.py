@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from joyhousebot.runtime.work_signal import RuntimeWorkSignal
+from porthouse.runtime.work_signal import RuntimeWorkSignal
 
 
 class _NotifyingStore:

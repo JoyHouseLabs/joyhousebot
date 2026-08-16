@@ -1,6 +1,6 @@
 # OpenCLI Capability Extension
 
-`capability-opencli` 是官方 Node Invocation Extension。它把 OpenCLI 的明确网站命令编译成 JoyhouseBot
+`capability-opencli` 是官方 Node Invocation Extension。它把 OpenCLI 的明确网站命令编译成 Porthouse
 Capability，不暴露任意命令字符串、argv、Shell、动态插件安装或任意 URL。
 
 ## 冻结发布

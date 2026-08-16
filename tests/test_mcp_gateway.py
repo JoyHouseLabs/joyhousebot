@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from joyhousebot.api.mcp_gateway import MCPGateway
+from porthouse.api.mcp_gateway import MCPGateway
 
 
 class _Store:

@@ -1,0 +1,31 @@
+[Unit]
+Description=Porthousebot channel worker (external channel connections)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated non-root service account; see porthouse-api.service for the
+# useradd/chown bootstrap steps required before enabling these units.
+User=porthouse
+Group=porthouse
+WorkingDirectory=/opt/porthouse
+Environment=PORTHOUSE_CONFIG_PATH=/opt/porthouse/config.json
+# Channel worker only submits runs and never calls LLM providers (see the
+# channel-worker service in docker-compose.runtime.yml): inject the channel
+# credentials this role needs, but do not put LLM provider API keys into the
+# shared environment file on its behalf.
+EnvironmentFile=/etc/porthouse/porthouse.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/porthouse/.venv/bin/porthouse channel-worker --config /opt/porthouse/config.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/porthouse /var/lib/porthouse
+
+[Install]
+WantedBy=multi-user.target

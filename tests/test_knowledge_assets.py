@@ -8,15 +8,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.context import Principal, RequestContext
-from joyhousebot.application.knowledge_assets import KnowledgeAssetService
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.capabilities.services.context import ContextPort
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.capabilities.models import CapabilityKind, CapabilityRef
-from joyhousebot.extension_sdk import CapabilityContext
-from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
+from porthouse.api.app import create_app
+from porthouse.application.context import Principal, RequestContext
+from porthouse.application.knowledge_assets import KnowledgeAssetService
+from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities.services.context import ContextPort
+from porthouse.config.schema import Config
+from porthouse.domain.capabilities.models import CapabilityKind, CapabilityRef
+from porthouse.extension_sdk import CapabilityContext
+from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -466,7 +466,7 @@ def test_knowledge_revision_failure_preserves_previous_active_index(
         source_url=None,
         title="Versioned notes",
         chunks=[{"text": "replacement that must not activate", "page": 2}],
-        source_system="joyhouse-product",
+        source_system="porthouse-product",
         source_id="source-versioned",
         source_version="2",
         run_id="run-index-failed",
@@ -508,7 +508,7 @@ def test_knowledge_revision_rejects_stale_generation_after_newer_activation(
         source_url=None,
         title="Older snapshot",
         chunks=[{"text": "old generation content"}],
-        source_system="joyhouse-product",
+        source_system="porthouse-product",
         source_id="source-ordered",
         source_version="1",
         source_generation=1,
@@ -524,7 +524,7 @@ def test_knowledge_revision_rejects_stale_generation_after_newer_activation(
         source_url=None,
         title="Newer snapshot",
         chunks=[{"text": "new generation content"}],
-        source_system="joyhouse-product",
+        source_system="porthouse-product",
         source_id="source-ordered",
         source_version="1",
         source_generation=2,
@@ -620,7 +620,7 @@ async def test_context_port_failed_parse_attempt_preserves_active_projection(
         source_url="",
         title="Stable source",
         chunks=[{"text": "stable searchable projection"}],
-        source_system="joyhouse-product",
+        source_system="porthouse-product",
         source_id="source-failure",
         source_version="1",
         source_generation=1,
@@ -628,9 +628,9 @@ async def test_context_port_failed_parse_attempt_preserves_active_projection(
     doc_id = await port.fail_knowledge_index(
         context,
         source_type="file",
-        source_url="joyhouse-local://vault/source-failure.pdf",
+        source_url="porthouse-local://vault/source-failure.pdf",
         title="Broken replacement",
-        source_system="joyhouse-product",
+        source_system="porthouse-product",
         source_id="source-failure",
         source_version="2",
         source_generation=2,
@@ -671,9 +671,9 @@ async def test_context_port_first_failed_parse_remains_visible_for_retry(
     doc_id = await port.fail_knowledge_index(
         context,
         source_type="file",
-        source_url="joyhouse-cloud://vault/report.pdf",
+        source_url="porthouse-cloud://vault/report.pdf",
         title="Quarterly report",
-        source_system="joyhouse-product",
+        source_system="porthouse-product",
         source_id="source-first-failure",
         source_version="4",
         source_generation=7,
@@ -738,7 +738,7 @@ async def test_knowledge_index_request_compiles_to_capability_graph() -> None:
     record = await service.submit_index_request(
         context,
         {
-            "source_system": "joyhouse-product",
+            "source_system": "porthouse-product",
             "source_id": "source-a",
             "source_version": "2",
             "source_generation": 2,
@@ -778,7 +778,7 @@ async def test_knowledge_index_request_freezes_runtime_input_assets() -> None:
     await service.submit_index_request(
         context,
         {
-            "source_system": "joyhouse-product",
+            "source_system": "porthouse-product",
             "source_id": "source-file-a",
             "source_version": "1",
             "source_generation": 1,

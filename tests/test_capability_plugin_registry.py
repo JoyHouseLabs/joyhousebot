@@ -2,18 +2,18 @@ from dataclasses import dataclass
 
 import pytest
 
-from joyhousebot.capabilities import CapabilityPluginRegistry, CapabilityRegistry
-from joyhousebot.contracts import (
+from porthouse.capabilities import CapabilityPluginRegistry, CapabilityRegistry
+from porthouse.contracts import (
     CapabilityContext,
     CapabilityResult,
     WriteReceipt,
 )
-from joyhousebot.contracts.plugins import (
+from porthouse.contracts.plugins import (
     PluginComponent,
     PluginManifest,
 )
-from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from joyhousebot.runtime.context import ToolExecutionContext
+from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from porthouse.runtime.context import ToolExecutionContext
 from tests.support.postgres_store import PostgresTestStore
 
 TEST_BUILD_DIGEST = f"sha256:{'0' * 64}"

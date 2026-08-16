@@ -33,7 +33,7 @@ bash scripts/pre_release_check.sh
 require_clean_worktree
 
 echo "==> 3. Build a wheel from this exact commit"
-BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/joyhousebot-release.XXXXXX")"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/porthouse-release.XXXXXX")"
 cleanup() {
   rm -rf "${BUILD_DIR}"
 }
@@ -53,8 +53,8 @@ echo "==> 4. Deployment composition parses"
 # non-production placeholders so a clean checkout can be verified without
 # exporting or printing operator secrets.
 POSTGRES_PASSWORD="release-candidate-placeholder" \
-JOYHOUSEBOT_METRICS_TOKEN="release-candidate-placeholder" \
-JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="release-candidate-placeholder" \
+PORTHOUSE_METRICS_TOKEN="release-candidate-placeholder" \
+PORTHOUSE_AUTH_ENCRYPTION_KEY="release-candidate-placeholder" \
 LLM_PROVIDER="release-candidate-provider" \
 LLM_MODEL="release-candidate-model" \
 docker compose -f docker-compose.runtime.yml config --quiet

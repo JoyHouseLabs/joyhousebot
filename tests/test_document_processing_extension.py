@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from joyhousebot_capability_document_processing import plugin as documents
+from porthouse_capability_document_processing import plugin as documents
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.capabilities.services.sandbox import SandboxPort
-from joyhousebot.capabilities.services.scratch import ScratchPort
-from joyhousebot.extension_sdk import CapabilityContext
-from joyhousebot.extension_sdk.sandbox import is_sandbox_available
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.capabilities.services.sandbox import SandboxPort
+from porthouse.capabilities.services.scratch import ScratchPort
+from porthouse.extension_sdk import CapabilityContext
+from porthouse.extension_sdk.sandbox import is_sandbox_available
 
 
 class _FakeContextPort:

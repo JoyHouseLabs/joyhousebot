@@ -10,14 +10,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.orchestration.branching import evaluate_branch
-from joyhousebot.orchestration.task_graph import validate_and_order_graph
-from joyhousebot.runtime.graph_revision import freeze_graph_revision, graph_task_rows
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.orchestration.branching import evaluate_branch
+from porthouse.orchestration.task_graph import validate_and_order_graph
+from porthouse.runtime.graph_revision import freeze_graph_revision, graph_task_rows
+from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _ROUTE_SCHEMA = {

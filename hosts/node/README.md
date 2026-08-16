@@ -1,4 +1,4 @@
-# JoyhouseBot Node Host
+# Porthouse Node Host
 
 本目录承载通用 Node Extension Host 的运行环境契约，不承载某个业务 App。当前已经具备：
 

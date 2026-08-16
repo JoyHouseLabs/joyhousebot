@@ -6,10 +6,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.runtime.action_identity import payload_hash
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.runtime.action_identity import payload_hash
 from tests.support.postgres_store import PostgresTestStore
 
 

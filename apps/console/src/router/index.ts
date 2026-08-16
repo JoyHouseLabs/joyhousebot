@@ -53,7 +53,7 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   if (to.meta.public) return true
-  if (typeof window !== 'undefined' && localStorage.getItem('joyhousebot_auth_session') !== '1') {
+  if (typeof window !== 'undefined' && localStorage.getItem('porthouse_auth_session') !== '1') {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   return true

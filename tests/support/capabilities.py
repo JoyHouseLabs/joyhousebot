@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from joyhousebot.domain.capabilities import (
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,

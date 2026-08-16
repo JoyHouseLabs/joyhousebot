@@ -7,25 +7,25 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from joyhousebot_capability_filesystem.plugin import FilesystemCapabilityPlugin
-from joyhousebot_capability_shell.plugin import ShellCapabilityPlugin
+from porthouse_capability_filesystem.plugin import FilesystemCapabilityPlugin
+from porthouse_capability_shell.plugin import ShellCapabilityPlugin
 
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
-from joyhousebot.capabilities.plugin_registry import CapabilityPluginRegistry
-from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from joyhousebot.runtime.action_identity import payload_hash
-from joyhousebot.runtime.approval_policy import approval_input_preview
-from joyhousebot.runtime.context import ActionApprovalRequiredError, ToolExecutionContext
-from joyhousebot.runtime.models import AgentOptions
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities.dispatcher import CapabilityDispatcher
+from porthouse.capabilities.plugin_registry import CapabilityPluginRegistry
+from porthouse.capabilities.tool_adapter import ToolCapabilityAdapter
+from porthouse.config.schema import Config
+from porthouse.contracts.tools import Tool
+from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from porthouse.runtime.action_identity import payload_hash
+from porthouse.runtime.approval_policy import approval_input_preview
+from porthouse.runtime.context import ActionApprovalRequiredError, ToolExecutionContext
+from porthouse.runtime.models import AgentOptions
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -443,7 +443,7 @@ def test_approval_api_is_owner_scoped_and_operator_policy_is_enforced(
             json={"resolution": "approve"},
         )
         assert forbidden.status_code == 403
-        monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "operator-token")
+        monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "operator-token")
         operator = client.post(
             f"/v1/runs/{operator_request.run_id}/approvals/{operator_request.approval_id}/resolve",
             headers={

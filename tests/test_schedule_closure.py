@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.channels.repository import ChannelRepository
-from joyhousebot.cron.service import CronService
-from joyhousebot.domain.schedules import (
+from porthouse.channels.repository import ChannelRepository
+from porthouse.cron.service import CronService
+from porthouse.domain.schedules import (
     CronPolicy,
     CronSchedule,
     schedule_run_prompt,
     schedule_run_session_id,
 )
-from joyhousebot.runtime.models import AgentEvent
+from porthouse.runtime.models import AgentEvent
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -150,7 +150,7 @@ async def test_monitor_active_hours_skip_automatic_tick_but_not_manual_run(
             "UPDATE schedules SET next_run_at_ms=0 WHERE schedule_id=%s", (job.id,)
         )
     monkeypatch.setattr(
-        "joyhousebot.cron.service.is_within_active_hours", lambda *_args: False
+        "porthouse.cron.service.is_within_active_hours", lambda *_args: False
     )
 
     claimed = cron._claim_due_jobs()

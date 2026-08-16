@@ -1,9 +1,9 @@
 from typing import Any
 
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.capabilities.dispatcher import capability_result_prompt
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.runtime.context import ToolExecutionContext
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.capabilities.dispatcher import capability_result_prompt
+from porthouse.contracts.tools import Tool
+from porthouse.runtime.context import ToolExecutionContext
 from tests.support.capabilities import register_tool_fixture
 
 

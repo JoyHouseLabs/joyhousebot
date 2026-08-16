@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 
 import pytest
-from joyhousebot_channel_qq import QQ_EXTENSION_MANIFEST, QQChannelPlugin
+from porthouse_channel_qq import QQ_EXTENSION_MANIFEST, QQChannelPlugin
 
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config, ExtensionsConfig
-from joyhousebot.extension_sdk.channels import OutboundMessage
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config, ExtensionsConfig
+from porthouse.extension_sdk.channels import OutboundMessage
 
 
 class RecordingAdapter:
@@ -33,7 +33,7 @@ def _configured_plugin(adapter=None) -> QQChannelPlugin:
 def test_qq_extension_has_versioned_channel_manifest() -> None:
     assert QQ_EXTENSION_MANIFEST.extension_id == "channel-qq"
     assert QQ_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert QQ_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-qq"
+    assert QQ_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-qq"
     assert QQChannelPlugin().extension_manifest is QQ_EXTENSION_MANIFEST
 
 
@@ -54,7 +54,7 @@ def test_channel_manager_loads_explicit_qq_extension_entry_point() -> None:
 
 @pytest.mark.asyncio
 async def test_qq_extension_fails_closed_without_vendor_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("joyhousebot_channel_qq.plugin.QQ_AVAILABLE", False)
+    monkeypatch.setattr("porthouse_channel_qq.plugin.QQ_AVAILABLE", False)
     plugin = _configured_plugin()
 
     await plugin.start()

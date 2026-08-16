@@ -7,15 +7,15 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.agent_teams import AgentTeamService
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from joyhousebot.orchestration.coordinator_agent import normalize_coordinator_plan
-from joyhousebot.orchestration.planner import build_coordinator_graph
-from joyhousebot.runtime.models import AgentOptions
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.api.app import create_app
+from porthouse.application.agent_teams import AgentTeamService
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from porthouse.orchestration.coordinator_agent import normalize_coordinator_plan
+from porthouse.orchestration.planner import build_coordinator_graph
+from porthouse.runtime.models import AgentOptions
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 

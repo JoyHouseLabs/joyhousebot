@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.orchestration.task_graph import validate_and_order_graph
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.orchestration.task_graph import validate_and_order_graph
+from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _ITEMS_SCHEMA = {
@@ -334,33 +334,33 @@ async def test_wait_event_token_schema_owner_and_duplicate_delivery(tmp_path: Pa
 
             invalid_token = client.post(
                 f"/v1/run-events/{wait_id}",
-                headers={"X-Joyhouse-Event-Token": old_token},
+                headers={"X-Porthouse-Event-Token": old_token},
                 json={"event_type": "order.ready", "payload": {"value": "ok"}},
             )
             assert invalid_token.status_code == 404
             invalid_payload = client.post(
                 f"/v1/run-events/{wait_id}",
-                headers={"X-Joyhouse-Event-Token": token},
+                headers={"X-Porthouse-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"wrong": True}},
             )
             assert invalid_payload.status_code == 422
             delivered = client.post(
                 f"/v1/run-events/{wait_id}",
-                headers={"X-Joyhouse-Event-Token": token},
+                headers={"X-Porthouse-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"value": "ok"}},
             )
             assert delivered.status_code == 200
             assert delivered.json()["duplicate"] is False
             duplicate = client.post(
                 f"/v1/run-events/{wait_id}",
-                headers={"X-Joyhouse-Event-Token": token},
+                headers={"X-Porthouse-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"value": "ok"}},
             )
             assert duplicate.status_code == 200
             assert duplicate.json()["duplicate"] is True
             conflicting_duplicate = client.post(
                 f"/v1/run-events/{wait_id}",
-                headers={"X-Joyhouse-Event-Token": token},
+                headers={"X-Porthouse-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"value": "changed"}},
             )
             assert conflicting_duplicate.status_code == 409

@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.application.context import Principal, RequestContext
-from joyhousebot.application.knowledge_maintenance import KnowledgeMaintenanceService
-from joyhousebot.capabilities.services.context import ContextPort
-from joyhousebot.contracts.capabilities import CapabilityContext
-from joyhousebot.providers.base import EmbeddingResponse
-from joyhousebot.services.retrieval.embedding_execution import (
+from porthouse.application.context import Principal, RequestContext
+from porthouse.application.knowledge_maintenance import KnowledgeMaintenanceService
+from porthouse.capabilities.services.context import ContextPort
+from porthouse.contracts.capabilities import CapabilityContext
+from porthouse.providers.base import EmbeddingResponse
+from porthouse.services.retrieval.embedding_execution import (
     EmbeddingAdmissionError,
     execute_embedding_profile,
 )
-from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
+from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
 

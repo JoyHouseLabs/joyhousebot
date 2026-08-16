@@ -1,9 +1,9 @@
 from email.message import EmailMessage
 
 import pytest
-from joyhousebot_channel_email import EmailChannelPlugin
+from porthouse_channel_email import EmailChannelPlugin
 
-from joyhousebot.bus.events import OutboundMessage
+from porthouse.bus.events import OutboundMessage
 
 
 def _make_config() -> dict:
@@ -78,7 +78,7 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
 
     fake = FakeIMAP()
     monkeypatch.setattr(
-        "joyhousebot_channel_email.plugin.imaplib.IMAP4_SSL",
+        "porthouse_channel_email.plugin.imaplib.IMAP4_SSL",
         lambda _h, _p: fake,
     )
 
@@ -120,7 +120,7 @@ def test_missing_message_id_uses_imap_uid_as_runtime_idempotency_key(monkeypatch
             return "BYE", []
 
     monkeypatch.setattr(
-        "joyhousebot_channel_email.plugin.imaplib.IMAP4_SSL",
+        "porthouse_channel_email.plugin.imaplib.IMAP4_SSL",
         lambda *_args: FakeIMAP(),
     )
 
@@ -223,7 +223,7 @@ async def test_send_uses_smtp_and_reply_subject(monkeypatch) -> None:
         return instance
 
     monkeypatch.setattr(
-        "joyhousebot_channel_email.plugin.smtplib.SMTP",
+        "porthouse_channel_email.plugin.smtplib.SMTP",
         _smtp_factory,
     )
 
@@ -279,7 +279,7 @@ async def test_send_skips_when_auto_reply_disabled(monkeypatch) -> None:
         return instance
 
     monkeypatch.setattr(
-        "joyhousebot_channel_email.plugin.smtplib.SMTP",
+        "porthouse_channel_email.plugin.smtplib.SMTP",
         _smtp_factory,
     )
 
@@ -335,7 +335,7 @@ async def test_send_skips_when_consent_not_granted(monkeypatch) -> None:
         return FakeSMTP(host, port, timeout=timeout)
 
     monkeypatch.setattr(
-        "joyhousebot_channel_email.plugin.smtplib.SMTP",
+        "porthouse_channel_email.plugin.smtplib.SMTP",
         _smtp_factory,
     )
 

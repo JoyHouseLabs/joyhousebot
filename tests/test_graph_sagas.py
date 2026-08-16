@@ -8,20 +8,20 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.capabilities import (
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.contracts.tools import Tool
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from joyhousebot.orchestration.failure_policy import (
+from porthouse.orchestration.failure_policy import (
     normalize_failure_policy,
     validate_saga_declarations,
 )
-from joyhousebot.orchestration.task_graph import validate_and_order_graph
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.orchestration.task_graph import validate_and_order_graph
+from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 

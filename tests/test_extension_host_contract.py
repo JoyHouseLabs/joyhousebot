@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from joyhousebot_connector_http_capability import (
+from jsonschema import Draft202012Validator
+from porthouse_connector_http_capability import (
     connector,
     extension_host_manifest_digest,
     request_digest,
     sign_request_body,
     sign_response_body,
 )
-from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "contract" / "extension-host"

@@ -3,7 +3,7 @@ import {mkdir, readFile, realpath} from "node:fs/promises";
 import {dirname, isAbsolute, relative, resolve} from "node:path";
 import {createInterface} from "node:readline";
 
-import type {OperationProgressEvent} from "@joyhousebot/extension-sdk";
+import type {OperationProgressEvent} from "@porthouse/extension-sdk";
 
 import {loadCompiledCatalog} from "./catalog.js";
 import {

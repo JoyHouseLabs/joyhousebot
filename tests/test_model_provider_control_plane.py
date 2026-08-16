@@ -5,21 +5,21 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from joyhousebot_provider_openai_compatible import (
+from porthouse_provider_openai_compatible import (
     OPENAI_COMPATIBLE_PROVIDER_EXTENSION,
 )
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.model_providers import ModelProviderService
-from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config, ExtensionsConfig
-from joyhousebot.domain.model_providers import (
+from porthouse.api.app import create_app
+from porthouse.application.model_providers import ModelProviderService
+from porthouse.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config, ExtensionsConfig
+from porthouse.domain.model_providers import (
     materialize_model_provider,
     normalize_model_provider,
     validate_agent_model_policy,
 )
-from joyhousebot.providers.factory import create_model_provider
+from porthouse.providers.factory import create_model_provider
 from tests.support.postgres_store import PostgresTestStore
 
 

@@ -2,24 +2,24 @@
 
 ## 1. 当前决定
 
-JoyHouse 采用一个 PostgreSQL database 作为第一阶段的集成部署方式，不为尚未出现的规模和组织边界承担多数据库运维成本。
+HappyHouse 采用一个 PostgreSQL database 作为第一阶段的集成部署方式，不为尚未出现的规模和组织边界承担多数据库运维成本。
 
-JoyHouse Product、JoyhouseBot Runtime、JoyHouse Market 和官方 App 统一连接一个 PostgreSQL
+HappyHouse Product、Porthouse Runtime、HappyHouse Market 和官方 App 统一连接一个 PostgreSQL
 database，使用同一个环境变量：
 
 ```bash
-export JOYHOUSE_DATABASE_URL='postgresql://user:password@127.0.0.1:5432/joyhouse'
+export HAPPYHOUSE_DATABASE_URL='postgresql://user:password@127.0.0.1:5432/happyhouse'
 ```
 
-本阶段允许共用同一个数据库账号。服务原有的 `JOYHOUSEBOT_DATABASE_URL`、
-`JOYHOUSE_PRODUCT_DATABASE_URL` 和 `JOYHOUSE_MARKET_DATABASE_URL` 只作为过渡别名；本地启动脚本会将它们
-映射到统一连接，新增部署统一配置 `JOYHOUSE_DATABASE_URL`。
+本阶段允许共用同一个数据库账号。统一部署使用 `HAPPYHOUSE_DATABASE_URL`；Porthouse 读取它作为共享连接，
+也可在独立 Runtime 部署中使用 `PORTHOUSE_DATABASE_URL`。Product、Cloud/Market 与 App 不应读取 Runtime
+专用变量。
 
 ```text
 PostgreSQL database: <shared database>
-├── Runtime tables              owner: JoyhouseBot migrations/repositories
-├── product_*                   owner: JoyHouse Product
-├── cloud_* / market_*          owner: JoyHouse Market
+├── Runtime tables              owner: Porthouse migrations/repositories
+├── product_*                   owner: HappyHouse Product
+├── cloud_* / market_*          owner: HappyHouse Market
 └── app_<app_id>_*              owner: corresponding App
 ```
 
@@ -53,9 +53,9 @@ PostgreSQL database: <shared database>
 
 | 模块 | 表范围 | 迁移记录 | 禁止操作 |
 | --- | --- | --- | --- |
-| JoyhouseBot Runtime | Runtime 现有执行、配置、审计和成果表 | `runtime_schema_migrations` 等 Runtime 自有记录 | Product/App migration 修改 Run、Task、Schedule、Approval |
-| JoyHouse Product | `product_*` | `product_schema_migrations` | 复制 Runtime 状态机或修改 Market 商业账本 |
-| JoyHouse Market | `cloud_*`、`market_*` | `market_schema_migrations` | 读取私人 Product/Runtime 正文或修改 App 业务状态 |
+| Porthouse Runtime | Runtime 现有执行、配置、审计和成果表 | `runtime_schema_migrations` 等 Runtime 自有记录 | Product/App migration 修改 Run、Task、Schedule、Approval |
+| HappyHouse Product | `product_*` | `product_schema_migrations` | 复制 Runtime 状态机或修改 Market 商业账本 |
+| HappyHouse Market | `cloud_*`、`market_*` | `market_schema_migrations` | 读取私人 Product/Runtime 正文或修改 App 业务状态 |
 | 官方 App | `app_<stable_app_id>_*` | `app_<stable_app_id>_schema_migrations` | 使用无前缀通用表名、修改其他 App 或 Core 表 |
 
 规则：
@@ -71,13 +71,13 @@ PostgreSQL database: <shared database>
 
 ## 4. 启动与迁移顺序
 
-本地和单机部署使用同一个 `JOYHOUSE_DATABASE_URL`，按以下顺序启动：
+本地和单机部署使用同一个 `HAPPYHOUSE_DATABASE_URL`，按以下顺序启动：
 
 ```text
 1. 创建共享 PostgreSQL database
-2. JoyhouseBot 执行 Runtime migration
-3. JoyHouse Product 执行 product_* migration
-4. JoyHouse Market 执行 cloud_*/market_* migration
+2. Porthouse 执行 Runtime migration
+3. HappyHouse Product 执行 product_* migration
+4. HappyHouse Market 执行 cloud_*/market_* migration
 5. 已启用的官方 App 各自执行 app_<id>_* migration
 6. 启动 API、Worker、Scheduler、Product、App 和前端
 ```
@@ -89,9 +89,9 @@ PostgreSQL database: <shared database>
 
 | 系统 | 拥有的数据 | 明确禁止拥有的数据 |
 | --- | --- | --- |
-| JoyhouseBot Runtime | Run、Task、Event、Trace、Schedule、Approval、Agent/Team/Workflow/Skill/Capability、Artifact/Work、审计和执行成本 | JoyHouse 目标、联系人、个人问题、Market 订单、App 私有领域状态 |
-| JoyHouse Product | 用户、设备、Source、Contact、Opportunity、Challenge、Goal、Plan、Action、Metric、Review、Handoff 和 Runtime 引用 | Runtime lease/retry/终态、Market 支付账本、App 专用生产状态 |
-| JoyHouse Market | Catalog、Offer、订单、支付事件、Entitlement、治理和结算 | Prompt、私人资料、Run/Memory/Artifact 正文、App 业务正文 |
+| Porthouse Runtime | Run、Task、Event、Trace、Schedule、Approval、Agent/Team/Workflow/Skill/Capability、Artifact/Work、审计和执行成本 | HappyHouse 目标、联系人、个人问题、Market 订单、App 私有领域状态 |
+| HappyHouse Product | 用户、设备、Source、Contact、Opportunity、Challenge、Goal、Plan、Action、Metric、Review、Handoff 和 Runtime 引用 | Runtime lease/retry/终态、Market 支付账本、App 专用生产状态 |
+| HappyHouse Market | Catalog、Offer、订单、支付事件、Entitlement、治理和结算 | Prompt、私人资料、Run/Memory/Artifact 正文、App 业务正文 |
 | 独立 App | 自己的领域规则、专用页面、生产资产、外部回执和领域业务状态 | Runtime 执行状态机、Product 通用个人经营事实、Market 支付账本 |
 
 模块只能通过自己的 Repository 写自己的表。跨模块协作仍使用 application service、版本化 HTTP/SSE、
@@ -99,7 +99,7 @@ Callback、Handoff 或稳定引用。禁止为图省事在 Product 查询中 JOI
 
 ## 6. App 的共库规则
 
-第一阶段官方 App 默认使用 `JOYHOUSE_DATABASE_URL`，不再要求每个 App 创建数据库和账号。
+第一阶段官方 App 默认使用 `HAPPYHOUSE_DATABASE_URL`，不再要求每个 App 创建数据库和账号。
 
 App 仍需要：
 
@@ -116,7 +116,7 @@ App 如果只是 UI + Skill/Workflow、没有专用业务状态，就不创建�
 `app_<id>_*` 表。
 
 远程第三方 App 可以继续使用自己的数据库。统一数据库是当前官方一体化部署的默认值，不要求外部 SaaS 把数据
-迁入 JoyHouse。
+迁入 HappyHouse。
 
 ## 7. Skill 与 Extension
 
@@ -154,8 +154,8 @@ Extension 是 Provider、Channel、Connector 或原子 Capability 技术制品�
 - 恢复后逐模块运行 schema/version 检查；
 - 不支持只回滚某个模块的数据库快照；应用回滚必须兼容当前 Schema；
 - 删除、清理和数据修复命令必须限定表前缀和对象 ID；
-- 测试继续使用专用数据库，例如 `joyhouse_test`、`joyhousebot_test`，并验证名称以 `_test` 结尾；
-- 自动化测试不得使用 `JOYHOUSE_DATABASE_URL` 指向的开发/生产数据库执行 TRUNCATE。
+- 测试继续使用专用数据库，例如 `happyhouse_test`、`porthouse_test`，并验证名称以 `_test` 结尾；
+- 自动化测试不得使用 `HAPPYHOUSE_DATABASE_URL` 或 `PORTHOUSE_DATABASE_URL` 指向的开发/生产数据库执行 TRUNCATE。
 
 ## 10. 未来拆库准备
 

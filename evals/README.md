@@ -11,10 +11,10 @@ Bootstrap the checked-in suites, create an Eval run for an exact candidate revis
 and then bind it to a release gate:
 
 ```bash
-joyhousebot eval-bootstrap
+porthouse eval-bootstrap
 
 # Create the Eval run through POST /v1/admin/eval-runs, then execute it:
-joyhousebot eval-execute evalrun_<id>
+porthouse eval-execute evalrun_<id>
 ```
 
 Automated Agent Evals can execute a draft revision only when the Run is tied to a matching active

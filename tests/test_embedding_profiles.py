@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.capabilities.services.context import ContextPort
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts.capabilities import CapabilityContext
-from joyhousebot.domain.embedding_profiles import normalize_embedding_profile
-from joyhousebot.providers.base import EmbeddingResponse
-from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities.services.context import ContextPort
+from porthouse.config.schema import Config
+from porthouse.contracts.capabilities import CapabilityContext
+from porthouse.domain.embedding_profiles import normalize_embedding_profile
+from porthouse.providers.base import EmbeddingResponse
+from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
 

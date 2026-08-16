@@ -10,13 +10,13 @@ Host command、Artifact upload grant、Device Relay 和 Model Gateway 仍不能�
 
 ## 1. 边界
 
-企业程序是产品平面，拥有用户界面、组织身份、业务权限、业务数据和最终事务；JoyhouseBot 是执行平面，
+企业程序是产品平面，拥有用户界面、组织身份、业务权限、业务数据和最终事务；Porthouse 是执行平面，
 负责任务规划、调度、审批、恢复、对账、审计和成果。企业业务代码不得作为 Python 插件加载进 Core 或
 Worker，只通过 `connector-http-capability` 的固定 HTTP 协议接入。
 
 ```text
-企业程序 ── submit/query/SSE ──▶ JoyhouseBot
-企业程序 ◀── signed Capability ── JoyhouseBot Worker
+企业程序 ── submit/query/SSE ──▶ Porthouse
+企业程序 ◀── signed Capability ── Porthouse Worker
 ```
 
 ## 2. 安装与控制面配置
@@ -50,9 +50,9 @@ Revision，或者调用 `POST /v1/admin/remote-connections`。服务地址、Key
   "name": "CRM 业务服务",
   "description": "销售线索读写边界",
   "service_profile": "business",
-  "base_url": "https://crm.internal.example/joyhousebot/v1",
-  "key_id": "joyhousebot-prod-2026-01",
-  "signing_secret_ref": "env://CRM_JOYHOUSEBOT_SIGNING_SECRET",
+  "base_url": "https://crm.internal.example/porthouse/v1",
+  "key_id": "porthouse-prod-2026-01",
+  "signing_secret_ref": "env://CRM_PORTHOUSE_SIGNING_SECRET",
   "require_response_signature": true,
   "timeout_seconds": 60,
   "max_response_bytes": 10485760,
@@ -108,13 +108,13 @@ Connector 插件 active
 ```http
 POST {base_url}/capabilities/{capability_id}:invoke
 Content-Type: application/json
-X-Joyhouse-Capability-Protocol: 1
-X-Joyhouse-Key-Id: <key-id>
-X-Joyhouse-Timestamp: <unix-seconds>
-X-Joyhouse-Nonce: <random>
-X-Joyhouse-Signature: v1=<hex-hmac-sha256>
-X-Joyhouse-Run-ID: <run-id>
-X-Joyhouse-Action-ID: <action-id>       # 写操作
+X-HappyHouse-Capability-Protocol: 1
+X-HappyHouse-Key-Id: <key-id>
+X-HappyHouse-Timestamp: <unix-seconds>
+X-HappyHouse-Nonce: <random>
+X-HappyHouse-Signature: v1=<hex-hmac-sha256>
+X-HappyHouse-Run-ID: <run-id>
+X-HappyHouse-Action-ID: <action-id>       # 写操作
 Idempotency-Key: action:<action-id>
 ```
 
@@ -150,7 +150,7 @@ Idempotency-Key: action:<action-id>
 }
 ```
 
-企业程序必须再次校验主体、权限、能力版本、实现摘要和业务规则。JoyhouseBot 的授权不能替代业务系统的
+企业程序必须再次校验主体、权限、能力版本、实现摘要和业务规则。Porthouse 的授权不能替代业务系统的
 最终授权。
 
 ## 4. 签名
@@ -180,7 +180,7 @@ JHBCAP-RESPONSE-HMAC-SHA256\n
 <sha256(response-body)>
 ```
 
-响应头为 `X-Joyhouse-Response-Signature: v1=<hex>`。连接器默认拒绝未签名或签名错误的响应。
+响应头为 `X-HappyHouse-Response-Signature: v1=<hex>`。连接器默认拒绝未签名或签名错误的响应。
 
 `request_digest` 用来跨 Worker claim 和多次 reconcile 冻结业务请求，它不包含短暂 lease/attempt，只包含：
 
@@ -247,7 +247,7 @@ JHBCAP-RESPONSE-HMAC-SHA256\n
 }
 ```
 
-JoyhouseBot 不会重新提交操作，而是调用：
+Porthouse 不会重新提交操作，而是调用：
 
 ```http
 POST {base_url}/operations:reconcile
@@ -259,7 +259,7 @@ POST {base_url}/operations:reconcile
 - `pending`：可带 `retry_after_seconds`；
 - `succeeded`：带最终 `output` 和 `artifacts`；
 - `failed`：带结构化 `error`；
-- `unknown`：无法确定结果，JoyhouseBot 转人工处理，不重新写入。
+- `unknown`：无法确定结果，Porthouse 转人工处理，不重新写入。
 
 响应还可以返回 `provider_cursor`、`checkpoint_ref`、`progress_summary`、0–100 的
 `progress_percent` 和最多 100 个 `events`。事件以稳定 `event_id` 和单 operation 内唯一 `sequence`

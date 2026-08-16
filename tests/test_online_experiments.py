@@ -6,11 +6,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.runtime.models import AgentEvent
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.domain.agents import AgentDefinition, AgentRevision
+from porthouse.runtime.models import AgentEvent
 from tests.support.postgres_store import PostgresTestStore
 
 

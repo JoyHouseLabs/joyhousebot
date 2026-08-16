@@ -69,7 +69,7 @@ export const consoleCenters: ConsoleCenter[] = [
     eyebrow: 'BUILD CENTER',
     title: '把专业方法组合成可交付的智能应用',
     description: '用 App 组织业务价值，用 Task Pack 承载持续任务，用 Skill 固化方法，再由 Agent、Workflow 与 Capability 执行。',
-    boundary: 'App 可以拥有独立用户、计费和业务系统；构建中心只定义它如何使用 JoyhouseBot，不把业务代码塞进 Runtime。',
+    boundary: 'App 可以拥有独立用户、计费和业务系统；构建中心只定义它如何使用 Porthouse，不把业务代码塞进 Runtime。',
     primaryAction: { to: '/apps', label: '查看应用架构' },
     navItems: [
       { to: '/apps', label: 'Apps', icon: 'P' },

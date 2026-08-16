@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from joyhousebot.app_sdk import (
+from porthouse.app_sdk import (
     AppRuntimeClient,
     AppRuntimeSimulator,
     verify_app_callback,
 )
-from joyhousebot.domain.app_callbacks import callback_body, callback_signature
+from porthouse.domain.app_callbacks import callback_body, callback_signature
 
 
 @pytest.mark.asyncio
@@ -50,12 +50,12 @@ def test_app_sdk_verifies_callback_identity_signature_and_replay() -> None:
     timestamp = "1000"
     verified = verify_app_callback(
         {
-            "X-Joyhouse-Timestamp": timestamp,
-            "X-Joyhouse-Signature": callback_signature(
+            "X-Porthouse-Timestamp": timestamp,
+            "X-Porthouse-Signature": callback_signature(
                 secret, timestamp=timestamp, body=body
             ),
-            "X-Joyhouse-Event-ID": "event-2",
-            "X-Joyhouse-Event-Type": "run.completed",
+            "X-Porthouse-Event-ID": "event-2",
+            "X-Porthouse-Event-Type": "run.completed",
         },
         body,
         secret=secret,
@@ -66,10 +66,10 @@ def test_app_sdk_verifies_callback_identity_signature_and_replay() -> None:
     with pytest.raises(ValueError, match="signature"):
         verify_app_callback(
             {
-                "X-Joyhouse-Timestamp": timestamp,
-                "X-Joyhouse-Signature": "v1=invalid",
-                "X-Joyhouse-Event-ID": "event-2",
-                "X-Joyhouse-Event-Type": "run.completed",
+                "X-Porthouse-Timestamp": timestamp,
+                "X-Porthouse-Signature": "v1=invalid",
+                "X-Porthouse-Event-ID": "event-2",
+                "X-Porthouse-Event-Type": "run.completed",
             },
             body,
             secret=secret,

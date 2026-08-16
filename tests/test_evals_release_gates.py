@@ -9,21 +9,21 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.errors import ConflictError
-from joyhousebot.application.eval_execution import EvalExecutionService
-from joyhousebot.application.evals import EvalService
-from joyhousebot.application.scenarios import ScenarioStudioService
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.domain.capabilities import (
+from porthouse.api.app import create_app
+from porthouse.application.errors import ConflictError
+from porthouse.application.eval_execution import EvalExecutionService
+from porthouse.application.evals import EvalService
+from porthouse.application.scenarios import ScenarioStudioService
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.domain.agents import AgentDefinition, AgentRevision
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from joyhousebot.domain.scenarios import ScenarioVersion
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.domain.scenarios import ScenarioVersion
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 

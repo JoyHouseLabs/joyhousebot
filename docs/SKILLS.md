@@ -1,6 +1,6 @@
 # Skill 资产与发布模型
 
-Skill 是 JoyhouseBot 中独立的、声明式的“如何完成工作”资产。它可以包含方法说明、Instruction、输入输出
+Skill 是 Porthouse 中独立的、声明式的“如何完成工作”资产。它可以包含方法说明、Instruction、输入输出
 Schema、模板、示例、依赖和 Eval case，但本身不能联网、执行代码或写入业务系统。真实动作仍由 Capability
 和 Integration 承担，并经过统一 Dispatcher、权限、审批、幂等和审计链。
 

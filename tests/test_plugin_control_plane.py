@@ -3,15 +3,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.bootstrap.extension_catalog import discover_enabled_extensions
-from joyhousebot.bootstrap.extension_rollouts import ExtensionRolloutWatcher
-from joyhousebot.config.schema import Config, ExtensionsConfig
-from joyhousebot.contracts.extensions import ExtensionManifest
-from joyhousebot.contracts.plugins import PluginComponent, PluginManifest, PluginQuickstart
-from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from joyhousebot.extension_discovery import scan_extension_catalog
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.bootstrap.extension_catalog import discover_enabled_extensions
+from porthouse.bootstrap.extension_rollouts import ExtensionRolloutWatcher
+from porthouse.config.schema import Config, ExtensionsConfig
+from porthouse.contracts.extensions import ExtensionManifest
+from porthouse.contracts.plugins import PluginComponent, PluginManifest, PluginQuickstart
+from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from porthouse.extension_discovery import scan_extension_catalog
 from tests.support.postgres_store import PostgresTestStore
 
 TEST_BUILD_DIGEST = f"sha256:{'a' * 64}"
@@ -68,11 +68,11 @@ def test_extension_directory_scan_reads_metadata_without_importing_code(
     extension.mkdir(parents=True)
     (extension / "pyproject.toml").write_text(
         """[project]
-name = "joyhousebot-capability-safe-scan"
+name = "porthouse-capability-safe-scan"
 version = "2.1.0"
 description = "Metadata only"
 
-[project.entry-points."joyhousebot.capabilities"]
+[project.entry-points."porthouse.capabilities"]
 capability-safe-scan = "module_that_must_never_import:create_plugin"
 """,
         encoding="utf-8",
@@ -85,7 +85,7 @@ capability-safe-scan = "module_that_must_never_import:create_plugin"
     assert values[0].source_version == "2.1.0"
     assert values[0].installed is False
     assert values[0].metadata["entry_points"] == {
-        "joyhousebot.capabilities": "module_that_must_never_import:create_plugin"
+        "porthouse.capabilities": "module_that_must_never_import:create_plugin"
     }
 
 

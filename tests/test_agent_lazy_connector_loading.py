@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.runtime.runner import NativeAgentRuntime
 
 
 @pytest.mark.asyncio

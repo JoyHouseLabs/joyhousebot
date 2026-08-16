@@ -9,20 +9,20 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
-from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter, ToolOutput
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts import OperationProgressEvent, OperationReconciliationResult
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.capabilities import InvocationStatus
-from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from joyhousebot.runtime.context import ActionOutcomeUnknownError, ToolExecutionContext
-from joyhousebot.runtime.models import AgentOptions
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities.dispatcher import CapabilityDispatcher
+from porthouse.capabilities.tool_adapter import ToolCapabilityAdapter, ToolOutput
+from porthouse.config.schema import Config
+from porthouse.contracts import OperationProgressEvent, OperationReconciliationResult
+from porthouse.contracts.tools import Tool
+from porthouse.domain.capabilities import InvocationStatus
+from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from porthouse.runtime.context import ActionOutcomeUnknownError, ToolExecutionContext
+from porthouse.runtime.models import AgentOptions
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.capabilities import register_tool_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
 
@@ -497,7 +497,7 @@ async def test_operator_reconciliation_requires_control_permission(
         lease_version=run.lease_version,
     )
     store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
-    monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "operator-token")
+    monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "operator-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     path = f"/v1/runs/{run.run_id}/operations/{record.reconciliation_id}/resolve"
 

@@ -8,7 +8,7 @@
       <span class="eyebrow">EXTENSION NOT DISCOVERED</span><h2>此扩展尚未进入发布目录</h2>
       <p>先安装并在部署配置中启用 <code>{{ pluginId }}</code>，再执行目录发现。该操作只登记不可变 Manifest 和组件，不会启动 Agent、调用模型或执行工具。</p>
       <pre>uv pip install -e extensions/{{ pluginId }}
-uv run joyhousebot discover-extensions --config config.json</pre>
+uv run porthouse discover-extensions --config config.json</pre>
       <div><router-link class="secondary-button" to="/extensions">返回扩展目录</router-link><button class="primary-button" @click="load">重新检查</button></div>
     </section>
     <div v-else-if="error" class="notice error-notice">{{ error }}</div>

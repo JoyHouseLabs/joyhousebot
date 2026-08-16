@@ -27,7 +27,7 @@ jobs:
 
       - name: Verify extension-free Core distribution
         env:
-          JOYHOUSEBOT_CORE_ONLY_TEST: "1"
+          PORTHOUSE_CORE_ONLY_TEST: "1"
         run: uv run pytest -q tests/core_only/test_core_only_distribution.py
 
   test:
@@ -36,18 +36,18 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg17
         env:
-          POSTGRES_DB: joyhousebot_test
-          POSTGRES_USER: joyhousebot
-          POSTGRES_PASSWORD: joyhousebot-test
+          POSTGRES_DB: porthouse_test
+          POSTGRES_USER: porthouse
+          POSTGRES_PASSWORD: porthouse-test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U joyhousebot -d joyhousebot_test"
+          --health-cmd "pg_isready -U porthouse -d porthouse_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      JOYHOUSEBOT_TEST_POSTGRES_URL: postgresql://joyhousebot:joyhousebot-test@127.0.0.1:5432/joyhousebot_test
+      PORTHOUSE_TEST_POSTGRES_URL: postgresql://porthouse:porthouse-test@127.0.0.1:5432/porthouse_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4

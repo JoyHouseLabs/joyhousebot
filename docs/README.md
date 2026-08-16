@@ -1,7 +1,7 @@
-# Joyhousebot 文档
+# HappyHousebot 文档
 
-这里只保留开源 Agent 执行与治理 Runtime 当前有效的权威文档。JoyhouseBot 将长程执行、恢复、权限、
-审批、审计和发布治理开放给个人、开发者和产品团队；JoyHouse 产品与 JoyHouse Market 位于相邻私有仓库，本仓库只说明它们
+这里只保留开源 Agent 执行与治理 Runtime 当前有效的权威文档。Porthouse 将长程执行、恢复、权限、
+审批、审计和发布治理开放给个人、开发者和产品团队；HappyHouse 产品与 HappyHouse Market 位于相邻私有仓库，本仓库只说明它们
 依赖的 Runtime 契约与开放协议。
 
 ### 架构与部署
@@ -38,6 +38,6 @@
 
 ### 研究与演进
 
-- [HARNESS_PAPER_INSIGHTS_FOR_JOYHOUSEBOT.md](HARNESS_PAPER_INSIGHTS_FOR_JOYHOUSEBOT.md)：从 DeepSeek Harness/Cordis 研究得到的 Extension 生命周期演进方向；它不是当前 Runtime 契约。
+- [HARNESS_PAPER_INSIGHTS_FOR_PORTHOUSE.md](HARNESS_PAPER_INSIGHTS_FOR_PORTHOUSE.md)：从 DeepSeek Harness/Cordis 研究得到的 Extension 生命周期演进方向；它不是当前 Runtime 契约。
 
 代码、接口或部署方式发生变化时，应直接更新对应的权威文档，不再新增兼容旧架构的平行说明。

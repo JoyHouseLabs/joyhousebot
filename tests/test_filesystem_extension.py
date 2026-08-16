@@ -1,11 +1,11 @@
 """Contracts for the optional Run-scoped filesystem extension."""
 
 import pytest
-from joyhousebot_capability_filesystem import plugin as filesystem
+from porthouse_capability_filesystem import plugin as filesystem
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.capabilities.services import CapabilityServiceBroker
-from joyhousebot.extension_sdk import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.capabilities.services import CapabilityServiceBroker
+from porthouse.extension_sdk import CapabilityContext
 
 
 def _context(services, **overrides):

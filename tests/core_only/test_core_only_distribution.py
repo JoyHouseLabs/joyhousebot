@@ -7,17 +7,17 @@ from importlib import metadata as importlib_metadata
 
 import pytest
 
-from joyhousebot.capabilities.plugin_registry import CapabilityPluginRegistry
-from joyhousebot.channels.plugins.registry import ChannelRegistry
-from joyhousebot.config.schema import Config
-from joyhousebot.connectors.registry import ToolConnectorRegistry
-from joyhousebot.extension_discovery import ENTRY_POINT_GROUPS, installed_extensions
-from joyhousebot.providers.factory import create_model_provider
-from joyhousebot.providers.registry import ModelProviderRegistry
-from joyhousebot.providers.unconfigured import UnconfiguredModelProvider
+from porthouse.capabilities.plugin_registry import CapabilityPluginRegistry
+from porthouse.channels.plugins.registry import ChannelRegistry
+from porthouse.config.schema import Config
+from porthouse.connectors.registry import ToolConnectorRegistry
+from porthouse.extension_discovery import ENTRY_POINT_GROUPS, installed_extensions
+from porthouse.providers.factory import create_model_provider
+from porthouse.providers.registry import ModelProviderRegistry
+from porthouse.providers.unconfigured import UnconfiguredModelProvider
 
 pytestmark = pytest.mark.skipif(
-    os.getenv("JOYHOUSEBOT_CORE_ONLY_TEST") != "1",
+    os.getenv("PORTHOUSE_CORE_ONLY_TEST") != "1",
     reason="runs in the isolated Core-only quality-gate environment",
 )
 
@@ -33,10 +33,10 @@ def test_core_wheel_has_no_extension_distributions_or_entry_points() -> None:
         for name in distributions
         if name.startswith(
             (
-                "joyhousebot-capability-",
-                "joyhousebot-channel-",
-                "joyhousebot-connector-",
-                "joyhousebot-provider-",
+                "porthouse-capability-",
+                "porthouse-channel-",
+                "porthouse-connector-",
+                "porthouse-provider-",
             )
         )
     }

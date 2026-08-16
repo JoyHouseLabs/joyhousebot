@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.services.memory.store import MemoryStore
-from joyhousebot.services.retrieval.adapter import search_async
-from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
+from porthouse.services.memory.store import MemoryStore
+from porthouse.services.retrieval.adapter import search_async
+from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
 

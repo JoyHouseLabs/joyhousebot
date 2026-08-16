@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
-from joyhousebot_capability_media_generation import MediaGenerationPlugin
-from joyhousebot_capability_media_generation.jimeng import JimengAdapter
-from joyhousebot_capability_media_generation.signing import sign_openapi_request
+from porthouse_capability_media_generation import MediaGenerationPlugin
+from porthouse_capability_media_generation.jimeng import JimengAdapter
+from porthouse_capability_media_generation.signing import sign_openapi_request
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.extension_sdk import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.extension_sdk import CapabilityContext
 
 
 def _context() -> CapabilityContext:
@@ -127,7 +127,7 @@ async def test_seedream_image_generation_returns_artifact_and_receipt(
         )
 
     monkeypatch.setattr(
-        "joyhousebot_capability_media_generation.volcengine_ark.TrackedAsyncClient",
+        "porthouse_capability_media_generation.volcengine_ark.TrackedAsyncClient",
         _client_factory(respond),
     )
     registry = CapabilityPluginRegistry()
@@ -173,7 +173,7 @@ async def test_seedance_video_is_accepted_then_reconciled(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        "joyhousebot_capability_media_generation.volcengine_ark.TrackedAsyncClient",
+        "porthouse_capability_media_generation.volcengine_ark.TrackedAsyncClient",
         _client_factory(respond),
     )
     registry = CapabilityPluginRegistry()
@@ -207,7 +207,7 @@ async def test_media_submission_unknown_enters_manual_reconciliation(monkeypatch
         return httpx.Response(503, json={"error": {"message": "upstream unavailable"}})
 
     monkeypatch.setattr(
-        "joyhousebot_capability_media_generation.volcengine_ark.TrackedAsyncClient",
+        "porthouse_capability_media_generation.volcengine_ark.TrackedAsyncClient",
         _client_factory(respond),
     )
     registry = CapabilityPluginRegistry()
@@ -253,7 +253,7 @@ async def test_jimeng_image_task_is_signed_and_reconciled(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        "joyhousebot_capability_media_generation.jimeng.TrackedAsyncClient",
+        "porthouse_capability_media_generation.jimeng.TrackedAsyncClient",
         _client_factory(respond),
     )
     registry = CapabilityPluginRegistry()

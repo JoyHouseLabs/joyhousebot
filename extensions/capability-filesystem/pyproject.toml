@@ -1,17 +1,17 @@
 [project]
-name = "joyhousebot-capability-filesystem"
+name = "porthouse-capability-filesystem"
 version = "0.1.0"
-description = "Optional Run-scoped filesystem capabilities for JoyhouseBot"
+description = "Optional Run-scoped filesystem capabilities for Porthouse"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
-dependencies = ["joyhousebot>=0.1.2,<0.2"]
+dependencies = ["porthouse>=0.1.2,<0.2"]
 
-[project.entry-points."joyhousebot.capabilities"]
-capability-filesystem = "joyhousebot_capability_filesystem:create_plugin"
+[project.entry-points."porthouse.capabilities"]
+capability-filesystem = "porthouse_capability_filesystem:create_plugin"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/joyhousebot_capability_filesystem"]
+packages = ["src/porthouse_capability_filesystem"]

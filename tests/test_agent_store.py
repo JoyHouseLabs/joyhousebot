@@ -5,8 +5,8 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
-from joyhousebot.contracts.plugins import PluginManifest
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
+from porthouse.contracts.plugins import PluginManifest
+from porthouse.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 TEST_PLUGIN_DIGEST = f"sha256:{'d' * 64}"
@@ -262,7 +262,7 @@ def test_run_snapshot_freezes_agent_revision_and_skill_bindings(tmp_path: Path) 
 @pytest.mark.postgres
 def test_postgres_run_snapshot_round_trip() -> None:
     database_url = require_postgres()
-    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, application_name="test-agent-snapshot")
     run_id = f"agent-snapshot-{uuid4().hex}"

@@ -8,10 +8,10 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
-from joyhousebot.storage.postgres_migrations import migration_checksum
-from joyhousebot.storage.postgres_store import PostgresRuntimeStore
-from joyhousebot.storage.runtime_store import destructive_migrate_enabled
+from porthouse.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
+from porthouse.storage.postgres_migrations import migration_checksum
+from porthouse.storage.postgres_store import PostgresRuntimeStore
+from porthouse.storage.runtime_store import destructive_migrate_enabled
 from tests.support.postgres_store import TEST_DATABASE_URL
 
 _CORE_DOMAINS = {
@@ -42,7 +42,7 @@ _CORE_DOMAINS = {
 @pytest.fixture()
 def store() -> Iterator[PostgresRuntimeStore]:
     runtime_store = PostgresRuntimeStore(
-        TEST_DATABASE_URL, application_name="joyhousebot-test-migrations"
+        TEST_DATABASE_URL, application_name="porthouse-test-migrations"
     )
     yield runtime_store
     runtime_store.close()
@@ -95,7 +95,7 @@ def test_runtime_reopens_when_product_tables_share_the_database(
     try:
         reopened = PostgresRuntimeStore(
             TEST_DATABASE_URL,
-            application_name="joyhousebot-test-shared-product-database",
+            application_name="porthouse-test-shared-product-database",
         )
         try:
             with reopened._pool.connection() as conn:
@@ -202,7 +202,7 @@ def test_recorded_generated_column_migration_is_not_reapplied(
         ).fetchone()["attnum"]
     reopened = PostgresRuntimeStore(
         TEST_DATABASE_URL,
-        application_name="joyhousebot-test-generated-column-reopen",
+        application_name="porthouse-test-generated-column-reopen",
     )
     try:
         with reopened._pool.connection() as conn:
@@ -219,7 +219,7 @@ def test_recorded_generated_column_migration_is_not_reapplied(
 def test_schedule_run_history_is_normalized_without_legacy_json_column(
     store: PostgresRuntimeStore,
 ) -> None:
-    from joyhousebot.scheduling.repository import ScheduleRepository
+    from porthouse.scheduling.repository import ScheduleRepository
 
     repository = ScheduleRepository(store)
     with store._pool.connection() as conn:
@@ -266,7 +266,7 @@ def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(
 
         reopened = PostgresRuntimeStore(
             TEST_DATABASE_URL,
-            application_name="joyhousebot-test-migration-reopen",
+            application_name="porthouse-test-migration-reopen",
         )
         try:
             assert len(reopened.list_runtime_turns(run_id)) == 2
@@ -305,12 +305,12 @@ def test_checksum_drift_fails_closed_and_preserves_history(
 
 
 def test_destructive_gate_requires_exact_phrase(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", raising=False)
+    monkeypatch.delenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", raising=False)
     assert not destructive_migrate_enabled()
     for legacy_value in ("1", "true", "yes", "on"):
-        monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", legacy_value)
+        monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", legacy_value)
         assert not destructive_migrate_enabled()
-    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
+    monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
     assert destructive_migrate_enabled()
 
 
@@ -338,7 +338,7 @@ def test_destructive_value_one_keeps_tables(
 ) -> None:
     run_id = f"mig-sentinel-{uuid4().hex}"
     _insert_sentinel_run(store, run_id)
-    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "1")
+    monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", "1")
     store.migrate()
     assert _sentinel_exists(store, run_id)
     with store._pool.connection() as conn, conn.transaction():
@@ -352,8 +352,8 @@ def test_destructive_phrase_drops_legacy_tables(
 ) -> None:
     run_id = f"mig-sentinel-{uuid4().hex}"
     _insert_sentinel_run(store, run_id)
-    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
-    with caplog.at_level("CRITICAL", logger="joyhousebot.storage.postgres_migrations"):
+    monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
+    with caplog.at_level("CRITICAL", logger="porthouse.storage.postgres_migrations"):
         store.migrate()
     assert not _sentinel_exists(store, run_id)
     critical = [r for r in caplog.records if r.levelname == "CRITICAL"]

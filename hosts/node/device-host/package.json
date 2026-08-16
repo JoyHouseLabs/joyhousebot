@@ -1,8 +1,8 @@
 {
-  "name": "@joyhousebot/device-host",
+  "name": "@porthouse/device-host",
   "version": "0.1.0",
   "private": true,
-  "description": "Outbound authenticated transport from JoyHouse Desktop to Cloud Runtime",
+  "description": "Outbound authenticated transport from Porthouse Desktop to Cloud Runtime",
   "type": "module",
   "main": "dist/index.js",
   "engines": {"node": ">=20"},
@@ -13,7 +13,7 @@
     "start": "node dist/cli.js"
   },
   "dependencies": {
-    "@joyhousebot/extension-sdk": "file:../../../sdks/node"
+    "@porthouse/extension-sdk": "file:../../../sdks/node"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

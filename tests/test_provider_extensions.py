@@ -1,15 +1,15 @@
-from joyhousebot_provider_anthropic import (
+from porthouse_provider_anthropic import (
     ANTHROPIC_PROVIDER_EXTENSION,
     AnthropicProvider,
 )
-from joyhousebot_provider_openai_compatible import (
+from porthouse_provider_openai_compatible import (
     OPENAI_COMPATIBLE_PROVIDER_EXTENSION,
     OpenAICompatibleProvider,
 )
 
-from joyhousebot.config.schema import Config, ExtensionsConfig, ProviderConfig
-from joyhousebot.providers.factory import create_model_provider
-from joyhousebot.providers.registry import ModelProviderRegistry
+from porthouse.config.schema import Config, ExtensionsConfig, ProviderConfig
+from porthouse.providers.factory import create_model_provider
+from porthouse.providers.registry import ModelProviderRegistry
 
 
 def test_anthropic_extension_declares_endpoint_and_manifest() -> None:

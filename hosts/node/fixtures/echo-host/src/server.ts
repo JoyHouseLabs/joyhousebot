@@ -19,12 +19,12 @@ import {
   type ReconcileRequest,
   type RemoteCapabilityResponse,
   type SignedRequestMetadata,
-} from "@joyhousebot/extension-sdk";
+} from "@porthouse/extension-sdk";
 
 const KEY_ID = process.env.ECHO_HOST_KEY_ID ?? "echo-test-key";
 const SECRET = process.env.ECHO_HOST_SIGNING_SECRET ?? "";
 const PORT = Number.parseInt(process.env.ECHO_HOST_PORT ?? "9019", 10);
-const BASE_PATH = "/joyhousebot/v1";
+const BASE_PATH = "/porthouse/v1";
 const ECHO_DIGEST = `sha256:${"1".repeat(64)}`;
 const DELAYED_ECHO_DIGEST = `sha256:${"5".repeat(64)}`;
 const nonceGuard = new NonceReplayGuard();
@@ -61,7 +61,7 @@ function capabilityManifest(
 const HOST_MANIFEST = {
   host_protocol_version: "1",
   host: {
-    host_id: "joyhousebot-node-echo-host",
+    host_id: "porthouse-node-echo-host",
     version: "0.1.0",
     build_digest: `sha256:${"2".repeat(64)}`,
   },
@@ -121,7 +121,7 @@ function sendJson(
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": String(body.length),
-    "X-Joyhouse-Response-Signature": signResponseBody({
+    "X-Porthouse-Response-Signature": signResponseBody({
       statusCode,
       nonce,
       body,

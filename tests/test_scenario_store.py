@@ -4,18 +4,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from joyhousebot.application.context import Principal, RequestContext
-from joyhousebot.application.run_commands import AgentRunTarget, ScenarioRunTarget
-from joyhousebot.application.runs import CreateRunCommand, RunService
-from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from joyhousebot.domain.scenarios import (
+from porthouse.application.context import Principal, RequestContext
+from porthouse.application.run_commands import AgentRunTarget, ScenarioRunTarget
+from porthouse.application.runs import CreateRunCommand, RunService
+from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from porthouse.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
     ScenarioField,
     ScenarioVersion,
 )
-from joyhousebot.domain.skills import SkillRef
-from joyhousebot.orchestration.planner import ScenarioPlanner
+from porthouse.domain.skills import SkillRef
+from porthouse.orchestration.planner import ScenarioPlanner
 from tests.support.postgres_store import PostgresTestStore
 
 

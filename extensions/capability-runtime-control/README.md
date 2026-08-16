@@ -1,4 +1,4 @@
-# JoyhouseBot Runtime Control Capability
+# Porthouse Runtime Control Capability
 
 Optional model-facing controls for origin-channel delivery, child Run submission,
 Schedule management, and Agent Monitor scratch. Core continues to own Run/Task,

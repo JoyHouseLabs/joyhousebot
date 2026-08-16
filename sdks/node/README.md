@@ -1,6 +1,6 @@
-# `@joyhousebot/extension-sdk`
+# `@porthouse/extension-sdk`
 
-Node.js SDK for implementing isolated JoyhouseBot Extension Host processes. It provides protocol types,
+Node.js SDK for implementing isolated Porthouse Extension Host processes. It provides protocol types,
 RFC 8785 request digests, Remote Capability HMAC helpers, bounded body parsing, replay protection and
 request identity validation.
 

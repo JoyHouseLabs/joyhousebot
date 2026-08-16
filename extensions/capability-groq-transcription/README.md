@@ -1,4 +1,4 @@
-# JoyhouseBot Groq Transcription Capability
+# Porthouse Groq Transcription Capability
 
 可选音频转写 Capability。安装后提供 `media.transcribe.groq@1.0.0`，只有获得
 `media.transcribe` 与 `filesystem.read` 权限的 Agent 才能调用。

@@ -10,7 +10,7 @@ import {
   requestDigest,
   signRequestBody,
   signResponseBody,
-} from "@joyhousebot/extension-sdk";
+} from "@porthouse/extension-sdk";
 import {
   createHostServer,
   loadSupervisorConfig,
@@ -22,7 +22,7 @@ const digest = (value) => createHash("sha256").update(value).digest("hex");
 const sha = (character) => `sha256:${character.repeat(64)}`;
 
 async function setup() {
-  const root = join(tmpdir(), `joyhouse-node-host-${process.pid}-${Date.now()}-${Math.random()}`);
+  const root = join(tmpdir(), `porthouse-node-host-${process.pid}-${Date.now()}-${Math.random()}`);
   await mkdir(root, {recursive: true});
   const worker = await readFile(FIXTURE);
   const extensions = [];
@@ -55,7 +55,7 @@ async function setup() {
   const config = {
     protocol_version: "1",
     host: {host_id: "test-host", version: "0.1.0", build_digest: sha("a")},
-    listen: {host: "127.0.0.1", port: 0, base_path: "/joyhousebot/v1"},
+    listen: {host: "127.0.0.1", port: 0, base_path: "/porthouse/v1"},
     operation_registry_path: join(root, "operations.json"),
     extensions,
   };
@@ -201,7 +201,7 @@ test("serves the signed Remote Capability transport", async () => {
       authorization,
       input,
     };
-    const target = "/joyhousebot/v1/capabilities/fixture.one:invoke";
+    const target = "/porthouse/v1/capabilities/fixture.one:invoke";
     const body = Buffer.from(canonicalJson(payload));
     const timestamp = String(Math.floor(Date.now() / 1000));
     const nonce = "signed-http-test";
@@ -209,13 +209,13 @@ test("serves the signed Remote Capability transport", async () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Joyhouse-Timestamp": timestamp,
-        "X-Joyhouse-Nonce": nonce,
-        "X-Joyhouse-Key-ID": "test-key",
-        "X-Joyhouse-Capability-Protocol": "1",
-        "X-Joyhouse-Action-ID": "action",
+        "X-Porthouse-Timestamp": timestamp,
+        "X-Porthouse-Nonce": nonce,
+        "X-Porthouse-Key-ID": "test-key",
+        "X-Porthouse-Capability-Protocol": "1",
+        "X-Porthouse-Action-ID": "action",
         "Idempotency-Key": "action:http",
-        "X-Joyhouse-Signature": signRequestBody({
+        "X-Porthouse-Signature": signRequestBody({
           method: "POST", path: target, timestamp, nonce, body, secret,
         }),
       },
@@ -224,7 +224,7 @@ test("serves the signed Remote Capability transport", async () => {
     const responseBody = Buffer.from(await response.arrayBuffer());
     assert.equal(response.status, 200);
     assert.equal(
-      response.headers.get("X-Joyhouse-Response-Signature"),
+      response.headers.get("X-Porthouse-Response-Signature"),
       signResponseBody({statusCode: 200, nonce, body: responseBody, secret}),
     );
     assert.equal(JSON.parse(responseBody).output.value, "through-http");

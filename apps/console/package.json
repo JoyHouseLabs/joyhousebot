@@ -1,11 +1,11 @@
 {
-  "name": "joyhousebot-ui",
+  "name": "porthouse-ui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:full": "concurrently -n api,ui \"sh -c 'cd ../.. && uv run joyhousebot api --port 18790'\" \"npm run dev\"",
+    "dev:full": "concurrently -n api,ui \"sh -c 'cd ../.. && uv run porthouse api --port 18790'\" \"npm run dev\"",
     "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview"

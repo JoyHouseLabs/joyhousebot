@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">APP ARCHITECTURE</span>
         <h1>应用与 Runtime 协作</h1>
-        <p>App 是可以独立交付和售卖的业务产品；JoyhouseBot 是它按需使用的长期执行引擎，不接管 App 的用户系统、交易和业务事实。</p>
+        <p>App 是可以独立交付和售卖的业务产品；Porthouse 是它按需使用的长期执行引擎，不接管 App 的用户系统、交易和业务事实。</p>
       </div>
       <div class="product-badge"><span>PRODUCT</span><strong>App ≠ Extension</strong></div>
     </header>
@@ -26,7 +26,7 @@
           <div v-if="!releases.length && !loading" class="empty-mini">还没有 App Pack 草稿。</div>
         </aside>
         <div class="manifest-editor">
-          <header><div><strong>joyhouse.app.json</strong><small>精确版本 + 摘要构成可复现依赖锁</small></div><span v-if="validation" :class="validation.valid ? 'valid' : 'invalid'">{{ validation.valid ? '依赖通过' : '依赖缺失' }}</span></header>
+          <header><div><strong>porthouse.app.json</strong><small>精确版本 + 摘要构成可复现依赖锁</small></div><span v-if="validation" :class="validation.valid ? 'valid' : 'invalid'">{{ validation.valid ? '依赖通过' : '依赖缺失' }}</span></header>
           <textarea v-model="manifestText" rows="22" spellcheck="false" />
           <div v-if="validation?.errors?.length" class="validation-errors"><span v-for="item in validation.errors" :key="item">{{ item }}</span></div>
           <footer>
@@ -92,7 +92,7 @@
 
     <section class="market-control panel">
       <div class="section-heading control-heading">
-        <div><span class="eyebrow">JOYHOUSE MARKET</span><h2>Market 账号、购买与可信获取</h2></div>
+        <div><span class="eyebrow">PORTHOUSE MARKET</span><h2>Market 账号、购买与可信获取</h2></div>
         <span class="market-summary">{{ registries.length }} REGISTRIES · {{ acquisitions.length }} ACQUISITIONS</span>
       </div>
       <p class="control-note">市场只负责发现、签名制品、商业授权与治理。购买不会自动安装，Market 也不能授予本地 Capability 权限。</p>
@@ -107,7 +107,7 @@
           <details class="market-form">
             <summary>添加可信 Registry</summary>
             <label>HTTPS Origin<input v-model.trim="registryForm.base_url" placeholder="https://market.example" /></label>
-            <label>Access Token 引用<input v-model.trim="registryForm.auth_token_ref" placeholder="env://JOYHOUSE_MARKET_TOKEN" /></label>
+            <label>Access Token 引用<input v-model.trim="registryForm.auth_token_ref" placeholder="env://PORTHOUSE_MARKET_TOKEN" /></label>
             <label>Discovery JSON<textarea v-model="registryForm.discovery" rows="7" spellcheck="false" /></label>
             <label>TUF root.json<textarea v-model="registryForm.trusted_root" rows="9" spellcheck="false" /></label>
             <button class="primary-button" type="button" :disabled="busy" @click="registerRegistry">固定信任根</button>
@@ -122,7 +122,7 @@
             <label>Offer ID<input v-model.trim="acquireForm.offer_id" placeholder="购买后自动填写" /></label>
             <label>Version<input v-model.trim="acquireForm.version" placeholder="1.0.0（空为当前稳定版）" /></label>
             <label>Channel<select v-model="acquireForm.channel"><option value="stable">stable</option><option value="beta">beta</option><option value="security">security</option></select></label>
-            <p v-if="receivedEntitlement" class="trust-line">已从 JoyHouse Market 接收绑定本机公钥的签名 Entitlement；Bearer Token 不会写入 Runtime。</p>
+            <p v-if="receivedEntitlement" class="trust-line">已从 Porthouse Market 接收绑定本机公钥的签名 Entitlement；Bearer Token 不会写入 Runtime。</p>
             <button class="primary-button" type="button" :disabled="busy || !acquireForm.registry_id" @click="requestAcquisition">解析并暂存</button>
           </div>
         </div>
@@ -189,7 +189,7 @@
           <div><span>反向业务操作</span><strong>Remote Capability</strong><small>签名请求、action_id、回执与对账</small></div>
         </div>
         <article>
-          <span class="system-label runtime-label">JOYHOUSEBOT</span>
+          <span class="system-label runtime-label">PORTHOUSE</span>
           <h3>Runtime 统一承担</h3>
           <ul><li v-for="item in runtimeOwns" :key="item">{{ item }}</li></ul>
         </article>
@@ -353,7 +353,7 @@ async function openMarket(item: MarketRegistry) {
     url.searchParams.set('installation_public_key', key.public_key)
     url.searchParams.set('return_origin', window.location.origin)
     url.searchParams.set('registry_id', item.registry_id)
-    window.open(url.toString(), 'joyhouse-market', 'popup,width=1180,height=820')
+    window.open(url.toString(), 'porthouse-market', 'popup,width=1180,height=820')
   } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Market 打开失败' }
   finally { busy.value = false }
 }
@@ -362,7 +362,7 @@ function receiveMarketEntitlement(event: MessageEvent) {
     try { return new URL(String(item.discovery?.market_web_url || item.base_url)).origin === event.origin } catch { return false }
   })
   const value = event.data
-  if (!registry || value?.type !== 'joyhouse-market-entitlement' || !value.entitlement?.payload || !value.entitlement?.envelope) return
+  if (!registry || value?.type !== 'porthouse-market-entitlement' || !value.entitlement?.payload || !value.entitlement?.envelope) return
   const payload = value.entitlement.payload as Record<string, any>
   const app = payload.app as Record<string, any>
   if (!app?.publisher_id || !app?.app_id || !payload.offer_id) return
@@ -446,7 +446,7 @@ const callbackFlow = [
 ]
 const commerce = [
   { index: '01', name: '独立 SaaS', description: 'App 自己获客、收费和托管，通过 API 使用官方或自建 Runtime。' },
-  { index: '02', name: 'Runtime 随产品交付', description: 'App 套餐中捆绑托管 JoyhouseBot，但用户仍只感知 App 品牌。' },
+  { index: '02', name: 'Runtime 随产品交付', description: 'App 套餐中捆绑托管 Porthouse，但用户仍只感知 App 品牌。' },
   { index: '03', name: 'Bring Your Own Runtime', description: '客户填写自己的 Runtime 地址和授权，App 仅销售业务价值。' },
 ]
 const ready = ['App Manifest v2、不可变摘要与版本化 Entry Point', '公共 App 列表、安装级幂等 Run 启动与结果隔离', 'App Client、用户 Grant、短期 Token、Secret 轮换与审计', '签名终态 Outbox、重试、死信、人工重放与投递观测', 'App SDK、无数据库模拟器、安装级 Token/模型成本归因', '作者 DSSE、Market Attestation、TUF、Acquisition 与更新策略']

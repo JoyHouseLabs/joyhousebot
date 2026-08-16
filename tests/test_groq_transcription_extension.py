@@ -1,13 +1,13 @@
 
 import httpx
 import pytest
-from joyhousebot_capability_groq_transcription import (
+from porthouse_capability_groq_transcription import (
     GroqTranscriptionPlugin,
     GroqTranscriptionProvider,
 )
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.contracts import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.contracts import CapabilityContext
 
 
 def test_groq_transcription_is_versioned_capability_plugin() -> None:
@@ -53,7 +53,7 @@ async def test_groq_provider_uses_configured_model(monkeypatch, tmp_path) -> Non
             await self.client.aclose()
 
     monkeypatch.setattr(
-        "joyhousebot_capability_groq_transcription.plugin.TrackedAsyncClient", Client
+        "porthouse_capability_groq_transcription.plugin.TrackedAsyncClient", Client
     )
     provider = GroqTranscriptionProvider(api_key="test-key")
     assert (

@@ -2,10 +2,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from joyhousebot_channel_feishu import FEISHU_EXTENSION_MANIFEST, FeishuChannelPlugin
+from porthouse_channel_feishu import FEISHU_EXTENSION_MANIFEST, FeishuChannelPlugin
 
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config, ExtensionsConfig
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config, ExtensionsConfig
 
 
 class RecordingAdapter:
@@ -51,7 +51,7 @@ def _event(message_id: str = "message-1"):
 def test_feishu_extension_has_versioned_channel_manifest() -> None:
     assert FEISHU_EXTENSION_MANIFEST.extension_id == "channel-feishu"
     assert FEISHU_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert FEISHU_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-feishu"
+    assert FEISHU_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-feishu"
     assert FeishuChannelPlugin().extension_manifest is FEISHU_EXTENSION_MANIFEST
 
 
@@ -70,7 +70,7 @@ def test_channel_manager_loads_explicit_feishu_extension_entry_point() -> None:
 
 @pytest.mark.asyncio
 async def test_feishu_extension_fails_closed_without_vendor_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("joyhousebot_channel_feishu.plugin.FEISHU_AVAILABLE", False)
+    monkeypatch.setattr("porthouse_channel_feishu.plugin.FEISHU_AVAILABLE", False)
     plugin = _configured_plugin()
     await plugin.start()
     assert plugin.is_running is False

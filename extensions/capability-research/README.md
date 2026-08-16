@@ -1,4 +1,4 @@
-# JoyhouseBot Research Capabilities
+# Porthouse Research Capabilities
 
 可选研究能力包，提供版本化 `web_search` 与 `web_fetch`。Brave Search、Readability 和网页
 抽取属于本扩展；Core 只提供网络追踪、SSRF 防护、权限、配额和调用审计。

@@ -1,11 +1,11 @@
 """Tests for scoped durable memory_get capability handler."""
 
 import pytest
-from joyhousebot_capability_context_assets.plugin import MemoryGetHandler
+from porthouse_capability_context_assets.plugin import MemoryGetHandler
 
-from joyhousebot.capabilities.services import CapabilityServiceBroker
-from joyhousebot.extension_sdk import CapabilityContext
-from joyhousebot.services.memory.store import MemoryStore
+from porthouse.capabilities.services import CapabilityServiceBroker
+from porthouse.extension_sdk import CapabilityContext
+from porthouse.services.memory.store import MemoryStore
 from tests.support.postgres_store import PostgresTestStore
 
 

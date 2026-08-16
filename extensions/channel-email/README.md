@@ -1,7 +1,7 @@
-# JoyhouseBot Email Channel
+# Porthouse Email Channel
 
-JoyhouseBot 的可选官方 Channel 扩展。它通过 IMAP 接收入站邮件，通过 SMTP 投递
-Runtime 的出站消息；Run、Task、PG Outbox、租约、重试与审计仍由 JoyhouseBot Core 负责。
+Porthouse 的可选官方 Channel 扩展。它通过 IMAP 接收入站邮件，通过 SMTP 投递
+Runtime 的出站消息；Run、Task、PG Outbox、租约、重试与审计仍由 Porthouse Core 负责。
 
 ## 本地安装
 
@@ -25,7 +25,7 @@ Resend 不需要进入 Runtime Core，也不需要复制一套 Channel 状态机
     "settings": {
       "channel-email": {
         "consentGranted": true,
-        "fromAddress": "JoyHouse <hello@joyhouse.me>",
+        "fromAddress": "Porthouse <hello@porthouse.me>",
         "smtpHost": "smtp.resend.com",
         "smtpPort": 465,
         "smtpUseSsl": true,

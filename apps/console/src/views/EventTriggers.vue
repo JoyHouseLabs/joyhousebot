@@ -39,7 +39,7 @@
           <div class="panel-heading detail-heading"><div><span class="eyebrow">EVENT ENTRY</span><h2>{{ selected.name }}</h2><p>{{ selected.instruction }}</p></div><span class="status-badge" :class="selected.enabled ? 'completed' : 'cancelled'">{{ selected.enabled ? '已启用' : '已停用' }}</span></div>
           <div class="trigger-facts"><div><span>Event Type</span><strong>{{ selected.event_type_filter }}</strong></div><div><span>Agent</span><strong>{{ selected.agent_id }}</strong></div><div><span>会话模式</span><strong>{{ selected.session_mode === 'per_event' ? '事件隔离' : '共享会话' }}</strong></div><div><span>Secret</span><strong>Version {{ selected.secret_version }}</strong></div></div>
           <section class="endpoint-card"><div><span class="eyebrow">ENDPOINT</span><code>{{ endpointUrl(selected) }}</code></div><button class="secondary-button" type="button" @click="copy(endpointUrl(selected))">复制地址</button></section>
-          <div class="request-contract"><strong>请求契约</strong><code>POST {{ selected.endpoint_path }}</code><code>X-Joyhouse-Webhook-Secret: &lt;secret&gt;</code><code>Idempotency-Key: &lt;stable-event-id&gt;</code><pre>{
+          <div class="request-contract"><strong>请求契约</strong><code>POST {{ selected.endpoint_path }}</code><code>X-Porthouse-Webhook-Secret: &lt;secret&gt;</code><code>Idempotency-Key: &lt;stable-event-id&gt;</code><pre>{
   "event_type": "{{ selected.event_type_filter === '*' ? 'business.event' : selected.event_type_filter }}",
   "payload": { "...": "..." }
 }</pre><p>相同 Idempotency-Key 与相同 Payload 会返回原 Run；同一键对应不同 Payload 会返回 409，避免重复或歧义执行。</p></div>

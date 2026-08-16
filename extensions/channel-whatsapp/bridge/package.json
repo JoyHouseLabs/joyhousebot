@@ -1,7 +1,7 @@
 {
-  "name": "joyhousebot-whatsapp-bridge",
+  "name": "porthouse-whatsapp-bridge",
   "version": "0.1.0",
-  "description": "Optional WhatsApp sidecar bridge for JoyhouseBot using Baileys",
+  "description": "Optional WhatsApp sidecar bridge for Porthouse using Baileys",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

@@ -1,4 +1,4 @@
-"""Tests for joyhousebot.utils.exceptions module."""
+"""Tests for porthouse.utils.exceptions module."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import asyncio
 
 import pytest
 
-from joyhousebot.utils.exceptions import (
+from porthouse.utils.exceptions import (
     ErrorCategory,
-    JoyhouseBotError,
     LLMError,
+    PorthouseError,
     RateLimitError,
     TimeoutError,
     ToolError,
@@ -22,8 +22,8 @@ from joyhousebot.utils.exceptions import (
 class TestExceptionClasses:
     """Test custom exception classes."""
 
-    def test_joyhousebot_error_to_dict(self) -> None:
-        exc = JoyhouseBotError("test message", code="TEST_CODE")
+    def test_porthouse_error_to_dict(self) -> None:
+        exc = PorthouseError("test message", code="TEST_CODE")
         result = exc.to_dict()
         assert result == {
             "error": "TEST_CODE",
@@ -230,7 +230,7 @@ class TestClassifyException:
         assert category == ErrorCategory.RETRYABLE
         assert should_retry is True
 
-    def test_classify_joyhousebot_error(self) -> None:
+    def test_classify_porthouse_error(self) -> None:
         exc = ToolError("test_tool", "Failed", is_recoverable=True)
         code, category, should_retry = classify_exception(exc)
         assert code == "TOOL_ERROR"
@@ -250,7 +250,7 @@ class TestToolErrorHandler:
     """Test tool_error_handler decorator."""
 
     async def test_decorator_handles_success(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Test failed")
         async def func(x: int) -> str:
@@ -260,7 +260,7 @@ class TestToolErrorHandler:
         assert "Result: 5" == result
 
     async def test_decorator_handles_file_not_found(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Read failed")
         async def func() -> str:
@@ -270,7 +270,7 @@ class TestToolErrorHandler:
         assert "Error: File not found" == result
 
     async def test_decorator_handles_permission_error(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Access failed")
         async def func() -> str:
@@ -280,7 +280,7 @@ class TestToolErrorHandler:
         assert "Error: Permission denied" == result
 
     async def test_decorator_handles_timeout(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Operation failed")
         async def func() -> str:
@@ -289,8 +289,8 @@ class TestToolErrorHandler:
         result = await func()
         assert "Error: Operation timed out" == result
 
-    async def test_decorator_handles_joyhousebot_error(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+    async def test_decorator_handles_porthouse_error(self) -> None:
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Test failed")
         async def func() -> str:
@@ -300,7 +300,7 @@ class TestToolErrorHandler:
         assert "Error: Tool 'test_tool' error: Custom error" == result
 
     async def test_decorator_handles_generic_exception(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Test failed")
         async def func() -> str:
@@ -310,7 +310,7 @@ class TestToolErrorHandler:
         assert "Error: Test failed" == result
 
     async def test_decorator_sync_function(self) -> None:
-        from joyhousebot.utils.exceptions import tool_error_handler
+        from porthouse.utils.exceptions import tool_error_handler
 
         @tool_error_handler("Sync failed")
         def func() -> str:

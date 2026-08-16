@@ -5,17 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from joyhousebot_connector_http_capability import (
+from porthouse_connector_http_capability import (
     HTTP_CAPABILITY_CONNECTOR_MANIFEST,
     create_extension,
 )
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.connectors import ToolConnectorRegistry
-from joyhousebot.domain.remote_connections import (
+from porthouse.api.app import create_app
+from porthouse.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.connectors import ToolConnectorRegistry
+from porthouse.domain.remote_connections import (
     materialize_remote_connection,
     normalize_remote_connection,
 )
@@ -42,7 +42,7 @@ def _configuration(*, capability_version: str = "1.0.0") -> dict:
     return {
         "service_profile": "business",
         "enabled": True,
-        "base_url": "https://crm.example.test/joyhousebot/v1",
+        "base_url": "https://crm.example.test/porthouse/v1",
         "key_id": "crm-key-1",
         "signing_secret_ref": "env://CRM_REMOTE_TEST_SECRET",
         "require_response_signature": True,

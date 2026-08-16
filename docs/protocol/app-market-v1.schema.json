@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://joyhousebot.com/schemas/app-market-v1.schema.json",
-  "title": "Joyhouse App Market v1 signed payloads",
+  "$id": "https://porthouse.happayhouselabs.com/schemas/app-market-v1.schema.json",
+  "title": "HappyHouse App Market v1 signed payloads",
   "$defs": {
     "digest": {
       "type": "string",
@@ -53,7 +53,7 @@
         "app_manifest": {
           "allOf": [
             {"$ref": "#/$defs/descriptor"},
-            {"properties": {"media_type": {"const": "application/vnd.joyhouse.app.manifest.v2+json"}}}
+            {"properties": {"media_type": {"const": "application/vnd.porthouse.app.manifest.v2+json"}}}
           ]
         },
         "components": {

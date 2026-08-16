@@ -1,12 +1,12 @@
 import pytest
 
-from joyhousebot.config.loader import (
+from porthouse.config.loader import (
     CONFIG_PATH_ENV,
     get_config_path,
     load_config,
 )
-from joyhousebot.config.schema import Config
-from joyhousebot.providers.factory import create_model_provider
+from porthouse.config.schema import Config
+from porthouse.providers.factory import create_model_provider
 
 
 def test_load_config_accepts_native_camel_case(tmp_path) -> None:
@@ -102,7 +102,7 @@ def test_config_loading_does_not_discover_or_import_provider_extensions(
     def fail_discovery(_group):
         raise AssertionError("configuration loading must not discover extensions")
 
-    monkeypatch.setattr("joyhousebot.extension_discovery.entry_points", fail_discovery)
+    monkeypatch.setattr("porthouse.extension_discovery.entry_points", fail_discovery)
     loaded = load_config(path)
 
     assert loaded.providers.default_provider == "not-installed"

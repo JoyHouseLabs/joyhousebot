@@ -1,11 +1,11 @@
 """Contracts for the optional fail-closed shell capability."""
 
 import pytest
-from joyhousebot_capability_shell import plugin as shell
+from porthouse_capability_shell import plugin as shell
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.capabilities.services import CapabilityServiceBroker
-from joyhousebot.extension_sdk import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.capabilities.services import CapabilityServiceBroker
+from porthouse.extension_sdk import CapabilityContext
 
 
 class _FakeSandboxServices:
@@ -93,7 +93,7 @@ async def test_core_sandbox_service_rejects_network_enablement(tmp_path, monkeyp
     async def available():
         return True
 
-    monkeypatch.setattr("joyhousebot.capabilities.services.sandbox.is_docker_available", available)
+    monkeypatch.setattr("porthouse.capabilities.services.sandbox.is_docker_available", available)
     services = CapabilityServiceBroker(None, scratch_root=tmp_path)
     result = await services.sandbox.execute(
         _context(services),

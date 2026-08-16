@@ -1,20 +1,20 @@
 [project]
-name = "joyhousebot-channel-feishu"
+name = "porthouse-channel-feishu"
 version = "0.1.0"
-description = "Optional Feishu/Lark channel extension for JoyhouseBot"
+description = "Optional Feishu/Lark channel extension for Porthouse"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [
-    "joyhousebot>=0.1.2,<0.2",
+    "porthouse>=0.1.2,<0.2",
     "lark-oapi>=1.0.0",
 ]
 
-[project.entry-points."joyhousebot.channels"]
-channel-feishu = "joyhousebot_channel_feishu:create_plugin"
+[project.entry-points."porthouse.channels"]
+channel-feishu = "porthouse_channel_feishu:create_plugin"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/joyhousebot_channel_feishu"]
+packages = ["src/porthouse_channel_feishu"]

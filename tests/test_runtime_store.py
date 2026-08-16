@@ -7,15 +7,15 @@ from uuid import uuid4
 
 import pytest
 
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts import Artifact
-from joyhousebot.runtime.artifact_materialization import materialize_capability_artifacts
-from joyhousebot.runtime.models import AgentEvent, GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.narrative import redact_runtime_value
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.runtime.tracking import safe_trace_data
-from joyhousebot.storage.content_blobs import LocalContentBlobStore
-from joyhousebot.storage.factory import _auto_migrate, create_runtime_store
+from porthouse.config.schema import Config
+from porthouse.contracts import Artifact
+from porthouse.runtime.artifact_materialization import materialize_capability_artifacts
+from porthouse.runtime.models import AgentEvent, GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.narrative import redact_runtime_value
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.runtime.tracking import safe_trace_data
+from porthouse.storage.content_blobs import LocalContentBlobStore
+from porthouse.storage.factory import _auto_migrate, create_runtime_store
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
@@ -88,9 +88,9 @@ def test_large_trace_and_artifact_content_use_content_addressed_blob_store(
                WHERE artifact_id='externalized-content:artifact'"""
         ).fetchone()
     assert trace_row["content"] is None
-    assert str(trace_row["storage_uri"]).startswith("joyhouse-blob://sha256/")
+    assert str(trace_row["storage_uri"]).startswith("porthouse-blob://sha256/")
     assert artifact_row["content"] is None
-    assert str(artifact_row["uri"]).startswith("joyhouse-blob://sha256/")
+    assert str(artifact_row["uri"]).startswith("porthouse-blob://sha256/")
     assert artifact_row["object_version"]
     assert store.get_trace_blob(trace.blob_id).content == content
     assert store.list_runtime_artifacts(run.run_id)[0]["content"] == content
@@ -118,7 +118,7 @@ def test_caller_owned_trace_uri_does_not_create_an_unreachable_local_blob(
 
 
 def test_content_blob_store_rejects_a_digest_for_different_content(tmp_path: Path) -> None:
-    from joyhousebot.domain.identity import payload_hash
+    from porthouse.domain.identity import payload_hash
 
     blob_store = LocalContentBlobStore(tmp_path / "digest-mismatch")
     with pytest.raises(ValueError, match="requested SHA-256"):
@@ -744,8 +744,8 @@ def test_reset_runtime_run_clears_cancel_request(tmp_path: Path) -> None:
 def test_runtime_store_factory_requires_postgres_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("JOYHOUSE_DATABASE_URL", raising=False)
-    monkeypatch.delenv("JOYHOUSEBOT_DATABASE_URL", raising=False)
+    monkeypatch.delenv("HAPPYHOUSE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("PORTHOUSE_DATABASE_URL", raising=False)
     config = Config()
     config.runtime.store.database_url = ""
     with pytest.raises(ValueError, match="database_url"):
@@ -755,7 +755,7 @@ def test_runtime_store_factory_requires_postgres_url(
 def test_runtime_store_factory_prefers_shared_database_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from joyhousebot.storage import postgres_store
+    from porthouse.storage import postgres_store
 
     captured: dict[str, object] = {}
     sentinel = object()
@@ -766,27 +766,27 @@ def test_runtime_store_factory_prefers_shared_database_url(
         return sentinel
 
     monkeypatch.setattr(postgres_store, "PostgresRuntimeStore", build_store)
-    monkeypatch.setenv("JOYHOUSE_DATABASE_URL", "postgresql://shared.example/joyhouse")
+    monkeypatch.setenv("HAPPYHOUSE_DATABASE_URL", "postgresql://shared.example/porthouse")
     monkeypatch.setenv(
-        "JOYHOUSEBOT_DATABASE_URL", "postgresql://legacy.example/joyhousebot"
+        "PORTHOUSE_DATABASE_URL", "postgresql://runtime.example/porthouse"
     )
     config = Config()
     config.runtime.store.database_url = "postgresql://config.example/runtime"
 
     assert create_runtime_store(config) is sentinel
-    assert captured["database_url"] == "postgresql://shared.example/joyhouse"
+    assert captured["database_url"] == "postgresql://shared.example/porthouse"
 
 
 def test_runtime_store_factory_supports_single_migrator_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("JOYHOUSEBOT_AUTO_MIGRATE", raising=False)
+    monkeypatch.delenv("PORTHOUSE_AUTO_MIGRATE", raising=False)
     assert _auto_migrate(True) is True
-    monkeypatch.setenv("JOYHOUSEBOT_AUTO_MIGRATE", "false")
+    monkeypatch.setenv("PORTHOUSE_AUTO_MIGRATE", "false")
     assert _auto_migrate(True) is False
-    monkeypatch.setenv("JOYHOUSEBOT_AUTO_MIGRATE", "true")
+    monkeypatch.setenv("PORTHOUSE_AUTO_MIGRATE", "true")
     assert _auto_migrate(False) is True
-    monkeypatch.setenv("JOYHOUSEBOT_AUTO_MIGRATE", "sometimes")
+    monkeypatch.setenv("PORTHOUSE_AUTO_MIGRATE", "sometimes")
     with pytest.raises(ValueError, match="must be true or false"):
         _auto_migrate(True)
 
@@ -796,8 +796,8 @@ def test_postgres_serializes_concurrent_migrations_and_maintenance() -> None:
     database_url = require_postgres()
     import psycopg
 
-    from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
-    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+    from porthouse.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
     def create_store(index: int) -> PostgresRuntimeStore:
         return PostgresRuntimeStore(
@@ -839,7 +839,7 @@ def test_postgres_serializes_concurrent_migrations_and_maintenance() -> None:
 @pytest.mark.postgres
 def test_postgres_runtime_store_conformance() -> None:
     database_url = require_postgres()
-    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)
     try:
@@ -1037,7 +1037,7 @@ def test_postgres_runtime_store_conformance() -> None:
 @pytest.mark.postgres
 def test_postgres_submission_quota_is_cluster_atomic() -> None:
     database_url = require_postgres()
-    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=4)
     user_id = f"quota-{uuid4().hex}"
@@ -1071,7 +1071,7 @@ def test_postgres_submission_quota_is_cluster_atomic() -> None:
 @pytest.mark.asyncio
 async def test_postgres_two_runtimes_execute_one_graph() -> None:
     database_url = require_postgres()
-    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
     class SlowAgent:
         async def process_direct(self, content: str, **_kwargs) -> str:

@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.bus.events import OutboundMessage
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config
-from joyhousebot.cron.service import CronService
-from joyhousebot.domain.schedules import CronSchedule
-from joyhousebot.services.memory.store import MemoryStore
-from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
+from porthouse.bus.events import OutboundMessage
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config
+from porthouse.cron.service import CronService
+from porthouse.domain.schedules import CronSchedule
+from porthouse.services.memory.store import MemoryStore
+from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
@@ -195,7 +195,7 @@ def test_channel_leases_and_outbox_have_single_owner(tmp_path: Path) -> None:
 @pytest.mark.postgres
 def test_postgres_memory_append_and_cron_fencing(tmp_path: Path) -> None:
     database_url = require_postgres()
-    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
     store_a = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)
     store_b = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)

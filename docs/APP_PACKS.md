@@ -4,7 +4,7 @@
 
 ## 1. 目的
 
-JoyhouseBot 的产品结构固定为：
+Porthouse 的产品结构固定为：
 
 ```text
 Core Runtime + Extensions + App Packs
@@ -21,7 +21,7 @@ App Pack 不在 API 进程中加载业务代码，也不能引入第二套任务
 
 ## 2. 清单
 
-清单文件名是 `joyhouse.app.json`，`app_id + version + manifest_sha256` 唯一标识一个不可变发布：
+清单文件名是 `happyhouse.app.json`，`app_id + version + manifest_sha256` 唯一标识一个不可变发布：
 
 ```json
 {
@@ -30,7 +30,7 @@ App Pack 不在 API 进程中加载业务代码，也不能引入第二套任务
   "version": "0.1.0",
   "name": "Market Radar",
   "description": "持续跟踪市场机会并形成周报。",
-  "publisher": "Joyhouse",
+  "publisher": "HappyHouse",
   "core": {"min_version": "0.1.2", "max_version": ""},
   "extensions": [
     {

@@ -6,7 +6,7 @@ import {SignedLocalCapabilityHost} from "./local-host.js";
 import {DeviceHostRunner} from "./runner.js";
 
 const config = await loadDeviceHostConfig(
-  resolve(process.env.JOYHOUSE_DEVICE_HOST_CONFIG ?? "device-host.config.json"),
+  resolve(process.env.PORTHOUSE_DEVICE_HOST_CONFIG ?? "device-host.config.json"),
 );
 const cloud = new RuntimeDeviceTransport(config);
 const runner = new DeviceHostRunner(cloud, new SignedLocalCapabilityHost(config.localHost));

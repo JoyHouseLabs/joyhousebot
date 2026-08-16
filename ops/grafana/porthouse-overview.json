@@ -1,0 +1,29 @@
+{
+  "title": "Porthouse Production Overview",
+  "schemaVersion": 39,
+  "tags": ["porthouse", "agent", "runtime", "slo"],
+  "timezone": "browser",
+  "refresh": "15s",
+  "panels": [
+    {"type":"stat","title":"API Up","targets":[{"expr":"porthouse_up"}]},
+    {"type":"stat","title":"Online Workers","targets":[{"expr":"sum(porthouse_workers_total{status=\"online\"})"}]},
+    {"type":"stat","title":"Queue Age","targets":[{"expr":"porthouse_queue_oldest_age_seconds"}]},
+    {"type":"stat","title":"Task Claim P95","targets":[{"expr":"porthouse_task_claim_delay_ms_p95"}]},
+    {"type":"timeseries","title":"Runs by Status","targets":[{"expr":"sum by (status) (porthouse_runs_total)"}]},
+    {"type":"timeseries","title":"24h Run Outcomes","targets":[{"expr":"sum by (status) (porthouse_runs_24h_total)"}]},
+    {"type":"timeseries","title":"24h Run Duration P95","targets":[{"expr":"porthouse_run_duration_ms_p95"}]},
+    {"type":"timeseries","title":"Tasks by Status","targets":[{"expr":"sum by (status) (porthouse_tasks_total)"}]},
+    {"type":"timeseries","title":"Provider Request Rate","targets":[{"expr":"sum by (provider,model,status) (rate(porthouse_provider_requests_total[5m]))"}]},
+    {"type":"timeseries","title":"Provider Duration / TTFT P95","targets":[{"expr":"porthouse_provider_duration_ms_p95"},{"expr":"porthouse_provider_ttft_ms_p95"}]},
+    {"type":"timeseries","title":"Provider Cost","targets":[{"expr":"sum by (provider,model) (porthouse_provider_cost_usd_total)"}]},
+    {"type":"timeseries","title":"Actions","targets":[{"expr":"sum by (status) (porthouse_actions_total)"}]},
+    {"type":"timeseries","title":"Approval / Reconciliation Wait","targets":[{"expr":"porthouse_approval_oldest_pending_seconds"},{"expr":"porthouse_reconciliation_oldest_active_seconds"}]},
+    {"type":"timeseries","title":"Verifications","targets":[{"expr":"sum by (status,verifier_type) (porthouse_verifications_total)"}]},
+    {"type":"timeseries","title":"Saga / GraphPatch / Eval","targets":[{"expr":"sum by (status) (porthouse_sagas_total)"},{"expr":"sum by (status) (porthouse_graph_patch_proposals_total)"},{"expr":"sum by (status) (porthouse_eval_runs_total)"}]},
+    {"type":"timeseries","title":"Oldest Active State Machine","targets":[{"expr":"porthouse_oldest_active_seconds"}]},
+    {"type":"timeseries","title":"Critical Events (24h)","targets":[{"expr":"sum by (event_type) (porthouse_critical_events_24h_total)"}]},
+    {"type":"timeseries","title":"Works / Shares","targets":[{"expr":"sum by (status,visibility) (porthouse_works_total)"},{"expr":"sum by (status) (porthouse_work_shares_total)"}]},
+    {"type":"timeseries","title":"Channel Outbox","targets":[{"expr":"sum by (channel,status) (porthouse_channel_outbox_total)"}]},
+    {"type":"timeseries","title":"API Token Security","targets":[{"expr":"sum by (token_type,status) (porthouse_api_tokens_total)"},{"expr":"sum by (risk) (porthouse_api_token_risks_total)"}]}
+  ]
+}

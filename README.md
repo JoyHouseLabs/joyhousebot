@@ -1,8 +1,8 @@
-# Joyhousebot
+# HappyHousebot
 
 ## 开源 Agent 执行与治理 Runtime
 
-JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可本地或云端部署。它把原本需要企业工程
+Porthouse 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可本地或云端部署。它把原本需要企业工程
 投入的长程执行、恢复、权限、审批、审计与发布治理，交给个人、独立开发者、小团队和垂直 App：自然语言目标被转化为
 持久 Run/Task，并经由能力准入、定时或事件唤醒、人工确认、验证与回放，形成可积累的 Artifact 与 Work。
 
@@ -13,7 +13,7 @@ JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可
 ## 给开发者的执行底座
 
 开发一个会调用模型的 Agent 很容易；交付一个能长期运行、可安全操作外部系统、故障后不丢状态且能说明
-“做了什么”的 Agent 应用，才需要完整的执行基础设施。JoyhouseBot 将这套基础设施作为开源 Runtime 提供：
+“做了什么”的 Agent 应用，才需要完整的执行基础设施。Porthouse 将这套基础设施作为开源 Runtime 提供：
 
 - **不重写可靠执行**：统一 Run/Task 状态机、PostgreSQL 事实源、Worker lease、fencing、重试、唤醒和故障接管。
 - **不绕过治理做集成**：Tool、Connector、MCP 与 Remote Capability 进入同一套版本、allowlist、权限、审批、
@@ -26,9 +26,9 @@ JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可
 这不是把企业软件卖给个人，而是把原本需要企业工程团队搭建的 Agent 执行与治理能力，做成每个开发者都能部署、
 组合和扩展的底座。
 
-## 为什么是 JoyhouseBot
+## 为什么是 Porthouse
 
-大多数 Agent 工具解决“这一次怎样回答或调用工具”；JoyhouseBot 解决“一个目标如何在数小时、数天甚至更长时间内，安全地推进到可验证结果”。它的价值不来自接入更多模型，而来自把企业级执行治理能力变成开发者可直接复用的长期系统。
+大多数 Agent 工具解决“这一次怎样回答或调用工具”；Porthouse 解决“一个目标如何在数小时、数天甚至更长时间内，安全地推进到可验证结果”。它的价值不来自接入更多模型，而来自把企业级执行治理能力变成开发者可直接复用的长期系统。
 
 | 能力 | Runtime 机制 | 用户得到的结果 |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ JoyhouseBot 是开源、PostgreSQL-first 的 Agent 执行与治理 Runtime，可
 
 ```mermaid
 flowchart TB
-    CLIENTS[JoyHouse / 独立 App / Console / API Client]
+    CLIENTS[HappyHouse / 独立 App / Console / API Client]
     ENTRY[HTTP + SSE / Schedule / Webhook / Channel / MCP]
     API[API 与控制面\n认证、提交、查询、版本发布]
     PG[(PostgreSQL\n唯一运行时事实源)]
@@ -70,10 +70,10 @@ flowchart TB
 
 App 是可以拥有独立用户、计费、业务数据库并单独售卖的业务产品；Skill 是版本化方法资产；Extension
 只表示 Runtime 的技术安装制品。三者不能混用，完整协作协议见
-[独立 App 与 JoyhouseBot 协作契约](docs/APP_INTEGRATION.md)。
+[独立 App 与 Porthouse 协作契约](docs/APP_INTEGRATION.md)。
 
-JoyHouse Market 是独立仓库和独立部署的账号、生态目录与商业分发产品，负责作者身份、签名制品、
-商业授权、更新和生态治理。Market 不读取个人运行数据，也不绕过本地安装与权限审批；JoyhouseBot
+HappyHouse Market 是独立仓库和独立部署的账号、生态目录与商业分发产品，负责作者身份、签名制品、
+商业授权、更新和生态治理。Market 不读取个人运行数据，也不绕过本地安装与权限审批；Porthouse
 Core 不依赖官方 Market，第三方 Registry 仍可实现开放协议。目标协议见
 [App Market 治理与跨实例分发协议](docs/APP_MARKET_GOVERNANCE.md)。
 
@@ -86,8 +86,8 @@ Core 不依赖官方 Market，第三方 Registry 仍可实现开放协议。目�
 ## 项目结构
 
 ```text
-joyhousebot/
-├── joyhousebot/              # 开源 Runtime：API、Worker、Agent、任务、工具、存储与权限
+porthouse/
+├── porthouse/              # 开源 Runtime：API、Worker、Agent、任务、工具、存储与权限
 ├── apps/
 │   └── console/              # 运行监控、Agent 配置、场景与回放控制台
 ├── extensions/               # 可独立安装、发现和启用的官方扩展
@@ -96,7 +96,7 @@ joyhousebot/
 └── tests/                    # Runtime 契约与集成测试
 ```
 
-JoyHouse 是构建在 JoyhouseBot Runtime 之上的产品层；Market 为其生态提供可选的目录、授权与分发能力。二者都不是开源 Runtime 的依赖。
+HappyHouse 是构建在 Porthouse Runtime 之上的产品层；Market 为其生态提供可选的目录、授权与分发能力。二者都不是开源 Runtime 的依赖。
 
 ## 治理模型
 
@@ -190,7 +190,7 @@ Schedule 的启停、补跑和触发历史，也可以把带 Secret、Event Type
 控制台支持管理员密码和 Google Authenticator/TOTP 登录：密码使用 Scrypt 加盐哈希，浏览器只持有短期
 会话 Token，数据库保存 Token 指纹；TOTP 密钥由独立部署密钥加密，恢复码仅在激活时显示一次。生产环境
 没有代码内置固定密码，首次管理员由环境变量引导并强制改密。本地 `config.dev.json` 的默认管理员为
-`joyhousebot / joyhousebot`，仅用于回环地址开发，首次登录后必须立即改密。
+`porthouse / porthouse`，仅用于回环地址开发，首次登录后必须立即改密。
 
 登录控制台时可另外选择本次操作的个人 `user_id`。管理员账号负责认证和平台权限，操作 `user_id` 负责
 个人 Run、记忆、自动化与成果归属；控制面接口不会随操作用户切换。代操作需要
@@ -214,20 +214,20 @@ api / bootstrap / channel adapters
 ```
 
 业务 App 应保留自己的界面、用户、计费、领域服务和数据库，通过 HTTP/SSE 与
-Remote Capability 协议使用 JoyhouseBot。只有 Provider、Channel、Connector 和原子 Capability 等技术
-能力才通过 Extension 安装，不把业务代码写入 `joyhousebot` 核心包。Core 与扩展的判定、依赖方向和迁移规则见
+Remote Capability 协议使用 Porthouse。只有 Provider、Channel、Connector 和原子 Capability 等技术
+能力才通过 Extension 安装，不把业务代码写入 `porthouse` 核心包。Core 与扩展的判定、依赖方向和迁移规则见
 [Core 与扩展包边界设计](docs/CORE_AND_EXTENSIONS.md)、
 [AgentTeam 协作协议](docs/AGENT_TEAMS.md)、
 [Run 顶层执行模式](docs/EXECUTION_MODES.md)。具体业务应用始终作为独立项目接入，不作为 Core 的默认集成。
 
-第一阶段 Runtime、JoyHouse Product、Market 和官方 App 共用一个 PostgreSQL database 和
-`JOYHOUSE_DATABASE_URL`，通过表所有权与独立迁移链保持模块边界；Skill 不拥有业务表，Extension 不得向
+第一阶段 Runtime、HappyHouse Product、Market 和官方 App 共用一个 PostgreSQL database 和
+`PORTHOUSE_DATABASE_URL`，通过表所有权与独立迁移链保持模块边界；Skill 不拥有业务表，Extension 不得向
 Core 注入自定义 DDL。完整规范见
 [数据库与生态扩展边界](docs/DATA_AND_ECOSYSTEM_BOUNDARIES.md)。
 
 ## 控制台示例
 
-Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
+HappyHousebot 自带用于试用、运维和问题定位的管理控制台：
 
 - **运行监控**：查看 API、PostgreSQL、Worker 集群、运行数量和资源用量。
 - **运行中心**：分页查看 Run，按状态、Agent、Session 或摘要筛选，并进入独立详情页。
@@ -240,9 +240,9 @@ Joyhousebot 自带用于试用、运维和问题定位的管理控制台：
 
 ![Run 详情与执行时间线](docs/pictures/ScreenShot_2026-08-05_230625_459.png)
 
-## 基于 JoyhouseBot 构建的 JoyHouse
+## 基于 Porthouse 构建的 HappyHouse
 
-JoyHouse Desktop、Web、Mobile、官网与浏览器扩展基于 JoyhouseBot 构建面向用户的产品体验：管理目标、
+HappyHouse Desktop、Web、Mobile、官网与浏览器扩展基于 Porthouse 构建面向用户的产品体验：管理目标、
 数据、持续任务、待确认事项与成果。它们通过版本化 HTTP/SSE、App SDK 与 Market 协议使用 Runtime，
 不复制 Run/Task 状态机；产品身份、计费、同步和领域体验保持在产品层，Runtime 则持续提供执行、恢复、
 权限、审计与成果链路。
@@ -256,7 +256,7 @@ cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
-export JOYHOUSE_DATABASE_URL="postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot"
+export PORTHOUSE_DATABASE_URL="postgresql://porthouse:porthouse-dev@127.0.0.1:15432/porthouse"
 ./scripts/start-local.sh
 ```
 
@@ -268,7 +268,7 @@ Core 默认不安装或启动任何渠道。需要邮件入口或单纯的可靠
 uv pip install -e extensions/channel-email
 ```
 
-然后把 `channel-email` 加入部署配置的 `extensions.allowedIds`，执行 `joyhousebot
+然后把 `channel-email` 加入部署配置的 `extensions.allowedIds`，执行 `porthouse
 discover-extensions`，再到 Console“扩展中心”激活。IMAP 入站和 SMTP 出站可以独立配置；凭据仍只使用
 `env://VARIABLE` 引用。其他渠道按需安装，不属于默认产品组合。
 
@@ -280,7 +280,7 @@ Resend 作为该 Email Extension 的 SMTP 服务商接入：`smtpHost=smtp.resen
 
 ```bash
 uv pip install -e extensions/capability-document-processing
-uv run joyhousebot discover-extensions --config config.json
+uv run porthouse discover-extensions --config config.json
 ```
 
 将 `capability-document-processing` 放入 `extensions.allowedIds` 后，在 Console 激活其
@@ -304,7 +304,7 @@ uv pip install -e extensions/connector-http-capability
 
 ```bash
 uv pip install -e extensions/capability-media-generation
-uv run joyhousebot discover-extensions --config config.json
+uv run porthouse discover-extensions --config config.json
 ```
 
 启用 `capability-media-generation` 后，可在 Console 的扩展详情中配置 `image.generate`、
@@ -328,13 +328,13 @@ export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
 export POSTGRES_PASSWORD="choose-a-strong-password"
-export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
-export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+export PORTHOUSE_METRICS_TOKEN="choose-a-scrape-token"
+export PORTHOUSE_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
-请将 `JOYHOUSEBOT_AUTH_ENCRYPTION_KEY` 放入秘密管理系统并长期保留；它用于加密控制面 TOTP 密钥，丢失会使已启用的验证器无法恢复。
+请将 `PORTHOUSE_AUTH_ENCRYPTION_KEY` 放入秘密管理系统并长期保留；它用于加密控制面 TOTP 密钥，丢失会使已启用的验证器无法恢复。
 
 Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`（管理面与控制台 UI，默认只绑 `127.0.0.1:18791`，不要暴露公网）。
 
@@ -347,7 +347,7 @@ Compose 起两个 API 角色：`api`（公网数据面，18790）和 `control`�
 ```bash
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: joyhousebot' \
+  -H 'X-User-ID: porthouse' \
   -d '{"execution":{"mode":"agent","agent_id":"default"},"session_id":"demo","input":{"content":"分析这个任务"}}'
 ```
 
@@ -358,7 +358,7 @@ curl -X POST http://127.0.0.1:18790/v1/runs \
 
 ```bash
 .venv/bin/python -m pytest
-.venv/bin/ruff check joyhousebot tests extensions/*/src
+.venv/bin/ruff check porthouse tests extensions/*/src
 cd apps/console && npm run build
 ```
 

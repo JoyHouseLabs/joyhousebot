@@ -8,21 +8,21 @@ from typing import Any
 
 import pytest
 
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.capabilities.tool_adapter import ToolOutput
-from joyhousebot.contracts import OperationReconciliationResult
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.capabilities import (
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.capabilities.tool_adapter import ToolOutput
+from porthouse.contracts import OperationReconciliationResult
+from porthouse.contracts.tools import Tool
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
     InvocationStatus,
 )
-from joyhousebot.providers.base import LLMProvider, LLMResponse
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.providers.base import LLMProvider, LLMResponse
+from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 

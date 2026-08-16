@@ -493,7 +493,7 @@ wheels = [
 ]
 
 [[package]]
-name = "joyhousebot"
+name = "porthouse"
 version = "0.1.2"
 source = { editable = "." }
 dependencies = [

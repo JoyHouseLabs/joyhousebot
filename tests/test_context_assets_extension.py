@@ -3,10 +3,10 @@
 from types import SimpleNamespace
 
 import pytest
-from joyhousebot_capability_context_assets import plugin as context_assets
+from porthouse_capability_context_assets import plugin as context_assets
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.extension_sdk import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.extension_sdk import CapabilityContext
 
 
 class _FakeContextServices:
@@ -84,7 +84,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
             idempotency_key="knowledge:source-a:2",
         ),
         {
-            "source_system": "joyhouse-product",
+            "source_system": "porthouse-product",
             "source_id": "source-a",
             "source_version": "2",
             "source_generation": 2,
@@ -103,7 +103,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
     )
     assert result.success is True
     assert result.write_receipt.idempotency_key == "knowledge:source-a:2"
-    assert services.indexed["source_system"] == "joyhouse-product"
+    assert services.indexed["source_system"] == "porthouse-product"
     assert services.indexed["source_id"] == "source-a"
     assert services.indexed["source_version"] == "2"
     assert services.indexed["source_generation"] == 2
@@ -136,7 +136,7 @@ async def test_knowledge_index_failure_records_current_chunker_version(
             idempotency_key="knowledge:source-failed:1",
         ),
         {
-            "source_system": "joyhouse-product",
+            "source_system": "porthouse-product",
             "source_id": "source-failed",
             "source_version": "1",
             "source_generation": 1,
@@ -234,7 +234,7 @@ async def test_knowledge_index_records_parser_failure_on_the_runtime_port() -> N
             idempotency_key="knowledge:source-file:3",
         ),
         {
-            "source_system": "joyhouse-product",
+            "source_system": "porthouse-product",
             "source_id": "source-file",
             "source_version": "3",
             "source_generation": 3,
@@ -246,7 +246,7 @@ async def test_knowledge_index_records_parser_failure_on_the_runtime_port() -> N
             "attachments": [
                 {
                     "reference_kind": "local_vault",
-                    "uri": "joyhouse-local://vault/private.docx",
+                    "uri": "porthouse-local://vault/private.docx",
                     "display_name": "private.docx",
                 }
             ],

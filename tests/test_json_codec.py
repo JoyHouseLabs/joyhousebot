@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from uuid import UUID
 
-from joyhousebot.storage.json_codec import json_value
+from porthouse.storage.json_codec import json_value
 
 
 class State(Enum):

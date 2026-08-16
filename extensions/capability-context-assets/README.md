@@ -1,6 +1,6 @@
-# JoyhouseBot Context Assets Capability
+# Porthouse Context Assets Capability
 
-Optional durable context capabilities for JoyhouseBot:
+Optional durable context capabilities for Porthouse:
 
 Document parsing primitives are supplied by the independently installable
 `capability-document-processing` package. Knowledge indexing reuses those parsers;
@@ -21,4 +21,4 @@ The extension receives only the Runtime's scope-enforcing context service. It do
 receive a PostgreSQL repository or construct its own user/Agent scope.
 
 Install the package and explicitly enable capability plugin discovery, or add
-`joyhousebot_capability_context_assets` to `tools.capabilityPlugins`.
+`porthouse_capability_context_assets` to `tools.capabilityPlugins`.

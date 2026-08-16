@@ -1,18 +1,18 @@
-# Joyhousebot 运行手册
+# HappyHousebot 运行手册
 
 ## 进程角色
 
 所有角色使用同一个镜像和 PostgreSQL，通过不同命令启动：
 
 ```bash
-joyhousebot api --surface combined --config ./config.json --host 0.0.0.0 --port 18790
-joyhousebot worker --config ./config.json
-joyhousebot scheduler --config ./config.json
-joyhousebot channel-worker --config ./config.json
+porthouse api --surface combined --config ./config.json --host 0.0.0.0 --port 18790
+porthouse worker --config ./config.json
+porthouse scheduler --config ./config.json
+porthouse channel-worker --config ./config.json
 ```
 
-生产启动前先由唯一迁移任务执行一次 `JOYHOUSEBOT_AUTO_MIGRATE=true joyhousebot check`；随后所有
-长运行角色设置 `JOYHOUSEBOT_AUTO_MIGRATE=false`。Compose 已用一次性 `migrate` 服务和
+生产启动前先由唯一迁移任务执行一次 `PORTHOUSE_AUTO_MIGRATE=true porthouse check`；随后所有
+长运行角色设置 `PORTHOUSE_AUTO_MIGRATE=false`。Compose 已用一次性 `migrate` 服务和
 `service_completed_successfully` 依赖固化这条顺序，避免多角色冷启动时 DDL 与目录初始化写入交叉。
 已经写入 `schema_migration_history` 的迁移不可原地修改；checksum 不一致会让迁移任务失败关闭。
 修复方式是恢复已发布 DDL 并新增 migration version，不能手工覆盖历史 checksum。
@@ -25,18 +25,18 @@ joyhousebot channel-worker --config ./config.json
 
 本地已有 PostgreSQL 时可直接运行 `./scripts/start-local.sh`。它会安全解析统一环境变量或旧
 OpenRouter 配置中的 Key，初始化数据库，启动一个 Combined API、一个 Scheduler 和默认两个
-Agent Worker，以及一个 Channel Worker。可通过 `JOYHOUSEBOT_LOCAL_WORKERS`、`JOYHOUSEBOT_LOCAL_PORT`、
-`JOYHOUSE_DATABASE_URL` 覆盖本地默认值；Product、Market 和官方 App 使用相同连接。旧
-`JOYHOUSEBOT_DATABASE_URL` 仍会被本地脚本映射为共享连接。所有组件日志写入
-`~/.joyhousebot/logs/local/<timestamp>/`。
+Agent Worker，以及一个 Channel Worker。可通过 `PORTHOUSE_LOCAL_WORKERS`、`PORTHOUSE_LOCAL_PORT`、
+`HAPPYHOUSE_DATABASE_URL` 覆盖本地默认值；Product、Market 和官方 App 使用相同连接。Porthouse 会把它映射为
+自身的 `PORTHOUSE_DATABASE_URL`。所有组件日志写入
+`~/.porthouse/logs/local/<timestamp>/`。
 
 `runtime.store.blobDirectory` 可把超过 `blobInlineThresholdBytes`（默认 64 KiB）的 Trace/Artifact 正文移出
-PostgreSQL 行。单机默认目录为 `~/.joyhousebot/runtime-blobs`；容器或多主机部署必须挂载持久化共享卷，且所有
+PostgreSQL 行。单机默认目录为 `~/.porthouse/runtime-blobs`；容器或多主机部署必须挂载持久化共享卷，且所有
 读取这些 Run/Work 的 API、Worker 与 Scheduler 使用同一路径。备份和恢复必须把 PostgreSQL 快照与 Blob 目录
 视为一个恢复点；只恢复数据库会保留 URI 但无法读取正文，只恢复目录则不会恢复运行状态。运行数据 purge 使用
 两阶段、24 小时宽限的未引用对象回收；不要绕过 PostgreSQL 直接删除目录内容。
 
-`runtime.store.inputAssetDirectory`（默认 `~/.joyhousebot/input-assets`）保存上传后冻结到 Run 的二进制
+`runtime.store.inputAssetDirectory`（默认 `~/.porthouse/input-assets`）保存上传后冻结到 Run 的二进制
 输入，`inputAssetMaxBytes` 默认 25 MiB。目录应为 `0700`，对象为 `0600`；多主机 API/Worker 必须使用共享、
 持久且可备份的挂载或对象存储适配器。Runtime 保留清理不会触碰非终态 Run 的输入，终态引用过期后先软删除
 数据库资产，再以 24 小时宽限回收无引用对象。不要把 Product Vault 目录直接配置成 Input Asset 目录。
@@ -45,8 +45,8 @@ PostgreSQL 行。单机默认目录为 `~/.joyhousebot/runtime-blobs`；容器�
 
 ```bash
 export POSTGRES_PASSWORD='choose-a-strong-password'  # 必填，compose 不提供默认值
-export JOYHOUSEBOT_METRICS_TOKEN='choose-a-scrape-token'  # 必填，/metrics 未配置 token 时 fail-closed
-export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"  # 必填，持久化保存
+export PORTHOUSE_METRICS_TOKEN='choose-a-scrape-token'  # 必填，/metrics 未配置 token 时 fail-closed
+export PORTHOUSE_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"  # 必填，持久化保存
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
@@ -55,7 +55,7 @@ PostgreSQL 数据卷升级镜像后不会重跑 init 脚本，需由数据库管
 
 ```bash
 docker compose -f docker-compose.runtime.yml exec -T postgres \
-  psql -U joyhousebot -d joyhousebot -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+  psql -U porthouse -d porthouse -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 ```
 
 若目标 PostgreSQL 不提供 `vector` 扩展，全文检索仍可用，但 Embedding Profile 发布和 HNSW 索引会明确
@@ -65,14 +65,14 @@ Compose 默认挂载 `deploy/config.runtime.json`（`allowInsecureAuth=false`）
 本机开发改用 `config.dev.json`（开启 insecure auth，仅限本机，不要对外暴露）：
 
 ```bash
-export JOYHOUSEBOT_CONFIG_FILE=./config.dev.json
+export PORTHOUSE_CONFIG_FILE=./config.dev.json
 ```
 
 生产部署须设置
-`JOYHOUSEBOT_CONFIG_FILE=/absolute/path/cloud.json`，所有角色会通过
-`JOYHOUSEBOT_CONFIG_PATH=/app/config.json` 读取同一份只读配置。
+`PORTHOUSE_CONFIG_FILE=/absolute/path/cloud.json`，所有角色会通过
+`PORTHOUSE_CONFIG_PATH=/app/config.json` 读取同一份只读配置。
 
-生产角色还必须设置 `JOYHOUSEBOT_ENVIRONMENT=production`。此时默认拒绝 `combined` API、
+生产角色还必须设置 `PORTHOUSE_ENVIRONMENT=production`。此时默认拒绝 `combined` API、
 `allow_insecure_auth=true`、通配 CORS，以及少于 32 字符的 Metrics/紧急控制 Token。只有本地开发可以
 使用 Combined；生产必须分别启动 `--surface public` 和 `--surface control`。
 
@@ -83,10 +83,10 @@ SSH 隧道或内网访问。
 
 ### systemd 部署
 
-非 Docker 环境可使用仓库提供的 `deploy/systemd/` units。它们先运行一次 `joyhousebot-migrate.service`，
+非 Docker 环境可使用仓库提供的 `deploy/systemd/` units。它们先运行一次 `porthouse-migrate.service`，
 再启动 Public API、Worker 和 Scheduler；迁移 unit 使用 `RemainAfterExit=yes`，因此升级时必须显式重启迁移
 unit，然后重启各长运行角色。`deploy/config.runtime.json` 已把 scratch、Blob 和 Input Asset 目录放在
-`/var/lib/joyhousebot`，与 unit 的 `ProtectHome=true`、`ReadWritePaths` 一致。安装顺序、目录权限和环境文件
+`/var/lib/porthouse`，与 unit 的 `ProtectHome=true`、`ReadWritePaths` 一致。安装顺序、目录权限和环境文件
 位置见 [systemd README](../deploy/systemd/README.md)。
 
 启用外部 Channel 时，Channel Worker 还必须显式注入对应的 Channel 凭据环境变量；不要把
@@ -96,11 +96,11 @@ Channel Worker；控制台的 Channels 页面当前提供安全状态查看，�
 本地直接运行时设置（15432 端口仅绑定 127.0.0.1）：
 
 ```bash
-export JOYHOUSE_DATABASE_URL='postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot'
+export PORTHOUSE_DATABASE_URL='postgresql://porthouse:porthouse-dev@127.0.0.1:15432/porthouse'
 export LLM_PROVIDER='anthropic'
 export LLM_API_KEY='your-key'
 export LLM_MODEL='anthropic/claude-sonnet-4-5'
-joyhousebot check --config ./config.json
+porthouse check --config ./config.json
 ```
 
 `LLM_PROVIDER` + `LLM_API_KEY` 是单供应商本地部署的统一入口；`LLM_MODEL` 必须给出精确模型 ID，可选
@@ -118,7 +118,7 @@ joyhousebot check --config ./config.json
 `/healthz`。内置 `default` Agent 是无业务偏好的直接执行器；需要开放规划时应显式发布 coordinator
 Agent，Team 则使用 Team Revision 中冻结的协调器。
 
-一体化部署统一配置 `JOYHOUSE_DATABASE_URL`。Runtime 仍接受旧 `JOYHOUSEBOT_DATABASE_URL` 作为过渡别名。
+一体化部署统一配置 `HAPPYHOUSE_DATABASE_URL`。独立 Porthouse 部署则配置 `PORTHOUSE_DATABASE_URL`。
 本地测试使用显式专用 PostgreSQL 测试库，不能使用共享开发或生产连接。
 
 ## 健康检查
@@ -129,14 +129,14 @@ Agent，Team 则使用 Team Revision 中冻结的协调器。
 - `GET /v1/me`：验证 Bearer Token 绑定的 `user_id`。
 - `GET /v1/admin/overview`：验证数据库管理员权限和平台全局监控面。
 - `GET /metrics`：Prometheus 文本格式指标；包含 Run/Task/Worker、Provider 平均/P95 延迟、TTFT、费用、队列年龄、租约过期、重试和 Channel outbox 聚合。采集结果按进程缓存 5 秒，避免高频抓取放大 PostgreSQL 查询压力。
-  数据库暂时不可用时仍返回 `joyhousebot_up 0` 和 HTTP 503，便于区分进程存活与数据面就绪。
-  该端点 fail-closed：未设置 `JOYHOUSEBOT_METRICS_TOKEN` 时一律返回 404；设置后必须携带
+  数据库暂时不可用时仍返回 `porthouse_up 0` 和 HTTP 503，便于区分进程存活与数据面就绪。
+  该端点 fail-closed：未设置 `PORTHOUSE_METRICS_TOKEN` 时一律返回 404；设置后必须携带
   `Authorization: Bearer <token>`，否则返回 401。`ops/prometheus/prometheus.yml` 已按
   `credentials_file` 方式配置 bearer 抓取。
 - `GET /v1/system/metrics`：管理员控制台使用的同源 JSON 指标。
 
-Grafana 可直接导入 `ops/grafana/joyhousebot-overview.json`；Prometheus 抓取示例位于
-`ops/prometheus/prometheus.yml`，告警规则位于 `ops/prometheus/joyhousebot-alerts.yml`。规则覆盖 API、
+Grafana 可直接导入 `ops/grafana/porthouse-overview.json`；Prometheus 抓取示例位于
+`ops/prometheus/prometheus.yml`，告警规则位于 `ops/prometheus/porthouse-alerts.yml`。规则覆盖 API、
 队列年龄、租约、重试、Worker、Provider 和 Channel outbox。
 
 ## 配置发布治理
@@ -188,7 +188,7 @@ Agent Worker、Channel Worker 都在注册和续租，再依据 Occurrence 的 `
 
 - 管理端使用 `GET /v1/event-triggers` 和 `GET /v1/event-trigger-deliveries`；两者按当前 `user_id`
   隔离，API Token 需要 `automation.read/write` scope。
-- 外部投递必须发送 `X-Joyhouse-Webhook-Secret` 与稳定的 `Idempotency-Key`。创建和轮换响应中的
+- 外部投递必须发送 `X-HappyHouse-Webhook-Secret` 与稳定的 `Idempotency-Key`。创建和轮换响应中的
   明文密钥只显示一次；遗失后只能轮换，不能从数据库或控制台回显。
 - 404 通常表示规则不存在或密钥错误，409 表示规则停用或相同幂等键对应不同 Payload，422 表示
   Event Type、Payload 大小或请求契约不符合规则。
@@ -204,17 +204,17 @@ App 出站终态通知与上面的入站业务 Webhook 是两个方向、两套�
 
 Scheduler 发送以下验证材料：
 
-- `Idempotency-Key` 与 `X-Joyhouse-Event-ID`：稳定事件 ID，消费者据此去重；
-- `X-Joyhouse-Timestamp`：签名时间戳；
-- `X-Joyhouse-Signature: v1=<hex>`：对 `timestamp + "." + canonical_json_body` 的
+- `Idempotency-Key` 与 `X-HappyHouse-Event-ID`：稳定事件 ID，消费者据此去重；
+- `X-HappyHouse-Timestamp`：签名时间戳；
+- `X-HappyHouse-Signature: v1=<hex>`：对 `timestamp + "." + canonical_json_body` 的
   HMAC-SHA256；
-- `X-Joyhouse-Event-Type`：`run.completed/failed/cancelled/timed_out`。
+- `X-HappyHouse-Event-Type`：`run.completed/failed/cancelled/timed_out`。
 
 消费者应在恒定时间比较签名、限制时间戳偏差并持久化 event ID。Runtime 采用 at-least-once 投递；
 HTTP 2xx 才算成功，3xx 不跟随，其他状态或网络错误按指数退避，达到登记的 `max_attempts` 后进入
 `dead`。使用 `GET /v1/runs/{run_id}/app-callbacks` 查看单个 Run；Prometheus 中
-`joyhousebot_app_callback_deliveries_total{status=...}` 和
-`joyhousebot_app_callback_oldest_pending_seconds` 用于告警。Callback Payload 不含 Result/Artifact，
+`porthouse_app_callback_deliveries_total{status=...}` 和
+`porthouse_app_callback_oldest_pending_seconds` 用于告警。Callback Payload 不含 Result/Artifact，
 App 应用短期委托 Token 读取 Location，避免私有成果落入通用 Webhook 日志。
 
 常见故障：
@@ -319,29 +319,29 @@ GET  /v1/schedules/{schedule_id}/monitor-scratch/revisions
 新 revision 修改，或将 `enabled` 设为 `false`。`delivery=origin` 可投递到最近一次真实外部渠道来源；
 `none` 只把结果保存在 Run/Occurrence 中。
 
-开发模式（显式 `gateway.allowInsecureAuth=true`）下，API 首次启动会把 `joyhousebot` 写入
+开发模式（显式 `gateway.allowInsecureAuth=true`）下，API 首次启动会把 `porthouse` 写入
 `platform_admins` 并创建控制台初始密码：
 
-- 用户名：`joyhousebot`
-- 初始密码：`joyhousebot`
+- 用户名：`porthouse`
+- 初始密码：`porthouse`
 
 这个 11 字符密码只作为回环地址 insecure 开发模式的窄范围例外；首次登录后必须改为至少 12 字符的新
 密码。本地仍保留 `X-User-ID` 无密码路径用于 API 联调，因此这个默认值绝不能
-用于对外可访问的部署；可通过 `JOYHOUSEBOT_DEV_USER_ID` 和 `JOYHOUSEBOT_DEV_ADMIN_PASSWORD` 覆盖。
+用于对外可访问的部署；可通过 `PORTHOUSE_DEV_USER_ID` 和 `PORTHOUSE_DEV_ADMIN_PASSWORD` 覆盖。
 其他开发 `user_id` 不会自动获得权限。
 
 生产控制面首次启动使用环境秘密引导管理员，不存在内置生产密码：
 
 ```bash
-export JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER='platform-admin'
-export JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD='use-a-unique-secret-with-12-plus-chars'
-export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+export PORTHOUSE_BOOTSTRAP_ADMIN_USER='platform-admin'
+export PORTHOUSE_BOOTSTRAP_ADMIN_PASSWORD='use-a-unique-secret-with-12-plus-chars'
+export PORTHOUSE_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 ```
 
 `BOOTSTRAP_ADMIN_PASSWORD` 只在数据库尚无该管理员密码时生效，并把账号标记为必须改密；改密后应从部署
 环境移除该变量。`AUTH_ENCRYPTION_KEY` 必须长期保留在秘密管理系统并进入备份/灾备流程，轮换前必须设计
 TOTP 密钥重加密，否则已启用的验证器无法登录。控制台会话默认 12 小时，可用
-`JOYHOUSEBOT_ADMIN_SESSION_HOURS` 设置 1–168 小时。
+`PORTHOUSE_ADMIN_SESSION_HOURS` 设置 1–168 小时。
 
 控制台密码登录页把“管理员账号”和“操作 user_id”分开：前者只用于验证后台权限，后者决定本次个人
 Run、Session、Memory、Schedule、Knowledge、Workflow 与 Work 的归属。两者不同时，浏览器会话只在
@@ -364,27 +364,27 @@ SHA-256 指纹。连续五次失败会锁定 15 分钟，限流与锁定都由 P
 `/v1/admin/users/{user_id}` 管理。令牌本身还有独立 scope（如 `runs.read`、`runs.write`、
 `admin.read`、`admin.write`、`mcp.invoke`），用于收窄账号权限。服务令牌禁止 `*` scope 且必须过期；
 管理 API 默认签发 90 天有效、60 天轮换提醒的用户令牌。`/v1/admin/access-token-events` 提供签发/吊销
-审计。紧急 operator 凭据只能通过进程环境变量 `JOYHOUSEBOT_CONTROL_TOKEN` 注入，不能写进 JSON 配置。
+审计。紧急 operator 凭据只能通过进程环境变量 `PORTHOUSE_CONTROL_TOKEN` 注入，不能写进 JSON 配置。
 
 配置文件中的 `apiKey`、`token`、`password`、`databaseUrl` 等敏感字段不接受明文；应留空并由标准环境变量注入，或写成 `env://VARIABLE`。启动时引用的环境变量不存在会直接失败。
 
 已有部署也可以继续使用一次性紧急 operator token引导 API Token：
 
 ```bash
-export JOYHOUSEBOT_CONTROL_TOKEN="$(openssl rand -base64 36)"
+export PORTHOUSE_CONTROL_TOKEN="$(openssl rand -base64 36)"
 
 curl -X PUT http://127.0.0.1:18790/v1/admin/users/platform-admin \
-  -H "Authorization: Bearer $JOYHOUSEBOT_CONTROL_TOKEN" \
+  -H "Authorization: Bearer $PORTHOUSE_CONTROL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"role":"admin","permissions":["*"],"enabled":true}'
 
 curl -X POST http://127.0.0.1:18790/v1/admin/access-tokens \
-  -H "Authorization: Bearer $JOYHOUSEBOT_CONTROL_TOKEN" \
+  -H "Authorization: Bearer $PORTHOUSE_CONTROL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"user_id":"platform-admin","label":"initial-admin"}'
 ```
 
-第二个响应中的 `token` 只出现一次。保存后从部署环境移除 `JOYHOUSEBOT_CONTROL_TOKEN` 并滚动
+第二个响应中的 `token` 只出现一次。保存后从部署环境移除 `PORTHOUSE_CONTROL_TOKEN` 并滚动
 重启 API；日常操作改用数据库 Token。不要把上面变量或响应写进仓库、Shell history 或日志。
 
 ## 远程 Capability 连接发布
@@ -412,7 +412,7 @@ Worker 的环境，例如 `OPENROUTER_API_KEY`；Console“集成中心 → Mode
 `model_providers.current_revision_id`。Agent 发布会拒绝目录外模型及超过模型输出上限的 `max_tokens`；
 Provider 发布会拒绝删除或停用当前 Agent 正在引用的模型，应先发布替换 Agent Revision，再缩减目录。
 
-本地或部署安装扩展后可先运行 `joyhousebot discover-extensions --config config.json`。该命令不需要 LLM
+本地或部署安装扩展后可先运行 `porthouse discover-extensions --config config.json`。该命令不需要 LLM
 密钥，也不会启动执行 Worker；它用于解除“必须先启动 Worker 才能在 Console 看见配置 Schema”的
 引导死锁。目录发现不等于发布或加载成功，生产执行资格仍以 Worker rollout ACK 为准。
 
@@ -449,7 +449,7 @@ Run/Task、提交配额和 API 限流均由 PostgreSQL 原子协调，不要求 
 - `reasoning.read_raw`：读取完整 Prompt、模型响应和错误 Trace Blob；
 - `replay.execute`：创建 offline、frozen、branch 或 live 回放。
 
-原始读取和回放都会写 runtime audit log。开发模式引导的 `joyhousebot` 管理员拥有 `*`，便于联调；
+原始读取和回放都会写 runtime audit log。开发模式引导的 `porthouse` 管理员拥有 `*`，便于联调；
 生产不得照搬该授权。Trace 表包含用户输入、上下文、Tool 数据和供应商推理，应使用数据库 TLS、磁盘/
 备份加密、最小权限与独立保留策略。`purge_old_runtime_data` 会一起清理模型缓存、推理、Span、Blob、
 回放、Event、Log 和 Request Trace；执行前应先按合规要求归档。
@@ -466,8 +466,8 @@ HTTP 客户端需要短等待时可发送 `Prefer: wait=20`；最大值为 30 �
 内置业务 Eval 安装和执行：
 
 ```bash
-joyhousebot eval-bootstrap --config ./config.json
-joyhousebot eval-execute evalrun_<id> --config ./config.json
+porthouse eval-bootstrap --config ./config.json
+porthouse eval-execute evalrun_<id> --config ./config.json
 ```
 
 三套数据集覆盖证据研究、受治理执行和可发布作品。候选 Agent draft 只能在目标 ID、revision 与 active
@@ -522,7 +522,7 @@ bounded error、pgvector 版本、数据库 DDL 权限和可用磁盘；修正�
 数据库协调演练会写入带唯一 `drill:*` 用户的合成 Run/Task，默认完成后精确清理：
 
 ```bash
-joyhousebot durability-drill \
+porthouse durability-drill \
   --confirm WRITE_SYNTHETIC_RUNTIME_DATA \
   --tasks 500 --claim-concurrency 16 \
   --config ./config.json
@@ -531,10 +531,10 @@ joyhousebot durability-drill \
 API 规模演练必须使用仅有 `runs.read`、`runs.write` 的专用服务令牌，令牌从环境读取，永不进入参数或报告：
 
 ```bash
-export JOYHOUSEBOT_LOAD_TOKEN='one-time-scoped-service-token'
-joyhousebot load-test --base-url https://api.example.com \
+export PORTHOUSE_LOAD_TOKEN='one-time-scoped-service-token'
+porthouse load-test --base-url https://api.example.com \
   --count 200 --concurrency 16 --wait
-unset JOYHOUSEBOT_LOAD_TOKEN
+unset PORTHOUSE_LOAD_TOKEN
 ```
 
 两种命令都会把机器可读 JSON 写入 `artifacts/drills/` 并以退出码表示 PASS/FAIL。完整分阶段矩阵、SLO 和
@@ -542,17 +542,17 @@ unset JOYHOUSEBOT_LOAD_TOKEN
 
 出现 `Too many open files` 时：
 
-1. 确认运行的是预期版本的 `joyhousebot api`，并核对其实际配置与进程角色。
+1. 确认运行的是预期版本的 `porthouse api`，并核对其实际配置与进程角色。
 2. 使用 `lsof -p <pid>` 按类型统计句柄；PG 连接池会在角色关闭时统一释放，Agent 也不再启动 knowledge watcher/subprocess。
 3. 检查是否意外把 Channel 角色与 API 混合启动，以及第三方 SDK 是否反复重连。
 4. 开发机可检查 `ulimit -n`，但提升限制不能替代定位泄漏。
 
 命令执行默认依赖 Docker 沙箱；Docker 不可用时工具返回错误，不会在 API/Worker 宿主机执行。
 
-## 独立 JoyHouse Market
+## 独立 HappyHouse Market
 
-JoyHouse Market 不是 Runtime 角色，也不位于本仓库。它在相邻的独立项目
-`../joyhouse-market` 中使用独立进程和独立密钥部署；第一阶段与其他服务共用 `JOYHOUSE_DATABASE_URL`，
+HappyHouse Market 不是 Runtime 角色，也不位于本仓库。它在相邻的独立项目
+`../happyhouse-market` 中使用独立进程和独立密钥部署；第一阶段与其他服务共用 `PORTHOUSE_DATABASE_URL`，
 只迁移和访问 `cloud_*`、`market_*` 表。生产环境必须额外完成：
 
 1. TLS、限流、WAF 与 `/tuf`、`/targets`、`/v2` 的分层缓存；

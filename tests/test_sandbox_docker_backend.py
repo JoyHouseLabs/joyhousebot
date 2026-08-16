@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from joyhousebot.sandbox.docker_backend import is_docker_available, run_in_container
+from porthouse.sandbox.docker_backend import is_docker_available, run_in_container
 
 
 @pytest.mark.asyncio
@@ -102,7 +102,7 @@ class _DockerHarness:
 @pytest.mark.asyncio
 async def test_is_docker_available_uses_ttl_cache(monkeypatch):
     """docker info is probed once per TTL window, not before every exec."""
-    import joyhousebot.sandbox.docker_backend as backend
+    import porthouse.sandbox.docker_backend as backend
 
     calls = 0
 
@@ -120,7 +120,7 @@ async def test_is_docker_available_uses_ttl_cache(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_in_container_applies_limits_and_names_container(monkeypatch, tmp_path):
-    """docker run gets resource limits, hardening flags and a joyhousebot-exec-* name."""
+    """docker run gets resource limits, hardening flags and a porthouse-exec-* name."""
     harness = _DockerHarness(_FakeProc(stdout=b"hi\n"))
     monkeypatch.setattr(asyncio, "create_subprocess_exec", harness)
 
@@ -133,7 +133,7 @@ async def test_run_in_container_applies_limits_and_names_container(monkeypatch, 
     )
     assert err is None and code == 0 and "hi" in out
     run_args = harness.calls[0]
-    assert run_args[run_args.index("--name") + 1].startswith("joyhousebot-exec-")
+    assert run_args[run_args.index("--name") + 1].startswith("porthouse-exec-")
     assert run_args[run_args.index("--memory") + 1] == "512m"
     assert run_args[run_args.index("--cpus") + 1] == "1"
     assert run_args[run_args.index("--pids-limit") + 1] == "256"

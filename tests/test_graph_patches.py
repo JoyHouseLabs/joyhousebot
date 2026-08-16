@@ -8,24 +8,24 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.context import Principal, RequestContext
-from joyhousebot.application.errors import ConflictError, ValidationError
-from joyhousebot.application.graph_patch_commands import (
+from porthouse.api.app import create_app
+from porthouse.application.context import Principal, RequestContext
+from porthouse.application.errors import ConflictError, ValidationError
+from porthouse.application.graph_patch_commands import (
     ApplyGraphPatchCommand,
     GraphPatchOperationCommand,
     ResolveGraphPatchProposalCommand,
 )
-from joyhousebot.application.run_commands import GraphTaskCommand
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
-from joyhousebot.domain.capabilities import (
+from porthouse.application.run_commands import GraphTaskCommand
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 

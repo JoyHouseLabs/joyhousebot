@@ -1,5 +1,5 @@
-from joyhousebot.config import access
-from joyhousebot.config.schema import Config
+from porthouse.config import access
+from porthouse.config.schema import Config
 
 
 def test_get_config_uses_cache_and_force_reload(monkeypatch, tmp_path):

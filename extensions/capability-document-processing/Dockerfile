@@ -1,9 +1,9 @@
 FROM python:3.12-slim
 
-WORKDIR /opt/joyhousebot
+WORKDIR /opt/porthouse
 
 COPY pyproject.toml README.md LICENSE ./
-COPY joyhousebot ./joyhousebot
+COPY porthouse ./porthouse
 COPY evals/suites ./evals/suites
 RUN pip install --no-cache-dir .
 

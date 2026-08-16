@@ -1,11 +1,11 @@
 # Core 与扩展包边界设计
 
 状态：Accepted（2026-08-09）
-适用范围：JoyhouseBot Runtime、Console、官方扩展与第三方扩展
+适用范围：Porthouse Runtime、Console、官方扩展与第三方扩展
 
 ## 1. 决策
 
-JoyhouseBot 是面向开发者、个人与小型组织的开源企业级 Agent 执行与治理 Runtime。Core 负责把目标可靠地
+Porthouse 是面向开发者、个人与小型组织的开源企业级 Agent 执行与治理 Runtime。Core 负责把目标可靠地
 变成可追踪、可恢复、可验证的执行，并将长任务、权限、审批、幂等、审计和发布治理作为可复用能力提供；
 独立业务 App 通过公共协议协作，供应商协议和模型可调用的具体技术能力通过 Extension 接入。
 
@@ -14,7 +14,7 @@ Core 的目的不是承载某个企业业务域，而是让开发者不必为每
 首个推荐组合是：
 
 ```text
-joyhousebot core + model provider extension + email channel extension
+porthouse core + model provider extension + email channel extension
 ```
 
 Core 不保留旧 Channel、Provider、Tool 或 MCP Client 的导入路径、配置字段和运行时翻译层。部署从当前
@@ -39,7 +39,7 @@ Core 不选择供应商或默认模型。空 Agent 目录只接受 `runtime.boot
 模型 ID；未配置时写入 `unconfigured/model`，不会暗中选择某家供应商。
 
 空数据库只种入一个无产品人格、无默认 Tool、默认关闭 Memory 的 `default` Agent，以保证 Runtime
-能够启动。Joyhouse 的人格、记忆策略、提示词 Skill 和持续任务必须通过产品发布物安装，不能写回 Core。
+能够启动。HappyHouse 的人格、记忆策略、提示词 Skill 和持续任务必须通过产品发布物安装，不能写回 Core。
 
 ## 3. 扩展必须拥有
 
@@ -54,7 +54,7 @@ Core 不选择供应商或默认模型。空 Agent 目录只接受 `runtime.boot
 独立业务产品保留自己的界面、身份、权限、业务服务和业务表所有权，通过版本化 HTTP/SSE 提交 Run，并通过
 唯一的通用远程 Capability Connector 接受 Worker 的签名调用。业务代码不得作为 Python 扩展加载到
 Runtime；业务路由、数据库模型和页面不得写入 Core。完整协作边界见
-[独立 App 与 JoyhouseBot 协作契约](APP_INTEGRATION.md)。
+[独立 App 与 Porthouse 协作契约](APP_INTEGRATION.md)。
 
 ## 4. 判定规则
 
@@ -67,16 +67,16 @@ Runtime；业务路由、数据库模型和页面不得写入 Core。完整协�
 依赖方向固定为：
 
 ```text
-business app / extension -> joyhousebot.extension_sdk -> core contracts/runtime
+business app / extension -> porthouse.extension_sdk -> core contracts/runtime
 core runtime -X-> extension implementation / vendor SDK
 ```
 
-扩展不能 import `joyhousebot.api`、`storage`、`runtime` 等内部包，不能持有数据库连接，不能创建第二套
+扩展不能 import `porthouse.api`、`storage`、`runtime` 等内部包，不能持有数据库连接，不能创建第二套
 Run/Task、重试或持久化状态机。
 
 ## 5. Extension SDK、Host 与安装协议
 
-`joyhousebot.extension_sdk` 是扩展唯一 Python 导入面，提供：
+`porthouse.extension_sdk` 是扩展唯一 Python 导入面，提供：
 
 - `ExtensionManifest`、`PluginManifest` 与版本化组件引用；
 - Channel envelope、`ChannelPlugin`、`RunAdapter`；
@@ -88,14 +88,14 @@ Run/Task、重试或持久化状态机。
 发现，不接受配置中的任意模块路径：
 
 ```toml
-[project.entry-points."joyhousebot.channels"]
-channel-email = "joyhousebot_channel_email:create_plugin"
+[project.entry-points."porthouse.channels"]
+channel-email = "porthouse_channel_email:create_plugin"
 
-[project.entry-points."joyhousebot.capabilities"]
-capability-research = "joyhousebot_capability_research:create_plugin"
+[project.entry-points."porthouse.capabilities"]
+capability-research = "porthouse_capability_research:create_plugin"
 
-[project.entry-points."joyhousebot.model_providers"]
-provider-anthropic = "joyhousebot_provider_anthropic:create_extension"
+[project.entry-points."porthouse.model_providers"]
+provider-anthropic = "porthouse_provider_anthropic:create_extension"
 ```
 
 安装只表示代码可发现。`catalogDirectories` 只扫描 `pyproject.toml` 和 distribution entry point
@@ -173,7 +173,7 @@ Core 负责入站去重、Run 提交、PG Outbox、Lease、fencing、投递重�
 
 Email 与其他 Channel 均为可卸载的独立 distribution；Console 不把未安装扩展描述为内置能力。
 
-部署安装或启用扩展后，先执行 `joyhousebot discover-extensions --config config.json`。该命令只导入
+部署安装或启用扩展后，先执行 `porthouse discover-extensions --config config.json`。该命令只导入
 显式启用扩展的不可变目录元数据，使 Console 能在 Agent Worker 启动前完成非敏感参数配置；它不赋予
 执行资格。发布仍必须经过精确构建校验、目标 Worker 预热和 ACK，未加载扩展的 Worker 不能执行能力。
 
@@ -218,10 +218,10 @@ Schema 和隔离策略。发布失败不能覆盖当前 active 版本。
 
 ## 10. 验收标准
 
-1. `pip install joyhousebot` 不安装任何渠道或模型供应商 SDK；
+1. `pip install porthouse` 不安装任何渠道或模型供应商 SDK；
 2. 无扩展时 API/Worker 可启动，Core 使用 fail-closed 的 `unconfigured/model` 占位实现，模型调用会明确失败，Tool 目录为空；
 3. 安装但未启用的扩展不执行、不注册模型可见能力；
-4. 扩展只 import `joyhousebot.extension_sdk`；
+4. 扩展只 import `porthouse.extension_sdk`；
 5. 旧导入、旧配置和任意模块加载入口不存在；
 6. 所有入站、出站和副作用进入统一 Runtime 链路；
 7. API 进程不 import 或执行扩展实现，模型、Tool 和扩展诊断只能在 Worker 链路发生；

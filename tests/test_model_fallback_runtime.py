@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.agent.executor import NativeAgentExecutor
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from porthouse.agent.executor import NativeAgentExecutor
+from porthouse.contracts.tools import Tool
+from porthouse.domain.agents import AgentRevision
+from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from porthouse.session.runtime_manager import RuntimeSessionManager
 from tests.support.capabilities import register_tool_fixture
 from tests.support.postgres_store import PostgresTestStore
 

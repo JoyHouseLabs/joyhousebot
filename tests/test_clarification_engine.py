@@ -2,16 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
-from joyhousebot.domain.scenarios import (
+from porthouse.domain.capabilities import CapabilityKind, CapabilityRef
+from porthouse.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
     RoutingDecision,
     ScenarioField,
     ScenarioVersion,
 )
-from joyhousebot.orchestration import ClarificationEngine, ScenarioRouter
-from joyhousebot.runtime.request_coordination import _enforce_routed_scenario
+from porthouse.orchestration import ClarificationEngine, ScenarioRouter
+from porthouse.runtime.request_coordination import _enforce_routed_scenario
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -144,7 +144,7 @@ def test_clarification_resumes_same_run_after_all_answers(tmp_path: Path) -> Non
     )
     second_step, second = engine.resolve(
         run_id="run-tts", user_id="user-a", input_request_id=first.input_request_id,
-        answers={"text": "欢迎使用 Joyhousebot"},
+        answers={"text": "欢迎使用 Porthousebot"},
     )
     assert second_step.missing_inputs == ("voice",)
     assert second is not None and second.node_id == "voice"

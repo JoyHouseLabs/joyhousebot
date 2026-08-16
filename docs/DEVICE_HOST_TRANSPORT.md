@@ -23,7 +23,7 @@ Runtime Action + reconciliation
 device_operation_deliveries (PostgreSQL)
              ^
              | authenticated HTTPS claim / heartbeat / result
-JoyHouse Device Host --> loopback HMAC --> Node Supervisor --> OpenCLI/Extension
+HappyHouse Device Host --> loopback HMAC --> Node Supervisor --> OpenCLI/Extension
 ```
 
 ## 2. 身份与密钥
@@ -35,7 +35,7 @@ JoyHouse Device Host --> loopback HMAC --> Node Supervisor --> OpenCLI/Extension
 设备 API 同时要求：
 
 - `Authorization: Bearer <device-token>`；
-- `X-Joyhouse-Device-ID: <registered-device-id>`；
+- `X-HappyHouse-Device-ID: <registered-device-id>`；
 - 数据库中设备仍为 `active`；
 - 心跳中的 Host revision 与 manifest digest 和注册值完全相同。
 
@@ -104,7 +104,7 @@ version，且 lease 尚未过期。旧进程即使保留 token，也不能用旧
 5. 上传有界事件和终态。
 
 它和 Supervisor 一起使用 `hosts/node/runtime-lock.json` 的 Node `v24.19.0`，不探测用户全局 Node。纯本地
-JoyHouse 可以直接调用 loopback Supervisor，不依赖 Cloud Device API。
+HappyHouse 可以直接调用 loopback Supervisor，不依赖 Cloud Device API。
 
 ## 7. 当前限制
 

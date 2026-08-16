@@ -2,9 +2,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -54,13 +54,13 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
         event = {"event_type": "crm.contact.updated", "payload": {"contact_id": "42"}}
         wrong = client.post(
             f"/v1/hooks/{trigger_id}",
-            headers={"X-Joyhouse-Webhook-Secret": "wrong", "Idempotency-Key": "evt-1"},
+            headers={"X-Porthouse-Webhook-Secret": "wrong", "Idempotency-Key": "evt-1"},
             json=event,
         )
         assert wrong.status_code == 404
         missing_identity = client.post(
             f"/v1/hooks/{trigger_id}",
-            headers={"X-Joyhouse-Webhook-Secret": secret},
+            headers={"X-Porthouse-Webhook-Secret": secret},
             json=event,
         )
         assert missing_identity.status_code == 422
@@ -68,7 +68,7 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
         accepted = client.post(
             f"/v1/hooks/{trigger_id}",
             headers={
-                "X-Joyhouse-Webhook-Secret": secret,
+                "X-Porthouse-Webhook-Secret": secret,
                 "Idempotency-Key": "evt-1",
             },
             json=event,
@@ -85,7 +85,7 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
         duplicate = client.post(
             f"/v1/hooks/{trigger_id}",
             headers={
-                "X-Joyhouse-Webhook-Secret": secret,
+                "X-Porthouse-Webhook-Secret": secret,
                 "Idempotency-Key": "evt-1",
             },
             json=event,
@@ -96,7 +96,7 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
         conflict = client.post(
             f"/v1/hooks/{trigger_id}",
             headers={
-                "X-Joyhouse-Webhook-Secret": secret,
+                "X-Porthouse-Webhook-Secret": secret,
                 "Idempotency-Key": "evt-1",
             },
             json={**event, "payload": {"contact_id": "99"}},
@@ -105,7 +105,7 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
         mismatch = client.post(
             f"/v1/hooks/{trigger_id}",
             headers={
-                "X-Joyhouse-Webhook-Secret": secret,
+                "X-Porthouse-Webhook-Secret": secret,
                 "Idempotency-Key": "evt-2",
             },
             json={"event_type": "crm.deal.closed", "payload": {}},
@@ -135,7 +135,7 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
             client.post(
                 f"/v1/hooks/{trigger_id}",
                 headers={
-                    "X-Joyhouse-Webhook-Secret": secret,
+                    "X-Porthouse-Webhook-Secret": secret,
                     "Idempotency-Key": "evt-3",
                 },
                 json=event,
@@ -160,7 +160,7 @@ def test_webhook_trigger_submits_idempotent_user_scoped_run(tmp_path: Path) -> N
             client.post(
                 f"/v1/hooks/{trigger_id}",
                 headers={
-                    "X-Joyhouse-Webhook-Secret": new_secret,
+                    "X-Porthouse-Webhook-Secret": new_secret,
                     "Idempotency-Key": "evt-3",
                 },
                 json=event,

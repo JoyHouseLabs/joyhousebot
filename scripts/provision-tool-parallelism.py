@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import argparse
 
-from joyhousebot.config.access import get_config
-from joyhousebot.domain.agents import AgentRevision
-from joyhousebot.storage.factory import create_runtime_store
+from porthouse.config.access import get_config
+from porthouse.domain.agents import AgentRevision
+from porthouse.storage.factory import create_runtime_store
 
 
 def main() -> None:

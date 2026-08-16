@@ -4,12 +4,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config, ExtensionsConfig
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config, ExtensionsConfig
+from porthouse.domain.agents import AgentDefinition, AgentRevision
+from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from porthouse.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
 from tests.support.capabilities import TEST_PLUGIN_DIGEST
 from tests.support.postgres_store import PostgresTestStore
 
@@ -66,10 +66,10 @@ def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
 def test_production_rejects_combined_or_insecure_api_surfaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("JOYHOUSEBOT_ENVIRONMENT", "production")
-    monkeypatch.delenv("JOYHOUSEBOT_ALLOW_COMBINED_SURFACE", raising=False)
-    monkeypatch.delenv("JOYHOUSEBOT_CONTROL_TOKEN", raising=False)
-    monkeypatch.delenv("JOYHOUSEBOT_METRICS_TOKEN", raising=False)
+    monkeypatch.setenv("PORTHOUSE_ENVIRONMENT", "production")
+    monkeypatch.delenv("PORTHOUSE_ALLOW_COMBINED_SURFACE", raising=False)
+    monkeypatch.delenv("PORTHOUSE_CONTROL_TOKEN", raising=False)
+    monkeypatch.delenv("PORTHOUSE_METRICS_TOKEN", raising=False)
     with pytest.raises(ValueError, match="separate public and control"):
         create_app(surface="combined")
 
@@ -117,35 +117,35 @@ def test_scoped_service_token_attenuates_user_api_access(tmp_path: Path) -> None
 def test_prometheus_metrics_endpoint_exposes_runtime_families(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("JOYHOUSEBOT_METRICS_TOKEN", "scrape-token")
+    monkeypatch.setenv("PORTHOUSE_METRICS_TOKEN", "scrape-token")
     client, store = _client(tmp_path)
     with client:
         response = client.get("/metrics", headers={"Authorization": "Bearer scrape-token"})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
-    assert "joyhousebot_up 1" in response.text
-    assert "joyhousebot_runs_total" in response.text
-    assert "joyhousebot_tasks_total" in response.text
-    assert "joyhousebot_task_claim_delay_ms_p95" in response.text
-    assert "joyhousebot_approval_oldest_pending_seconds" in response.text
-    assert "joyhousebot_reconciliation_oldest_active_seconds" in response.text
+    assert "porthouse_up 1" in response.text
+    assert "porthouse_runs_total" in response.text
+    assert "porthouse_tasks_total" in response.text
+    assert "porthouse_task_claim_delay_ms_p95" in response.text
+    assert "porthouse_approval_oldest_pending_seconds" in response.text
+    assert "porthouse_reconciliation_oldest_active_seconds" in response.text
 
 
 def test_prometheus_metrics_fails_closed_without_configured_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("JOYHOUSEBOT_METRICS_TOKEN", raising=False)
+    monkeypatch.delenv("PORTHOUSE_METRICS_TOKEN", raising=False)
     client, _ = _client(tmp_path)
     with client:
         response = client.get("/metrics")
     assert response.status_code == 404
-    assert "joyhousebot_up" not in response.text
+    assert "porthouse_up" not in response.text
 
 
 def test_prometheus_metrics_requires_bearer_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("JOYHOUSEBOT_METRICS_TOKEN", "scrape-token")
+    monkeypatch.setenv("PORTHOUSE_METRICS_TOKEN", "scrape-token")
     client, _ = _client(tmp_path)
     with client:
         assert client.get("/metrics").status_code == 401
@@ -473,7 +473,7 @@ def test_authentication_and_operator_impersonation(tmp_path: Path, monkeypatch) 
             == "user-a"
         )
 
-        monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "operator-token")
+        monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "operator-token")
         missing = client.get("/v1/runs", headers={"Authorization": "Bearer operator-token"})
         delegated = client.get(
             "/v1/runs",
@@ -528,17 +528,17 @@ def test_insecure_default_user_is_explicit_test_admin(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "cloud.db")
     client = TestClient(create_app(build_api_container(config=config, store=store)))
     with client:
-        identity = client.get("/v1/me", headers={"X-User-Id": "joyhousebot"})
+        identity = client.get("/v1/me", headers={"X-User-Id": "porthouse"})
         assert identity.status_code == 200
         assert identity.json()["role"] == "admin"
         assert identity.json()["is_admin"] is True
-        admins = client.get("/v1/admin/users", headers={"X-User-Id": "joyhousebot"})
+        admins = client.get("/v1/admin/users", headers={"X-User-Id": "porthouse"})
         assert admins.status_code == 200
         assert admins.json()["items"][0]["is_test_user"] is True
 
         login = client.post(
             "/v1/auth/login",
-            json={"user_id": "joyhousebot", "password": "joyhousebot"},
+            json={"user_id": "porthouse", "password": "porthouse"},
         )
         assert login.status_code == 200
         assert login.json()["must_change_password"] is True
@@ -889,7 +889,7 @@ def test_admin_model_diagnostics_raw_payload_and_offline_replay(tmp_path: Path) 
 
 
 def test_rate_limit_returns_429(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("JOYHOUSEBOT_API_RATE_PER_MINUTE", "5")
+    monkeypatch.setenv("PORTHOUSE_API_RATE_PER_MINUTE", "5")
     client, _ = _client(tmp_path)
     with client:
         codes = [
@@ -902,7 +902,7 @@ def test_rate_limit_returns_429(tmp_path: Path, monkeypatch) -> None:
 
 def test_rate_limit_counts_failed_auth_per_client_ip(tmp_path: Path, monkeypatch) -> None:
     """Rotating bearer tokens must not reset a brute-force budget (H2)."""
-    monkeypatch.setenv("JOYHOUSEBOT_API_RATE_PER_MINUTE", "5")
+    monkeypatch.setenv("PORTHOUSE_API_RATE_PER_MINUTE", "5")
     client, _ = _client(tmp_path)
     with client:
         codes = [

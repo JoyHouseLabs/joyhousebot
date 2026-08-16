@@ -7,15 +7,15 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from joyhousebot.api.schemas import SaveAgentRevisionRequest
-from joyhousebot.cron.active_hours import is_within_active_hours
-from joyhousebot.cron.managed_monitor import (
+from porthouse.api.schemas import SaveAgentRevisionRequest
+from porthouse.cron.active_hours import is_within_active_hours
+from porthouse.cron.managed_monitor import (
     managed_monitor_schedule_id,
     reconcile_agent_monitor,
     reconcile_existing_agent_monitors,
 )
-from joyhousebot.domain.agents import AgentDefinition, AgentRevision
-from joyhousebot.scheduling.repository import ScheduleRepository
+from porthouse.domain.agents import AgentDefinition, AgentRevision
+from porthouse.scheduling.repository import ScheduleRepository
 from tests.support.postgres_store import PostgresTestStore
 
 

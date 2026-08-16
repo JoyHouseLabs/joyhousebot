@@ -1,4 +1,4 @@
-# JoyhouseBot Vision Capability
+# Porthouse Vision Capability
 
 `capability-vision` sends one **frozen Runtime Input Asset** to a configured
 OpenAI-compatible vision endpoint for OCR or visual understanding. It cannot

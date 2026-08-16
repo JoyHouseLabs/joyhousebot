@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * joyhousebot WhatsApp Bridge
+ * porthouse WhatsApp Bridge
  * 
- * This bridge connects WhatsApp Web to joyhousebot's Python backend
+ * This bridge connects WhatsApp Web to porthouse's Python backend
  * via WebSocket. It handles authentication, message forwarding,
  * and reconnection logic.
  * 
@@ -10,7 +10,7 @@
  *   npm run build && npm start
  *   
  * Or with custom settings:
- *   BRIDGE_PORT=3001 AUTH_DIR=~/.joyhousebot/whatsapp npm start
+ *   BRIDGE_PORT=3001 AUTH_DIR=~/.porthouse/whatsapp npm start
  */
 
 // Polyfill crypto for Baileys in ESM
@@ -25,10 +25,10 @@ import { join } from 'path';
 
 const PORT = parseInt(process.env.BRIDGE_PORT || '3001', 10);
 const HOST = process.env.BRIDGE_HOST || '127.0.0.1';
-const AUTH_DIR = process.env.AUTH_DIR || join(homedir(), '.joyhousebot', 'whatsapp-auth');
+const AUTH_DIR = process.env.AUTH_DIR || join(homedir(), '.porthouse', 'whatsapp-auth');
 const TOKEN = process.env.BRIDGE_TOKEN || undefined;
 
-console.log('🐈 joyhousebot WhatsApp Bridge');
+console.log('🐈 porthouse WhatsApp Bridge');
 console.log('========================\n');
 
 if (HOST !== '127.0.0.1' && HOST !== '::1' && !TOKEN) {

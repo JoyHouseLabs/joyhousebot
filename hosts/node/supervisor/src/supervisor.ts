@@ -1,4 +1,4 @@
-import type {CapabilityIdentity, ExtensionHostManifest} from "@joyhousebot/extension-sdk";
+import type {CapabilityIdentity, ExtensionHostManifest} from "@porthouse/extension-sdk";
 
 import {hostManifest} from "./manifest.js";
 import {OperationRegistry} from "./operations.js";

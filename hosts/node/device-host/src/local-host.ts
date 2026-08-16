@@ -6,7 +6,7 @@ import {
   signResponseBody,
   type InvocationRequest,
   type RemoteCapabilityResponse,
-} from "@joyhousebot/extension-sdk";
+} from "@porthouse/extension-sdk";
 
 import type {
   DeviceHostConfig,
@@ -64,11 +64,11 @@ export class SignedLocalCapabilityHost implements LocalCapabilityHost {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Joyhouse-Capability-Protocol": "1",
-        "X-Joyhouse-Key-ID": this.#config.keyId,
-        "X-Joyhouse-Timestamp": timestamp,
-        "X-Joyhouse-Nonce": nonce,
-        "X-Joyhouse-Signature": signRequestBody({
+        "X-Porthouse-Capability-Protocol": "1",
+        "X-Porthouse-Key-ID": this.#config.keyId,
+        "X-Porthouse-Timestamp": timestamp,
+        "X-Porthouse-Nonce": nonce,
+        "X-Porthouse-Signature": signRequestBody({
           method: "POST",
           path,
           timestamp,
@@ -78,7 +78,7 @@ export class SignedLocalCapabilityHost implements LocalCapabilityHost {
         }),
         "Idempotency-Key": execution?.idempotency_key ?? "",
         ...(execution?.action_id
-          ? {"X-Joyhouse-Action-ID": execution.action_id}
+          ? {"X-Porthouse-Action-ID": execution.action_id}
           : {}),
       },
       body,
@@ -86,7 +86,7 @@ export class SignedLocalCapabilityHost implements LocalCapabilityHost {
     });
     const raw = Buffer.from(await response.arrayBuffer());
     if (this.#config.requireResponseSignature) {
-      const actual = response.headers.get("x-joyhouse-response-signature") ?? "";
+      const actual = response.headers.get("x-porthouse-response-signature") ?? "";
       const expected = signResponseBody({
         statusCode: response.status,
         nonce,

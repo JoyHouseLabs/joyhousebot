@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import {readFile, writeFile} from "node:fs/promises";
 
-import {canonicalJson, sha256Hex} from "@joyhousebot/extension-sdk";
+import {canonicalJson, sha256Hex} from "@porthouse/extension-sdk";
 
 import type {
   AllowedCommand,

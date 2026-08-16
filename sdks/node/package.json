@@ -1,7 +1,7 @@
 {
-  "name": "@joyhousebot/extension-sdk",
+  "name": "@porthouse/extension-sdk",
   "version": "0.1.0",
-  "description": "JoyhouseBot Extension Host protocol and signing SDK for Node.js",
+  "description": "Porthouse Extension Host protocol and signing SDK for Node.js",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

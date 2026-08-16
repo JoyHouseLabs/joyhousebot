@@ -1,4 +1,4 @@
-# JoyhouseBot Document Processing Capability
+# Porthouse Document Processing Capability
 
 Optional, business-neutral extraction of immutable private Runtime Input Assets.
 
@@ -22,7 +22,7 @@ Production deployments can select the stronger network-disabled `container` back
 ```json
 {
   "isolation_backend": "container",
-  "container_image": "joyhousebot-document-processing:0.1.0"
+  "container_image": "porthouse-document-processing:0.1.0"
 }
 ```
 
@@ -31,7 +31,7 @@ Build the optional parser image from the repository root:
 ```bash
 docker build \
   -f extensions/capability-document-processing/Dockerfile \
-  -t joyhousebot-document-processing:0.1.0 \
+  -t porthouse-document-processing:0.1.0 \
   .
 ```
 

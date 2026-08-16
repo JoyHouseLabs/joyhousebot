@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.application.app_packs import AppPackService
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.config.schema import Config
+from porthouse.api.app import create_app
+from porthouse.application.app_packs import AppPackService
+from porthouse.bootstrap.container import build_api_container
+from porthouse.config.schema import Config
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -58,7 +58,7 @@ def _consumer_manifest() -> dict:
         "version": "1.0.0",
         "name": "Content Studio",
         "description": "Turns approved research into a content production plan.",
-        "publisher": "Joyhouse",
+        "publisher": "Porthouse",
         "core": {"min_version": "0.1.2"},
         "extensions": [],
         "capabilities": [],

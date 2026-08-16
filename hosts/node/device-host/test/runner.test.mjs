@@ -53,7 +53,7 @@ test("device runner renews accepted work and submits one terminal result", async
         protocol_version: "1",
         status: "succeeded",
         summary: "done",
-        output: {account: "joyhouse"},
+        output: {account: "porthouse"},
         events: [{event_id: "event-1", sequence: 0, event_type: "progress"}],
       };
     },
@@ -65,7 +65,7 @@ test("device runner renews accepted work and submits one terminal result", async
   assert.equal(calls.renew, 1);
   assert.equal(calls.complete.length, 1);
   assert.equal(calls.complete[0].invocation_id, "inv-action-1");
-  assert.deepEqual(calls.complete[0].data, {account: "joyhouse"});
+  assert.deepEqual(calls.complete[0].data, {account: "porthouse"});
   assert.equal(calls.events[0].sequence, 0);
 });
 

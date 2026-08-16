@@ -1,7 +1,7 @@
 x-runtime-build: &runtime_build
   context: .
   args:
-    JOYHOUSEBOT_EXTENSIONS: ${JOYHOUSEBOT_EXTENSIONS:-provider-openai-compatible}
+    PORTHOUSE_EXTENSIONS: ${PORTHOUSE_EXTENSIONS:-provider-openai-compatible}
 
 services:
   postgres:
@@ -10,20 +10,20 @@ services:
     # on an operator to install a server-side package after boot.
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_DB: joyhousebot
-      POSTGRES_USER: joyhousebot
+      POSTGRES_DB: porthouse
+      POSTGRES_USER: porthouse
       # No default password: startup fails fast when it is not provided.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U joyhousebot -d joyhousebot"]
+      test: ["CMD-SHELL", "pg_isready -U porthouse -d porthouse"]
       interval: 5s
       timeout: 3s
       retries: 20
     ports:
       # Loopback only: the database must not be reachable from other hosts.
-      - "127.0.0.1:${JOYHOUSEBOT_POSTGRES_PORT:-15432}:5432"
+      - "127.0.0.1:${PORTHOUSE_POSTGRES_PORT:-15432}:5432"
     volumes:
-      - joyhousebot_pg_data:/var/lib/postgresql/data
+      - porthouse_pg_data:/var/lib/postgresql/data
       - ./deploy/postgres/init/10-enable-pgvector.sql:/docker-entrypoint-initdb.d/10-enable-pgvector.sql:ro
 
   # Public data plane only: runs/sessions/schedules + MCP. Admin routes and
@@ -32,20 +32,20 @@ services:
     build: *runtime_build
     command: ["api", "--surface", "public", "--host", "0.0.0.0", "--port", "18790"]
     environment: &runtime_env
-      JOYHOUSE_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
-      JOYHOUSEBOT_CONFIG_PATH: /app/config.json
+      PORTHOUSE_DATABASE_URL: postgresql://porthouse:${POSTGRES_PASSWORD:?required}@postgres:5432/porthouse
+      PORTHOUSE_CONFIG_PATH: /app/config.json
       # Schema is owned by the one-shot migrate service below. Runtime roles
       # must never race DDL with another role's catalog bootstrap writes.
-      JOYHOUSEBOT_AUTO_MIGRATE: "false"
+      PORTHOUSE_AUTO_MIGRATE: "false"
       # No default token: /metrics refuses all requests when it is not set.
-      JOYHOUSEBOT_METRICS_TOKEN: ${JOYHOUSEBOT_METRICS_TOKEN:?required}
-      JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
-      JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+      PORTHOUSE_METRICS_TOKEN: ${PORTHOUSE_METRICS_TOKEN:?required}
+      PORTHOUSE_OTEL_ENABLED: ${PORTHOUSE_OTEL_ENABLED:-false}
+      PORTHOUSE_ENVIRONMENT: ${PORTHOUSE_ENVIRONMENT:-production}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_PROPAGATORS: tracecontext,baggage
     volumes: &runtime_config
-      - ${JOYHOUSEBOT_CONFIG_FILE:-./deploy/config.runtime.json}:/app/config.json:ro
+      - ${PORTHOUSE_CONFIG_FILE:-./deploy/config.runtime.json}:/app/config.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,11 +63,11 @@ services:
     environment:
       <<: *runtime_env
       # One-time values may be removed after the first password change.
-      JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER: ${JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER:-}
-      JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD: ${JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD:-}
+      PORTHOUSE_BOOTSTRAP_ADMIN_USER: ${PORTHOUSE_BOOTSTRAP_ADMIN_USER:-}
+      PORTHOUSE_BOOTSTRAP_ADMIN_PASSWORD: ${PORTHOUSE_BOOTSTRAP_ADMIN_PASSWORD:-}
       # Persistent 32-byte URL-safe base64 key used to encrypt TOTP secrets.
-      JOYHOUSEBOT_AUTH_ENCRYPTION_KEY: ${JOYHOUSEBOT_AUTH_ENCRYPTION_KEY:?required}
-      JOYHOUSEBOT_ADMIN_SESSION_HOURS: ${JOYHOUSEBOT_ADMIN_SESSION_HOURS:-12}
+      PORTHOUSE_AUTH_ENCRYPTION_KEY: ${PORTHOUSE_AUTH_ENCRYPTION_KEY:?required}
+      PORTHOUSE_ADMIN_SESSION_HOURS: ${PORTHOUSE_ADMIN_SESSION_HOURS:-12}
     volumes: *runtime_config
     depends_on:
       postgres:
@@ -75,7 +75,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:${JOYHOUSEBOT_CONTROL_PORT:-18791}:18790"
+      - "127.0.0.1:${PORTHOUSE_CONTROL_PORT:-18791}:18790"
 
   worker:
     build: *runtime_build
@@ -148,11 +148,11 @@ services:
     environment:
       # Channel worker only submits runs and never calls LLM providers, so it
       # must not inherit provider API keys from the runtime env anchor above.
-      JOYHOUSE_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
-      JOYHOUSEBOT_CONFIG_PATH: /app/config.json
-      JOYHOUSEBOT_AUTO_MIGRATE: "false"
-      JOYHOUSEBOT_OTEL_ENABLED: ${JOYHOUSEBOT_OTEL_ENABLED:-false}
-      JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+      PORTHOUSE_DATABASE_URL: postgresql://porthouse:${POSTGRES_PASSWORD:?required}@postgres:5432/porthouse
+      PORTHOUSE_CONFIG_PATH: /app/config.json
+      PORTHOUSE_AUTO_MIGRATE: "false"
+      PORTHOUSE_OTEL_ENABLED: ${PORTHOUSE_OTEL_ENABLED:-false}
+      PORTHOUSE_ENVIRONMENT: ${PORTHOUSE_ENVIRONMENT:-production}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     volumes: *runtime_config
@@ -168,10 +168,10 @@ services:
     build: *runtime_build
     command: ["check"]
     environment:
-      JOYHOUSE_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
-      JOYHOUSEBOT_CONFIG_PATH: /app/config.json
-      JOYHOUSEBOT_AUTO_MIGRATE: "true"
-      JOYHOUSEBOT_ENVIRONMENT: ${JOYHOUSEBOT_ENVIRONMENT:-production}
+      PORTHOUSE_DATABASE_URL: postgresql://porthouse:${POSTGRES_PASSWORD:?required}@postgres:5432/porthouse
+      PORTHOUSE_CONFIG_PATH: /app/config.json
+      PORTHOUSE_AUTO_MIGRATE: "true"
+      PORTHOUSE_ENVIRONMENT: ${PORTHOUSE_ENVIRONMENT:-production}
       # The one-shot migrator seeds an empty Agent catalog with this exact ID.
       # It does not receive provider credentials or import provider code.
       LLM_MODEL: ${LLM_MODEL:?required}
@@ -182,4 +182,4 @@ services:
     restart: "no"
 
 volumes:
-  joyhousebot_pg_data:
+  porthouse_pg_data:

@@ -10,22 +10,22 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from joyhousebot.api.app import create_app
-from joyhousebot.bootstrap.container import build_api_container
-from joyhousebot.capabilities import CapabilityRegistry
-from joyhousebot.config.schema import Config
-from joyhousebot.contracts.tools import Tool
-from joyhousebot.domain.capabilities import (
+from porthouse.api.app import create_app
+from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities import CapabilityRegistry
+from porthouse.config.schema import Config
+from porthouse.contracts.tools import Tool
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from joyhousebot.orchestration.control_nodes import (
+from porthouse.orchestration.control_nodes import (
     validate_compensation_declarations,
 )
-from joyhousebot.orchestration.task_graph import validate_and_order_graph
-from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
-from joyhousebot.runtime.runner import NativeAgentRuntime
+from porthouse.orchestration.task_graph import validate_and_order_graph
+from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
+from porthouse.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _VALUE_SCHEMA = {

@@ -1,14 +1,14 @@
 from pathlib import Path
 
 import pytest
-from joyhousebot_channel_telegram import (
+from porthouse_channel_telegram import (
     TELEGRAM_EXTENSION_MANIFEST,
     TelegramChannelPlugin,
 )
-from joyhousebot_channel_telegram.plugin import _markdown_to_telegram_html
+from porthouse_channel_telegram.plugin import _markdown_to_telegram_html
 
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config, ExtensionsConfig
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config, ExtensionsConfig
 
 
 class RecordingAdapter:
@@ -28,7 +28,7 @@ def _configured_plugin() -> TelegramChannelPlugin:
 def test_telegram_extension_has_versioned_channel_manifest() -> None:
     assert TELEGRAM_EXTENSION_MANIFEST.extension_id == "channel-telegram"
     assert TELEGRAM_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert TELEGRAM_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-telegram"
+    assert TELEGRAM_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-telegram"
     assert TelegramChannelPlugin().extension_manifest is TELEGRAM_EXTENSION_MANIFEST
 
 
@@ -47,7 +47,7 @@ def test_channel_manager_loads_explicit_telegram_extension_entry_point() -> None
 
 @pytest.mark.asyncio
 async def test_telegram_extension_fails_closed_without_vendor_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("joyhousebot_channel_telegram.plugin.TELEGRAM_AVAILABLE", False)
+    monkeypatch.setattr("porthouse_channel_telegram.plugin.TELEGRAM_AVAILABLE", False)
     plugin = _configured_plugin()
     await plugin.start()
     assert plugin.is_running is False
@@ -61,7 +61,7 @@ def test_telegram_markdown_conversion_remains_extension_owned() -> None:
 def test_telegram_extension_has_no_model_provider_coupling() -> None:
     source = (
         Path(__file__).parents[1]
-        / "extensions/channel-telegram/src/joyhousebot_channel_telegram/plugin.py"
+        / "extensions/channel-telegram/src/porthouse_channel_telegram/plugin.py"
     ).read_text(encoding="utf-8")
     assert "GroqTranscriptionProvider" not in source
     assert "providers.transcription" not in source

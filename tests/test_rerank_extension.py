@@ -1,7 +1,7 @@
-from joyhousebot_capability_rerank import RerankCapabilityPlugin
+from porthouse_capability_rerank import RerankCapabilityPlugin
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.contracts import CapabilityContext
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.contracts import CapabilityContext
 
 
 def test_rerank_extension_is_a_scoped_read_capability() -> None:

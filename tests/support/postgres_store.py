@@ -14,11 +14,11 @@ import psycopg
 import pytest
 from psycopg.errors import DeadlockDetected
 
-from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+from porthouse.storage.postgres_store import PostgresRuntimeStore
 
 TEST_DATABASE_URL = (
-    os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL")
-    or "postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot_test"
+    os.environ.get("PORTHOUSE_TEST_POSTGRES_URL")
+    or "postgresql://porthouse:porthouse-dev@127.0.0.1:15432/porthouse_test"
 )
 
 # One connectivity probe per database URL per test run, so a missing
@@ -36,7 +36,7 @@ def require_postgres(database_url: str | None = None) -> str:
     """
     target = (database_url or TEST_DATABASE_URL or "").strip()
     if not target:
-        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
+        pytest.skip("PORTHOUSE_TEST_POSTGRES_URL is not configured")
     if target not in _probe_failures:
         try:
             with psycopg.connect(target, connect_timeout=3, autocommit=True):

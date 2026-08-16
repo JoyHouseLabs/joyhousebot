@@ -1,7 +1,7 @@
-# JoyhouseBot MCP Client Connector
+# Porthouse MCP Client Connector
 
 可选的外部 MCP Server 客户端连接器。它在 Worker 启动时连接显式配置的 MCP Server，
-把远端 Tool 注册到 JoyhouseBot 的统一 Capability Registry；调用仍经过 allowlist、审批、
+把远端 Tool 注册到 Porthouse 的统一 Capability Registry；调用仍经过 allowlist、审批、
 Action、审计和 Run/Task 链路。
 
 ```bash

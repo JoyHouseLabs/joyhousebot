@@ -2,18 +2,18 @@ import asyncio
 
 import httpx
 import pytest
-from joyhousebot_provider_anthropic import AnthropicProvider
-from joyhousebot_provider_openai_compatible import OpenAICompatibleProvider
+from porthouse_provider_anthropic import AnthropicProvider
+from porthouse_provider_openai_compatible import OpenAICompatibleProvider
 
-from joyhousebot.config.schema import Config, ExtensionsConfig, ProviderConfig
-from joyhousebot.providers.factory import create_model_provider
-from joyhousebot.providers.observability import bind_model_observation
-from joyhousebot.providers.provider_support import (
+from porthouse.config.schema import Config, ExtensionsConfig, ProviderConfig
+from porthouse.providers.factory import create_model_provider
+from porthouse.providers.observability import bind_model_observation
+from porthouse.providers.provider_support import (
     error_metadata,
     sanitize_tools,
     user_friendly_error,
 )
-from joyhousebot.runtime.context import CancellationToken, RunContext, bind_run_context
+from porthouse.runtime.context import CancellationToken, RunContext, bind_run_context
 from tests.support.postgres_store import PostgresTestStore
 
 

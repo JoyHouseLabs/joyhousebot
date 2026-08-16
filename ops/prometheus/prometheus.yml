@@ -3,16 +3,16 @@ global:
   evaluation_interval: 15s
 
 rule_files:
-  - /etc/prometheus/joyhousebot-alerts.yml
+  - /etc/prometheus/porthouse-alerts.yml
 
 scrape_configs:
-  - job_name: joyhousebot
+  - job_name: porthouse
     metrics_path: /metrics
     # Required: /metrics is fail-closed and returns 404 unless the API has
-    # JOYHOUSEBOT_METRICS_TOKEN set, and 401 without this bearer credential.
+    # PORTHOUSE_METRICS_TOKEN set, and 401 without this bearer credential.
     # Put the same token into the file below (one line, no newline is fine).
     authorization:
       type: Bearer
-      credentials_file: /etc/prometheus/secrets/joyhousebot_metrics_token
+      credentials_file: /etc/prometheus/secrets/porthouse_metrics_token
     static_configs:
       - targets: ["api:18790"]

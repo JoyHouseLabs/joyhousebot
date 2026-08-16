@@ -1,10 +1,10 @@
 
 import pytest
-from joyhousebot_channel_slack import SLACK_EXTENSION_MANIFEST, SlackChannelPlugin
-from joyhousebot_channel_slack.plugin import ack_emoji_for_slack
+from porthouse_channel_slack import SLACK_EXTENSION_MANIFEST, SlackChannelPlugin
+from porthouse_channel_slack.plugin import ack_emoji_for_slack
 
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config, ExtensionsConfig
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config, ExtensionsConfig
 
 
 def test_slack_reaction_aliases_belong_to_the_extension() -> None:
@@ -43,7 +43,7 @@ def _configured_plugin(adapter=None) -> SlackChannelPlugin:
 def test_slack_extension_has_versioned_channel_manifest() -> None:
     assert SLACK_EXTENSION_MANIFEST.extension_id == "channel-slack"
     assert SLACK_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert SLACK_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-slack"
+    assert SLACK_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-slack"
     assert SlackChannelPlugin().extension_manifest is SLACK_EXTENSION_MANIFEST
 
 
@@ -64,7 +64,7 @@ def test_channel_manager_loads_explicit_slack_extension_entry_point() -> None:
 
 @pytest.mark.asyncio
 async def test_slack_extension_fails_closed_without_vendor_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("joyhousebot_channel_slack.plugin.SLACK_AVAILABLE", False)
+    monkeypatch.setattr("porthouse_channel_slack.plugin.SLACK_AVAILABLE", False)
     plugin = _configured_plugin()
     await plugin.start()
     assert plugin.is_running is False

@@ -1,7 +1,7 @@
-# JoyhouseBot HTTP Capability Connector
+# Porthouse HTTP Capability Connector
 
 通用远程业务能力连接器。企业程序保持自己的 UI、身份、组织权限、业务数据库和事务，只把经过保护的
-业务操作暴露为版本化 Capability。连接器在 Agent Worker 内注册这些声明，调用继续经过 JoyhouseBot
+业务操作暴露为版本化 Capability。连接器在 Agent Worker 内注册这些声明，调用继续经过 Porthouse
 的权限、配额、审批、Action、幂等、对账、Trace 和 Artifact 链路。
 
 它不会加载企业代码、连接企业数据库、接受模型提供的 URL，也不会创建第二套 Run/Task 状态机。

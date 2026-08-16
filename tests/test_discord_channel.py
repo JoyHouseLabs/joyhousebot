@@ -1,8 +1,8 @@
 import pytest
-from joyhousebot_channel_discord import DISCORD_EXTENSION_MANIFEST, DiscordChannelPlugin
+from porthouse_channel_discord import DISCORD_EXTENSION_MANIFEST, DiscordChannelPlugin
 
-from joyhousebot.channels.manager import ChannelManager
-from joyhousebot.config.schema import Config, ExtensionsConfig
+from porthouse.channels.manager import ChannelManager
+from porthouse.config.schema import Config, ExtensionsConfig
 
 
 class RecordingAdapter:
@@ -22,7 +22,7 @@ def _configured_plugin() -> DiscordChannelPlugin:
 def test_discord_extension_has_versioned_channel_manifest() -> None:
     assert DISCORD_EXTENSION_MANIFEST.extension_id == "channel-discord"
     assert DISCORD_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert DISCORD_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-discord"
+    assert DISCORD_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-discord"
     assert DiscordChannelPlugin().extension_manifest is DISCORD_EXTENSION_MANIFEST
 
 
@@ -41,7 +41,7 @@ def test_channel_manager_loads_explicit_discord_extension_entry_point() -> None:
 
 @pytest.mark.asyncio
 async def test_discord_extension_fails_closed_without_websocket_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("joyhousebot_channel_discord.plugin.DISCORD_AVAILABLE", False)
+    monkeypatch.setattr("porthouse_channel_discord.plugin.DISCORD_AVAILABLE", False)
     plugin = _configured_plugin()
     await plugin.start()
     assert plugin.is_running is False

@@ -1,7 +1,7 @@
-# JoyhouseBot Feishu Channel
+# Porthouse Feishu Channel
 
 可选 Feishu/Lark WebSocket Channel 扩展。供应商 SDK 和消息卡片转换位于本包，持久执行、投递 Outbox、
-租约、重试和审计由 JoyhouseBot Core 负责。
+租约、重试和审计由 Porthouse Core 负责。
 
 ```bash
 uv pip install -e extensions/channel-feishu

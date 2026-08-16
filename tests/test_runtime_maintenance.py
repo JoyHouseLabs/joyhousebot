@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from joyhousebot.runtime.models import AgentEvent
-from joyhousebot.storage.content_blobs import LocalContentBlobStore
+from porthouse.runtime.models import AgentEvent
+from porthouse.storage.content_blobs import LocalContentBlobStore
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -237,7 +237,7 @@ async def test_trace_blob_expires_at_is_enforced(tmp_path: Path) -> None:
 async def test_content_blob_gc_is_two_phase_and_follows_database_references(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import joyhousebot.storage.postgres_maintenance as maintenance
+    import porthouse.storage.postgres_maintenance as maintenance
 
     monkeypatch.setattr(maintenance, "_CONTENT_BLOB_GC_GRACE_SECONDS", 0)
     store = PostgresTestStore(tmp_path / "content-blob-gc.db")
@@ -267,7 +267,7 @@ async def test_content_blob_gc_is_two_phase_and_follows_database_references(
 async def test_input_asset_retention_preserves_active_runs_and_two_phase_deletes_objects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import joyhousebot.storage.postgres_maintenance as maintenance
+    import porthouse.storage.postgres_maintenance as maintenance
 
     monkeypatch.setattr(maintenance, "_CONTENT_BLOB_GC_GRACE_SECONDS", 0)
     store = PostgresTestStore(
@@ -341,7 +341,7 @@ async def test_events_purge_tombstone_reaches_sse_replay(tmp_path: Path) -> None
     counts = await store.purge_old_runtime_data(future_ms)
     assert counts["runtime_runs_tombstoned"] == 1
 
-    from joyhousebot.runtime.events import EventBroker
+    from porthouse.runtime.events import EventBroker
 
     broker = EventBroker(store)
     stream = broker.subscribe(run.run_id)
@@ -359,8 +359,8 @@ async def test_events_purge_tombstone_reaches_sse_replay(tmp_path: Path) -> None
 
 
 def test_session_state_message_tail_is_bounded() -> None:
-    from joyhousebot.session.models import Session
-    from joyhousebot.session.runtime_manager import (
+    from porthouse.session.models import Session
+    from porthouse.session.runtime_manager import (
         SESSION_STATE_MAX_MESSAGES,
         RuntimeSessionManager,
     )
@@ -391,9 +391,9 @@ def test_session_state_message_tail_is_bounded() -> None:
 
 
 def test_session_state_message_tail_has_serialized_byte_limit() -> None:
-    from joyhousebot.domain.identity import canonical_json
-    from joyhousebot.session.models import Session
-    from joyhousebot.session.runtime_manager import (
+    from porthouse.domain.identity import canonical_json
+    from porthouse.session.models import Session
+    from porthouse.session.runtime_manager import (
         SESSION_STATE_MAX_MESSAGE_BYTES,
         RuntimeSessionManager,
     )

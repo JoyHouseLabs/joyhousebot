@@ -1,13 +1,13 @@
 import pytest
 
-from joyhousebot.domain.capabilities import (
+from porthouse.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
     CapabilityResult,
     InvocationStatus,
 )
-from joyhousebot.domain.scenarios import (
+from porthouse.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
     ScenarioField,

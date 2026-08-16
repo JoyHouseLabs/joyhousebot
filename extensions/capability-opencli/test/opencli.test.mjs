@@ -87,7 +87,7 @@ test("builds argv without a shell and rejects flag injection", () => {
 
 test("maps OpenCLI JSON, empty, auth, bridge, and timeout outcomes", async () => {
   const compiled = compile().commands[0];
-  const workspace = join(tmpdir(), `joyhouse-opencli-${process.pid}-${Date.now()}`);
+  const workspace = join(tmpdir(), `porthouse-opencli-${process.pid}-${Date.now()}`);
   await mkdir(workspace, {recursive: true});
   const execute = (mode, timeoutMs = 2_000) => runOpenCli({
     entrypoint: FIXTURE,

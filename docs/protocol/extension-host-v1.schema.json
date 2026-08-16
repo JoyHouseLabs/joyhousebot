@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://joyhousebot.com/protocol/extension-host-v1.schema.json",
-  "title": "JoyhouseBot Extension Host Profile v1",
+  "$id": "https://porthouse.happayhouselabs.com/protocol/extension-host-v1.schema.json",
+  "title": "Porthouse Extension Host Profile v1",
   "oneOf": [
     {"$ref": "#/$defs/hostDescribe"},
     {"$ref": "#/$defs/invokeRequest"},

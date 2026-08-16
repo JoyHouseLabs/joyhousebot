@@ -1,6 +1,6 @@
 # Knowledge Runtime boundary
 
-JoyhouseBot Core owns the durable and governed mechanics of Knowledge; source-specific parsing remains an official or
+Porthouse Core owns the durable and governed mechanics of Knowledge; source-specific parsing remains an official or
 third-party extension capability.
 
 ## Core responsibilities

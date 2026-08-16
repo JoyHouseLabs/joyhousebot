@@ -3,15 +3,15 @@
 from types import SimpleNamespace
 
 import pytest
-from joyhousebot_capability_runtime_control import plugin as runtime_control
+from porthouse_capability_runtime_control import plugin as runtime_control
 
-from joyhousebot.capabilities import CapabilityPluginRegistry
-from joyhousebot.capabilities.services import CapabilityServiceBroker
-from joyhousebot.cron.service import CronService
-from joyhousebot.domain.capabilities import InvocationStatus
-from joyhousebot.domain.schedules import CronSchedule
-from joyhousebot.extension_sdk import CapabilityContext
-from joyhousebot.extension_sdk.tools import ToolOutput
+from porthouse.capabilities import CapabilityPluginRegistry
+from porthouse.capabilities.services import CapabilityServiceBroker
+from porthouse.cron.service import CronService
+from porthouse.domain.capabilities import InvocationStatus
+from porthouse.domain.schedules import CronSchedule
+from porthouse.extension_sdk import CapabilityContext
+from porthouse.extension_sdk.tools import ToolOutput
 from tests.support.postgres_store import PostgresTestStore
 
 

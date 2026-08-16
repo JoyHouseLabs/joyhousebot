@@ -1,4 +1,4 @@
-import type {OperationProgressEvent} from "@joyhousebot/extension-sdk";
+import type {OperationProgressEvent} from "@porthouse/extension-sdk";
 
 import type {CloudDeviceTransport, DeviceDelivery, DeviceHostConfig} from "./types.js";
 
@@ -112,7 +112,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
       headers: {
         Authorization: `Bearer ${this.#config.deviceToken}`,
         "Content-Type": "application/json",
-        "X-Joyhouse-Device-ID": this.#config.deviceId,
+        "X-Porthouse-Device-ID": this.#config.deviceId,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
