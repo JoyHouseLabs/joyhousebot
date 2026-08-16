@@ -31,10 +31,12 @@ from joyhousebot.storage.postgres_app_packs import PostgresAppPackStoreMixin
 from joyhousebot.storage.postgres_app_updates import PostgresAppUpdateStoreMixin
 from joyhousebot.storage.postgres_app_usage import PostgresAppUsageStoreMixin
 from joyhousebot.storage.postgres_approvals import PostgresApprovalStoreMixin
+from joyhousebot.storage.postgres_artifact_uploads import PostgresArtifactUploadStoreMixin
 from joyhousebot.storage.postgres_cancel import PostgresRunCancelMixin
 from joyhousebot.storage.postgres_capabilities import PostgresCapabilityStoreMixin
 from joyhousebot.storage.postgres_clarifications import PostgresClarificationStoreMixin
 from joyhousebot.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
+from joyhousebot.storage.postgres_device_hosts import PostgresDeviceHostStoreMixin
 from joyhousebot.storage.postgres_embedding_profiles import (
     PostgresEmbeddingProfileStoreMixin,
 )
@@ -56,10 +58,12 @@ from joyhousebot.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
 from joyhousebot.storage.postgres_graph_subruns import PostgresGraphSubrunStoreMixin
 from joyhousebot.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
 from joyhousebot.storage.postgres_graphs import PostgresGraphStoreMixin
+from joyhousebot.storage.postgres_host_tools import PostgresHostToolStoreMixin
 from joyhousebot.storage.postgres_input_assets import PostgresInputAssetStoreMixin
 from joyhousebot.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
 from joyhousebot.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
 from joyhousebot.storage.postgres_migrations import PostgresMigrationMixin
+from joyhousebot.storage.postgres_model_gateway import PostgresModelGatewayStoreMixin
 from joyhousebot.storage.postgres_model_providers import PostgresModelProviderStoreMixin
 from joyhousebot.storage.postgres_observability import PostgresObservabilityStoreMixin
 from joyhousebot.storage.postgres_operational_metrics import (
@@ -141,6 +145,8 @@ class PostgresRuntimeStore(
     PostgresLoopDecisionStoreMixin,
     PostgresVerificationStoreMixin,
     PostgresApprovalStoreMixin,
+    PostgresArtifactUploadStoreMixin,
+    PostgresDeviceHostStoreMixin,
     PostgresReconciliationStoreMixin,
     PostgresClarificationStoreMixin,
     PostgresScenarioStoreMixin,
@@ -160,6 +166,8 @@ class PostgresRuntimeStore(
     PostgresOperationalMetricsStoreMixin,
     PostgresRolloutStoreMixin,
     PostgresModelProviderStoreMixin,
+    PostgresModelGatewayStoreMixin,
+    PostgresHostToolStoreMixin,
     PostgresEmbeddingProfileStoreMixin,
     PostgresRemoteConnectionStoreMixin,
     PostgresOperationsStoreMixin,
@@ -183,6 +191,8 @@ class PostgresRuntimeStore(
         blob_inline_threshold_bytes: int = 65536,
         input_asset_directory: str = "~/.joyhousebot/input-assets",
         input_asset_max_bytes: int = 25 * 1024 * 1024,
+        artifact_upload_directory: str = "~/.joyhousebot/artifact-uploads",
+        artifact_upload_max_bytes: int = 250 * 1024 * 1024,
     ) -> None:
         if not database_url.strip():
             raise ValueError("PostgreSQL database_url is required")
@@ -199,6 +209,14 @@ class PostgresRuntimeStore(
             else None
         )
         self.input_asset_max_bytes = max(1, int(input_asset_max_bytes))
+        self.artifact_upload_store = (
+            LocalBinaryObjectStore(
+                artifact_upload_directory, scheme="joyhouse-artifact"
+            )
+            if str(artifact_upload_directory).strip()
+            else None
+        )
+        self.artifact_upload_max_bytes = max(1, int(artifact_upload_max_bytes))
         self._pool = ConnectionPool(
             conninfo=database_url,
             min_size=max(0, min_pool_size),

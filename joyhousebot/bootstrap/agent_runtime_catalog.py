@@ -363,7 +363,8 @@ class AgentRuntimeCatalog:
         if loop is None:
             raise RuntimeError("default Agent runtime is unavailable for connector preflight")
         extension_id = "connector-http-capability"
-        if loop.tool_connectors.get(extension_id) is None:
+        connector = loop.tool_connectors.get(extension_id)
+        if connector is None:
             raise RuntimeError("HTTP Capability Connector is not enabled on this Worker")
         revision = await asyncio.to_thread(
             self.store.get_remote_connection_revision,
@@ -375,6 +376,12 @@ class AgentRuntimeCatalog:
         configuration = dict(revision["configuration"])
         configuration.pop("signing_secret_variable", None)
         materialized = materialize_remote_connection(configuration)
+        if configuration.get("service_profile") == "extension_host":
+            if connector.preflight is None:
+                raise RuntimeError("HTTP Capability Connector does not support Host preflight")
+            await connector.preflight(
+                {"service_id": item["aggregate_id"], "service": materialized}
+            )
         staged = CapabilityRegistry()
         async with AsyncExitStack() as stack:
             await loop.tool_connectors.connect_configured(

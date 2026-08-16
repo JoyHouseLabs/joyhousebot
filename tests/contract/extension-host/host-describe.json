@@ -1,0 +1,71 @@
+{
+  "protocol_version": "1",
+  "status": "succeeded",
+  "manifest": {
+    "host_protocol_version": "1",
+    "host": {
+      "host_id": "joyhousebot-node-echo-host",
+      "version": "0.1.0",
+      "build_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "extensions": [
+      {
+        "extension_id": "capability-echo-fixture",
+        "version": "1.0.0",
+        "build_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "lockfile_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "sdk_version": "1"
+      }
+    ],
+    "capabilities": [
+      {
+        "capability_id": "host.echo",
+        "version": "1.0.0",
+        "implementation_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "host.echo",
+        "description": "Contract fixture host.echo",
+        "input_schema": {"type": "object", "additionalProperties": true},
+        "output_schema": {"type": "object"},
+        "permissions": ["host.echo.invoke"],
+        "tags": [],
+        "side_effect": "read",
+        "idempotent": true,
+        "retryable": true,
+        "data_classification": "confidential",
+        "timeout_seconds": 60,
+        "expected_duration_seconds": 10,
+        "invocation_concurrency": "parallel_safe",
+        "max_concurrent_invocations": 1,
+        "cost_policy": {},
+        "execution_mode": "immediate",
+        "supports_stream": false,
+        "provenance": {}
+      },
+      {
+        "capability_id": "host.delayed_echo",
+        "version": "1.0.0",
+        "implementation_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "name": "host.delayed_echo",
+        "description": "Contract fixture host.delayed_echo",
+        "input_schema": {"type": "object", "additionalProperties": true},
+        "output_schema": {"type": "object"},
+        "permissions": ["host.delayed_echo.invoke"],
+        "tags": [],
+        "side_effect": "read",
+        "idempotent": true,
+        "retryable": true,
+        "data_classification": "confidential",
+        "timeout_seconds": 60,
+        "expected_duration_seconds": 10,
+        "invocation_concurrency": "parallel_safe",
+        "max_concurrent_invocations": 1,
+        "cost_policy": {},
+        "execution_mode": "immediate",
+        "supports_stream": false,
+        "provenance": {}
+      }
+    ]
+  },
+  "manifest_digest": "sha256:7fd3e41e6a5477d7ba13d6e17f95712439682a1255cb9c28b2035188d51d1de1",
+  "runtime": {"language": "node", "version": "v24.19.0"}
+}

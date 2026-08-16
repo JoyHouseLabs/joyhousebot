@@ -36,6 +36,7 @@ const router = createRouter({
         { path: 'tools', name: 'Tools', component: () => import('../views/CapabilityEditor.vue') },
         { path: 'channels', name: 'Channels', component: () => import('../views/Channels.vue') },
         { path: 'connections', name: 'RemoteConnections', component: () => import('../views/RemoteConnections.vue') },
+        { path: 'devices', name: 'DeviceHosts', component: () => import('../views/DeviceHosts.vue') },
         { path: 'scenarios', name: 'Scenarios', component: () => import('../views/Scenarios.vue') },
         { path: 'platform', name: 'Platform', component: () => import('../views/Platform.vue') },
         { path: 'security', name: 'Security', component: () => import('../views/Security.vue') },

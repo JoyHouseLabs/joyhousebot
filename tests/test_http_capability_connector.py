@@ -55,6 +55,7 @@ def _capability(**overrides: Any) -> dict[str, Any]:
 
 def _service(*, capabilities: list[dict[str, Any]] | None = None, **overrides: Any):
     value = {
+        "service_profile": "business",
         "base_url": "https://crm.example.test/joyhousebot/v1",
         "key_id": "test-key",
         "signing_secret": SECRET,
@@ -173,6 +174,7 @@ async def test_signed_read_invocation_uses_fixed_endpoint_and_frozen_identity():
         payload = json.loads(body)
         assert payload["subject"]["user_id"] == "user-1"
         assert payload["execution"]["run_id"] == "run-1"
+        assert payload["execution"]["request_digest"].startswith("sha256:")
         assert payload["capability"]["implementation_digest"] == DIGEST
         return _signed_response(
             request,
@@ -235,6 +237,7 @@ async def test_write_receipt_must_match_runtime_action():
 @pytest.mark.asyncio
 async def test_accepted_write_reconciles_without_resubmitting():
     calls: list[str] = []
+    reconcile_requests: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
@@ -253,6 +256,7 @@ async def test_accepted_write_reconciles_without_resubmitting():
                 },
                 status=202,
             )
+        reconcile_requests.append(json.loads(request.content))
         return _signed_response(
             request,
             {
@@ -262,6 +266,19 @@ async def test_accepted_write_reconciles_without_resubmitting():
                 "operation": {"operation_id": "crm-op-42"},
                 "output": {"lead_id": "lead-1"},
                 "artifacts": [],
+                "provider_cursor": "cursor-2",
+                "checkpoint_ref": "checkpoint-2",
+                "progress_summary": "complete",
+                "progress_percent": 100,
+                "events": [
+                    {
+                        "event_id": "event-2",
+                        "sequence": 2,
+                        "event_type": "operation.completed",
+                        "summary": "complete",
+                        "payload": {"safe": True},
+                    }
+                ],
             },
         )
 
@@ -280,12 +297,18 @@ async def test_accepted_write_reconciles_without_resubmitting():
         tool = RemoteCapabilityTool(service, service.capabilities[0], client)
         accepted = await tool.execute(lead_id="lead-1", tool_context=context)
         reconciled = await tool.reconcile_operation(
-            accepted.operation or {}, tool_context=context
+            {**(accepted.operation or {}), "provider_cursor": "cursor-1"},
+            tool_context=context,
         )
     assert accepted.status == InvocationStatus.ACCEPTED
     assert accepted.operation["remote_operation_id"] == "crm-op-42"
+    assert accepted.operation["request_digest"].startswith("sha256:")
     assert reconciled.status == "succeeded"
     assert reconciled.output == {"lead_id": "lead-1"}
+    assert reconciled.provider_cursor == "cursor-2"
+    assert reconciled.progress_percent == 100
+    assert reconciled.events[0].event_id == "event-2"
+    assert reconcile_requests[0]["operation"]["cursor"] == "cursor-1"
     assert calls == [
         "/joyhousebot/v1/capabilities/crm.lead.update:invoke",
         "/joyhousebot/v1/operations:reconcile",
@@ -313,6 +336,38 @@ async def test_unsigned_response_fails_closed():
 
 
 @pytest.mark.asyncio
+async def test_extension_host_uri_artifact_requires_runtime_upload_grant():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _signed_response(
+            request,
+            {
+                "protocol_version": "1",
+                "status": "succeeded",
+                "output": {"lead_id": "lead-1"},
+                "artifacts": [
+                    {
+                        "artifact_type": "host.output",
+                        "media_type": "text/plain",
+                        "uri": "file:///tmp/host-output.txt",
+                    }
+                ],
+            },
+        )
+
+    service = _service(
+        service_profile="extension_host",
+        host_protocol_version="1",
+        expected_host_manifest_digest=f"sha256:{'9' * 64}",
+        require_host_preflight=True,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tool = RemoteCapabilityTool(service, service.capabilities[0], client)
+        with pytest.raises(ToolInvocationError) as raised:
+            await tool.execute(lead_id="lead-1", tool_context=_context())
+    assert raised.value.code == "HOST_ARTIFACT_GRANT_REQUIRED"
+
+
+@pytest.mark.asyncio
 async def test_invalid_content_length_fails_closed():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -327,6 +382,23 @@ async def test_invalid_content_length_fails_closed():
         with pytest.raises(ToolInvocationError) as raised:
             await tool.execute(lead_id="lead-1", tool_context=_context())
     assert raised.value.code == "REMOTE_RESPONSE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_response_larger_than_connection_limit_fails_closed():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"x" * 2048,
+            headers={"Content-Length": "2048"},
+        )
+
+    service = _service(max_response_bytes=1024)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tool = RemoteCapabilityTool(service, service.capabilities[0], client)
+        with pytest.raises(ToolInvocationError) as raised:
+            await tool.execute(lead_id="lead-1", tool_context=_context())
+    assert raised.value.code == "REMOTE_RESPONSE_TOO_LARGE"
 
 
 @pytest.mark.asyncio
@@ -363,6 +435,7 @@ async def test_tool_connector_registry_connects_extension():
 
 def connector_settings_for_test() -> dict[str, Any]:
     return {
+        "service_profile": "business",
         "base_url": "https://crm.example.test/joyhousebot/v1",
         "key_id": "test-key",
         "signing_secret": SECRET,

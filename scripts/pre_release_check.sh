@@ -9,6 +9,8 @@ cd "${ROOT_DIR}"
 # supported extension surface from the checked-in source packages.
 bash scripts/install-test-extensions.sh
 bash scripts/ensure-test-pgvector.sh
+bash scripts/test-extension-host.sh
+uv run --frozen python scripts/verify-node-runtime-lock.py
 uv run --frozen python -m compileall -q joyhousebot extensions/*/src
 uv run --frozen python -m pytest
 uv run --frozen python -m ruff check joyhousebot tests extensions/*/src

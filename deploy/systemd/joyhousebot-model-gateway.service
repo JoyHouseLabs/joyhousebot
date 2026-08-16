@@ -1,0 +1,26 @@
+[Unit]
+Description=JoyhouseBot credential-isolating Host Model Gateway
+After=network-online.target joyhousebot-migrate.service
+Wants=network-online.target
+Requires=joyhousebot-migrate.service
+
+[Service]
+Type=simple
+User=joyhouseruntime
+Group=joyhouseruntime
+WorkingDirectory=/opt/joyhousebot/current
+EnvironmentFile=/etc/joyhousebot.env
+Environment=JOYHOUSEBOT_AUTO_MIGRATE=false
+ExecStart=/opt/joyhousebot/venv/bin/joyhousebot model-gateway --config /etc/joyhousebot/config.json --host 127.0.0.1 --port 18794
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/joyhousebot
+
+[Install]
+WantedBy=multi-user.target

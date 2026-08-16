@@ -413,6 +413,25 @@ async def list_operations(run_id: str, context: ContextDep, container: Container
     return {"items": [record_dict(row) for row in rows]}
 
 
+@router.get("/{run_id}/operations/{reconciliation_id}/events")
+async def list_operation_events(
+    run_id: str,
+    reconciliation_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+    after_sequence: int = Query(default=-1, ge=-1),
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    rows = await container.reconciliations.events(
+        context,
+        run_id,
+        reconciliation_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
+    return {"items": [record_dict(row) for row in rows]}
+
+
 @router.post("/{run_id}/operations/{reconciliation_id}/resolve")
 async def resolve_operation(
     run_id: str,

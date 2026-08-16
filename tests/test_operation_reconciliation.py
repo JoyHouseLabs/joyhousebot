@@ -15,7 +15,7 @@ from joyhousebot.bootstrap.container import build_api_container
 from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
 from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter, ToolOutput
 from joyhousebot.config.schema import Config
-from joyhousebot.contracts import OperationReconciliationResult
+from joyhousebot.contracts import OperationProgressEvent, OperationReconciliationResult
 from joyhousebot.contracts.tools import Tool
 from joyhousebot.domain.capabilities import InvocationStatus
 from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -295,6 +295,92 @@ async def test_reconciliation_claim_has_one_database_owner(tmp_path: Path) -> No
             )
         )
     assert sum(item is not None for item in claims) == 1
+
+
+@pytest.mark.asyncio
+async def test_progress_batch_is_deduplicated_and_cursor_is_fenced(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "operation-progress.db")
+    _, context = _claimed_context(store, "run-operation-progress")
+    dispatcher = CapabilityDispatcher(store)
+    with pytest.raises(ActionOutcomeUnknownError) as raised:
+        await dispatcher.invoke_tool(
+            _adapter(_AsyncOperationTool()), {"value": "one"}, context=context
+        )
+    record = store.get_action_reconciliation(raised.value.action_id)
+    assert record is not None
+    claimed = store.claim_operation_reconciliation(
+        record.reconciliation_id, worker_id="worker-a"
+    )
+    assert claimed is not None
+    event = OperationProgressEvent(
+        event_id="provider-event-1",
+        sequence=1,
+        event_type="operation.progress",
+        summary="half way",
+        payload={"safe": True},
+    )
+    saved = store.persist_operation_reconciliation_observation(
+        record.reconciliation_id,
+        worker_id="worker-a",
+        lease_version=claimed.lease_version,
+        provider_cursor="cursor-1",
+        checkpoint_ref="checkpoint-1",
+        progress_summary="half way",
+        progress_percent=50,
+        events=[event],
+    )
+    assert saved is not None
+    assert saved.provider_cursor == "cursor-1"
+    assert saved.checkpoint_ref == "checkpoint-1"
+    assert saved.progress_percent == 50
+    duplicate = store.persist_operation_reconciliation_observation(
+        record.reconciliation_id,
+        worker_id="worker-a",
+        lease_version=claimed.lease_version,
+        provider_cursor="cursor-1",
+        events=[event],
+    )
+    assert duplicate is not None
+    assert len(
+        store.list_operation_reconciliation_events(
+            record.reconciliation_id, expected_user_id="user-a"
+        )
+    ) == 1
+    runtime_events = store.list_runtime_events(context.run_id)
+    assert sum(
+        item.type == "operation.reconciliation_progress" for item in runtime_events
+    ) == 1
+
+    assert store.defer_operation_reconciliation(
+        record.reconciliation_id,
+        worker_id="worker-a",
+        lease_version=claimed.lease_version,
+        retry_after_seconds=0,
+        last_error={"code": "PENDING", "message": "pending"},
+    )
+    next_claim = store.claim_operation_reconciliation(
+        record.reconciliation_id, worker_id="worker-b"
+    )
+    assert next_claim is not None
+    stale = store.persist_operation_reconciliation_observation(
+        record.reconciliation_id,
+        worker_id="worker-a",
+        lease_version=claimed.lease_version,
+        provider_cursor="stale-cursor",
+        events=[],
+    )
+    assert stale is None
+    current = store.get_operation_reconciliation(record.reconciliation_id)
+    assert current is not None and current.provider_cursor == "cursor-1"
+    store.create_api_access_token(user_id="user-a", actor_id="test", token="progress-token")
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    with client:
+        response = client.get(
+            f"/v1/runs/{context.run_id}/operations/{record.reconciliation_id}/events",
+            headers={"Authorization": "Bearer progress-token"},
+        )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["event_id"] == "provider-event-1"
 
 
 @pytest.mark.asyncio

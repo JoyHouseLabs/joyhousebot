@@ -28,11 +28,15 @@ export interface RemoteCapabilityDeclaration {
   invocation_concurrency?: string
   max_concurrent_invocations?: number
   cost_policy?: Record<string, unknown>
+  execution_mode?: 'immediate' | 'durable'
+  supports_stream?: boolean
+  provenance?: Record<string, unknown>
   release_status?: string
   loaded_definition?: Record<string, unknown> | null
 }
 
 export interface RemoteConnectionConfiguration {
+  service_profile: 'business' | 'extension_host'
   enabled: boolean
   base_url: string
   key_id: string
@@ -42,6 +46,9 @@ export interface RemoteConnectionConfiguration {
   require_response_signature: boolean
   timeout_seconds: number
   max_response_bytes: number
+  host_protocol_version: string
+  expected_host_manifest_digest: string
+  require_host_preflight: boolean
   capabilities: RemoteCapabilityDeclaration[]
 }
 
@@ -92,6 +99,7 @@ export interface SaveRemoteConnection {
   connection_id?: string
   name: string
   description: string
+  service_profile: 'business' | 'extension_host'
   enabled: boolean
   base_url: string
   key_id: string
@@ -100,6 +108,9 @@ export interface SaveRemoteConnection {
   require_response_signature: boolean
   timeout_seconds: number
   max_response_bytes: number
+  host_protocol_version: string
+  expected_host_manifest_digest: string
+  require_host_preflight: boolean
   capabilities: RemoteCapabilityDeclaration[]
 }
 

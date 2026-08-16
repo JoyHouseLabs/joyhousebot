@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "commands": [
+    {
+      "site": "github",
+      "name": "whoami",
+      "capability_version": "1.0.0"
+    },
+    {
+      "site": "twitter",
+      "name": "search",
+      "capability_version": "1.0.0"
+    },
+    {
+      "site": "twitter",
+      "name": "post",
+      "capability_version": "1.0.0"
+    }
+  ]
+}

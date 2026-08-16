@@ -40,6 +40,7 @@ def _capability(version: str = "1.0.0") -> dict:
 
 def _configuration(*, capability_version: str = "1.0.0") -> dict:
     return {
+        "service_profile": "business",
         "enabled": True,
         "base_url": "https://crm.example.test/joyhousebot/v1",
         "key_id": "crm-key-1",
@@ -48,6 +49,16 @@ def _configuration(*, capability_version: str = "1.0.0") -> dict:
         "timeout_seconds": 60,
         "max_response_bytes": 1024 * 1024,
         "capabilities": [_capability(capability_version)],
+    }
+
+
+def _host_configuration() -> dict:
+    return {
+        **_configuration(),
+        "service_profile": "extension_host",
+        "host_protocol_version": "1",
+        "expected_host_manifest_digest": f"sha256:{'8' * 64}",
+        "require_host_preflight": True,
     }
 
 
@@ -87,6 +98,10 @@ def test_remote_connection_rejects_plaintext_and_materializes_only_in_worker(
     materialized = materialize_remote_connection(normalized)
     assert materialized["signing_secret"] == "s" * 32
     assert "signing_secret_ref" not in materialized
+    with pytest.raises(ValueError, match="preflight cannot be disabled"):
+        normalize_remote_connection(
+            "node-host", {**_host_configuration(), "require_host_preflight": False}
+        )
 
 
 def test_remote_connection_rollout_and_safe_rollback(tmp_path: Path) -> None:
@@ -176,6 +191,55 @@ async def test_worker_preflight_discovers_exact_remote_capability(
     assert discovered is not None
     assert discovered["ref"]["plugin_id"] == "connector-http-capability"
     assert discovered["origin"]["remote_service_id"] == "crm"
+
+
+@pytest.mark.asyncio
+async def test_worker_runs_extension_host_preflight_before_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    store.save_remote_connection_revision(
+        "node-host",
+        name="Node Host",
+        description="Managed extension host",
+        configuration=_host_configuration(),
+        actor_id="admin",
+    )
+    calls: list[dict] = []
+
+    async def preflight(settings: dict) -> dict:
+        calls.append(settings)
+        return {"manifest_digest": f"sha256:{'8' * 64}"}
+
+    declared = create_extension()
+    extension = type(declared)(
+        manifest=declared.manifest,
+        connect=declared.connect,
+        preflight=preflight,
+    )
+    connectors = ToolConnectorRegistry()
+    connectors.register(extension, source="test")
+    catalog = AgentRuntimeCatalog(config=Config(), store=store)
+    catalog._runtime = SimpleNamespace(  # noqa: SLF001
+        default_agent_id="default", worker_id="agent-remote-a"
+    )
+    catalog.resolve = lambda _key: SimpleNamespace(  # type: ignore[method-assign]
+        tool_connectors=connectors
+    )
+    monkeypatch.setenv("CRM_REMOTE_TEST_SECRET", "s" * 32)
+
+    await catalog._preheat_remote_connection(  # noqa: SLF001
+        {
+            "aggregate_type": "remote_connection",
+            "aggregate_id": "node-host",
+            "revision_id": "node-host:v1",
+        }
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["service_id"] == "node-host"
+    assert calls[0]["service"]["signing_secret"] == "s" * 32
+    assert "signing_secret_ref" not in calls[0]["service"]
 
 
 @pytest.mark.asyncio

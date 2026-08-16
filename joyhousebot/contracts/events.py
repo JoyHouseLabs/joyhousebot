@@ -63,6 +63,8 @@ class EventType(str, Enum):
     APPROVAL_REQUESTED = "approval.requested"
     APPROVAL_RESOLVED = "approval.resolved"
     OPERATION_RECONCILIATION_REQUESTED = "operation.reconciliation_requested"
+    OPERATION_RECONCILIATION_PROGRESS = "operation.reconciliation_progress"
+    OPERATION_RECONCILIATION_RECOVERED = "operation.reconciliation_recovered"
     OPERATION_RECONCILIATION_RESOLVED = "operation.reconciliation_resolved"
     CAPABILITY_STARTED = "capability.started"
     CAPABILITY_PROGRESS = "capability.progress"

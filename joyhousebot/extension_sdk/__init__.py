@@ -4,6 +4,7 @@ from joyhousebot.contracts.artifacts import Artifact
 from joyhousebot.contracts.capabilities import (
     CapabilityContext,
     CapabilityResult,
+    OperationProgressEvent,
     OperationReconciliationResult,
     WriteReceipt,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "CapabilityRef",
     "CapabilityResult",
     "InvocationStatus",
+    "OperationProgressEvent",
     "OperationReconciliationResult",
     "EXTENSION_SDK_VERSION",
     "ExtensionManifest",

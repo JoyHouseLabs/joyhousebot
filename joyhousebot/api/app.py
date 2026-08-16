@@ -39,12 +39,16 @@ from joyhousebot.api.routers import (
     admin_teams,
     app_auth,
     apps,
+    artifact_uploads,
     auth,
+    device_hosts,
     event_triggers,
     graph_events,
+    host_tools,
     input_assets,
     knowledge,
     memory,
+    model_grants,
     runs,
     schedules,
     sessions,
@@ -198,6 +202,7 @@ def create_app(
             "X-Tracker-Id",
             "X-Impersonate-User-ID",
             "X-Joyhouse-Event-Token",
+            "X-Joyhouse-Device-ID",
             "X-Joyhouse-Webhook-Secret",
             "X-User-Id",
         ],
@@ -334,6 +339,10 @@ def create_app(
         app.include_router(event_triggers.router, prefix=prefix)
         app.include_router(action_items.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)
+        app.include_router(artifact_uploads.router, prefix=prefix)
+        app.include_router(device_hosts.router, prefix=prefix)
+        app.include_router(host_tools.router, prefix=prefix)
+        app.include_router(model_grants.router, prefix=prefix)
         app.include_router(input_assets.router, prefix=prefix)
         app.include_router(knowledge.router, prefix=prefix)
         app.include_router(memory.router, prefix=prefix)

@@ -28,9 +28,10 @@ class LocalBinaryObjectStore:
     hashed while streaming, then atomically promoted to its digest path.
     """
 
-    scheme = "joyhouse-input"
-
-    def __init__(self, directory: str | Path) -> None:
+    def __init__(self, directory: str | Path, *, scheme: str = "joyhouse-input") -> None:
+        if not scheme or any(char not in "abcdefghijklmnopqrstuvwxyz-" for char in scheme):
+            raise ValueError("binary object store scheme is invalid")
+        self.scheme = scheme
         self.root = Path(directory).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "node": {
+    "version": "v24.19.0",
+    "source": "../../hosts/node/runtime-lock.json"
+  },
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.84.2",
+    "npm_integrity": "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA=="
+  }
+}

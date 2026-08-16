@@ -74,7 +74,7 @@ core runtime -X-> extension implementation / vendor SDK
 扩展不能 import `joyhousebot.api`、`storage`、`runtime` 等内部包，不能持有数据库连接，不能创建第二套
 Run/Task、重试或持久化状态机。
 
-## 5. Extension SDK 与安装协议
+## 5. Extension SDK、Host 与安装协议
 
 `joyhousebot.extension_sdk` 是扩展唯一 Python 导入面，提供：
 
@@ -84,7 +84,7 @@ Run/Task、重试或持久化状态机。
 - `CapabilityServiceBroker` 及其 Context、Scratch、Sandbox、Runtime Control 窄端口；
 - `ToolConnectorExtension` 与生命周期契约。
 
-官方扩展是 `extensions/` 下的独立 Python distribution。每种扩展只能通过对应 entry point 被 Core
+当前进程内官方扩展是 `extensions/` 下的独立 Python distribution。每种扩展只能通过对应 entry point 被 Core
 发现，不接受配置中的任意模块路径：
 
 ```toml
@@ -103,6 +103,18 @@ metadata，不 import 扩展；`allowedIds` 是部署安全边界，Worker 只�
 启停是 PostgreSQL 中的 desired state，通过 Console 操作。Worker 加载精确版本/build 并 ACK 后才是
 effective active。Provider 的凭据和端点另外放在 `providers.settings`。Manifest ID、entry point 名、
 API/SDK 版本和不可变 build digest 任一不匹配时直接拒绝加载。
+
+需要 Node.js、其他语言或独立依赖树的 Extension 不得伪装成 Python entry point，也不得让 Core import
+对应实现。它们按照 [Extension Host Profile v1](EXTENSION_HOST_PROTOCOL.md) 作为独立 bundle/OCI 制品运行：
+Host 作为部署服务进入 Remote Connection Revision，具体能力以 Remote Capability 的精确版本和
+`implementation_digest` 发布，继续经过连接 rollout、Capability rollout、Worker ACK 和 Agent allowlist。
+Invocation、Channel 和 Event Source 使用不同 Profile，但共同复用 Runtime 的身份、权限、Action、审批、
+Artifact、审计和故障恢复。分阶段实现顺序见
+[Polyglot Extension Host 实施计划](POLYGLOT_EXTENSION_HOST_PLAN.md)。
+
+第一阶段不增加 `executor` Extension 类型。Pi 等外部执行器发布为普通 `capability`；Node Host 是通用
+Supervisor，不包含 Pi、WhatsApp、Playwright 或供应商 SDK 的专用逻辑。设计文档未实现的 Host Manifest
+字段不能提前写进当前 Python `ExtensionManifest`，也不能被 Console 描述为已经可用。
 
 `connector-http-capability` 是一个例外清晰的两层配置：扩展启用属于不可变部署配置；具体远程服务属于
 PostgreSQL 控制面，通过 Console/API 创建连接 Revision。数据库只保存 `env://VARIABLE` 引用，Worker

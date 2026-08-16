@@ -84,8 +84,11 @@ class OperationReconciliationCoordinator:
             return None
         try:
             context.cancellation.raise_if_cancelled()
+            observed_operation = dict(claimed.operation)
+            if claimed.provider_cursor is not None:
+                observed_operation["provider_cursor"] = claimed.provider_cursor
             outcome = await asyncio.wait_for(
-                adapter.reconcile_operation(claimed.operation, tool_context=context),
+                adapter.reconcile_operation(observed_operation, tool_context=context),
                 timeout=max(1, int(adapter.definition.timeout_seconds)),
             )
             context.cancellation.raise_if_cancelled()
@@ -110,6 +113,35 @@ class OperationReconciliationCoordinator:
                 error={"code": "RECONCILIATION_EXCEPTION", "message": str(exc)},
             )
             return None
+        try:
+            observed = await asyncio.to_thread(
+                self.store.persist_operation_reconciliation_observation,
+                claimed.reconciliation_id,
+                worker_id=worker_id,
+                lease_version=claimed.lease_version,
+                provider_cursor=outcome.provider_cursor,
+                checkpoint_ref=outcome.checkpoint_ref,
+                progress_summary=outcome.progress_summary or outcome.summary or None,
+                progress_percent=outcome.progress_percent,
+                events=outcome.events,
+                cursor_reset=outcome.cursor_reset,
+            )
+        except ValueError as exc:
+            await self._defer(
+                claimed,
+                worker_id,
+                retry_after_seconds=0,
+                error={
+                    "code": "RECONCILIATION_OBSERVATION_INVALID",
+                    "message": str(exc),
+                },
+                manual_required=True,
+                operation=outcome.operation,
+            )
+            return None
+        if observed is None:
+            return None
+        claimed = observed
         if outcome.status == "pending":
             await self._defer(
                 claimed,

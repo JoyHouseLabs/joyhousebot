@@ -25,6 +25,31 @@ class ReconciliationService:
             expected_user_id=context.user_id,
         )
 
+    async def events(
+        self,
+        context: RequestContext,
+        run_id: str,
+        reconciliation_id: str,
+        *,
+        after_sequence: int = -1,
+        limit: int = 200,
+    ) -> list[Any]:
+        await self.runs.get(context, run_id)
+        record = await asyncio.to_thread(
+            self.store.get_operation_reconciliation,
+            reconciliation_id,
+            expected_user_id=context.user_id,
+        )
+        if record is None or record.run_id != run_id:
+            raise NotFoundError("operation reconciliation not found")
+        return await asyncio.to_thread(
+            self.store.list_operation_reconciliation_events,
+            reconciliation_id,
+            expected_user_id=context.user_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+
     async def resolve(
         self,
         context: RequestContext,

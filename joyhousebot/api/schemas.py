@@ -223,6 +223,7 @@ class RemoteConnectionRevisionRequest(BaseModel):
     connection_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     name: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=2000)
+    service_profile: Literal["business", "extension_host"]
     enabled: bool = True
     base_url: str = Field(min_length=1, max_length=2048)
     key_id: str = Field(min_length=1, max_length=128)
@@ -238,8 +239,10 @@ class RemoteConnectionRevisionRequest(BaseModel):
         ge=1024,
         le=50 * 1024 * 1024,
     )
+    host_protocol_version: str = Field(default="", max_length=32)
+    expected_host_manifest_digest: str = Field(default="", max_length=128)
+    require_host_preflight: bool = False
     capabilities: list[dict[str, Any]] = Field(min_length=1, max_length=500)
-
 
 class ModelProviderRevisionRequest(BaseModel):
     provider_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")

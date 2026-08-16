@@ -18,6 +18,7 @@ from joyhousebot.application.scenarios import ScenarioStudioService
 from joyhousebot.bootstrap.agent_catalog import default_agent_id
 from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
 from joyhousebot.bootstrap.extension_rollouts import ExtensionRolloutWatcher
+from joyhousebot.bootstrap.host_tool_worker import HostToolBrokerWorker
 from joyhousebot.channels.manager import ChannelManager
 from joyhousebot.channels.repository import ChannelRepository
 from joyhousebot.channels.runtime_bridge import ChannelRuntimeBridge
@@ -106,15 +107,74 @@ class ExecutionWorker:
         knowledge_task = asyncio.create_task(
             self._knowledge_maintenance_loop(), name="knowledge-maintenance-worker"
         )
+        artifact_task = asyncio.create_task(
+            self._artifact_materialization_loop(), name="artifact-materialization-worker"
+        )
+        host_tool_worker = HostToolBrokerWorker(
+            store=self.store,
+            catalog=self.catalog,
+            worker_id=self.runtime.worker_id,
+            lease_seconds=self.runtime.lease_seconds,
+        )
+        host_tool_task = asyncio.create_task(
+            host_tool_worker.run(), name="host-tool-broker-worker"
+        )
         try:
             await asyncio.Event().wait()
         finally:
             catalog_task.cancel()
             knowledge_task.cancel()
-            await asyncio.gather(catalog_task, knowledge_task, return_exceptions=True)
+            artifact_task.cancel()
+            host_tool_task.cancel()
+            await asyncio.gather(
+                catalog_task,
+                knowledge_task,
+                artifact_task,
+                host_tool_task,
+                return_exceptions=True,
+            )
             await self.catalog.close()
             await self.runtime.close()
             await asyncio.to_thread(self.store.close)
+
+    async def _artifact_materialization_loop(self) -> None:
+        while True:
+            try:
+                grant = await asyncio.to_thread(
+                    self.store.claim_artifact_upload,
+                    worker_id=self.runtime.worker_id,
+                    lease_seconds=60,
+                )
+                if grant is None:
+                    await asyncio.sleep(0.5)
+                    continue
+                try:
+                    saved = await asyncio.to_thread(
+                        self.store.materialize_artifact_upload,
+                        grant.grant_id,
+                        worker_id=self.runtime.worker_id,
+                        lease_version=grant.lease_version,
+                    )
+                    if not saved:
+                        raise RuntimeError("Artifact materialization lease was fenced")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await asyncio.to_thread(
+                        self.store.fail_artifact_upload,
+                        grant.grant_id,
+                        worker_id=self.runtime.worker_id,
+                        lease_version=grant.lease_version,
+                        error={"type": type(exc).__name__, "message": str(exc)[:1000]},
+                    )
+                    logger.exception(
+                        "Artifact materialization failed grant_id={}", grant.grant_id
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Artifact materialization worker loop failed; retrying")
+                await asyncio.sleep(1.0)
 
     async def _knowledge_maintenance_loop(self) -> None:
         lease_seconds = 120

@@ -15,6 +15,8 @@ from joyhousebot.application.app_delegation import AppDelegationService
 from joyhousebot.application.app_market import AppMarketService
 from joyhousebot.application.app_packs import AppPackService
 from joyhousebot.application.approvals import ApprovalService
+from joyhousebot.application.artifact_uploads import ArtifactUploadService
+from joyhousebot.application.device_hosts import DeviceHostService
 from joyhousebot.application.embedding_profiles import EmbeddingProfileService
 from joyhousebot.application.eval_execution import EvalExecutionService
 from joyhousebot.application.evals import EvalService
@@ -23,10 +25,12 @@ from joyhousebot.application.experiments import ExperimentService
 from joyhousebot.application.feedback import FeedbackService
 from joyhousebot.application.graph_events import GraphEventService
 from joyhousebot.application.graph_patches import GraphPatchService
+from joyhousebot.application.host_tools import HostToolService
 from joyhousebot.application.input_assets import InputAssetService
 from joyhousebot.application.knowledge_assets import KnowledgeAssetService
 from joyhousebot.application.knowledge_maintenance import KnowledgeMaintenanceService
 from joyhousebot.application.memory_candidates import MemoryCandidateService
+from joyhousebot.application.model_grants import ModelGrantService
 from joyhousebot.application.model_providers import ModelProviderService
 from joyhousebot.application.platform import PlatformService
 from joyhousebot.application.prompts import PromptService
@@ -68,6 +72,9 @@ class ApplicationContainer:
     runtime: NativeAgentRuntime
     runs: RunService
     approvals: ApprovalService
+    artifact_uploads: ArtifactUploadService
+    device_hosts: DeviceHostService
+    host_tools: HostToolService
     action_items: ActionItemService
     reconciliations: ReconciliationService
     knowledge_assets: KnowledgeAssetService
@@ -90,6 +97,7 @@ class ApplicationContainer:
     workflows: WorkflowService
     remote_connections: RemoteConnectionService
     model_providers: ModelProviderService
+    model_grants: ModelGrantService
     embedding_profiles: EmbeddingProfileService
     skills: SkillService
     prompts: PromptService
@@ -238,6 +246,9 @@ def build_api_container(
         runtime=runtime,
         runs=runs,
         approvals=ApprovalService(runtime, runs, store),
+        artifact_uploads=ArtifactUploadService(store),
+        device_hosts=DeviceHostService(store, runtime),
+        host_tools=HostToolService(store),
         action_items=ActionItemService(store),
         reconciliations=ReconciliationService(runtime, runs, store),
         knowledge_assets=KnowledgeAssetService(store, runtime),
@@ -273,6 +284,7 @@ def build_api_container(
         ),
         remote_connections=RemoteConnectionService(store, platform),
         model_providers=ModelProviderService(store),
+        model_grants=ModelGrantService(store),
         embedding_profiles=EmbeddingProfileService(store),
         skills=SkillService(store),
         prompts=PromptService(store),

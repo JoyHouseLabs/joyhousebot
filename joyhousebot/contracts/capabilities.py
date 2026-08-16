@@ -69,6 +69,28 @@ class CapabilityResult:
 
 
 @dataclass(slots=True)
+class OperationProgressEvent:
+    """One bounded, provider-sequenced observation for a long operation."""
+
+    event_id: str
+    sequence: int
+    event_type: str
+    summary: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.event_id.strip() or len(self.event_id) > 128:
+            raise ValueError("operation progress event_id must contain at most 128 characters")
+        if self.sequence < 0:
+            raise ValueError("operation progress sequence must be non-negative")
+        if not self.event_type.strip() or len(self.event_type) > 64:
+            raise ValueError("operation progress event_type must contain at most 64 characters")
+        if len(self.summary) > 1000:
+            raise ValueError("operation progress summary exceeds 1000 characters")
+
+
+@dataclass(slots=True)
 class OperationReconciliationResult:
     """Provider-neutral result of querying an already-started operation."""
 
@@ -79,12 +101,26 @@ class OperationReconciliationResult:
     artifacts: list[Artifact] = field(default_factory=list)
     operation: dict[str, Any] | None = None
     retry_after_seconds: int | None = None
+    provider_cursor: str | None = None
+    checkpoint_ref: str | None = None
+    progress_summary: str | None = None
+    progress_percent: float | None = None
+    events: list[OperationProgressEvent] = field(default_factory=list)
+    cursor_reset: bool = False
 
     def __post_init__(self) -> None:
         if self.status == "failed" and self.error is None:
             raise ValueError("failed reconciliation requires an error")
         if self.status != "failed" and self.error is not None:
             raise ValueError("only failed reconciliation may contain an error")
+        if self.provider_cursor is not None and len(self.provider_cursor) > 1024:
+            raise ValueError("provider cursor exceeds 1024 characters")
+        if self.checkpoint_ref is not None and len(self.checkpoint_ref) > 2048:
+            raise ValueError("checkpoint reference exceeds 2048 characters")
+        if self.progress_summary is not None and len(self.progress_summary) > 2000:
+            raise ValueError("progress summary exceeds 2000 characters")
+        if self.progress_percent is not None and not 0 <= self.progress_percent <= 100:
+            raise ValueError("progress percent must be between 0 and 100")
 
 
 @runtime_checkable

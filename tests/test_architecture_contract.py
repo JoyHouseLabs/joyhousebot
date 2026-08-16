@@ -342,6 +342,8 @@ PACKAGE_TIERS = {
     "api": 6,
     "bootstrap": 6,
     "cli": 6,
+    # Dedicated credential-isolating HTTP entrypoint plus its bounded service.
+    "model_gateway": 6,
     "__main__": 6,
 }
 

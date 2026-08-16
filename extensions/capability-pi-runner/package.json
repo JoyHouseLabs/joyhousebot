@@ -1,0 +1,23 @@
+{
+  "name": "@joyhousebot/capability-pi-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Governed Pi coding capability for the JoyhouseBot Node Extension Host",
+  "type": "module",
+  "main": "dist/worker.js",
+  "engines": {"node": "24.19.0"},
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@joyhousebot/extension-sdk": "file:../../sdks/node"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "typescript": "5.9.3"
+  },
+  "license": "Apache-2.0"
+}

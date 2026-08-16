@@ -167,12 +167,15 @@ class ToolConnectorExtension:
 
     manifest: ExtensionManifest
     connect: Callable[[ToolConnectorConnectRequest], Awaitable[None]]
+    preflight: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
 
     def __post_init__(self) -> None:
         if "tool_connector" not in self.manifest.extension_types:
             raise ValueError("tool connector extension manifest type is required")
         if not callable(self.connect):
             raise TypeError("tool connector extension connect callback is required")
+        if self.preflight is not None and not callable(self.preflight):
+            raise TypeError("tool connector extension preflight callback must be callable")
 
 
 __all__ = [

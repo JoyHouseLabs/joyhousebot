@@ -25,6 +25,11 @@ class OperationReconciliationRecord:
     lease_owner: str | None
     lease_expires_at: str | None
     lease_version: int
+    provider_cursor: str | None
+    checkpoint_ref: str | None
+    progress_summary: str | None
+    progress_percent: float | None
+    last_provider_event_at: str | None
     result: dict[str, Any] | None
     error: dict[str, Any] | None
     last_error: dict[str, Any] | None
@@ -33,6 +38,20 @@ class OperationReconciliationRecord:
     created_at: str
     updated_at: str
     resolved_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class OperationReconciliationEventRecord:
+    reconciliation_id: str
+    event_id: str
+    sequence: int
+    event_type: str
+    summary: str
+    payload: dict[str, Any]
+    created_at: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

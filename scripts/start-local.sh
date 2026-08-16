@@ -17,6 +17,10 @@ if [[ -z "${JOYHOUSEBOT_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
 fi
 API_HOST="${JOYHOUSEBOT_LOCAL_HOST:-127.0.0.1}"
 API_PORT="${JOYHOUSEBOT_LOCAL_PORT:-18790}"
+MODEL_GATEWAY_PORT="${JOYHOUSEBOT_MODEL_GATEWAY_PORT:-18794}"
+START_MODEL_GATEWAY="${JOYHOUSEBOT_START_MODEL_GATEWAY:-false}"
+NODE_HOST_CONFIG="${JOYHOUSEBOT_NODE_HOST_CONFIG:-}"
+DEVICE_HOST_CONFIG="${JOYHOUSEBOT_DEVICE_HOST_CONFIG:-}"
 WORKER_COUNT="${JOYHOUSEBOT_LOCAL_WORKERS:-2}"
 LOG_ROOT="${JOYHOUSEBOT_LOCAL_LOG_ROOT:-${HOME}/.joyhousebot/logs/local}"
 RUN_STAMP="$(date '+%Y%m%d-%H%M%S')"
@@ -184,6 +188,8 @@ main() {
   [[ "${WORKER_COUNT}" -le 32 ]] || fail "JOYHOUSEBOT_LOCAL_WORKERS must not exceed 32"
   [[ "${API_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PORT must be a valid port"
   [[ "${API_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_LOCAL_PORT must not exceed 65535"
+  [[ "${MODEL_GATEWAY_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_MODEL_GATEWAY_PORT must be a valid port"
+  [[ "${MODEL_GATEWAY_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_MODEL_GATEWAY_PORT must not exceed 65535"
   [[ "${LOCAL_PG_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_PORT must be a valid port"
   [[ "${LOCAL_PG_DATABASE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_DATABASE contains unsupported characters"
   [[ "${LOCAL_PG_USER}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_USER contains unsupported characters"
@@ -216,10 +222,35 @@ main() {
     start_role "worker-${worker_index}" uv run joyhousebot worker --config "${CONFIG_PATH}"
   done
   start_role channel-worker uv run joyhousebot channel-worker --config "${CONFIG_PATH}"
+  if [[ "${START_MODEL_GATEWAY}" == "true" ]]; then
+    if lsof -nP -iTCP:"${MODEL_GATEWAY_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+      fail "TCP port ${MODEL_GATEWAY_PORT} is already in use"
+    fi
+    start_role model-gateway uv run joyhousebot model-gateway \
+      --config "${CONFIG_PATH}" --host 127.0.0.1 --port "${MODEL_GATEWAY_PORT}"
+  fi
+  if [[ -n "${NODE_HOST_CONFIG}" || -n "${DEVICE_HOST_CONFIG}" ]]; then
+    require_command node
+    "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/verify-node-runtime-lock.py"
+    [[ "$(node --version)" == "v24.19.0" ]] || \
+      fail "Node Host requires the exact reviewed Node v24.19.0 LTS runtime"
+  fi
+  if [[ -n "${NODE_HOST_CONFIG}" ]]; then
+    [[ -f "${NODE_HOST_CONFIG}" ]] || fail "Node Host config not found: ${NODE_HOST_CONFIG}"
+    (cd "${ROOT_DIR}/hosts/node/supervisor" && npm run build --silent)
+    start_role node-host env JOYHOUSE_NODE_HOST_CONFIG="${NODE_HOST_CONFIG}" \
+      node "${ROOT_DIR}/hosts/node/supervisor/dist/cli.js"
+  fi
+  if [[ -n "${DEVICE_HOST_CONFIG}" ]]; then
+    [[ -f "${DEVICE_HOST_CONFIG}" ]] || fail "Device Host config not found: ${DEVICE_HOST_CONFIG}"
+    (cd "${ROOT_DIR}/hosts/node/device-host" && npm run build --silent)
+    start_role device-host env JOYHOUSE_DEVICE_HOST_CONFIG="${DEVICE_HOST_CONFIG}" \
+      node "${ROOT_DIR}/hosts/node/device-host/dist/cli.js"
+  fi
 
   wait_for_api
   info "ready: http://${API_HOST}:${API_PORT}/ui/"
-  info "press Ctrl+C to stop API, Scheduler, Channel Worker and ${WORKER_COUNT} Agent Workers"
+  info "press Ctrl+C to stop all selected Runtime and Host roles"
   tail -n 20 -F "${LOG_DIR}"/*.log &
   TAIL_PID="$!"
   monitor_children

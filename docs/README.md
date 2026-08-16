@@ -30,6 +30,11 @@
 - [APP_MARKET_GOVERNANCE.md](APP_MARKET_GOVERNANCE.md)：可替换 Market Registry 的签名、授权与分发协议。
 - [REMOTE_CAPABILITY_PROTOCOL.md](REMOTE_CAPABILITY_PROTOCOL.md)：签名 HTTP Remote Capability 的发布、调用与对账协议。
 - [PLUGIN_DEPLOYMENT.md](PLUGIN_DEPLOYMENT.md)：Extension 的安装、发现、发布和 Worker ACK 流程。
+- [EXTENSION_HOST_PROTOCOL.md](EXTENSION_HOST_PROTOCOL.md)：基于 Remote Capability v1 的通用 Extension Host Profile、Node SDK、隔离、OpenCLI/设备桥、Tool Broker 与三类运行模式。
+- [POLYGLOT_EXTENSION_HOST_PLAN.md](POLYGLOT_EXTENSION_HOST_PLAN.md)：从协议、Node SDK、Host Supervisor 到 OpenCLI、Device Host、Pi、渠道和 Node 生态的分阶段实施计划。
+- [DEVICE_HOST_TRANSPORT.md](DEVICE_HOST_TRANSPORT.md)：Cloud 到本机 Host 的设备身份、pull delivery、lease fencing、恢复与 Node 客户端协议。
+- [HOST_MODEL_AND_TOOL_GATEWAYS.md](HOST_MODEL_AND_TOOL_GATEWAYS.md)：Host 短期模型/工具授权、预算、审批和 child Action 链。
+- [PI_RUNNER.md](PI_RUNNER.md)：Pi Pilot 的 worktree、模型代理、测试证据和安全边界。
 
 ### 研究与演进
 

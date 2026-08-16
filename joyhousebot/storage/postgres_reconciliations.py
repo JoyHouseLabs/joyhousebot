@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import Any
 
+from joyhousebot.contracts.events import AgentEvent, EventType, EventVisibility
+from joyhousebot.domain.operation_progress import (
+    MAX_OPERATION_EVENTS_RETAINED,
+    validated_operation_events,
+)
 from joyhousebot.storage.json_codec import Jsonb
-from joyhousebot.storage.reconciliation_records import OperationReconciliationRecord
+from joyhousebot.storage.postgres_event_writes import append_runtime_event_in_transaction
+from joyhousebot.storage.reconciliation_records import (
+    OperationReconciliationEventRecord,
+    OperationReconciliationRecord,
+)
 
 _ACTIVE = ("pending", "checking", "manual_required")
 
@@ -58,6 +68,36 @@ class PostgresReconciliationStoreMixin:
                 version=1,
                 ddl=ddl,
                 description="leased external operation reconciliation state machine",
+            )
+            progress_ddl = """
+            ALTER TABLE operation_reconciliations
+                ADD COLUMN IF NOT EXISTS provider_cursor TEXT,
+                ADD COLUMN IF NOT EXISTS checkpoint_ref TEXT,
+                ADD COLUMN IF NOT EXISTS progress_summary TEXT,
+                ADD COLUMN IF NOT EXISTS progress_percent DOUBLE PRECISION,
+                ADD COLUMN IF NOT EXISTS last_provider_event_at TIMESTAMPTZ;
+            CREATE TABLE IF NOT EXISTS operation_reconciliation_events (
+                reconciliation_id TEXT NOT NULL REFERENCES operation_reconciliations(reconciliation_id)
+                    ON DELETE CASCADE,
+                event_id TEXT NOT NULL,
+                sequence BIGINT NOT NULL CHECK (sequence >= 0),
+                event_type TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                PRIMARY KEY (reconciliation_id,event_id),
+                UNIQUE (reconciliation_id,sequence)
+            );
+            CREATE INDEX IF NOT EXISTS ix_operation_reconciliation_events_created
+                ON operation_reconciliation_events(reconciliation_id,created_at);
+            """
+            conn.execute(progress_ddl)
+            self._record_migration(
+                conn,
+                name="operation_reconciliations",
+                version=2,
+                ddl=progress_ddl,
+                description="bounded provider progress events and durable reconcile cursor",
             )
 
     def ensure_operation_reconciliation(
@@ -220,6 +260,171 @@ class PostgresReconciliationStoreMixin:
                 (worker_id, max(5, int(lease_seconds)), reconciliation_id),
             ).fetchone()
         return self._operation_reconciliation(row) if row else None
+
+    def persist_operation_reconciliation_observation(
+        self, reconciliation_id: str, **kwargs: Any
+    ) -> OperationReconciliationRecord | None:
+        """Atomically persist a leased provider batch before advancing its cursor."""
+        events = validated_operation_events(kwargs.get("events") or ())
+        progress_percent = kwargs.get("progress_percent")
+        if progress_percent is not None and not 0 <= float(progress_percent) <= 100:
+            raise ValueError("progress percent must be between 0 and 100")
+        with self._pool.connection() as conn, conn.transaction():
+            row = conn.execute(
+                """SELECT rec.*,intent.task_id FROM operation_reconciliations rec
+                   JOIN action_intents intent ON intent.action_id=rec.action_id
+                   WHERE rec.reconciliation_id=%s FOR UPDATE OF rec""",
+                (reconciliation_id,),
+            ).fetchone()
+            if row is None or (
+                row["status"] != "checking"
+                or row["lease_owner"] != kwargs["worker_id"]
+                or int(row["lease_version"]) != int(kwargs["lease_version"])
+            ):
+                return None
+            retained = int(
+                conn.execute(
+                    """SELECT count(*) AS count FROM operation_reconciliation_events
+                       WHERE reconciliation_id=%s""",
+                    (reconciliation_id,),
+                ).fetchone()["count"]
+            )
+            inserted = 0
+            for event in events:
+                existing = conn.execute(
+                    """SELECT sequence,event_type,summary,payload
+                       FROM operation_reconciliation_events
+                       WHERE reconciliation_id=%s AND event_id=%s""",
+                    (reconciliation_id, event.event_id),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        int(existing["sequence"]) != event.sequence
+                        or str(existing["event_type"]) != event.event_type
+                        or str(existing["summary"]) != event.summary
+                        or dict(existing["payload"]) != event.payload
+                    ):
+                        raise ValueError("operation event identity was reused with new content")
+                    continue
+                sequence_owner = conn.execute(
+                    """SELECT event_id FROM operation_reconciliation_events
+                       WHERE reconciliation_id=%s AND sequence=%s""",
+                    (reconciliation_id, event.sequence),
+                ).fetchone()
+                if sequence_owner is not None:
+                    raise ValueError("operation event sequence was reused by another event")
+                if retained + inserted >= MAX_OPERATION_EVENTS_RETAINED:
+                    raise ValueError(
+                        f"operation event retention exceeds {MAX_OPERATION_EVENTS_RETAINED}"
+                    )
+                conn.execute(
+                    """INSERT INTO operation_reconciliation_events
+                           (reconciliation_id,event_id,sequence,event_type,summary,payload)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (
+                        reconciliation_id,
+                        event.event_id,
+                        event.sequence,
+                        event.event_type,
+                        event.summary,
+                        Jsonb(event.payload),
+                    ),
+                )
+                inserted += 1
+                runtime_event_id = "operation_progress_" + sha256(
+                    f"{reconciliation_id}\0{event.event_id}".encode()
+                ).hexdigest()
+                append_runtime_event_in_transaction(
+                    conn,
+                    AgentEvent(
+                        event_id=runtime_event_id,
+                        run_id=str(row["run_id"]),
+                        task_id=row["task_id"],
+                        type=EventType.OPERATION_RECONCILIATION_PROGRESS.value,
+                        phase="execution",
+                        status="waiting_external",
+                        visibility=EventVisibility.PRIVATE.value,
+                        summary=(event.summary or kwargs.get("progress_summary") or event.event_type)[
+                            :500
+                        ],
+                        worker_id=kwargs["worker_id"],
+                        lease_version=kwargs["lease_version"],
+                        data={
+                            "reconciliation_id": reconciliation_id,
+                            "action_id": str(row["action_id"]),
+                            "provider_event_id": event.event_id,
+                            "provider_sequence": event.sequence,
+                            "provider_event_type": event.event_type,
+                        },
+                    ),
+                )
+            if kwargs.get("cursor_reset"):
+                append_runtime_event_in_transaction(
+                    conn,
+                    AgentEvent(
+                        event_id=f"operation_cursor_recovered_{reconciliation_id}_{row['lease_version']}",
+                        run_id=str(row["run_id"]),
+                        task_id=row["task_id"],
+                        type=EventType.OPERATION_RECONCILIATION_RECOVERED.value,
+                        phase="execution",
+                        status="waiting_external",
+                        visibility=EventVisibility.PRIVATE.value,
+                        summary="外部操作事件游标已恢复",
+                        worker_id=kwargs["worker_id"],
+                        lease_version=kwargs["lease_version"],
+                        data={
+                            "reconciliation_id": reconciliation_id,
+                            "reason": "provider_cursor_reset",
+                        },
+                    ),
+                )
+            saved = conn.execute(
+                """UPDATE operation_reconciliations SET
+                       provider_cursor=COALESCE(%s,provider_cursor),
+                       checkpoint_ref=COALESCE(%s,checkpoint_ref),
+                       progress_summary=COALESCE(%s,progress_summary),
+                       progress_percent=COALESCE(%s,progress_percent),
+                       last_provider_event_at=CASE WHEN %s>0 THEN clock_timestamp()
+                                                   ELSE last_provider_event_at END,
+                       updated_at=clock_timestamp()
+                   WHERE reconciliation_id=%s AND status='checking' AND lease_owner=%s
+                     AND lease_version=%s RETURNING *""",
+                (
+                    kwargs.get("provider_cursor"),
+                    kwargs.get("checkpoint_ref"),
+                    kwargs.get("progress_summary"),
+                    progress_percent,
+                    inserted,
+                    reconciliation_id,
+                    kwargs["worker_id"],
+                    kwargs["lease_version"],
+                ),
+            ).fetchone()
+        return self._operation_reconciliation(saved) if saved else None
+
+    def list_operation_reconciliation_events(
+        self,
+        reconciliation_id: str,
+        *,
+        expected_user_id: str,
+        after_sequence: int = -1,
+        limit: int = 200,
+    ) -> list[OperationReconciliationEventRecord]:
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """SELECT evt.* FROM operation_reconciliation_events evt
+                   JOIN operation_reconciliations rec
+                     ON rec.reconciliation_id=evt.reconciliation_id
+                   WHERE evt.reconciliation_id=%s AND rec.user_id=%s AND evt.sequence>%s
+                   ORDER BY evt.sequence LIMIT %s""",
+                (
+                    reconciliation_id,
+                    expected_user_id,
+                    max(-1, int(after_sequence)),
+                    max(1, min(500, int(limit))),
+                ),
+            ).fetchall()
+        return [self._operation_reconciliation_event(row) for row in rows]
 
     def defer_operation_reconciliation(self, reconciliation_id: str, **kwargs: Any) -> bool:
         status = "manual_required" if kwargs.get("manual_required") else "pending"
@@ -426,9 +631,31 @@ class PostgresReconciliationStoreMixin:
             attempt_count=int(row["attempt_count"]), max_attempts=int(row["max_attempts"]),
             next_attempt_at=_iso(row["next_attempt_at"]), deadline_at=_iso(row["deadline_at"]),
             lease_owner=row["lease_owner"], lease_expires_at=_iso(row["lease_expires_at"]),
-            lease_version=int(row["lease_version"]), result=_json(row["result"]),
+            lease_version=int(row["lease_version"]), provider_cursor=row["provider_cursor"],
+            checkpoint_ref=row["checkpoint_ref"], progress_summary=row["progress_summary"],
+            progress_percent=(
+                float(row["progress_percent"]) if row["progress_percent"] is not None else None
+            ),
+            last_provider_event_at=_iso(row["last_provider_event_at"]),
+            result=_json(row["result"]),
             error=_json(row["error"]), last_error=_json(row["last_error"]),
             resolution_source=row["resolution_source"], resolved_by=row["resolved_by"],
             created_at=_iso(row["created_at"]) or "", updated_at=_iso(row["updated_at"]) or "",
             resolved_at=_iso(row["resolved_at"]),
+        )
+
+    @staticmethod
+    def _operation_reconciliation_event(
+        row: dict[str, Any]
+    ) -> OperationReconciliationEventRecord:
+        from joyhousebot.storage.postgres_store import _iso, _json
+
+        return OperationReconciliationEventRecord(
+            reconciliation_id=str(row["reconciliation_id"]),
+            event_id=str(row["event_id"]),
+            sequence=int(row["sequence"]),
+            event_type=str(row["event_type"]),
+            summary=str(row["summary"]),
+            payload=dict(_json(row["payload"], {})),
+            created_at=_iso(row["created_at"]) or "",
         )

@@ -118,6 +118,26 @@ def api(
     )
 
 
+@app.command("model-gateway")
+def model_gateway(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(18794, "--port"),
+    workers: int = typer.Option(1, "--workers", min=1),
+    config: Path | None = ConfigOption,
+) -> None:
+    """Start the credential-isolating Host Model Gateway process."""
+    import uvicorn
+
+    _select_config(config)
+    uvicorn.run(
+        "joyhousebot.model_gateway.app:app",
+        host=host,
+        port=port,
+        workers=workers,
+        factory=False,
+    )
+
+
 @app.command()
 def worker(config: Path | None = ConfigOption) -> None:
     """Start an Agent execution worker with no public network listener."""

@@ -17,6 +17,18 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ENV_REFERENCE = re.compile(r"^env://([A-Za-z_][A-Za-z0-9_]*)$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+_HOST_PROVENANCE_FIELDS = frozenset(
+    {
+        "host_id",
+        "host_version",
+        "host_build_digest",
+        "host_extension_id",
+        "host_extension_version",
+        "host_extension_build_digest",
+        "host_extension_lockfile_digest",
+        "host_sdk_version",
+    }
+)
 
 
 def normalize_remote_connection(
@@ -29,6 +41,7 @@ def normalize_remote_connection(
     if not isinstance(value, dict):
         raise ValueError("remote connection configuration must be an object")
     allowed = {
+        "service_profile",
         "enabled",
         "base_url",
         "key_id",
@@ -37,6 +50,9 @@ def normalize_remote_connection(
         "require_response_signature",
         "timeout_seconds",
         "max_response_bytes",
+        "host_protocol_version",
+        "expected_host_manifest_digest",
+        "require_host_preflight",
         "capabilities",
     }
     unknown = sorted(set(value) - allowed)
@@ -58,6 +74,29 @@ def normalize_remote_connection(
     max_response_bytes = int(value.get("max_response_bytes") or 10 * 1024 * 1024)
     if not 1024 <= max_response_bytes <= _MAX_RESPONSE_BYTES:
         raise ValueError("remote connection max_response_bytes is outside the safe range")
+    service_profile = str(value.get("service_profile") or "").strip()
+    if service_profile not in {"business", "extension_host"}:
+        raise ValueError(
+            "remote connection service_profile must be business or extension_host"
+        )
+    host_protocol_version = str(value.get("host_protocol_version") or "").strip()
+    expected_manifest_digest = str(
+        value.get("expected_host_manifest_digest") or ""
+    ).strip()
+    require_host_preflight = bool(value.get("require_host_preflight", False))
+    if service_profile == "extension_host":
+        if host_protocol_version != "1":
+            raise ValueError("extension host protocol version must be exactly 1")
+        if not _DIGEST.fullmatch(expected_manifest_digest):
+            raise ValueError(
+                "extension host expected_host_manifest_digest must be sha256"
+            )
+        if not require_host_preflight:
+            raise ValueError("extension host preflight cannot be disabled")
+        if not bool(value.get("require_response_signature", True)):
+            raise ValueError("extension host response signatures cannot be disabled")
+    elif host_protocol_version or expected_manifest_digest or require_host_preflight:
+        raise ValueError("business service cannot declare extension host preflight fields")
     raw_capabilities = value.get("capabilities")
     if not isinstance(raw_capabilities, list) or not raw_capabilities:
         raise ValueError("remote connection must declare at least one capability")
@@ -68,6 +107,7 @@ def normalize_remote_connection(
     if len(identities) != len(set(identities)):
         raise ValueError("remote connection contains duplicate capability versions")
     return {
+        "service_profile": service_profile,
         "enabled": bool(value.get("enabled", True)),
         "base_url": base_url,
         "key_id": key_id,
@@ -78,6 +118,9 @@ def normalize_remote_connection(
         ),
         "timeout_seconds": timeout,
         "max_response_bytes": max_response_bytes,
+        "host_protocol_version": host_protocol_version,
+        "expected_host_manifest_digest": expected_manifest_digest,
+        "require_host_preflight": require_host_preflight,
         "capabilities": capabilities,
     }
 
@@ -174,6 +217,18 @@ def _normalize_capability(raw: Any) -> dict[str, Any]:
     max_concurrent = int(raw.get("max_concurrent_invocations") or 1)
     if not 1 <= max_concurrent <= 1000:
         raise ValueError(f"remote capability {capability_id} concurrency limit is invalid")
+    execution_mode = str(raw.get("execution_mode") or "immediate").strip()
+    if execution_mode not in {"immediate", "durable"}:
+        raise ValueError(f"remote capability {capability_id} execution mode is invalid")
+    raw_provenance = raw.get("provenance") or {}
+    if not isinstance(raw_provenance, dict):
+        raise ValueError(f"remote capability {capability_id} provenance must be an object")
+    unknown_provenance = sorted(set(raw_provenance) - _HOST_PROVENANCE_FIELDS)
+    if unknown_provenance:
+        raise ValueError(
+            f"remote capability {capability_id} provenance contains unsupported fields: "
+            + ", ".join(unknown_provenance)
+        )
     input_schema = _schema(
         raw.get("input_schema"),
         default={"type": "object", "properties": {}},
@@ -207,6 +262,9 @@ def _normalize_capability(raw: Any) -> dict[str, Any]:
         "invocation_concurrency": concurrency,
         "max_concurrent_invocations": max_concurrent,
         "cost_policy": dict(raw.get("cost_policy") or {}),
+        "execution_mode": execution_mode,
+        "supports_stream": bool(raw.get("supports_stream", False)),
+        "provenance": dict(raw_provenance),
     }
 
 

@@ -2,6 +2,12 @@
 
 状态：Implemented（2026-08-10）
 
+本文件描述已经实现的同步调用与异步对账基线。Node.js、其他语言和受管长程 Extension Host 不创建
+平行协议，而是在本协议之上增加分阶段实施的
+[Extension Host Profile v1](EXTENSION_HOST_PROTOCOL.md)。跨语言签名向量、`request_digest`、最小 Node SDK
+和 Echo Host 契约测试已经实现；`supports_stream`、生产 Host Supervisor、Host Manifest 预热、checkpoint、
+Host command、Artifact upload grant、Device Relay 和 Model Gateway 仍不能视为已可用。
+
 ## 1. 边界
 
 企业程序是产品平面，拥有用户界面、组织身份、业务权限、业务数据和最终事务；JoyhouseBot 是执行平面，
@@ -43,6 +49,7 @@ Revision，或者调用 `POST /v1/admin/remote-connections`。服务地址、Key
   "connection_id": "crm",
   "name": "CRM 业务服务",
   "description": "销售线索读写边界",
+  "service_profile": "business",
   "base_url": "https://crm.internal.example/joyhousebot/v1",
   "key_id": "joyhousebot-prod-2026-01",
   "signing_secret_ref": "env://CRM_JOYHOUSEBOT_SIGNING_SECRET",
@@ -132,7 +139,8 @@ Idempotency-Key: action:<action-id>
     "task_id": "task-1",
     "request_id": "request-1",
     "action_id": "act-1",
-    "idempotency_key": "action:act-1"
+    "idempotency_key": "action:act-1",
+    "request_digest": "sha256:..."
   },
   "authorization": {
     "permissions": ["crm.lead.update"],
@@ -173,6 +181,22 @@ JHBCAP-RESPONSE-HMAC-SHA256\n
 ```
 
 响应头为 `X-Joyhouse-Response-Signature: v1=<hex>`。连接器默认拒绝未签名或签名错误的响应。
+
+`request_digest` 用来跨 Worker claim 和多次 reconcile 冻结业务请求，它不包含短暂 lease/attempt，只包含：
+
+```json
+{
+  "capability": {"capability_id": "...", "version": "...", "implementation_digest": "sha256:..."},
+  "subject": {"user_id": "...", "agent_id": "...", "session_id": "..."},
+  "authorization": {"permissions": ["..."], "permission_mode": "default"},
+  "input": {}
+}
+```
+
+以上投影按 RFC 8785 JSON Canonicalization Scheme 编码后计算 SHA-256，格式为
+`sha256:<64 lowercase hex>`。新调用必须携带该字段；Connector 对历史上没有该字段的已受理 operation 保持
+对账兼容，但不能将其伪造为 Extension Host 的完整冻结身份。共享 Schema 和跨语言向量位于
+`docs/protocol/extension-host-v1.schema.json` 与 `tests/contract/extension-host/`。
 
 ## 5. 同步结果与写入回执
 
@@ -229,12 +253,19 @@ JoyhouseBot 不会重新提交操作，而是调用：
 POST {base_url}/operations:reconcile
 ```
 
-正文包含原 Capability、主体、冻结执行身份和 `operation.operation_id`。响应状态只能是：
+正文包含原 Capability、主体、冻结执行身份、`operation.operation_id`，以及存在时的上次已提交
+`operation.cursor`。响应状态只能是：
 
 - `pending`：可带 `retry_after_seconds`；
 - `succeeded`：带最终 `output` 和 `artifacts`；
 - `failed`：带结构化 `error`；
 - `unknown`：无法确定结果，JoyhouseBot 转人工处理，不重新写入。
+
+响应还可以返回 `provider_cursor`、`checkpoint_ref`、`progress_summary`、0–100 的
+`progress_percent` 和最多 100 个 `events`。事件以稳定 `event_id` 和单 operation 内唯一 `sequence`
+去重；Core 先在当前 reconciliation lease 的同一事务内写入事件，再推进 cursor。`cursor_reset=true`
+表示服务端已按稳定 operation identity 回退到可恢复查询，并会形成一条私有恢复审计事件。事件正文不进入
+`operation JSONB`，而保存在有上限的规范化表中。
 
 ## 7. 错误
 
@@ -272,3 +303,18 @@ PostgreSQL 中的 active generation；其他 Worker 在处理紧随其后的 Cap
 
 Agent Revision 再以精确 `CapabilityRef` 和最小权限绑定能力。更新企业程序实现时必须更换版本或
 `implementation_digest`；同版本漂移会被不可变目录拒绝。
+
+## 9. Extension Host 演进边界
+
+Extension Host 继续复用本协议的固定 `base_url`、HMAC、防重放、主体、权限、Capability identity、
+`action_id/idempotency_key`、写回执和 `accepted -> reconcile`。Host operation 绑定稳定 Action；Runtime
+内部的 reconciliation/Run/Task lease 不成为远端可决定的公共身份。
+
+长程 Profile 的正确性必须始终可通过 `operations:reconcile` 和 PostgreSQL 恢复。可选 SSE 只用于降低
+进度延迟，不能取代对账，也不能要求 Agent Worker 为等待外部事件永久占用 lease。详细开发顺序见
+[Polyglot Extension Host 开发计划](POLYGLOT_EXTENSION_HOST_PLAN.md)。
+
+OpenCLI 等依赖用户本机登录态的 Extension 在纯本地部署时继续使用固定回环 `base_url`。Cloud Runtime
+调用 NAT 后的本地 Host 时，由 Device Relay 对 Runtime 呈现同一固定 Remote Capability 接口；设备只通过
+出站 HTTPS 领取 operation 和提交结果，可选 SSE 仅用于唤醒。Relay 不创建另一套 Run/Task/Approval 状态机，
+不接收浏览器 Cookie，并继续以本协议的 Action、幂等、签名和 reconcile 作为正确性边界。

@@ -23,6 +23,7 @@ router = APIRouter(
 
 def _configuration(body: RemoteConnectionRevisionRequest) -> dict:
     return {
+        "service_profile": body.service_profile,
         "enabled": body.enabled,
         "base_url": body.base_url,
         "key_id": body.key_id,
@@ -31,6 +32,9 @@ def _configuration(body: RemoteConnectionRevisionRequest) -> dict:
         "require_response_signature": body.require_response_signature,
         "timeout_seconds": body.timeout_seconds,
         "max_response_bytes": body.max_response_bytes,
+        "host_protocol_version": body.host_protocol_version,
+        "expected_host_manifest_digest": body.expected_host_manifest_digest,
+        "require_host_preflight": body.require_host_preflight,
         "capabilities": body.capabilities,
     }
 

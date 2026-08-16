@@ -99,6 +99,38 @@ services:
     deploy:
       replicas: 2
 
+  # Credential-isolating model endpoint for untrusted managed Hosts. It is
+  # reachable only on the Compose network and never publishes a host port.
+  model-gateway:
+    build: *runtime_build
+    command: ["model-gateway", "--host", "0.0.0.0", "--port", "18794"]
+    environment:
+      <<: *runtime_env
+      LLM_PROVIDER: ${LLM_PROVIDER:?required}
+      LLM_MODEL: ${LLM_MODEL:?required}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_BASE: ${LLM_API_BASE:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes: *runtime_config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "18794"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18794/readyz', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
   scheduler:
     build: *runtime_build
     command: ["scheduler"]

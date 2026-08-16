@@ -1,0 +1,24 @@
+{
+  "name": "@joyhousebot/echo-host-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Contract fixture for JoyhouseBot Node Extension Host",
+  "type": "module",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@joyhousebot/extension-sdk": "file:../../../../sdks/node"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "Apache-2.0"
+}

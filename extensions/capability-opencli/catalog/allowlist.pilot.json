@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "commands": [
+    {
+      "site": "github",
+      "name": "whoami",
+      "capability_version": "1.0.0",
+      "timeout_seconds": 60,
+      "expected_duration_seconds": 5
+    },
+    {
+      "site": "twitter",
+      "name": "search",
+      "capability_version": "1.0.0",
+      "timeout_seconds": 120,
+      "expected_duration_seconds": 15
+    },
+    {
+      "site": "twitter",
+      "name": "post",
+      "capability_version": "1.0.0",
+      "timeout_seconds": 120,
+      "expected_duration_seconds": 30,
+      "allow_path_arguments": ["images"]
+    }
+  ]
+}

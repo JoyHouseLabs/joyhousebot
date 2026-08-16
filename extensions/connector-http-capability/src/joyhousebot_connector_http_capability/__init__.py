@@ -5,6 +5,9 @@ from .connector import (
     RemoteCapabilityTool,
     connect_remote_capabilities,
     create_extension,
+    extension_host_manifest_digest,
+    preflight_extension_host,
+    request_digest,
     sign_request_body,
     sign_response_body,
 )
@@ -14,6 +17,9 @@ __all__ = [
     "RemoteCapabilityTool",
     "connect_remote_capabilities",
     "create_extension",
+    "extension_host_manifest_digest",
+    "preflight_extension_host",
+    "request_digest",
     "sign_request_body",
     "sign_response_body",
 ]
