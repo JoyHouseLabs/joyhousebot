@@ -4,6 +4,8 @@ import {dirname} from "node:path";
 
 import type {OperationProgressEvent} from "@porthouse/extension-sdk";
 
+import type {CapturedArtifact} from "./capture.js";
+
 import type {OpenCliExecutionResult} from "./runner.js";
 
 export type StoredOperationStatus =
@@ -28,6 +30,7 @@ export interface StoredOperation {
   status: StoredOperationStatus;
   attempt: number;
   output?: unknown;
+  artifacts?: CapturedArtifact[];
   error?: OpenCliExecutionResult["error"];
   events: OperationProgressEvent[];
   created_at: string;

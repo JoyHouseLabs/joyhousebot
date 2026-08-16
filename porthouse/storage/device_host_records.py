@@ -76,3 +76,35 @@ class DeviceOperationDeliveryEventRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class DeviceHostControlRequestRecord:
+    """Auditable, bounded management work for a paired local Host.
+
+    This is deliberately separate from DeviceOperationDeliveryRecord: control
+    requests have no Run, Action, Tool, or business-side reconciliation.
+    """
+
+    request_id: str
+    user_id: str
+    device_id: str
+    action: str
+    parameters: dict[str, Any]
+    status: str
+    request_digest: str
+    attempt_count: int
+    max_attempts: int
+    claim_session_id: str | None
+    claim_expires_at: str | None
+    claim_version: int
+    result: dict[str, Any] | None
+    error: dict[str, Any] | None
+    requested_by: str
+    created_at: str
+    claimed_at: str | None
+    completed_at: str | None
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import {mkdir, readFile, rm} from "node:fs/promises";
+import {mkdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import test from "node:test";
 
 import {
   buildOpenCliArgv,
+  captureMarkdownArtifact,
   compileCatalog,
   preflightOpenCli,
   runOpenCli,
@@ -83,6 +84,57 @@ test("builds argv without a shell and rejects flag injection", () => {
   assert.throws(() => buildOpenCliArgv(compiled, {
     query: "safe", arbitrary: "--help", browser_profile_ref: "chrome-main",
   }, "/tmp/opencli-operation"), /unknown fields/);
+});
+
+test("uses an explicit negative flag for reviewed true-default booleans", () => {
+  const compiled = compile([command({
+    args: [{name: "download-images", type: "boolean", default: true}],
+  })]).commands[0];
+  const built = buildOpenCliArgv(compiled, {
+    "download-images": false,
+    browser_profile_ref: "chrome-main",
+  }, "/tmp/opencli-operation");
+  assert.deepEqual(built.argv, ["fixture", "read", "--no-download-images", "--format=json"]);
+});
+
+test("Markdown capture forbids image download side effects", () => {
+  const compiled = compile([command({
+    args: [
+      {name: "output", type: "string", default: "./output"},
+      {name: "download-images", type: "boolean", default: true},
+    ],
+  })], [{
+    site: "fixture", name: "read", capability_version: "1.0.0",
+    capture_output_markdown: true, allow_path_arguments: ["output"],
+  }]).commands[0];
+  assert.throws(() => buildOpenCliArgv(compiled, {
+    "download-images": true,
+    browser_profile_ref: "chrome-main",
+  }, "/tmp/opencli-operation"), /forbids image downloads/);
+  assert.equal(
+    compiled.capability.input_schema.properties["download-images"].default,
+    false,
+  );
+});
+
+test("captures one bounded Markdown output as an Artifact instead of a host path", async () => {
+  const workspace = join(tmpdir(), `porthouse-opencli-capture-${process.pid}-${Date.now()}`);
+  await mkdir(join(workspace, "article"), {recursive: true});
+  await writeFile(join(workspace, "article", "post.md"), "# Captured");
+  try {
+    const artifacts = await captureMarkdownArtifact({
+      workspace,
+      operationId: "opencli-one",
+      capabilityId: "opencli.weixin.download",
+      sourceUrl: "https://mp.weixin.qq.com/s/example",
+    });
+    assert.equal(artifacts.length, 1);
+    assert.equal(artifacts[0].data.content, "# Captured");
+    assert.equal(artifacts[0].metadata.source_url, "https://mp.weixin.qq.com/s/example");
+    assert.equal(artifacts[0].evidence.relative_path, "article/post.md");
+  } finally {
+    await rm(workspace, {recursive: true, force: true});
+  }
 });
 
 test("maps OpenCLI JSON, empty, auth, bridge, and timeout outcomes", async () => {

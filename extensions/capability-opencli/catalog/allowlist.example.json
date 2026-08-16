@@ -15,6 +15,18 @@
       "site": "twitter",
       "name": "post",
       "capability_version": "1.0.0"
+    },
+    {
+      "site": "weixin",
+      "name": "search",
+      "capability_version": "1.0.0"
+    },
+    {
+      "site": "weixin",
+      "name": "download",
+      "capability_version": "1.0.0",
+      "allow_path_arguments": ["output"],
+      "capture_output_markdown": true
     }
   ]
 }

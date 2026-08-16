@@ -9,9 +9,12 @@ from fastapi import APIRouter, Header, HTTPException, Query, status
 from porthouse.api.dependencies import ContainerDep, ContextDep
 from porthouse.api.device_host_schemas import (
     AppendDeviceOperationEventsRequest,
+    ClaimDeviceHostControlsRequest,
     ClaimDeviceOperationsRequest,
+    CompleteDeviceHostControlRequest,
     CompleteDeviceOperationRequest,
     CreateDeviceDeliveryRequest,
+    CreateDeviceHostControlRequest,
     DeviceCompletionResult,
     DeviceHeartbeatRequest,
     DeviceOperationLeaseHeartbeatRequest,
@@ -84,6 +87,36 @@ async def revoke_device_host(
     device_id: str, context: ContextDep, container: ContainerDep
 ) -> None:
     await container.device_hosts.revoke(context, device_id)
+
+
+@router.post("/device-hosts/{device_id}/control-requests", status_code=status.HTTP_202_ACCEPTED)
+async def create_device_host_control_request(
+    device_id: str,
+    body: CreateDeviceHostControlRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    record = await container.device_hosts.request_control(
+        context, device_id, **body.model_dump()
+    )
+    return {"control_request": record_dict(record)}
+
+
+@router.get("/device-hosts/{device_id}/control-requests")
+async def list_device_host_control_requests(
+    device_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    return {
+        "items": [
+            record_dict(record)
+            for record in await container.device_hosts.list_controls(
+                context, device_id, limit=limit
+            )
+        ]
+    }
 
 
 @router.post(
@@ -167,6 +200,37 @@ async def claim_device_operations(
             _public_delivery(record, include_request=True) for record in records
         ]
     }
+
+
+@router.post("/device-host/control-requests:claim")
+async def claim_device_host_controls(
+    body: ClaimDeviceHostControlsRequest,
+    container: ContainerDep,
+    authorization: Annotated[str, Header()] = "",
+    x_porthouse_device_id: Annotated[str, Header()] = "",
+):
+    device, _ = await _authenticate_device(
+        container, authorization, x_porthouse_device_id
+    )
+    records = await container.device_hosts.claim_controls(device, **body.model_dump())
+    return {"items": [record_dict(record) for record in records]}
+
+
+@router.post("/device-host/control-requests/{request_id}:complete")
+async def complete_device_host_control_request(
+    request_id: str,
+    body: CompleteDeviceHostControlRequest,
+    container: ContainerDep,
+    authorization: Annotated[str, Header()] = "",
+    x_porthouse_device_id: Annotated[str, Header()] = "",
+):
+    device, _ = await _authenticate_device(
+        container, authorization, x_porthouse_device_id
+    )
+    record = await container.device_hosts.complete_control(
+        device, request_id, **body.model_dump()
+    )
+    return {"control_request": record_dict(record)}
 
 
 @router.post("/device-host/operations/{delivery_id}/model-grant")

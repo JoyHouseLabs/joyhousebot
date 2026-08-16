@@ -197,6 +197,7 @@ class PostgresMigrationMixin:
             self.migrate_approvals()
             self.migrate_reconciliations()
             self.migrate_device_hosts()
+            self.migrate_device_host_controls()
             self.migrate_artifact_uploads()
             self.migrate_admins()
             self.migrate_agents()

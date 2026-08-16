@@ -18,6 +18,18 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_ENVELOPE_BYTES = 1024 * 1024
 _MAX_RESULT_BYTES = 4 * 1024 * 1024
+_MAX_CONTROL_RESULT_BYTES = 128 * 1024
+_CONTROL_ACTIONS = {
+    "preflight",
+    "diagnose_opencli",
+    "diagnose_pi",
+    "enable_opencli",
+    "disable_opencli",
+    "enable_pi",
+    "disable_pi",
+    "restart_host",
+}
+_CONTROL_PARAMETER_KEYS = {"browser_profile_ref", "workspace_ref"}
 
 
 def _canonical(value: dict[str, Any]) -> bytes:
@@ -86,6 +98,82 @@ class DeviceHostService:
         )
         if not revoked:
             raise NotFoundError("active Device Host not found")
+
+    async def request_control(
+        self,
+        context: RequestContext,
+        device_id: str,
+        *,
+        action: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> Any:
+        normalized_action = str(action or "").strip()
+        if normalized_action not in _CONTROL_ACTIONS:
+            raise ValidationError("Device Host control action is not allowlisted")
+        normalized_parameters = self._control_parameters(parameters or {})
+        normalized_device_id = self._identifier(device_id, "device_id")
+        return await asyncio.to_thread(
+            self.store.create_device_host_control_request,
+            request_id=f"hostctl_{uuid4().hex}",
+            user_id=context.user_id,
+            device_id=normalized_device_id,
+            action=normalized_action,
+            parameters=normalized_parameters,
+            request_digest=_digest(
+                {
+                    "action": normalized_action,
+                    "device_id": normalized_device_id,
+                    "parameters": normalized_parameters,
+                }
+            ),
+            max_attempts=3,
+            requested_by=context.user_id,
+        )
+
+    async def list_controls(
+        self, context: RequestContext, device_id: str, *, limit: int
+    ) -> list[Any]:
+        return await asyncio.to_thread(
+            self.store.list_device_host_control_requests,
+            user_id=context.user_id,
+            device_id=self._identifier(device_id, "device_id"),
+            limit=limit,
+        )
+
+    async def claim_controls(self, device: Any, **values: Any) -> list[Any]:
+        return await asyncio.to_thread(
+            self.store.claim_device_host_control_requests,
+            user_id=device.user_id,
+            device_id=device.device_id,
+            claim_session_id=self._claim_session(values["claim_session_id"]),
+            limit=values["limit"],
+            lease_seconds=values["lease_seconds"],
+        )
+
+    async def complete_control(
+        self, device: Any, request_id: str, **values: Any
+    ) -> Any:
+        result = dict(values.get("result") or {})
+        error = dict(values.get("error") or {})
+        if len(_canonical({"result": result, "error": error})) > _MAX_CONTROL_RESULT_BYTES:
+            raise ValidationError("Device Host control result exceeds 128 KiB")
+        control_status = str(values.get("status") or "")
+        if control_status not in {"succeeded", "failed", "manual_required"}:
+            raise ValidationError("Device Host control completion status is invalid")
+        saved = await asyncio.to_thread(
+            self.store.complete_device_host_control_request,
+            self._identifier(request_id, "request_id"),
+            user_id=device.user_id,
+            device_id=device.device_id,
+            claim_session_id=self._claim_session(values["claim_session_id"]),
+            claim_version=values["claim_version"],
+            status=control_status,
+            result=result,
+            error=error,
+        )
+        if saved is None:
+            raise ConflictError("Device Host control request is stale or not owned by this device")
+        return saved
 
     async def get_delivery(self, context: RequestContext, delivery_id: str) -> Any:
         record = await asyncio.to_thread(
@@ -430,6 +518,18 @@ class DeviceHostService:
             permissions.update(str(value) for value in definition.get("permissions") or ())
             seen.add(identity)
         return frozen, sorted(permissions)
+
+    @staticmethod
+    def _control_parameters(value: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(value, dict) or set(value) - _CONTROL_PARAMETER_KEYS:
+            raise ValidationError("Device Host control parameters are not allowlisted")
+        normalized: dict[str, str] = {}
+        for key, raw in value.items():
+            item = str(raw or "").strip()
+            if not _IDENTIFIER.fullmatch(item):
+                raise ValidationError(f"Device Host control parameter {key} is invalid")
+            normalized[key] = item
+        return normalized
 
     @staticmethod
     def _identifier(value: str, field: str) -> str:

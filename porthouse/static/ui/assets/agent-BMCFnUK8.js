@@ -1,0 +1,1 @@
+import{S as e,m as t}from"./index-SdtQ1Zma.js";async function n(){let n=await t(`/v1/agents`,{headers:e()});if(!n.ok)throw Error(await n.text());return{ok:!0,agents:(await n.json()).items??[]}}export{n as t};

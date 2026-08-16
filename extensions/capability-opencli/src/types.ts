@@ -35,6 +35,8 @@ export interface AllowedCommand {
   expected_duration_seconds?: number;
   data_classification?: "public" | "internal" | "confidential" | "restricted";
   allow_path_arguments?: string[];
+  /** Capture one bounded Markdown document emitted below the managed output workspace. */
+  capture_output_markdown?: boolean;
 }
 
 export interface Allowlist {
@@ -85,6 +87,7 @@ export interface CompiledCommand {
   args: OpenCliArgument[];
   columns: string[];
   allowed_path_arguments: string[];
+  capture_output_markdown: boolean;
   capability: CapabilityDefinition;
 }
 

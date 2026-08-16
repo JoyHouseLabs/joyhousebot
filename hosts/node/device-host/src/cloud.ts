@@ -1,6 +1,11 @@
 import type {OperationProgressEvent} from "@porthouse/extension-sdk";
 
-import type {CloudDeviceTransport, DeviceDelivery, DeviceHostConfig} from "./types.js";
+import type {
+  CloudDeviceTransport,
+  DeviceDelivery,
+  DeviceHostConfig,
+  DeviceHostControlRequest,
+} from "./types.js";
 
 export class RuntimeDeviceTransport implements CloudDeviceTransport {
   readonly #config: DeviceHostConfig;
@@ -15,6 +20,10 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
 
   get runtimeBaseUrl(): string {
     return this.#config.runtimeBaseUrl;
+  }
+
+  get localHostBaseUrl(): string {
+    return this.#config.localHost.baseUrl;
   }
 
   async heartbeat(): Promise<void> {
@@ -102,6 +111,32 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
         claim_session_id: sessionId,
         claim_version: delivery.claim_version,
         result,
+      },
+    );
+  }
+
+  async claimControls(sessionId: string): Promise<DeviceHostControlRequest[]> {
+    const response = await this.#request("/v1/device-host/control-requests:claim", {
+      claim_session_id: sessionId,
+      limit: 3,
+      lease_seconds: this.#config.claimLeaseSeconds,
+    });
+    return Array.isArray(response.items) ? response.items as DeviceHostControlRequest[] : [];
+  }
+
+  async completeControl(
+    request: DeviceHostControlRequest,
+    sessionId: string,
+    outcome: {status: "succeeded" | "failed" | "manual_required"; result?: Record<string, unknown>; error?: Record<string, unknown>},
+  ): Promise<void> {
+    await this.#request(
+      `/v1/device-host/control-requests/${encodeURIComponent(request.request_id)}:complete`,
+      {
+        claim_session_id: sessionId,
+        claim_version: request.claim_version,
+        status: outcome.status,
+        result: outcome.result ?? {},
+        error: outcome.error ?? {},
       },
     );
   }

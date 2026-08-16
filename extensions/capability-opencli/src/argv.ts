@@ -23,7 +23,13 @@ export function buildOpenCliArgv(
   const options: string[] = [];
   for (const argument of command.args) {
     const supplied = Object.prototype.hasOwnProperty.call(values, argument.name);
-    const value = supplied ? values[argument.name] : argument.default;
+    let value = supplied ? values[argument.name] : argument.default;
+    if (command.capture_output_markdown && argument.name === "download-images") {
+      if (supplied && value !== false) {
+        throw new Error("OpenCLI Markdown capture forbids image downloads");
+      }
+      value = false;
+    }
     if (value === undefined || value === null) {
       if (argument.required) throw new Error(`OpenCLI argument is required: ${argument.name}`);
       continue;
@@ -31,6 +37,9 @@ export function buildOpenCliArgv(
     const serialized = serializeArgument(argument, value);
     if (["bool", "boolean"].includes(argument.type)) {
       if (serialized === "true") options.push(`--${argument.name}`);
+      // OpenCLI/Commander accepts `--no-<flag>` for a boolean that defaults to
+      // true. This lets a reviewed download command disable image side effects.
+      else if (argument.default === true) options.push(`--no-${argument.name}`);
       continue;
     }
     const safeValue = command.allowed_path_arguments.includes(argument.name)

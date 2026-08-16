@@ -207,7 +207,7 @@ function parseAllowedCommand(value: unknown): AllowedCommand {
   const item = value as Record<string, unknown>;
   const known = new Set([
     "site", "name", "capability_version", "timeout_seconds", "expected_duration_seconds",
-    "data_classification", "allow_path_arguments",
+    "data_classification", "allow_path_arguments", "capture_output_markdown",
   ]);
   const unknown = Object.keys(item).filter((key) => !known.has(key));
   if (unknown.length) throw new Error(`OpenCLI allowlist contains unsupported fields: ${unknown.join(", ")}`);
@@ -231,6 +231,7 @@ function parseAllowedCommand(value: unknown): AllowedCommand {
     allow_path_arguments: item.allow_path_arguments === undefined
       ? []
       : stringArray(item.allow_path_arguments, 32, "allow_path_arguments"),
+    capture_output_markdown: Boolean(item.capture_output_markdown),
   };
 }
 
@@ -239,7 +240,9 @@ function compileCommand(
   allowed: AllowedCommand,
   options: CompileCatalogOptions,
 ): CompiledCommand {
-  const pathArguments = upstream.args.filter((argument) => PATH_ARGUMENTS.test(argument.name));
+  const pathArguments = upstream.args.filter(
+    (argument) => PATH_ARGUMENTS.test(argument.name) && ["str", "string"].includes(argument.type),
+  );
   const allowedPaths = new Set(allowed.allow_path_arguments ?? []);
   for (const argument of pathArguments) {
     if (!allowedPaths.has(argument.name)) {
@@ -252,6 +255,11 @@ function compileCommand(
     if (!pathArguments.some((argument) => argument.name === name)) {
       throw new Error(`allowed path argument does not exist: ${upstream.site} ${upstream.name} ${name}`);
     }
+  }
+  if (allowed.capture_output_markdown && !allowedPaths.has("output")) {
+    throw new Error(
+      `OpenCLI output capture requires governed output path: ${upstream.site} ${upstream.name}`,
+    );
   }
   const frozen = {
     opencli_version: options.openCliVersion,
@@ -266,6 +274,7 @@ function compileCommand(
     args: upstream.args,
     columns: upstream.columns ?? [],
     allowed_path_arguments: [...allowedPaths].sort(),
+    capture_output_markdown: Boolean(allowed.capture_output_markdown),
   };
   const capability = buildCapability(upstream, allowed, options, frozen);
   return {...frozen, capability};
@@ -280,7 +289,14 @@ function buildCapability(
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const argument of upstream.args) {
-    properties[argument.name] = argumentSchema(argument);
+    properties[argument.name] = argumentSchema(argument, {
+      forceDefault:
+        allowed.capture_output_markdown && argument.name === "download-images" ? false : undefined,
+      descriptionSuffix:
+        allowed.capture_output_markdown && argument.name === "download-images"
+          ? ". Disabled because captured Markdown artifacts must not retain downloaded images."
+          : undefined,
+    });
     if (argument.required) required.push(argument.name);
   }
   if (upstream.browser) {
@@ -343,24 +359,28 @@ function buildCapability(
   };
 }
 
-function argumentSchema(argument: OpenCliArgument): Record<string, unknown> {
-  const description = argument.help ?? argument.name;
+function argumentSchema(
+  argument: OpenCliArgument,
+  overrides: {forceDefault?: unknown; descriptionSuffix?: string} = {},
+): Record<string, unknown> {
+  const description = `${argument.help ?? argument.name}${overrides.descriptionSuffix ?? ""}`;
   const enumValue = argument.choices?.length ? {enum: argument.choices} : {};
+  const defaultValue = overrides.forceDefault === undefined ? argument.default : overrides.forceDefault;
   if (["bool", "boolean"].includes(argument.type)) {
-    return {type: "boolean", description, ...enumValue, ...(argument.default === undefined ? {} : {default: argument.default})};
+    return {type: "boolean", description, ...enumValue, ...(defaultValue === undefined ? {} : {default: defaultValue})};
   }
   if (["int"].includes(argument.type)) {
-    return {type: "integer", description, ...enumValue, ...(argument.default === undefined ? {} : {default: argument.default})};
+    return {type: "integer", description, ...enumValue, ...(defaultValue === undefined ? {} : {default: defaultValue})};
   }
   if (["float", "number"].includes(argument.type)) {
-    return {type: "number", description, ...enumValue, ...(argument.default === undefined ? {} : {default: argument.default})};
+    return {type: "number", description, ...enumValue, ...(defaultValue === undefined ? {} : {default: defaultValue})};
   }
   return {
     type: "string",
     maxLength: 16_384,
     description,
     ...enumValue,
-    ...(argument.default === undefined ? {} : {default: argument.default}),
+    ...(defaultValue === undefined ? {} : {default: defaultValue}),
   };
 }
 

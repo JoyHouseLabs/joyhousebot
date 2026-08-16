@@ -36,9 +36,27 @@ export interface DeviceDelivery {
   request: InvocationRequest;
 }
 
+export type DeviceHostControlAction =
+  | "preflight"
+  | "diagnose_opencli"
+  | "diagnose_pi"
+  | "enable_opencli"
+  | "disable_opencli"
+  | "enable_pi"
+  | "disable_pi"
+  | "restart_host";
+
+export interface DeviceHostControlRequest {
+  request_id: string;
+  action: DeviceHostControlAction;
+  parameters: Record<string, string>;
+  claim_version: number;
+}
+
 export interface CloudDeviceTransport {
   readonly modelGatewayBaseUrl: string;
   readonly runtimeBaseUrl: string;
+  readonly localHostBaseUrl: string;
   heartbeat(): Promise<void>;
   claim(sessionId: string): Promise<DeviceDelivery[]>;
   renew(delivery: DeviceDelivery, sessionId: string): Promise<void>;
@@ -53,6 +71,12 @@ export interface CloudDeviceTransport {
     delivery: DeviceDelivery,
     sessionId: string,
     result: Record<string, unknown>,
+  ): Promise<void>;
+  claimControls(sessionId: string): Promise<DeviceHostControlRequest[]>;
+  completeControl(
+    request: DeviceHostControlRequest,
+    sessionId: string,
+    outcome: {status: "succeeded" | "failed" | "manual_required"; result?: Record<string, unknown>; error?: Record<string, unknown>},
   ): Promise<void>;
 }
 

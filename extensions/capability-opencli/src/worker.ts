@@ -6,6 +6,7 @@ import {createInterface} from "node:readline";
 import type {OperationProgressEvent} from "@porthouse/extension-sdk";
 
 import {loadCompiledCatalog} from "./catalog.js";
+import {captureMarkdownArtifact, type CapturedArtifact} from "./capture.js";
 import {
   OpenCliOperationStore,
   operationIdentity,
@@ -241,6 +242,19 @@ class OpenCliExtensionWorker {
       operation.status = result.state;
       operation.output = result.output;
       operation.error = result.error;
+      try {
+        operation.artifacts = result.state === "succeeded" && command.capture_output_markdown
+          ? await this.captureArtifacts(operation, command)
+          : [];
+      } catch (error) {
+        operation.status = "failed";
+        operation.error = {
+          code: "OPENCLI_CAPTURE_FAILED",
+          message: safeMessage(error),
+          retryable: false,
+          exit_code: null,
+        };
+      }
       if (result.state === "retryable" && operation.access === "write") {
         operation.status = "manual_required";
         operation.error = {
@@ -279,6 +293,19 @@ class OpenCliExtensionWorker {
     }).finally(() => this.active.delete(operation.operation_id));
   }
 
+  async captureArtifacts(
+    operation: StoredOperation,
+    command: CompiledCommand,
+  ): Promise<CapturedArtifact[]> {
+    const workspace = resolve(WORKSPACE_ROOT, operation.operation_id);
+    return captureMarkdownArtifact({
+      workspace,
+      operationId: operation.operation_id,
+      capabilityId: command.capability.capability_id,
+      sourceUrl: typeof operation.input.url === "string" ? operation.input.url : null,
+    });
+  }
+
   accepted(operation: StoredOperation): Record<string, unknown> {
     return {
       protocol_version: "1",
@@ -315,7 +342,13 @@ class OpenCliExtensionWorker {
       return {...common, status: "unknown", summary: operation.error?.message ?? "OpenCLI operation requires review"};
     }
     if (operation.status === "succeeded") {
-      return {...common, status: "succeeded", summary: "OpenCLI command completed", output: operation.output, artifacts: []};
+      return {
+        ...common,
+        status: "succeeded",
+        summary: "OpenCLI command completed",
+        output: operation.output,
+        artifacts: operation.artifacts ?? [],
+      };
     }
     return {
       ...common,

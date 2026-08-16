@@ -311,6 +311,11 @@ uv run porthouse discover-extensions --config config.json
 `image.edit` 和 `video.generate` 的默认供应商与模型。扩展内置火山方舟 Seedream/Seedance 和即梦
 适配器；密钥仅从 Worker 环境读取。完整安装、审批、异步对账与临时媒体 URL 说明见
 [`extensions/capability-media-generation/README.md`](extensions/capability-media-generation/README.md)。
+媒体订阅与公众号采集也按来源协议拆分：RSS/Atom 使用 Python 的
+`capability-media-monitor`，而需要本机浏览器身份的公众号历史搜索与 Markdown 下载使用冻结的
+`capability-opencli`。两者都只产生来源证据；后续的入库、筛选和简报由已发布 Skill/Workflow 决定。
+安装、权限和“下载即入库”的通用流程见
+[`docs/MEDIA_SOURCE_CONNECTORS.md`](docs/MEDIA_SOURCE_CONNECTORS.md)。
 目录发现只把已安装、已启用扩展的不可变 Manifest、组件和 Capability Draft 写入 PostgreSQL，
 不会启动 Agent、调用模型或执行工具；Extension 与 Capability 真正生效仍需健康 Worker 预热并 ACK。
 

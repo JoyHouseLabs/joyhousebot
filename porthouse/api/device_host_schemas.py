@@ -91,6 +91,28 @@ class IssueDeviceModelGrantRequest(BaseModel):
     claim_version: int = Field(ge=1)
 
 
+class CreateDeviceHostControlRequest(BaseModel):
+    action: Literal[
+        "preflight", "diagnose_opencli", "diagnose_pi", "enable_opencli",
+        "disable_opencli", "enable_pi", "disable_pi", "restart_host",
+    ]
+    parameters: dict[str, str] = Field(default_factory=dict, max_length=2)
+
+
+class ClaimDeviceHostControlsRequest(BaseModel):
+    claim_session_id: str = Field(min_length=16, max_length=256)
+    limit: int = Field(default=3, ge=1, le=10)
+    lease_seconds: int = Field(default=60, ge=10, le=300)
+
+
+class CompleteDeviceHostControlRequest(BaseModel):
+    claim_session_id: str = Field(min_length=16, max_length=256)
+    claim_version: int = Field(ge=1)
+    status: Literal["succeeded", "failed", "manual_required"]
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: dict[str, Any] = Field(default_factory=dict)
+
+
 class DeviceCompletionResult(BaseModel):
     invocation_id: str = Field(min_length=1, max_length=256)
     status: Literal["succeeded", "failed", "cancelled", "timed_out"]

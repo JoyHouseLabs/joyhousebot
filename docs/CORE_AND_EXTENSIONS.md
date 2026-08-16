@@ -144,6 +144,7 @@ Model Provider 同样使用两层配置：`provider-*` 扩展的安装/启用属
       "channel-email",
       "capability-research",
       "capability-context-assets",
+      "capability-media-monitor",
       "capability-media-generation"
     ],
     "initiallyActive": ["provider-anthropic", "channel-email"],
@@ -182,6 +183,7 @@ Email 与其他 Channel 均为可卸载的独立 distribution；Console 不把�
 - Shell 扩展只能调用 Core 的 fail-closed container sandbox，容器不可用时失败；
 - Filesystem 扩展只能访问当前 Run 的隔离 scratch，不能把 `memory/` 当宿主文件；
 - Context Assets 通过窄服务访问用户 Memory/Knowledge，写入必须携带冻结 Action 和回执；
+- Media Monitor 只读取 RSS/Atom 并返回 Runtime-owned cursor；增量状态由 Monitor Scratch 保存，完整文章仍经 Context Assets 进入 Artifact/Knowledge；
 - Document Processing 只读取当前 Run 已冻结绑定的私有 Input Asset，默认在受限 Python 子进程生成文本 Artifact，
   生产部署可显式选择无网络容器；禁止在 Worker 进程内解析，显式选择的隔离后端不可用时失败关闭且不得自动降级，
   也不得借用 `knowledge.index` 保存一次性私有文档；

@@ -107,6 +107,7 @@ pythonpath = [
     "extensions/capability-filesystem/src",
     "extensions/capability-groq-transcription/src",
     "extensions/capability-media-generation/src",
+    "extensions/capability-media-monitor/src",
     "extensions/capability-research/src",
     "extensions/capability-rerank/src",
     "extensions/capability-vision/src",

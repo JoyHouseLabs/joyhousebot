@@ -5,6 +5,7 @@ import type {OperationProgressEvent, RemoteCapabilityResponse} from "@porthouse/
 import type {
   CloudDeviceTransport,
   DeviceDelivery,
+  DeviceHostControlRequest,
   LocalCapabilityHost,
   LocalRuntimeContext,
 } from "./types.js";
@@ -30,7 +31,52 @@ export class DeviceHostRunner {
     for (const delivery of deliveries) {
       await this.#execute(delivery);
     }
-    return deliveries.length;
+    const controls = await this.#cloud.claimControls(this.#sessionId);
+    for (const control of controls) {
+      await this.#executeControl(control);
+    }
+    return deliveries.length + controls.length;
+  }
+
+  async #executeControl(control: DeviceHostControlRequest): Promise<void> {
+    const outcome = await this.#controlOutcome(control);
+    await this.#cloud.completeControl(control, this.#sessionId, outcome);
+  }
+
+  async #controlOutcome(control: DeviceHostControlRequest): Promise<{
+    status: "succeeded" | "failed" | "manual_required";
+    result?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+  }> {
+    try {
+      const health = await fetch(`${this.#cloud.localHostBaseUrl}/healthz`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!health.ok) throw new Error(`Runtime health returned ${health.status}`);
+      if (["preflight", "diagnose_opencli", "diagnose_pi"].includes(control.action)) {
+        return {
+          status: "succeeded",
+          result: {
+            action: control.action,
+            node_version: process.version,
+            local_host: "reachable",
+            parameters: control.parameters,
+          },
+        };
+      }
+      return {
+        status: "manual_required",
+        error: {
+          code: "HOST_PROFILE_UPDATE_REQUIRED",
+          message: "This Desktop Host must apply the signed capability profile before changing deployment state.",
+        },
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: {code: "HOST_PREFLIGHT_FAILED", message: safeMessage(error)},
+      };
+    }
   }
 
   async #execute(delivery: DeviceDelivery): Promise<void> {
@@ -162,4 +208,10 @@ function unknownEvent(
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function safeMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : "local Host check failed")
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, 500);
 }

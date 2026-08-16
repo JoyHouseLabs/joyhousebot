@@ -22,6 +22,24 @@
       "timeout_seconds": 120,
       "expected_duration_seconds": 30,
       "allow_path_arguments": ["images"]
+    },
+    {
+      "site": "weixin",
+      "name": "search",
+      "capability_version": "1.0.0",
+      "timeout_seconds": 120,
+      "expected_duration_seconds": 15,
+      "data_classification": "confidential"
+    },
+    {
+      "site": "weixin",
+      "name": "download",
+      "capability_version": "1.0.0",
+      "timeout_seconds": 180,
+      "expected_duration_seconds": 30,
+      "data_classification": "confidential",
+      "allow_path_arguments": ["output"],
+      "capture_output_markdown": true
     }
   ]
 }

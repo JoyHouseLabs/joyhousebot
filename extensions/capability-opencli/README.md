@@ -6,7 +6,8 @@ Capability，不暴露任意命令字符串、argv、Shell、动态插件安装�
 ## 冻结发布
 
 发布者必须准备精确版本的上游 `cli-manifest.json` 和人工审核后的 allowlist；仓库中的
-`catalog/allowlist.pilot.json` 只准入 GitHub 当前账号、X 搜索和需审批的 X 发帖三个试点命令。再运行：
+`catalog/allowlist.pilot.json` 准入 GitHub/X 试点命令，以及只读的微信公众号搜索与文章 Markdown
+导入。再运行：
 
 ```bash
 npm ci
@@ -22,13 +23,14 @@ node dist/cli.js compile-catalog \
   --opencli-version 1.8.6 \
   --opencli-integrity sha512-... \
   --opencli-entrypoint-sha256 e2c5402693ccb71a04a7793d40ebf3238578d32c8b620edbb38554e0a3d2df07 \
-  --manifest-sha256 8045376896234011adef4226b395f323d301e1b0613fc7d59b2be5b16f6eff99
+  --manifest-sha256 310a143b41ea677de88f05bfd9c525e3b1e19c14f88d0377356508b161adf3e6
 ```
 
 Catalog 只保留 allowlist 内的命令，并生成严格 input JSON Schema、读写风险、目标域名、浏览器/Profile
 要求和不可变 implementation digest。带 `output`、`file`、`path` 等参数的命令默认拒绝编译；确需文件参数
-时必须逐字段准入，运行时只允许 operation workspace 内的相对路径。下载文件还必须通过 Runtime 的一次性
-Artifact upload grant 回写，不能返回本地路径。
+时必须逐字段准入，运行时只允许 operation workspace 内的相对路径。微信公众号下载是一个严格的例外：
+catalog 明确启用后，只会把一个不超过 512 KiB 的 Markdown 内容作为 Runtime Artifact 回传；图片下载会
+被调用方关闭，不能返回本地路径、目录或浏览器资料。
 
 ## 运行
 

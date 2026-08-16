@@ -36,6 +36,9 @@ from porthouse.storage.postgres_cancel import PostgresRunCancelMixin
 from porthouse.storage.postgres_capabilities import PostgresCapabilityStoreMixin
 from porthouse.storage.postgres_clarifications import PostgresClarificationStoreMixin
 from porthouse.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
+from porthouse.storage.postgres_device_host_controls import (
+    PostgresDeviceHostControlStoreMixin,
+)
 from porthouse.storage.postgres_device_hosts import PostgresDeviceHostStoreMixin
 from porthouse.storage.postgres_embedding_profiles import (
     PostgresEmbeddingProfileStoreMixin,
@@ -146,6 +149,7 @@ class PostgresRuntimeStore(
     PostgresVerificationStoreMixin,
     PostgresApprovalStoreMixin,
     PostgresArtifactUploadStoreMixin,
+    PostgresDeviceHostControlStoreMixin,
     PostgresDeviceHostStoreMixin,
     PostgresReconciliationStoreMixin,
     PostgresClarificationStoreMixin,

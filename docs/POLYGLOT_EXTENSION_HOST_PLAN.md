@@ -632,6 +632,9 @@ Desktop/Server 打包和 Market 分发具备稳定契约。
 
 每个 Milestone 必须能独立安装和回滚，不能通过 feature flag 暗中启用未完成的下一里程碑能力。
 
+Console 的 Device Host 控制请求与业务 Run 投递保持独立，固定动作、领取围栏和状态回传的协议见
+[Device Host Control Plane](DEVICE_HOST_CONTROL_PLANE.md)。HappyHouse Desktop 是普通用户不可见的本机执行者。
+
 ## 19. 风险与决策门
 
 | 风险 | 决策门 |
