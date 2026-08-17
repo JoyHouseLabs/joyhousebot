@@ -7,25 +7,16 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from porthouse.runtime.agent_execution import AgentExecutionMixin
-from porthouse.runtime.controls import RuntimeControlsMixin
-from porthouse.runtime.coordinator import RuntimeCoordinatorMixin
 from porthouse.runtime.events import EventBroker
 from porthouse.runtime.narrative import redact_runtime_value
-from porthouse.runtime.request_coordination import RequestCoordinationMixin
-from porthouse.runtime.submission import SubmissionMixin
+from porthouse.runtime.services import RuntimeServices
 from porthouse.runtime.supervisor import TaskSupervisor
 from porthouse.runtime.work_signal import RuntimeWorkSignal
 from porthouse.runtime.worker_telemetry import ProcessTelemetry
+from porthouse.storage.contracts import RuntimeStores
 
 
-class NativeAgentRuntime(
-    SubmissionMixin,
-    AgentExecutionMixin,
-    RuntimeCoordinatorMixin,
-    RequestCoordinationMixin,
-    RuntimeControlsMixin,
-):
+class NativeAgentRuntime:
     """Own durable lifecycle, events, cancellation, and multi-task execution."""
 
     def __init__(
@@ -33,7 +24,7 @@ class NativeAgentRuntime(
         *,
         agent: Any,
         agent_resolver: Callable[[str], Any | None] | None = None,
-        store: Any,
+        store: object,
         max_concurrent_runs: int | None = None,
         lease_seconds: int = 30,
         worker_enabled: bool = True,
@@ -49,8 +40,8 @@ class NativeAgentRuntime(
     ) -> None:
         self.agent = agent
         self.agent_resolver = agent_resolver
-        self.store = store
-        self.events = EventBroker(store)
+        self.stores = RuntimeStores.from_backend(store)
+        self.events = EventBroker(self.stores.events)
         self.supervisor = TaskSupervisor(max_concurrent=max_concurrent_runs)
         self.max_concurrent_runs = (
             int(max_concurrent_runs)
@@ -73,7 +64,7 @@ class NativeAgentRuntime(
         self.monitor_reconciler = monitor_reconciler
         self.task_worker_count = max(1, min(int(max_concurrent_runs or 4), 32))
         self.work_signal = RuntimeWorkSignal(
-            store, fallback_poll_seconds=poll_interval_seconds
+            self.stores.workers, fallback_poll_seconds=poll_interval_seconds
         )
         self._graph_task_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._graph_active_count = 0
@@ -85,6 +76,30 @@ class NativeAgentRuntime(
         self._start_lock = asyncio.Lock()
         self._process_telemetry = ProcessTelemetry()
         self._last_telemetry_heartbeat_at = 0.0
+        self.services = RuntimeServices.create(self)
+
+    def _resolve_service_method(
+        self, name: str, *, requester: object | None = None
+    ) -> Any:
+        return self.services.resolve(name, requester=requester)
+
+    async def submit_run(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.services.submission.submit_run(*args, **kwargs)
+
+    async def submit_graph(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.services.submission.submit_graph(*args, **kwargs)
+
+    async def materialize_graph(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.services.submission.materialize_graph(*args, **kwargs)
+
+    async def cancel(self, run_id: str, reason: str = "cancelled by user") -> bool:
+        return await self.services.controls.cancel(run_id, reason)
+
+    async def resume(self, run_id: str) -> Any:
+        return await self.services.controls.resume(run_id)
+
+    async def wait(self, run_id: str, timeout: float | None = None) -> Any:
+        return await self.services.controls.wait(run_id, timeout)
 
     def _worker_metadata(self) -> dict[str, Any]:
         return {
@@ -105,7 +120,7 @@ class NativeAgentRuntime(
 
     async def _heartbeat_worker(self) -> None:
         """Renew presence and periodically attach bounded capacity telemetry."""
-        heartbeat = getattr(self.store, "heartbeat_runtime_worker", None)
+        heartbeat = getattr(self.stores.workers, "heartbeat_runtime_worker", None)
         if heartbeat is None:
             return
         now = asyncio.get_running_loop().time()
@@ -130,7 +145,7 @@ class NativeAgentRuntime(
                 return
             if self.worker_enabled or self.scheduler_enabled:
                 await self.work_signal.start()
-            register = getattr(self.store, "register_runtime_worker", None)
+            register = getattr(self.stores.workers, "register_runtime_worker", None)
             if register is not None:
                 await asyncio.to_thread(
                     register,
@@ -140,10 +155,11 @@ class NativeAgentRuntime(
                 )
             self._worker_tasks = []
             if self.worker_enabled or self.scheduler_enabled:
-                await self._scan_incomplete_runs()
+                await self.services.coordinator._scan_incomplete_runs()
                 self._worker_tasks.append(
                     asyncio.create_task(
-                        self._runtime_coordinator_loop(), name="runtime-coordinator"
+                        self.services.coordinator._runtime_coordinator_loop(),
+                        name="runtime-coordinator",
                     )
                 )
             else:
@@ -156,11 +172,12 @@ class NativeAgentRuntime(
                 self._worker_tasks.extend(
                     [
                         asyncio.create_task(
-                            self._task_dispatcher_loop(), name="runtime-task-dispatcher"
+                            self.services.coordinator._task_dispatcher_loop(),
+                            name="runtime-task-dispatcher",
                         ),
                         *[
                             asyncio.create_task(
-                                self._graph_executor_loop(index),
+                                self.services.coordinator._graph_executor_loop(index),
                                 name=f"graph-executor:{index}",
                             )
                             for index in range(self.task_worker_count)
@@ -176,7 +193,7 @@ class NativeAgentRuntime(
         self._worker_tasks.clear()
         await self.work_signal.close()
         await self.supervisor.close()
-        unregister = getattr(self.store, "unregister_runtime_worker", None)
+        unregister = getattr(self.stores.workers, "unregister_runtime_worker", None)
         if unregister is not None and self.presence_enabled:
             await asyncio.to_thread(unregister, self.worker_id)
         self._started = False
@@ -198,7 +215,7 @@ class NativeAgentRuntime(
         data: dict[str, Any] | None = None,
     ) -> None:
         await asyncio.to_thread(
-            self.store.append_runtime_log,
+            self.stores.logs.append_runtime_log,
             run_id=run_id,
             task_id=task_id,
             worker_id=self.worker_id,
@@ -218,7 +235,7 @@ class NativeAgentRuntime(
         revision_key = agent_revision_id or agent_id
         if agent_revision_id:
             revision = await asyncio.to_thread(
-                self.store.get_agent_revision, agent_revision_id
+                self.stores.catalog.get_agent_revision, agent_revision_id
             )
             if (
                 revision is None
@@ -229,7 +246,7 @@ class NativeAgentRuntime(
                     f"published Agent revision not found: {agent_id}@{agent_revision_id}"
                 )
             self._assert_plugin_requirements(revision.plugin_requirements)
-        snapshot_reader = getattr(self.store, "get_run_execution_snapshot", None)
+        snapshot_reader = getattr(self.stores.catalog, "get_run_execution_snapshot", None)
         if not agent_revision_id and snapshot_reader is not None:
             snapshot = await asyncio.to_thread(snapshot_reader, run_id)
             if snapshot is not None and (
@@ -264,7 +281,7 @@ class NativeAgentRuntime(
         revision.
         """
         authority_permissions: frozenset[str] = frozenset()
-        run = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        run = await asyncio.to_thread(self.stores.runs.get_runtime_run, run_id)
         if run is not None:
             raw_authority = dict(run.options or {}).get("authority_permissions", ())
             if isinstance(raw_authority, (list, tuple, set, frozenset)):
@@ -273,7 +290,7 @@ class NativeAgentRuntime(
                 )
         if agent_revision_id:
             revision = await asyncio.to_thread(
-                self.store.get_agent_revision, agent_revision_id
+                self.stores.catalog.get_agent_revision, agent_revision_id
             )
             if (
                 revision is None
@@ -287,7 +304,7 @@ class NativeAgentRuntime(
             return authority_permissions | frozenset(
                 str(item).strip() for item in value if str(item).strip()
             )
-        reader = getattr(self.store, "get_run_execution_snapshot", None)
+        reader = getattr(self.stores.catalog, "get_run_execution_snapshot", None)
         if reader is None:
             return authority_permissions
         snapshot = await asyncio.to_thread(reader, run_id)

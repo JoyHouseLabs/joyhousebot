@@ -35,7 +35,7 @@ async def _submit_team_child(
     child_run_id: str,
 ) -> Any:
     team = await asyncio.to_thread(
-        runtime.store.get_agent_team_revision,
+        runtime.stores.catalog.get_agent_team_revision,
         str(configuration["team_revision_id"]),
     )
     if (
@@ -102,7 +102,7 @@ async def _submit_scenario_child(
     child_run_id: str,
 ) -> Any:
     scenario = await asyncio.to_thread(
-        runtime.store.get_scenario_version,
+        runtime.stores.scenarios.get_scenario_version,
         str(configuration["scenario_id"]),
         int(configuration["scenario_version"]),
     )
@@ -112,17 +112,17 @@ async def _submit_scenario_child(
         or scenario.planning_mode != "fixed"
     ):
         raise ValueError("Workflow Scenario subrun requires its frozen fixed revision")
-    inputs = ClarificationEngine(runtime.store).validate_inputs(
+    inputs = ClarificationEngine(runtime.stores.clarifications).validate_inputs(
         scenario, dict(configuration.get("inputs") or {})
     )
-    step = ClarificationEngine(runtime.store).evaluate(scenario, inputs)
+    step = ClarificationEngine(runtime.stores.clarifications).evaluate(scenario, inputs)
     if not step.complete:
         raise ValueError(
             "Workflow Scenario subrun has unresolved required inputs: "
             + ", ".join(step.missing_inputs)
         )
     spec = await asyncio.to_thread(
-        ScenarioPlanner(runtime.store).build_graph,
+        ScenarioPlanner(runtime.stores.catalog).build_graph,
         scenario,
         goal=prompt,
         inputs=step.collected_inputs,
@@ -168,7 +168,9 @@ async def execute_graph_subrun(
     mode = str(configuration["mode"])
     child_run_id = _child_run_id(task)
     child = await asyncio.to_thread(
-        runtime.store.get_runtime_run, child_run_id, expected_user_id=run.user_id
+        runtime.stores.runs.get_runtime_run,
+        child_run_id,
+        expected_user_id=run.user_id,
     )
     if child is None:
         child = (
@@ -191,7 +193,7 @@ async def execute_graph_subrun(
         )
     if child.status not in _TERMINAL:
         suspended = await asyncio.to_thread(
-            runtime.store.suspend_graph_task_for_subrun,
+            runtime.stores.graphs.suspend_graph_task_for_subrun,
             run_id=run.run_id,
             task_id=task.task_id,
             child_run_id=child.run_id,
@@ -238,7 +240,7 @@ async def execute_graph_subrun(
     child_artifact_ids: list[str] = []
     if mode == "team":
         child_artifacts = await asyncio.to_thread(
-            runtime.store.list_runtime_artifacts, child.run_id
+            runtime.stores.execution.list_runtime_artifacts, child.run_id
         )
         child_artifact_ids = [
             str(item["artifact_id"])

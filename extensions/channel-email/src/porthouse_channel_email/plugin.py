@@ -121,30 +121,32 @@ class EmailChannelPlugin(BaseChannelPlugin):
             try:
                 inbound_items = await asyncio.to_thread(self._fetch_new_messages)
                 for item in inbound_items:
-                    sender = item["sender"]
-                    subject = item.get("subject", "")
-                    message_id = item.get("message_id", "")
-
-                    if subject:
-                        self._last_subject_by_chat[sender] = subject
-                    if message_id:
-                        self._last_message_id_by_chat[sender] = message_id
-
-                    await self._publish_inbound(
-                        sender_id=sender,
-                        chat_id=sender,
-                        content=item["content"],
-                        metadata=item.get("metadata", {}),
-                    )
-                    uid = str((item.get("metadata") or {}).get("uid") or "")
-                    if uid:
-                        if self._config.get("mark_seen", True):
-                            await asyncio.to_thread(self._mark_uid_seen, uid)
-                        self._remember_uid(uid)
+                    await self._process_inbound_item(item)
             except Exception as e:
                 self._log_error(f"Email polling error: {e}")
 
             await asyncio.sleep(poll_seconds)
+
+    async def _process_inbound_item(self, item: dict[str, Any]) -> None:
+        sender = item["sender"]
+        subject = item.get("subject", "")
+        message_id = item.get("message_id", "")
+        if subject:
+            self._last_subject_by_chat[sender] = subject
+        if message_id:
+            self._last_message_id_by_chat[sender] = message_id
+        await self._publish_inbound(
+            sender_id=sender,
+            chat_id=sender,
+            content=item["content"],
+            metadata=item.get("metadata", {}),
+        )
+        uid = str((item.get("metadata") or {}).get("uid") or "")
+        if not uid:
+            return
+        if self._config.get("mark_seen", True):
+            await asyncio.to_thread(self._mark_uid_seen, uid)
+        self._remember_uid(uid)
 
     async def stop(self) -> None:
         self._set_running(False)

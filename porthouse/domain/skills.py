@@ -69,10 +69,7 @@ def normalize_skill_version(value: str) -> str:
     return normalized
 
 
-def normalize_skill_document(value: dict[str, Any]) -> dict[str, Any]:
-    """Return a canonical draft/published document without mutable status fields."""
-    skill_id = normalize_skill_id(str(value.get("skill_id") or ""))
-    version = normalize_skill_version(str(value.get("version") or ""))
+def _skill_text_fields(value: dict[str, Any]) -> tuple[str, str, str]:
     name = str(value.get("name") or "").strip()
     description = str(value.get("description") or "").strip()
     instruction_content = str(value.get("instruction_content") or "").strip()
@@ -82,62 +79,75 @@ def normalize_skill_document(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Skill description must be <= 2000 characters")
     if len(instruction_content) > 200_000:
         raise ValueError("Skill instruction content must be <= 200000 characters")
+    return name, description, instruction_content
 
-    tags = sorted(
-        {
-            str(item).strip().lower()
-            for item in value.get("tags") or []
-            if str(item).strip()
-        }
-    )
+
+def _skill_tags(value: Any) -> list[str]:
+    tags = sorted({str(item).strip().lower() for item in value or [] if str(item).strip()})
     if len(tags) > 32 or any(len(item) > 64 for item in tags):
         raise ValueError("Skill tags support at most 32 values of 64 characters")
+    return tags
 
-    required_capabilities: list[dict[str, str]] = []
-    seen_capabilities: set[tuple[str, str]] = set()
-    for raw in value.get("required_capabilities") or []:
+
+def _skill_capabilities(value: Any) -> list[dict[str, str]]:
+    capabilities: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in value or []:
         if not isinstance(raw, dict):
             raise ValueError("required_capabilities entries must be objects")
         capability_id = str(raw.get("capability_id") or "").strip()
-        capability_version = str(raw.get("version") or "").strip()
-        if not capability_id or not capability_version:
+        version = str(raw.get("version") or "").strip()
+        if not capability_id or not version:
             raise ValueError("required Capabilities must pin capability_id and version")
-        identity = (capability_id, capability_version)
-        if identity in seen_capabilities:
-            continue
-        seen_capabilities.add(identity)
-        required_capabilities.append(
-            {"capability_id": capability_id, "version": capability_version}
-        )
+        identity = (capability_id, version)
+        if identity not in seen:
+            seen.add(identity)
+            capabilities.append({"capability_id": capability_id, "version": version})
+    return capabilities
 
-    required_integrations = sorted(
-        {
-            str(item).strip()
-            for item in value.get("required_integrations") or []
-            if str(item).strip()
-        }
-    )
-    if len(required_integrations) > 32:
+
+def _skill_integrations(value: Any) -> list[str]:
+    integrations = sorted({str(item).strip() for item in value or [] if str(item).strip()})
+    if len(integrations) > 32:
         raise ValueError("Skill supports at most 32 required Integrations")
+    return integrations
 
-    for schema_name in ("input_schema", "output_schema"):
-        schema = value.get(schema_name) or {}
-        if not isinstance(schema, dict):
-            raise ValueError(f"{schema_name} must be a JSON object")
-        try:
-            if schema:
-                Draft202012Validator.check_schema(schema)
-        except SchemaError as exc:
-            raise ValueError(f"invalid Skill {schema_name}: {exc.message}") from exc
 
-    examples = _object_list(value.get("examples"), field="examples", maximum=24)
-    eval_cases = _object_list(value.get("eval_cases"), field="eval_cases", maximum=64)
-    templates = _object_list(value.get("templates"), field="templates", maximum=24)
-    for index, case in enumerate(eval_cases):
+def _skill_schema(value: Any, *, field: str) -> dict[str, Any]:
+    schema = value or {}
+    if not isinstance(schema, dict):
+        raise ValueError(f"{field} must be a JSON object")
+    try:
+        if schema:
+            Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValueError(f"invalid Skill {field}: {exc.message}") from exc
+    return dict(schema)
+
+
+def _skill_eval_cases(value: Any) -> list[dict[str, Any]]:
+    cases = _object_list(value, field="eval_cases", maximum=64)
+    for index, case in enumerate(cases):
         if not str(case.get("name") or "").strip():
             raise ValueError(f"eval_cases[{index}].name is required")
         if not str(case.get("expected_behavior") or "").strip():
             raise ValueError(f"eval_cases[{index}].expected_behavior is required")
+    return cases
+
+
+def normalize_skill_document(value: dict[str, Any]) -> dict[str, Any]:
+    """Return a canonical draft/published document without mutable status fields."""
+    skill_id = normalize_skill_id(str(value.get("skill_id") or ""))
+    version = normalize_skill_version(str(value.get("version") or ""))
+    name, description, instruction_content = _skill_text_fields(value)
+    tags = _skill_tags(value.get("tags"))
+    required_capabilities = _skill_capabilities(value.get("required_capabilities"))
+    required_integrations = _skill_integrations(value.get("required_integrations"))
+    input_schema = _skill_schema(value.get("input_schema"), field="input_schema")
+    output_schema = _skill_schema(value.get("output_schema"), field="output_schema")
+    examples = _object_list(value.get("examples"), field="examples", maximum=24)
+    eval_cases = _skill_eval_cases(value.get("eval_cases"))
+    templates = _object_list(value.get("templates"), field="templates", maximum=24)
 
     return {
         "skill_id": skill_id,
@@ -146,8 +156,8 @@ def normalize_skill_document(value: dict[str, Any]) -> dict[str, Any]:
         "description": description,
         "instruction_content": instruction_content,
         "tags": tags,
-        "input_schema": dict(value.get("input_schema") or {}),
-        "output_schema": dict(value.get("output_schema") or {}),
+        "input_schema": input_schema,
+        "output_schema": output_schema,
         "required_capabilities": required_capabilities,
         "required_integrations": required_integrations,
         "examples": examples,

@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from porthouse.domain.scenarios import RoutingDecision, ScenarioVersion
+from porthouse.storage.contracts import ScenarioStorePort
 
 
 class ScenarioRouter:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: ScenarioStorePort) -> None:
         self.store = store
 
     def route(

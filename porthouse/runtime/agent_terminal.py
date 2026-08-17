@@ -91,7 +91,7 @@ class AgentTerminalMixin:
                 data=result,
             )
         )
-        record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        record = await asyncio.to_thread(self.stores.runs.get_runtime_run, run_id)
         parent_events: list[AgentEvent] = []
         if record is not None and record.parent_run_id:
             child_event_type = (
@@ -118,7 +118,7 @@ class AgentTerminalMixin:
                 )
             )
         bundle = await asyncio.to_thread(
-            self.store.finish_runtime_run_bundle,
+            self.stores.runs.finish_runtime_run_bundle,
             run_id,
             status=status.value,
             event=event,
@@ -145,7 +145,8 @@ class AgentTerminalMixin:
             if experiment_id:
                 try:
                     guardrail = await asyncio.to_thread(
-                        self.store.enforce_experiment_guardrails, experiment_id
+                        self.stores.experiments.enforce_experiment_guardrails,
+                        experiment_id,
                     )
                     if guardrail.get("paused"):
                         await self._log(
@@ -179,7 +180,7 @@ class AgentTerminalMixin:
         lease_version: int | None = None,
     ) -> None:
         owned = await asyncio.to_thread(
-            self.store.heartbeat_runtime_run,
+            self.stores.runs.heartbeat_runtime_run,
             run_id,
             worker_id=self.worker_id,
             lease_seconds=self.lease_seconds,

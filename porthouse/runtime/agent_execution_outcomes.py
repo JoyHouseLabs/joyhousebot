@@ -22,10 +22,9 @@ async def suspend_for_action(
 ) -> AgentResult:
     if isinstance(exc, ActionApprovalRequiredError):
         return await _suspend_for_approval(runtime, record, cancellation, started_at, exc)
-    reconciliation = None
-    getter = getattr(runtime.store, "get_action_reconciliation", None)
-    if getter is not None:
-        reconciliation = await asyncio.to_thread(getter, exc.action_id)
+    reconciliation = await asyncio.to_thread(
+        runtime.stores.reconciliations.get_action_reconciliation, exc.action_id
+    )
     waiting_result = {
         "stop_reason": "waiting_external",
         "action_id": exc.action_id,
@@ -34,7 +33,7 @@ async def suspend_for_action(
     if reconciliation is not None:
         waiting_result["reconciliation_id"] = reconciliation.reconciliation_id
         transitioned = await asyncio.to_thread(
-            runtime.store.suspend_run_for_reconciliation,
+            runtime.stores.runs.suspend_run_for_reconciliation,
             run_id=record.run_id,
             reconciliation_id=reconciliation.reconciliation_id,
             action_id=exc.action_id,
@@ -44,7 +43,7 @@ async def suspend_for_action(
         )
     else:
         transitioned = await asyncio.to_thread(
-            runtime.store.update_runtime_run,
+            runtime.stores.runs.update_runtime_run,
             record.run_id,
             status=RunStatus.WAITING_EXTERNAL.value,
             result=waiting_result,
@@ -106,7 +105,7 @@ async def _suspend_for_approval(
     exc: ActionApprovalRequiredError,
 ) -> AgentResult:
     transitioned = await asyncio.to_thread(
-        runtime.store.suspend_run_for_approval,
+        runtime.stores.runs.suspend_run_for_approval,
         run_id=record.run_id,
         approval_id=exc.approval_id,
         action_id=exc.action_id,

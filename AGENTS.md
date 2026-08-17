@@ -46,8 +46,10 @@ uv sync
 ./scripts/start-local.sh
 
 # Runtime 测试与静态检查
+bash scripts/install-test-extensions.sh
 .venv/bin/python -m pytest
-.venv/bin/ruff check porthouse tests
+.venv/bin/ruff check porthouse tests extensions/*/src scripts/check_complexity.py
+.venv/bin/python scripts/check_complexity.py --check
 
 # 控制台
 cd apps/console && npm install && npm run build
@@ -61,16 +63,17 @@ cd apps/console && npm install && npm run build
 - 控制台的 API 类型、请求和错误适配集中在 `apps/console/src/api/`；不要从 Vue 组件直接调用数据库、绕开 HTTP 客户端，或复制 Runtime 业务规则。
 - Runtime 内置 UI 静态产物由 `scripts/build-ui.sh` 生成/同步；不要手工编辑构建后的 `porthouse/static/ui/` 文件。
 - HappyHouse 产品与 Market 在相邻私有仓库中独立构建和发布；本仓库只维护它们依赖的开放协议和 Runtime 契约。
-- 公共 API 与事件字段应保持向后兼容。必须破坏兼容性时，先设计版本迁移、文档和回滚方案，再修改实现。
+- 首个公开稳定版本发布前，内部 Python API、模块路径、开发期 HTTP/事件契约和 Schema 可以直接重构；同一变更必须同步更新调用方、测试、文档与迁移，并删除旧路径，不为尚未发布的结构新增兼容 shim、双写或长期 deprecation 层。已经被外部制品或相邻仓库实际采用的协议仍需先核对使用方。任何删除本地数据、压缩迁移或重建数据库的操作都必须单独确认，不能从“允许破坏兼容性”推导出数据删除授权。
 
 ## 6. 代码结构与复杂度
 
 - 以高内聚、低耦合为默认：一个模块只承担一个稳定职责；跨模块协作只能经过公开接口、契约或 application service，禁止用共享可变全局状态、跨层 import 或 Repository 绕过领域规则。
 - API Router 只做认证、Schema 适配和 HTTP 错误转换；application service 负责用例编排；runtime/domain 负责规则与状态机；storage 只负责持久化。出现三个以上无关职责或多个独立状态机时必须拆分。
-- 常规生产源文件目标不超过 600 行，超过 900 行必须在同目录设计说明或模块 docstring 中说明不可拆的聚合原因、公开边界和后续拆分点；新增业务逻辑不得继续堆入已有超大文件。PostgreSQL Repository、迁移、协议 Schema、生成物、测试数据和纯静态字典可因事务一致性或声明性结构超过此目标，但仍应按职责拆分。
-- 单个函数/方法目标不超过 100 行；超过 160 行必须拆成具名私有步骤，或说明事务/协议原子性为何不能拆开。避免超过三个嵌套层级；复杂分支先提取策略或状态转换表。
-- Vue 页面只组合业务区块与交互状态。跨页面的无业务 UI 必须进入 design system；超过 500 行的页面优先拆为 composable、section 组件和 API adapter，超过 750 行必须说明例外，不能把请求、状态机、样式和领域转换混在一个文件。
-- Code review 与发布检查应检查新增/修改的大文件与跨层依赖；现有超大模块按触碰优先的绞杀式重构治理，不以一次性格式化制造无关变更。
+- 常规生产源文件以不超过 600 行为目标；600–900 行进入强制审查区间，900 行为默认硬上限。Vue 页面以不超过 500 行为目标，500–750 行优先拆为 composable、section 组件和 API adapter，默认同样不得超过 900 行。文件长度不是拆分目的：一个 700–900 行但职责单一、边界清楚的聚合模块，可以优于被机械切碎后需要跨多个文件追踪的实现。
+- 单个函数/方法以不超过 100 行为目标；100–200 行进入强制审查区间，200 行为默认硬上限。分支复杂度以 20 为目标，20–40 进入强制审查区间，40 为默认硬上限；嵌套层级以不超过三层为目标，超过四层默认阻止。复杂流程优先提取具名步骤、不可变状态对象、策略或状态转换表，不能仅通过移动代码隐藏复杂度。
+- PostgreSQL Repository、迁移、协议 Schema、生成物、测试数据、纯静态字典以及必须保持原子的事务/协议实现可以申请例外。例外必须在相邻设计说明或模块 docstring 中写明不可拆原因、公开边界、事务或协议约束、后续拆分点、责任人和复核条件；例外只豁免对应指标，不自动豁免函数复杂度或跨层依赖。
+- 复杂度门禁采用基线递减：现有超限项记录在 `scripts/complexity_baseline.json`，不得新增或恶化；治理完成后必须同步降低基线，禁止用提高全局阈值或扩大例外掩盖回归。新增生产代码不得使用未登记的超限项，修改已有超限模块时不得继续增加其长度、分支或嵌套复杂度。
+- Code review 与发布检查必须运行 `scripts/check_complexity.py --check` 并检查跨层依赖。现有超限模块按执行风险和变更频率优先重构，不以一次性格式化、机械拆文件或兼容 wrapper 制造无关复杂度。
 
 ## 7. 发布与安全纪律
 

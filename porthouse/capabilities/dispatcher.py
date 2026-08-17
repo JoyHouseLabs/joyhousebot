@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
@@ -32,6 +32,24 @@ from porthouse.runtime.permissions import permission_engine
 from porthouse.utils.permissions import missing_permissions
 
 
+@dataclass(frozen=True)
+class _DispatchSetup:
+    action_id: str | None
+    invocation_id: str
+    idempotency_key: str
+    context: ToolExecutionContext
+    invocation: CapabilityInvocation
+    persist: bool
+    persist_action: bool
+
+
+@dataclass(frozen=True)
+class _InvocationClaim:
+    stored: Any | None = None
+    result: CapabilityResult | None = None
+    return_immediately: bool = False
+
+
 class CapabilityDispatcher:
     def __init__(self, store: Any | None) -> None:
         self.store = store
@@ -51,6 +69,49 @@ class CapabilityDispatcher:
         tool_call_id: str | None = None,
         **kwargs: Any,
     ) -> CapabilityResult:
+        setup = await self._prepare_dispatch(
+            adapter, inputs, context=context, tool_call_id=tool_call_id
+        )
+        if isinstance(setup, CapabilityResult):
+            return setup
+
+        approval_policy: ApprovalPolicy | None = None
+        if setup.persist_action:
+            approval_policy, recovered = await self._claim_durable_action(
+                adapter, inputs, setup
+            )
+            if recovered is not None:
+                return recovered
+
+        claim = await self._claim_invocation(setup)
+        if claim.return_immediately:
+            assert claim.result is not None
+            return claim.result
+        result = claim.result or await self._execute(
+            adapter,
+            setup.invocation,
+            setup.context,
+            inputs,
+            kwargs,
+            time.monotonic(),
+        )
+        await self._finalize_dispatch(
+            adapter,
+            setup,
+            stored=claim.stored,
+            result=result,
+            approval_policy=approval_policy,
+        )
+        return result
+
+    async def _prepare_dispatch(
+        self,
+        adapter: ToolCapabilityAdapter,
+        inputs: dict[str, Any],
+        *,
+        context: ToolExecutionContext,
+        tool_call_id: str | None,
+    ) -> _DispatchSetup | CapabilityResult:
         action_id = self._resolve_action_id(adapter, inputs, context)
         side_effect = str(adapter.definition.side_effect or "unknown").strip().lower()
         requires_durable_action = side_effect not in {"none", "read"}
@@ -92,7 +153,6 @@ class CapabilityDispatcher:
             invocation_id=invocation_id,
             permission_mode=execution_context.permission_mode,
         )
-        stored = None
         persist = self.store is not None and await asyncio.to_thread(
             self.store.get_runtime_run, execution_context.run_id
         ) is not None
@@ -115,144 +175,170 @@ class CapabilityDispatcher:
                 )
             )
         )
-        if persist_action:
-            approval_policy = await self._prepare_action(
-                adapter,
-                inputs,
-                execution_context,
-                action_id=action_id,
-                invocation_id=invocation_id,
-                idempotency_key=idempotency_key,
-            )
-            recovered = await self._recover_action_result(action_id)
-            if recovered is not None:
-                if not recovered.terminal:
-                    reconciled = await self._reconcile_action(
-                        adapter,
-                        execution_context,
-                        action_id=action_id,
-                        invocation_id=recovered.invocation_id,
-                        idempotency_key=idempotency_key,
-                        operation=recovered.operation,
-                        required_role=approval_policy.required_role,
-                    )
-                    if reconciled is not None:
-                        return reconciled
-                    raise ActionOutcomeUnknownError(action_id, recovered.invocation_id)
-                return recovered
-            worker_id = execution_context.worker_id or f"agent:{execution_context.agent_id}"
-            if approval_policy.required:
-                claimed = await self._claim_or_wait_for_approval(
-                    action_id, worker_id=worker_id
-                )
-            else:
-                claimed = await asyncio.to_thread(
-                    self.store.claim_action_intent, action_id, worker_id=worker_id
-                )
-            if not claimed:
-                recovered = await self._recover_invocation_result(
-                    action_id=action_id,
-                    invocation_id=invocation_id,
-                    run_id=execution_context.run_id,
-                )
-                if recovered is not None:
-                    if not recovered.terminal:
-                        reconciled = await self._reconcile_action(
-                            adapter,
-                            execution_context,
-                            action_id=action_id,
-                            invocation_id=recovered.invocation_id,
-                            idempotency_key=idempotency_key,
-                            operation=recovered.operation,
-                            required_role=approval_policy.required_role,
-                        )
-                        if reconciled is not None:
-                            return reconciled
-                        raise ActionOutcomeUnknownError(action_id, recovered.invocation_id)
-                    return recovered
-                reconciled = await self._reconcile_action(
-                    adapter,
-                    execution_context,
-                    action_id=action_id,
-                    invocation_id=invocation_id,
-                    idempotency_key=idempotency_key,
-                    operation=None,
-                    required_role=approval_policy.required_role,
-                )
-                if reconciled is not None:
-                    return reconciled
-                raise ActionOutcomeUnknownError(action_id, invocation_id)
+        return _DispatchSetup(
+            action_id=action_id,
+            invocation_id=invocation_id,
+            idempotency_key=idempotency_key,
+            context=execution_context,
+            invocation=invocation,
+            persist=persist,
+            persist_action=persist_action,
+        )
 
-        result: CapabilityResult | None = None
-        if persist:
-            stored, created = await asyncio.to_thread(
-                self.store.create_capability_invocation, invocation
+    async def _claim_durable_action(
+        self,
+        adapter: ToolCapabilityAdapter,
+        inputs: dict[str, Any],
+        setup: _DispatchSetup,
+    ) -> tuple[ApprovalPolicy, CapabilityResult | None]:
+        assert setup.action_id is not None
+        policy = await self._prepare_action(
+            adapter,
+            inputs,
+            setup.context,
+            action_id=setup.action_id,
+            invocation_id=setup.invocation_id,
+            idempotency_key=setup.idempotency_key,
+        )
+        recovered = await self._recover_action_result(setup.action_id)
+        if recovered is not None:
+            return policy, await self._resolve_recovered_action(
+                adapter, setup, recovered, policy
             )
-            if not created:
-                if stored.result:
-                    result = capability_result_from_dict(stored.result)
-                elif persist_action and action_id:
-                    raise ActionOutcomeUnknownError(action_id, stored.invocation_id)
-                else:
-                    return CapabilityResult(
-                        invocation_id=stored.invocation_id,
-                        status=InvocationStatus.ACCEPTED,
-                        summary="能力调用正在执行",
-                        operation={"run_id": stored.run_id, "task_id": stored.task_id},
-                    )
-            else:
-                started = await asyncio.to_thread(
-                    self.store.start_capability_invocation,
-                    invocation.invocation_id,
-                    worker_id=(
-                        execution_context.worker_id
-                        or f"agent:{execution_context.agent_id}"
-                    ),
-                )
-                if not started:
-                    result = CapabilityResult.failed(
-                        invocation.invocation_id,
-                        code="INVOCATION_CLAIM_FAILED",
-                        message="能力调用未能取得执行权",
-                        retryable=True,
-                    )
+        worker_id = setup.context.worker_id or f"agent:{setup.context.agent_id}"
+        claimed = (
+            await self._claim_or_wait_for_approval(setup.action_id, worker_id=worker_id)
+            if policy.required
+            else await asyncio.to_thread(
+                self.store.claim_action_intent, setup.action_id, worker_id=worker_id
+            )
+        )
+        if claimed:
+            return policy, None
+        recovered = await self._recover_invocation_result(
+            action_id=setup.action_id,
+            invocation_id=setup.invocation_id,
+            run_id=setup.context.run_id,
+        )
+        if recovered is not None:
+            return policy, await self._resolve_recovered_action(
+                adapter, setup, recovered, policy
+            )
+        reconciled = await self._reconcile_action(
+            adapter,
+            setup.context,
+            action_id=setup.action_id,
+            invocation_id=setup.invocation_id,
+            idempotency_key=setup.idempotency_key,
+            operation=None,
+            required_role=policy.required_role,
+        )
+        if reconciled is not None:
+            return policy, reconciled
+        raise ActionOutcomeUnknownError(setup.action_id, setup.invocation_id)
 
-        if result is None:
-            started_at = time.monotonic()
-            result = await self._execute(
-                adapter,
-                invocation,
-                execution_context,
-                inputs,
-                kwargs,
-                started_at,
+    async def _resolve_recovered_action(
+        self,
+        adapter: ToolCapabilityAdapter,
+        setup: _DispatchSetup,
+        recovered: CapabilityResult,
+        policy: ApprovalPolicy,
+    ) -> CapabilityResult:
+        if recovered.terminal:
+            return recovered
+        assert setup.action_id is not None
+        reconciled = await self._reconcile_action(
+            adapter,
+            setup.context,
+            action_id=setup.action_id,
+            invocation_id=recovered.invocation_id,
+            idempotency_key=setup.idempotency_key,
+            operation=recovered.operation,
+            required_role=policy.required_role,
+        )
+        if reconciled is not None:
+            return reconciled
+        raise ActionOutcomeUnknownError(setup.action_id, recovered.invocation_id)
+
+    async def _claim_invocation(self, setup: _DispatchSetup) -> _InvocationClaim:
+        if not setup.persist:
+            return _InvocationClaim()
+        stored, created = await asyncio.to_thread(
+            self.store.create_capability_invocation, setup.invocation
+        )
+        if not created:
+            if stored.result:
+                return _InvocationClaim(
+                    stored=stored,
+                    result=capability_result_from_dict(stored.result),
+                )
+            if setup.persist_action and setup.action_id:
+                raise ActionOutcomeUnknownError(setup.action_id, stored.invocation_id)
+            return _InvocationClaim(
+                stored=stored,
+                result=CapabilityResult(
+                    invocation_id=stored.invocation_id,
+                    status=InvocationStatus.ACCEPTED,
+                    summary="能力调用正在执行",
+                    operation={"run_id": stored.run_id, "task_id": stored.task_id},
+                ),
+                return_immediately=True,
             )
-        if persist and (stored is None or stored.result is None):
+        worker_id = setup.context.worker_id or f"agent:{setup.context.agent_id}"
+        started = await asyncio.to_thread(
+            self.store.start_capability_invocation,
+            setup.invocation.invocation_id,
+            worker_id=worker_id,
+        )
+        if started:
+            return _InvocationClaim(stored=stored)
+        return _InvocationClaim(
+            stored=stored,
+            result=CapabilityResult.failed(
+                setup.invocation.invocation_id,
+                code="INVOCATION_CLAIM_FAILED",
+                message="能力调用未能取得执行权",
+                retryable=True,
+            ),
+        )
+
+    async def _finalize_dispatch(
+        self,
+        adapter: ToolCapabilityAdapter,
+        setup: _DispatchSetup,
+        *,
+        stored: Any | None,
+        result: CapabilityResult,
+        approval_policy: ApprovalPolicy | None,
+    ) -> None:
+        if setup.persist and (stored is None or stored.result is None):
             await asyncio.to_thread(
                 self.store.finish_capability_invocation,
-                invocation.invocation_id,
+                setup.invocation.invocation_id,
                 status=result.status.value,
                 result=result.to_dict(),
                 error=result.error.to_dict() if result.error else None,
             )
-        if persist_action and action_id:
-            await self._record_action_result(
-                action_id=action_id,
-                run_id=execution_context.run_id,
-                result=result,
-            )
-            if not result.terminal:
-                await self._ensure_reconciliation(
-                    adapter,
-                    execution_context,
-                    action_id=action_id,
-                    invocation_id=invocation_id,
-                    idempotency_key=idempotency_key,
-                    operation=result.operation,
-                    required_role=approval_policy.required_role,
-                )
-                raise ActionOutcomeUnknownError(action_id, invocation_id)
-        return result
+        if not setup.persist_action or setup.action_id is None:
+            return
+        assert approval_policy is not None
+        await self._record_action_result(
+            action_id=setup.action_id,
+            run_id=setup.context.run_id,
+            result=result,
+        )
+        if result.terminal:
+            return
+        await self._ensure_reconciliation(
+            adapter,
+            setup.context,
+            action_id=setup.action_id,
+            invocation_id=setup.invocation_id,
+            idempotency_key=setup.idempotency_key,
+            operation=result.operation,
+            required_role=approval_policy.required_role,
+        )
+        raise ActionOutcomeUnknownError(setup.action_id, setup.invocation_id)
 
     async def _ensure_reconciliation(
         self,

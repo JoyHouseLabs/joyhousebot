@@ -19,84 +19,10 @@ from psycopg_pool import ConnectionPool
 
 from porthouse.storage.binary_objects import LocalBinaryObjectStore
 from porthouse.storage.content_blobs import LocalContentBlobStore
+from porthouse.storage.contracts import RuntimeStores
 from porthouse.storage.json_codec import Jsonb
-from porthouse.storage.postgres_admins import PostgresAdminStoreMixin
-from porthouse.storage.postgres_agent_skills import PostgresAgentSkillStoreMixin
-from porthouse.storage.postgres_agent_teams import PostgresAgentTeamStoreMixin
-from porthouse.storage.postgres_agents import PostgresAgentStoreMixin
-from porthouse.storage.postgres_app_callbacks import PostgresAppCallbackStoreMixin
-from porthouse.storage.postgres_app_delegation import PostgresAppDelegationStoreMixin
-from porthouse.storage.postgres_app_market import PostgresAppMarketStoreMixin
-from porthouse.storage.postgres_app_packs import PostgresAppPackStoreMixin
-from porthouse.storage.postgres_app_updates import PostgresAppUpdateStoreMixin
-from porthouse.storage.postgres_app_usage import PostgresAppUsageStoreMixin
-from porthouse.storage.postgres_approvals import PostgresApprovalStoreMixin
-from porthouse.storage.postgres_artifact_uploads import PostgresArtifactUploadStoreMixin
-from porthouse.storage.postgres_cancel import PostgresRunCancelMixin
-from porthouse.storage.postgres_capabilities import PostgresCapabilityStoreMixin
-from porthouse.storage.postgres_clarifications import PostgresClarificationStoreMixin
-from porthouse.storage.postgres_context_manifests import PostgresContextManifestStoreMixin
-from porthouse.storage.postgres_device_deliveries import PostgresDeviceDeliveryStoreMixin
-from porthouse.storage.postgres_device_host_controls import (
-    PostgresDeviceHostControlStoreMixin,
-)
-from porthouse.storage.postgres_device_hosts import PostgresDeviceHostStoreMixin
-from porthouse.storage.postgres_embedding_profiles import (
-    PostgresEmbeddingProfileStoreMixin,
-)
-from porthouse.storage.postgres_evals import PostgresEvalStoreMixin
-from porthouse.storage.postgres_event_triggers import PostgresEventTriggerStoreMixin
-from porthouse.storage.postgres_execution_loop import PostgresExecutionLoopStoreMixin
-from porthouse.storage.postgres_experiments import PostgresExperimentStoreMixin
-from porthouse.storage.postgres_extension_inventory import (
-    PostgresExtensionInventoryStoreMixin,
-)
-from porthouse.storage.postgres_graph_actions import PostgresGraphActionStoreMixin
-from porthouse.storage.postgres_graph_branches import PostgresGraphBranchStoreMixin
-from porthouse.storage.postgres_graph_control_nodes import PostgresGraphControlNodeStoreMixin
-from porthouse.storage.postgres_graph_foreach import PostgresGraphForeachStoreMixin
-from porthouse.storage.postgres_graph_loops import PostgresGraphLoopStoreMixin
-from porthouse.storage.postgres_graph_patches import PostgresGraphPatchStoreMixin
-from porthouse.storage.postgres_graph_revisions import PostgresGraphRevisionStoreMixin
-from porthouse.storage.postgres_graph_sagas import PostgresGraphSagaStoreMixin
-from porthouse.storage.postgres_graph_subruns import PostgresGraphSubrunStoreMixin
-from porthouse.storage.postgres_graph_wait_events import PostgresGraphWaitEventStoreMixin
-from porthouse.storage.postgres_graphs import PostgresGraphStoreMixin
-from porthouse.storage.postgres_host_tools import PostgresHostToolStoreMixin
-from porthouse.storage.postgres_input_assets import PostgresInputAssetStoreMixin
-from porthouse.storage.postgres_loop_decisions import PostgresLoopDecisionStoreMixin
-from porthouse.storage.postgres_memory_candidates import PostgresMemoryCandidateStoreMixin
-from porthouse.storage.postgres_migrations import PostgresMigrationMixin
-from porthouse.storage.postgres_model_gateway import PostgresModelGatewayStoreMixin
-from porthouse.storage.postgres_model_providers import PostgresModelProviderStoreMixin
-from porthouse.storage.postgres_observability import PostgresObservabilityStoreMixin
-from porthouse.storage.postgres_operational_metrics import (
-    PostgresOperationalMetricsStoreMixin,
-)
-from porthouse.storage.postgres_operations import PostgresOperationsStoreMixin
-from porthouse.storage.postgres_plan_confirmations import (
-    PostgresPlanConfirmationStoreMixin,
-)
-from porthouse.storage.postgres_plugins import PostgresPluginStoreMixin
-from porthouse.storage.postgres_prompts import PostgresPromptStoreMixin
-from porthouse.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
-from porthouse.storage.postgres_reconciliations import PostgresReconciliationStoreMixin
-from porthouse.storage.postgres_remote_connections import (
-    PostgresRemoteConnectionStoreMixin,
-)
-from porthouse.storage.postgres_rollouts import PostgresRolloutStoreMixin
-from porthouse.storage.postgres_run_listing import PostgresRunListingStoreMixin
-from porthouse.storage.postgres_runs import PostgresRunStoreMixin
-from porthouse.storage.postgres_scenarios import PostgresScenarioStoreMixin
-from porthouse.storage.postgres_skills import PostgresSkillStoreMixin
-from porthouse.storage.postgres_tasks import PostgresTaskStoreMixin
-from porthouse.storage.postgres_verifications import PostgresVerificationStoreMixin
-from porthouse.storage.postgres_workflows import PostgresWorkflowStoreMixin
-from porthouse.storage.postgres_works import PostgresWorkStoreMixin
-from porthouse.storage.runtime_store import (
-    RuntimeRunRecord,
-    RuntimeTaskRecord,
-)
+from porthouse.storage.postgres_repositories import PostgresRepositorySet
+from porthouse.storage.runtime_store import RuntimeRunRecord, RuntimeTaskRecord
 
 _CHANNEL = "porthouse_runtime_work"
 _TERMINAL = ("completed", "failed", "cancelled", "timed_out")
@@ -121,72 +47,24 @@ def _json(value: Any, default: Any = None) -> Any:
     return value
 
 
-class PostgresRuntimeStore(
-    PostgresMigrationMixin,
-    PostgresAppCallbackStoreMixin,
-    PostgresAppDelegationStoreMixin,
-    PostgresAppMarketStoreMixin,
-    PostgresAppPackStoreMixin,
-    PostgresAppUpdateStoreMixin,
-    PostgresAppUsageStoreMixin,
-    PostgresAgentTeamStoreMixin,
-    PostgresPlanConfirmationStoreMixin,
-    PostgresWorkflowStoreMixin,
-    PostgresGraphRevisionStoreMixin,
-    PostgresGraphSagaStoreMixin,
-    PostgresGraphSubrunStoreMixin,
-    PostgresGraphPatchStoreMixin,
-    PostgresEvalStoreMixin,
-    PostgresExperimentStoreMixin,
-    PostgresPromptStoreMixin,
-    PostgresWorkStoreMixin,
-    PostgresGraphWaitEventStoreMixin,
-    PostgresAdminStoreMixin,
-    PostgresAgentSkillStoreMixin,
-    PostgresAgentStoreMixin,
-    PostgresSkillStoreMixin,
-    PostgresCapabilityStoreMixin,
-    PostgresExecutionLoopStoreMixin,
-    PostgresContextManifestStoreMixin,
-    PostgresMemoryCandidateStoreMixin,
-    PostgresEventTriggerStoreMixin,
-    PostgresLoopDecisionStoreMixin,
-    PostgresVerificationStoreMixin,
-    PostgresApprovalStoreMixin,
-    PostgresArtifactUploadStoreMixin,
-    PostgresDeviceHostControlStoreMixin,
-    PostgresDeviceHostStoreMixin,
-    PostgresDeviceDeliveryStoreMixin,
-    PostgresReconciliationStoreMixin,
-    PostgresClarificationStoreMixin,
-    PostgresScenarioStoreMixin,
-    PostgresGraphStoreMixin,
-    PostgresGraphBranchStoreMixin,
-    PostgresGraphForeachStoreMixin,
-    PostgresGraphLoopStoreMixin,
-    PostgresGraphControlNodeStoreMixin,
-    PostgresGraphActionStoreMixin,
-    PostgresRunListingStoreMixin,
-    PostgresInputAssetStoreMixin,
-    PostgresRunStoreMixin,
-    PostgresRunCancelMixin,
-    PostgresTaskStoreMixin,
-    PostgresRateLimitStoreMixin,
-    PostgresObservabilityStoreMixin,
-    PostgresOperationalMetricsStoreMixin,
-    PostgresRolloutStoreMixin,
-    PostgresModelProviderStoreMixin,
-    PostgresModelGatewayStoreMixin,
-    PostgresHostToolStoreMixin,
-    PostgresEmbeddingProfileStoreMixin,
-    PostgresRemoteConnectionStoreMixin,
-    PostgresOperationsStoreMixin,
-    PostgresExtensionInventoryStoreMixin,
-    PostgresPluginStoreMixin,
-):
+class PostgresRuntimeStore:
     """Production runtime store backed by a psycopg connection pool."""
 
     backend_name = "postgres"
+
+    def __getattr__(self, name: str) -> Any:
+        repositories = self.__dict__.get("_repositories")
+        if repositories is None:
+            repositories = PostgresRepositorySet(self)
+            object.__setattr__(self, "_repositories", repositories)
+        return repositories.resolve(name)
+
+    @property
+    def repositories(self) -> PostgresRepositorySet:
+        return self._repositories
+
+    def runtime_stores(self) -> RuntimeStores:
+        return self._repositories.runtime_stores()
 
     def __init__(
         self,
@@ -237,6 +115,7 @@ class PostgresRuntimeStore(
         self._listener = None
         self._listener_lock = threading.Lock()
         self._closed = False
+        self._repositories = PostgresRepositorySet(self)
         try:
             self._pool.wait(timeout=10)
             if auto_migrate:

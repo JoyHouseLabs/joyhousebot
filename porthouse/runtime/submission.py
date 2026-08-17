@@ -48,6 +48,39 @@ class SubmissionMixin(GraphMaterializationMixin):
         initial_status: str = "queued",
     ) -> Any:
         await self.start()
+        options, request_id, tracker_id, top_level = self._normalize_run_options(
+            options
+        )
+        options, profile = await self._resolve_run_authority(
+            options, top_level=top_level
+        )
+        await self._validate_run_lineage(options)
+        record, created = await self._create_agent_run(
+            options,
+            run_id=run_id or uuid4().hex,
+            initial_status=initial_status,
+            top_level=top_level,
+        )
+        if created:
+            await self._initialize_agent_run(
+                record,
+                options,
+                profile=profile,
+                top_level=top_level,
+                initial_status=initial_status,
+                request_id=request_id,
+                tracker_id=tracker_id,
+            )
+        if record.status in {"queued", "running"}:
+            if self.worker_enabled and not await self.supervisor.is_active(record.run_id):
+                await self._schedule_record(record.run_id)
+            else:
+                await asyncio.to_thread(self.stores.workers.notify_work, record.run_id)
+        return await asyncio.to_thread(self.stores.runs.get_runtime_run, record.run_id)
+
+    def _normalize_run_options(
+        self, options: AgentOptions
+    ) -> tuple[AgentOptions, str, str, bool]:
         inherited_tracking = get_request_tracking()
         request_id, tracker_id = ensure_tracking_ids(
             request_id=options.request_id
@@ -75,6 +108,12 @@ class SubmissionMixin(GraphMaterializationMixin):
         )
         if options.agent_id == "default" and self.default_agent_id != "default":
             options = replace(options, agent_id=self.default_agent_id)
+        self._validate_run_options(options)
+        top_level = not (options.root_run_id or options.parent_run_id or options.parent_task_id)
+        return options, request_id, tracker_id, top_level
+
+    @staticmethod
+    def _validate_run_options(options: AgentOptions) -> None:
         if not options.prompt.strip():
             raise ValueError("prompt is required")
         validate_execution_contracts(
@@ -90,74 +129,8 @@ class SubmissionMixin(GraphMaterializationMixin):
                 raise ValueError(f"{name} is required")
         if len(options.input_asset_ids) > 20:
             raise ValueError("a Run may bind at most 20 input assets")
-        top_level = not (options.root_run_id or options.parent_run_id or options.parent_task_id)
-        profile = None
-        if options.agent_revision_id:
-            revision = await asyncio.to_thread(
-                self.store.get_agent_revision, options.agent_revision_id
-            )
-            team_ref = options.metadata.get("team_ref")
-            if isinstance(team_ref, dict):
-                team = await asyncio.to_thread(
-                    self.store.get_agent_team_revision,
-                    str(team_ref.get("revision_id") or ""),
-                )
-                member = next(
-                    (
-                        item
-                        for item in (team.members if team is not None else ())
-                        if item.agent_id == options.agent_id
-                        and item.agent_revision_id == options.agent_revision_id
-                    ),
-                    None,
-                )
-                if (
-                    team is None
-                    or team.status not in (
-                        {"published"} if top_level else {"published", "retired"}
-                    )
-                    or team.team_id != str(team_ref.get("team_id") or "")
-                    or member is None
-                    or (top_level and member.member_id != team.coordinator_member_id)
-                    or revision is None
-                    or revision.agent_id != options.agent_id
-                    or revision.status not in (
-                        {"published"} if top_level else {"published", "retired"}
-                    )
-                ):
-                    raise ValueError("Agent revision is outside the published AgentTeam boundary")
-            else:
-                eval_run_id = str(options.metadata.get("eval_run_id") or "")
-                eval_run = await asyncio.to_thread(self.store.get_eval_run, eval_run_id)
-                published_revision = bool(
-                    top_level
-                    and revision is not None
-                    and revision.agent_id == options.agent_id
-                    and revision.status == "published"
-                )
-                if not published_revision and (
-                    eval_run is None
-                    or eval_run["status"] != "running"
-                    or eval_run["target_type"] != "agent"
-                    or eval_run["target_id"] != options.agent_id
-                    or eval_run["target_revision_id"] != options.agent_revision_id
-                    or revision is None
-                    or revision.agent_id != options.agent_id
-                    or revision.status not in {"draft", "published"}
-                ):
-                    raise ValueError(
-                        "Agent revision must be published or have a matching active Eval run"
-                    )
-        else:
-            profile = await asyncio.to_thread(self.store.get_agent_profile, options.agent_id)
-            if profile is None:
-                raise ValueError(f"active published Agent not found: {options.agent_id}")
-            if options.agent_id != profile.definition.agent_id:
-                options = replace(options, agent_id=profile.definition.agent_id)
         if options.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
-        # Child runs spawned by the runtime itself (subagents, graph tasks)
-        # stay exempt: their fan-out is already bounded by the parent run.
         for name, value in (
             ("max_turns", options.max_turns),
             ("max_input_tokens", options.max_input_tokens),
@@ -171,29 +144,131 @@ class SubmissionMixin(GraphMaterializationMixin):
             raise ValueError("max_repairs must be between zero and ten")
         if options.max_replans is not None and not 0 <= options.max_replans <= 10:
             raise ValueError("max_replans must be between zero and ten")
+
+    async def _resolve_run_authority(
+        self, options: AgentOptions, *, top_level: bool
+    ) -> tuple[AgentOptions, Any]:
+        profile = None
+        if options.agent_revision_id:
+            revision = await asyncio.to_thread(
+                self.stores.catalog.get_agent_revision, options.agent_revision_id
+            )
+            team_ref = options.metadata.get("team_ref")
+            if isinstance(team_ref, dict):
+                await self._validate_team_run_revision(
+                    options, revision, team_ref, top_level=top_level
+                )
+            else:
+                await self._validate_eval_run_revision(
+                    options, revision, top_level=top_level
+                )
+        else:
+            profile = await asyncio.to_thread(
+                self.stores.catalog.get_agent_profile, options.agent_id
+            )
+            if profile is None:
+                raise ValueError(f"active published Agent not found: {options.agent_id}")
+            if options.agent_id != profile.definition.agent_id:
+                options = replace(options, agent_id=profile.definition.agent_id)
+        return options, profile
+
+    async def _validate_team_run_revision(
+        self,
+        options: AgentOptions,
+        revision: Any,
+        team_ref: dict[str, Any],
+        *,
+        top_level: bool,
+    ) -> None:
+        team = await asyncio.to_thread(
+            self.stores.catalog.get_agent_team_revision,
+            str(team_ref.get("revision_id") or ""),
+        )
+        member = next(
+            (
+                item
+                for item in (team.members if team is not None else ())
+                if item.agent_id == options.agent_id
+                and item.agent_revision_id == options.agent_revision_id
+            ),
+            None,
+        )
+        allowed_statuses = {"published"} if top_level else {"published", "retired"}
+        if (
+            team is None
+            or team.status not in allowed_statuses
+            or team.team_id != str(team_ref.get("team_id") or "")
+            or member is None
+            or (top_level and member.member_id != team.coordinator_member_id)
+            or revision is None
+            or revision.agent_id != options.agent_id
+            or revision.status not in allowed_statuses
+        ):
+            raise ValueError("Agent revision is outside the published AgentTeam boundary")
+
+    async def _validate_eval_run_revision(
+        self, options: AgentOptions, revision: Any, *, top_level: bool
+    ) -> None:
+        eval_run_id = str(options.metadata.get("eval_run_id") or "")
+        eval_run = await asyncio.to_thread(
+            self.stores.catalog.get_eval_run, eval_run_id
+        )
+        published_revision = bool(
+            top_level
+            and revision is not None
+            and revision.agent_id == options.agent_id
+            and revision.status == "published"
+        )
+        if not published_revision and (
+            eval_run is None
+            or eval_run["status"] != "running"
+            or eval_run["target_type"] != "agent"
+            or eval_run["target_id"] != options.agent_id
+            or eval_run["target_revision_id"] != options.agent_revision_id
+            or revision is None
+            or revision.agent_id != options.agent_id
+            or revision.status not in {"draft", "published"}
+        ):
+            raise ValueError(
+                "Agent revision must be published or have a matching active Eval run"
+            )
+
+    async def _validate_run_lineage(self, options: AgentOptions) -> None:
         for field_name, referenced_run_id in (
             ("root_run_id", options.root_run_id),
             ("parent_run_id", options.parent_run_id),
         ):
             if not referenced_run_id:
                 continue
-            referenced = await asyncio.to_thread(self.store.get_runtime_run, referenced_run_id)
+            referenced = await asyncio.to_thread(
+                self.stores.runs.get_runtime_run, referenced_run_id
+            )
             if referenced is None or referenced.user_id != options.user_id:
                 raise ValueError(f"{field_name} does not belong to user_id")
         if options.parent_task_id:
             parent_task = await asyncio.to_thread(
-                self.store.get_runtime_task, options.parent_task_id
+                self.stores.tasks.get_runtime_task, options.parent_task_id
             )
             parent_run = (
-                await asyncio.to_thread(self.store.get_runtime_run, parent_task.run_id)
+                await asyncio.to_thread(
+                    self.stores.runs.get_runtime_run, parent_task.run_id
+                )
                 if parent_task is not None
                 else None
             )
             if parent_run is None or parent_run.user_id != options.user_id:
                 raise ValueError("parent_task_id does not belong to user_id")
-        run_id = run_id or uuid4().hex
-        record, created = await asyncio.to_thread(
-            self.store.create_runtime_run,
+
+    async def _create_agent_run(
+        self,
+        options: AgentOptions,
+        *,
+        run_id: str,
+        initial_status: str,
+        top_level: bool,
+    ) -> tuple[Any, bool]:
+        return await asyncio.to_thread(
+            self.stores.runs.create_runtime_run,
             run_id=run_id,
             user_id=options.user_id,
             session_id=options.session_id,
@@ -217,97 +292,102 @@ class SubmissionMixin(GraphMaterializationMixin):
             ),
             input_asset_ids=options.input_asset_ids,
         )
-        if created:
-            snapshot = await asyncio.to_thread(
-                self.store.create_run_execution_snapshot,
-                record.run_id,
-                options.agent_id,
-                revision_id=options.agent_revision_id,
-            )
-            experiment_assignment = dict(options.metadata or {}).get("experiment_assignment")
-            if isinstance(experiment_assignment, dict) and experiment_assignment.get(
-                "experiment_id"
-            ):
-                await asyncio.to_thread(
-                    self.store.record_experiment_assignment,
-                    run_id=record.run_id,
-                    user_id=record.user_id,
-                    assignment=experiment_assignment,
-                )
-            if (
-                profile is not None
-                and top_level
-                and self.monitor_reconciler is not None
-                and not options.metadata.get("schedule_payload_kind")
-            ):
-                try:
-                    await asyncio.to_thread(
-                        self.monitor_reconciler,
-                        user_id=record.user_id,
-                        profile=profile,
-                        channel=options.channel,
-                        target=options.chat_id,
-                    )
-                except Exception as exc:
-                    logger.exception("Managed Agent Monitor reconciliation failed")
-                    await self._log(
-                        record.run_id,
-                        "monitor.reconcile_failed",
-                        "Managed Agent Monitor reconciliation failed",
-                        level="warning",
-                        data={"error": str(exc), "agent_id": record.agent_id},
-                    )
-            await append_trace_event_async(
-                store=self.store,
-                tracker_id=tracker_id,
-                request_id=request_id,
-                parent_request_id=options.parent_request_id,
-                user_id=record.user_id,
+
+    async def _initialize_agent_run(
+        self,
+        record: Any,
+        options: AgentOptions,
+        *,
+        profile: Any,
+        top_level: bool,
+        initial_status: str,
+        request_id: str,
+        tracker_id: str,
+    ) -> None:
+        snapshot = await asyncio.to_thread(
+            self.stores.catalog.create_run_execution_snapshot,
+            record.run_id,
+            options.agent_id,
+            revision_id=options.agent_revision_id,
+        )
+        experiment_assignment = dict(options.metadata or {}).get("experiment_assignment")
+        if isinstance(experiment_assignment, dict) and experiment_assignment.get(
+            "experiment_id"
+        ):
+            await asyncio.to_thread(
+                self.stores.experiments.record_experiment_assignment,
                 run_id=record.run_id,
-                transport="runtime",
-                direction="internal",
-                operation="agent.run",
-                stage="queued",
+                user_id=record.user_id,
+                assignment=experiment_assignment,
+            )
+        if (
+            profile is not None
+            and top_level
+            and self.monitor_reconciler is not None
+            and not options.metadata.get("schedule_payload_kind")
+        ):
+            try:
+                await asyncio.to_thread(
+                    self.monitor_reconciler,
+                    user_id=record.user_id,
+                    profile=profile,
+                    channel=options.channel,
+                    target=options.chat_id,
+                )
+            except Exception as exc:
+                logger.exception("Managed Agent Monitor reconciliation failed")
+                await self._log(
+                    record.run_id,
+                    "monitor.reconcile_failed",
+                    "Managed Agent Monitor reconciliation failed",
+                    level="warning",
+                    data={"error": str(exc), "agent_id": record.agent_id},
+                )
+        await append_trace_event_async(
+            store=self.stores.traces,
+            tracker_id=tracker_id,
+            request_id=request_id,
+            parent_request_id=options.parent_request_id,
+            user_id=record.user_id,
+            run_id=record.run_id,
+            transport="runtime",
+            direction="internal",
+            operation="agent.run",
+            stage="queued",
+            status=record.status,
+            data={
+                "agent_id": record.agent_id,
+                "agent_revision_id": snapshot.agent_revision_id,
+                "session_id": record.session_id,
+            },
+        )
+        await self._log(
+            record.run_id,
+            "run.queued" if initial_status == "queued" else "run.waiting_input",
+            "Agent run queued" if initial_status == "queued" else "Run awaits user input",
+        )
+        await self.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.RUN_ACCEPTED.value,
                 status=record.status,
-                data={
-                    "agent_id": record.agent_id,
-                    "agent_revision_id": snapshot.agent_revision_id,
-                    "session_id": record.session_id,
-                },
+                data={"kind": "agent"},
             )
-            await self._log(
-                record.run_id,
-                "run.queued" if initial_status == "queued" else "run.waiting_input",
-                "Agent run queued" if initial_status == "queued" else "Run awaits user input",
-            )
+        )
+        if initial_status == "queued":
             await self.events.publish(
                 AgentEvent(
                     run_id=record.run_id,
-                    type=EventType.RUN_ACCEPTED.value,
-                    status=record.status,
-                    data={"kind": "agent"},
+                    type=EventType.RUN_QUEUED.value,
+                    status=RunStatus.QUEUED.value,
+                    data={
+                        "user_id": record.user_id,
+                        "session_id": record.session_id,
+                        "agent_id": record.agent_id,
+                        "kind": "agent",
+                    },
                 )
             )
-            if initial_status == "queued":
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=record.run_id,
-                        type=EventType.RUN_QUEUED.value,
-                        status=RunStatus.QUEUED.value,
-                        data={
-                            "user_id": record.user_id,
-                            "session_id": record.session_id,
-                            "agent_id": record.agent_id,
-                            "kind": "agent",
-                        },
-                    )
-                )
-        if record.status in {"queued", "running"}:
-            if self.worker_enabled and not await self.supervisor.is_active(record.run_id):
-                await self._schedule_record(record.run_id)
-            else:
-                await asyncio.to_thread(self.store.notify_work, record.run_id)
-        return await asyncio.to_thread(self.store.get_runtime_run, record.run_id)
 
     async def submit_graph(
         self,
@@ -316,6 +396,68 @@ class SubmissionMixin(GraphMaterializationMixin):
         run_id: str | None = None,
     ) -> Any:
         await self.start()
+        spec, request_id, tracker_id, top_level = self._normalize_graph_spec(spec)
+        spec, profile, pinned_revision = await asyncio.to_thread(
+            resolve_graph_agent_authority,
+            self.stores.catalog,
+            spec,
+            top_level=top_level,
+        )
+        ordered = await self._validate_graph_submission(spec)
+        await self._validate_graph_lineage(spec)
+        max_active_per_user = (
+            positive_env_int("PORTHOUSE_MAX_RUNS_PER_USER", 4) if top_level else None
+        )
+        max_submissions_per_minute = (
+            positive_env_int("PORTHOUSE_RUN_SUBMIT_PER_MINUTE", 30)
+            if top_level
+            else None
+        )
+        run_id = run_id or uuid4().hex
+        revision = freeze_graph_revision(run_id, spec, ordered, source="explicit_submission")
+        options = graph_options({}, spec, revision, initial_events_required=True)
+        graph_rows = graph_task_rows(run_id, revision)
+        record, created = await asyncio.to_thread(
+            self.stores.graphs.create_runtime_graph,
+            run_id=run_id,
+            user_id=spec.user_id,
+            session_id=spec.session_id,
+            agent_id=spec.agent_id,
+            prompt=spec.goal,
+            options=options,
+            tasks=graph_rows,
+            revision=revision,
+            created_by=f"runtime:{self.worker_id}",
+            idempotency_key=spec.idempotency_key,
+            max_active_per_user=max_active_per_user,
+            max_submissions_per_minute=max_submissions_per_minute,
+            root_run_id=spec.root_run_id,
+            parent_run_id=spec.parent_run_id,
+            parent_task_id=spec.parent_task_id,
+            max_children_per_root=spec.max_children_per_root,
+            input_asset_ids=spec.input_asset_ids,
+        )
+        if created:
+            await self._initialize_graph_run(
+                record,
+                spec,
+                ordered,
+                revision,
+                profile=profile,
+                pinned_revision=pinned_revision,
+                top_level=top_level,
+                request_id=request_id,
+                tracker_id=tracker_id,
+            )
+        await asyncio.to_thread(self.stores.workers.notify_work, record.run_id)
+        # Give an already-running worker a scheduling opportunity before an
+        # accepted response is observed; execution itself remains asynchronous.
+        await asyncio.sleep(0)
+        return await asyncio.to_thread(self.stores.runs.get_runtime_run, record.run_id)
+
+    def _normalize_graph_spec(
+        self, spec: TaskGraphSpec
+    ) -> tuple[TaskGraphSpec, str, str, bool]:
         inherited_tracking = get_request_tracking()
         request_id, tracker_id = ensure_tracking_ids(
             request_id=spec.request_id
@@ -342,12 +484,9 @@ class SubmissionMixin(GraphMaterializationMixin):
             if not value.strip():
                 raise ValueError(f"{name} is required")
         top_level = not (spec.root_run_id or spec.parent_run_id or spec.parent_task_id)
-        spec, profile, pinned_revision = await asyncio.to_thread(
-            resolve_graph_agent_authority,
-            self.store,
-            spec,
-            top_level=top_level,
-        )
+        return spec, request_id, tracker_id, top_level
+
+    async def _validate_graph_submission(self, spec: TaskGraphSpec) -> list[Any]:
         ordered = validate_and_order_graph(spec.tasks)
         for task in ordered:
             validate_execution_contracts(
@@ -355,7 +494,9 @@ class SubmissionMixin(GraphMaterializationMixin):
                 verification_policy=task.verification_policy,
                 prefix=f"graph task {task.id}",
             )
-        catalog = await asyncio.to_thread(self.store.list_capability_definitions)
+        catalog = await asyncio.to_thread(
+            self.stores.catalog.list_capability_definitions
+        )
         validate_compensation_declarations(ordered, catalog)
         validate_saga_declarations(
             ordered,
@@ -363,217 +504,173 @@ class SubmissionMixin(GraphMaterializationMixin):
             spec.failure_policy,
             max_concurrent=spec.max_concurrent,
         )
+        return ordered
+
+    async def _validate_graph_lineage(self, spec: TaskGraphSpec) -> None:
         for field_name, referenced_run_id in (
             ("root_run_id", spec.root_run_id),
             ("parent_run_id", spec.parent_run_id),
         ):
             if not referenced_run_id:
                 continue
-            referenced = await asyncio.to_thread(self.store.get_runtime_run, referenced_run_id)
+            referenced = await asyncio.to_thread(
+                self.stores.runs.get_runtime_run, referenced_run_id
+            )
             if referenced is None or referenced.user_id != spec.user_id:
                 raise ValueError(f"{field_name} does not belong to user_id")
         if spec.parent_task_id:
             parent_task = await asyncio.to_thread(
-                self.store.get_runtime_task, spec.parent_task_id
+                self.stores.tasks.get_runtime_task, spec.parent_task_id
             )
             if parent_task is None or parent_task.run_id != spec.parent_run_id:
                 raise ValueError("parent_task_id does not belong to parent_run_id")
-        max_active_per_user = (
-            positive_env_int("PORTHOUSE_MAX_RUNS_PER_USER", 4) if top_level else None
+
+    async def _initialize_graph_run(
+        self,
+        record: Any,
+        spec: TaskGraphSpec,
+        ordered: list[Any],
+        revision: dict[str, Any],
+        *,
+        profile: Any,
+        pinned_revision: Any,
+        top_level: bool,
+        request_id: str,
+        tracker_id: str,
+    ) -> None:
+        snapshot = await asyncio.to_thread(
+            self.stores.catalog.create_run_execution_snapshot,
+            record.run_id,
+            spec.agent_id,
+            revision_id=spec.agent_revision_id,
         )
-        max_submissions_per_minute = (
-            positive_env_int("PORTHOUSE_RUN_SUBMIT_PER_MINUTE", 30)
-            if top_level
-            else None
+        if (
+            pinned_revision is None
+            and top_level
+            and self.monitor_reconciler is not None
+        ):
+            try:
+                await asyncio.to_thread(
+                    self.monitor_reconciler,
+                    user_id=record.user_id,
+                    profile=profile,
+                )
+            except Exception as exc:
+                logger.exception("Managed Agent Monitor reconciliation failed")
+                await self._log(
+                    record.run_id,
+                    "monitor.reconcile_failed",
+                    "Managed Agent Monitor reconciliation failed",
+                    level="warning",
+                    data={"error": str(exc), "agent_id": record.agent_id},
+                )
+        await append_trace_event_async(
+            store=self.stores.traces,
+            tracker_id=tracker_id,
+            request_id=request_id,
+            parent_request_id=spec.parent_request_id,
+            user_id=record.user_id,
+            run_id=record.run_id,
+            transport="runtime",
+            direction="internal",
+            operation="task_graph.run",
+            stage="queued",
+            status=record.status,
+            data={
+                "agent_id": record.agent_id,
+                "agent_revision_id": snapshot.agent_revision_id,
+                "task_count": len(ordered),
+            },
         )
-        run_id = run_id or uuid4().hex
-        revision = freeze_graph_revision(run_id, spec, ordered, source="explicit_submission")
-        options = graph_options({}, spec, revision, initial_events_required=True)
-        graph_rows = graph_task_rows(run_id, revision)
-        create_graph = getattr(self.store, "create_runtime_graph", None)
-        if create_graph is not None:
-            record, created = await asyncio.to_thread(
-                create_graph,
-                run_id=run_id,
-                user_id=spec.user_id,
-                session_id=spec.session_id,
-                agent_id=spec.agent_id,
-                prompt=spec.goal,
-                options=options,
-                tasks=graph_rows,
-                revision=revision,
-                created_by=f"runtime:{self.worker_id}",
-                idempotency_key=spec.idempotency_key,
-                max_active_per_user=max_active_per_user,
-                max_submissions_per_minute=max_submissions_per_minute,
-                root_run_id=spec.root_run_id,
-                parent_run_id=spec.parent_run_id,
-                parent_task_id=spec.parent_task_id,
-                max_children_per_root=spec.max_children_per_root,
-                input_asset_ids=spec.input_asset_ids,
-            )
-        else:
-            record, created = await asyncio.to_thread(
-                self.store.create_runtime_run,
-                run_id=run_id,
-                user_id=spec.user_id,
-                session_id=spec.session_id,
-                agent_id=spec.agent_id,
-                kind="graph",
-                prompt=spec.goal,
-                options=options,
-                idempotency_key=spec.idempotency_key,
-                total_task_count=len(graph_rows),
-                root_run_id=spec.root_run_id,
-                parent_run_id=spec.parent_run_id,
-                parent_task_id=spec.parent_task_id,
-                max_children_per_root=spec.max_children_per_root,
-                max_active_per_user=max_active_per_user,
-                max_submissions_per_minute=max_submissions_per_minute,
-                input_asset_ids=spec.input_asset_ids,
-            )
-        if created:
-            snapshot = await asyncio.to_thread(
-                self.store.create_run_execution_snapshot,
-                record.run_id,
-                spec.agent_id,
-                revision_id=spec.agent_revision_id,
-            )
-            if (
-                pinned_revision is None
-                and top_level
-                and self.monitor_reconciler is not None
-            ):
-                try:
-                    await asyncio.to_thread(
-                        self.monitor_reconciler,
-                        user_id=record.user_id,
-                        profile=profile,
-                    )
-                except Exception as exc:
-                    logger.exception("Managed Agent Monitor reconciliation failed")
-                    await self._log(
-                        record.run_id,
-                        "monitor.reconcile_failed",
-                        "Managed Agent Monitor reconciliation failed",
-                        level="warning",
-                        data={"error": str(exc), "agent_id": record.agent_id},
-                    )
-            await append_trace_event_async(
-                store=self.store,
-                tracker_id=tracker_id,
-                request_id=request_id,
-                parent_request_id=spec.parent_request_id,
-                user_id=record.user_id,
+        await self._log(
+            record.run_id,
+            "graph.queued",
+            "Task graph persisted and ready for distributed execution",
+            data={"task_count": len(ordered)},
+        )
+        await self._publish_graph_submission_events(record, spec, ordered, revision)
+
+    async def _publish_graph_submission_events(
+        self,
+        record: Any,
+        spec: TaskGraphSpec,
+        ordered: list[Any],
+        revision: dict[str, Any],
+    ) -> None:
+        await self.events.publish(
+            AgentEvent(
                 run_id=record.run_id,
-                transport="runtime",
-                direction="internal",
-                operation="task_graph.run",
-                stage="queued",
-                status=record.status,
+                type=EventType.RUN_ACCEPTED.value,
+                status=RunStatus.QUEUED.value,
                 data={
-                    "agent_id": record.agent_id,
-                    "agent_revision_id": snapshot.agent_revision_id,
+                    "kind": "graph",
                     "task_count": len(ordered),
+                    "graph_revision_id": revision["revision_id"],
                 },
             )
-            for task_row in graph_rows if create_graph is None else []:
-                await asyncio.to_thread(
-                    self.store.create_runtime_task,
-                    task_id=task_row["task_id"],
-                    run_id=record.run_id,
-                    agent_id=task_row["agent_id"],
-                    name=task_row["name"],
-                    payload=task_row["payload"],
-                    dependencies=task_row["dependencies"],
-                    priority=task_row["priority"],
-                    max_attempts=task_row["max_attempts"],
-                )
-            await self._log(
-                record.run_id,
-                "graph.queued",
-                "Task graph persisted and ready for distributed execution",
-                data={"task_count": len(ordered)},
+        )
+        await self.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.RUN_QUEUED.value,
+                status=RunStatus.QUEUED.value,
+                data={
+                    "user_id": record.user_id,
+                    "session_id": record.session_id,
+                    "agent_id": record.agent_id,
+                    "kind": "graph",
+                    "task_count": len(ordered),
+                    "graph_revision_id": revision["revision_id"],
+                },
             )
+        )
+        await self.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.PLAN_CREATED.value,
+                phase="planning",
+                data={
+                    "goal": spec.goal,
+                    "graph_revision_id": revision["revision_id"],
+                    "steps": [
+                        {
+                            "task_id": graph_task_id(record.run_id, task.id),
+                            "name": task.name or task.id,
+                            "agent_id": task.agent_id or spec.agent_id,
+                            "dependencies": task.dependencies,
+                            "node_type": task.node_type,
+                        }
+                        for task in ordered
+                    ],
+                },
+            )
+        )
+        for task in ordered:
+            if (
+                dict(revision["settings"].get("failure_policy") or {}).get("mode")
+                == "saga"
+                and task.node_type == "compensation"
+            ):
+                continue
             await self.events.publish(
                 AgentEvent(
                     run_id=record.run_id,
-                    type=EventType.RUN_ACCEPTED.value,
-                    status=RunStatus.QUEUED.value,
-                    data={
-                        "kind": "graph",
-                        "task_count": len(ordered),
-                        "graph_revision_id": revision["revision_id"],
-                    },
+                    task_id=graph_task_id(record.run_id, task.id),
+                    type=EventType.TASK_QUEUED.value,
+                    data={"name": task.name or task.id, "dependencies": task.dependencies},
                 )
             )
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.RUN_QUEUED.value,
-                    status=RunStatus.QUEUED.value,
-                    data={
-                        "user_id": record.user_id,
-                        "session_id": record.session_id,
-                        "agent_id": record.agent_id,
-                        "kind": "graph",
-                        "task_count": len(ordered),
-                        "graph_revision_id": revision["revision_id"],
-                    },
-                )
-            )
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.PLAN_CREATED.value,
-                    phase="planning",
-                    data={
-                        "goal": spec.goal,
-                        "graph_revision_id": revision["revision_id"],
-                        "steps": [
-                            {
-                                "task_id": graph_task_id(record.run_id, task.id),
-                                "name": task.name or task.id,
-                                "agent_id": task.agent_id or spec.agent_id,
-                                "dependencies": task.dependencies,
-                                "node_type": task.node_type,
-                            }
-                            for task in ordered
-                        ],
-                    },
-                )
-            )
-            for task in ordered:
-                if (
-                    dict(revision["settings"].get("failure_policy") or {}).get("mode")
-                    == "saga"
-                    and task.node_type == "compensation"
-                ):
-                    continue
-                await self.events.publish(
-                    AgentEvent(
-                        run_id=record.run_id,
-                        task_id=graph_task_id(record.run_id, task.id),
-                        type=EventType.TASK_QUEUED.value,
-                        data={"name": task.name or task.id, "dependencies": task.dependencies},
-                    )
-                )
-        await asyncio.to_thread(self.store.notify_work, record.run_id)
-        # Give an already-running worker a scheduling opportunity before an
-        # accepted response is observed; execution itself remains asynchronous.
-        await asyncio.sleep(0)
-        return await asyncio.to_thread(self.store.get_runtime_run, record.run_id)
 
     async def _schedule_record(self, run_id: str, *, wake_source: str = "local") -> None:
-        existing = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        existing = await asyncio.to_thread(self.stores.runs.get_runtime_run, run_id)
         if existing is not None and existing.kind == "graph":
-            await asyncio.to_thread(self.store.notify_work, run_id)
+            await asyncio.to_thread(self.stores.workers.notify_work, run_id)
             return
 
         async def _factory(cancellation: CancellationToken) -> AgentResult:
             claim_started = time.monotonic()
             record = await asyncio.to_thread(
-                self.store.claim_runtime_run,
+                self.stores.runs.claim_runtime_run,
                 run_id,
                 worker_id=self.worker_id,
                 lease_seconds=self.lease_seconds,
@@ -596,14 +693,16 @@ class SubmissionMixin(GraphMaterializationMixin):
                 while True:
                     await asyncio.sleep(max(1.0, self.lease_seconds / 3))
                     owned = await asyncio.to_thread(
-                        self.store.heartbeat_runtime_run,
+                        self.stores.runs.heartbeat_runtime_run,
                         run_id,
                         worker_id=self.worker_id,
                         lease_seconds=self.lease_seconds,
                         lease_version=record.lease_version,
                     )
                     if not owned:
-                        current = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+                        current = await asyncio.to_thread(
+                            self.stores.runs.get_runtime_run, run_id
+                        )
                         if (
                             current is not None
                             and current.cancel_requested_at is not None

@@ -232,7 +232,7 @@ async def execute_graph_bounded_loop(
     initial_state = select_initial_loop_state(configuration, dependency_results)
     loop_id = _loop_identity(task, configuration, initial_state)
     all_tasks = await asyncio.to_thread(
-        runtime.store.list_runtime_tasks, run_id=run.run_id, limit=5000
+        runtime.stores.tasks.list_runtime_tasks, run_id=run.run_id, limit=5000
     )
     children = sorted(
         [item for item in all_tasks if item.parent_task_id == task.task_id],
@@ -329,7 +329,7 @@ async def _advance(
 ) -> None:
     child = _loop_child(task, state=state, iteration=iteration, loop_id=loop_id)
     outcome = await asyncio.to_thread(
-        runtime.store.advance_runtime_bounded_loop,
+        runtime.stores.graphs.advance_runtime_bounded_loop,
         run_id=run.run_id,
         task_id=task.task_id,
         loop_id=loop_id,
@@ -377,7 +377,7 @@ async def _finish(
         for event in [terminal_event, *(extra_events or [])]
     ]
     saved = await asyncio.to_thread(
-        runtime.store.finish_runtime_bounded_loop,
+        runtime.stores.graphs.finish_runtime_bounded_loop,
         run_id=run.run_id,
         task_id=task.task_id,
         outcome=outcome,

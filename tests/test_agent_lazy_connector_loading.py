@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.storage.contracts import RuntimeStores
 
 
 @pytest.mark.asyncio
@@ -20,7 +21,7 @@ async def test_lazy_resolved_agent_connects_tools_before_graph_execution() -> No
 
     agent = Agent()
     runtime = SimpleNamespace(
-        store=Store(),
+        stores=RuntimeStores.from_backend(Store()),
         default_agent_id="default",
         agent_resolver=lambda key: agent if key == "specialist" else None,
         agent=None,

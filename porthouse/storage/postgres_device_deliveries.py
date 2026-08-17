@@ -3,7 +3,7 @@
 Split from ``postgres_device_hosts`` by responsibility: registrations and
 capability declarations stay with the host identity mixin, while frozen
 operation deliveries, claims, events and completions live here. Both mixins
-are composed into the one RuntimeStore and share the same connection pool.
+are composed into one PostgreSQL repository set and share the same connection pool.
 """
 
 from __future__ import annotations

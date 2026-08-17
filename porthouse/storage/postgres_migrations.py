@@ -6,7 +6,7 @@ an already-recorded migration means the DDL was edited after it shipped; that
 is drift, and startup fails closed instead of silently absorbing it through
 ``IF NOT EXISTS`` idempotency or rewriting the recorded checksum.
 
-Extensions never receive this lock or a RuntimeStore. Business services own
+Extensions never receive this lock or the Runtime repository backend. Business services own
 their database, migration history, and deployment coordination independently.
 """
 
@@ -19,7 +19,6 @@ from typing import Any
 
 import psycopg
 
-from porthouse.storage.migration_history import migration_checksum as _migration_checksum
 from porthouse.storage.migration_history import migration_is_recorded, record_migration
 from porthouse.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
 from porthouse.storage.runtime_store import destructive_migrate_enabled
@@ -159,122 +158,7 @@ _DESTRUCTIVE_DROP_TABLES = (
 )
 
 
-def migration_checksum(ddl: str) -> str:
-    """Backward-compatible public import for migration checksum tests/tools."""
-    return _migration_checksum(ddl)
-
-
-class PostgresMigrationMixin:
-    """Migration sequencing, history recording, and the shared DDL lock."""
-
-    def _migrate_all(self) -> None:
-        """Serialize the complete migration sequence across all processes.
-
-        Per-domain migration locks are not enough: one process can otherwise
-        create an observability index while another process is still altering
-        a runtime table referenced by that index.  The cluster-wide lock runs
-        on a dedicated connection so this also works when the runtime pool
-        has a maximum size of one.
-        """
-        with self.schema_migration_lock():
-            self.migrate()
-            self.migrate_input_assets()
-            self.migrate_graph_revisions()
-            self.migrate_graph_sagas()
-            self.migrate_graph_patches()
-            self.migrate_evals()
-            self.migrate_experiments()
-            self.migrate_prompts()
-            self.migrate_works()
-            self.migrate_graph_event_waits()
-            self.migrate_execution_loop()
-            self.migrate_context_manifests()
-            self.migrate_memory_candidates()
-            self.migrate_event_triggers()
-            self.migrate_user_workflows()
-            self.migrate_loop_decisions()
-            self.migrate_verifications()
-            self.migrate_approvals()
-            self.migrate_reconciliations()
-            self.migrate_device_hosts()
-            self.migrate_device_host_controls()
-            self.migrate_artifact_uploads()
-            self.migrate_admins()
-            self.migrate_agents()
-            self.migrate_agent_teams()
-            self.migrate_plan_confirmations()
-            self.migrate_capabilities()
-            self.migrate_skills()
-            self.migrate_plugins()
-            self.migrate_model_providers()
-            self.migrate_model_gateway()
-            self.migrate_host_tools()
-            self.migrate_embedding_profiles()
-            self.migrate_remote_connections()
-            self.migrate_scenarios()
-            self.migrate_app_packs()
-            self.migrate_app_delegation()
-            self.migrate_app_callbacks()
-            self.migrate_app_market()
-            self.migrate_clarifications()
-            self.migrate_rate_limits()
-            self.migrate_observability()
-
-    @contextmanager
-    def schema_migration_lock(self) -> Iterator[None]:
-        """Hold the Core cluster-wide schema migration advisory lock."""
-        with psycopg.connect(
-            self.database_url,
-            autocommit=True,
-            application_name=f"{self.application_name}-migration-lock",
-        ) as lock_connection:
-            lock_connection.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_MIGRATION_LOCK_ID,))
-            try:
-                yield
-            finally:
-                lock_connection.execute(
-                    "SELECT pg_advisory_unlock(%s)", (SCHEMA_MIGRATION_LOCK_ID,)
-                )
-
-    def _record_migration(
-        self,
-        conn: Any,
-        *,
-        name: str,
-        version: int,
-        ddl: str,
-        description: str = "",
-    ) -> None:
-        record_migration(
-            conn, name=name, version=version, ddl=ddl, description=description
-        )
-
-    def _migration_is_recorded(
-        self,
-        conn: Any,
-        *,
-        name: str,
-        version: int,
-        ddl: str,
-        description: str = "",
-    ) -> bool:
-        """Return whether an immutable migration already exists, validating it.
-
-        Idempotent base DDL may still run on every startup to repair legacy
-        installations. Data migrations, generated-column replacements and
-        backfills must not: when recorded, they are validated and skipped.
-        """
-        return migration_is_recorded(
-            conn,
-            name=name,
-            version=version,
-            ddl=ddl,
-            description=description,
-        )
-
-    def migrate(self) -> None:
-        """Apply idempotent schema changes under a cluster-wide advisory lock."""
-        ddl = """
+_RUNTIME_CORE_V3_DDL = """
         CREATE TABLE IF NOT EXISTS runtime_schema_migrations (
             version INTEGER PRIMARY KEY,
             description TEXT NOT NULL,
@@ -484,7 +368,120 @@ class PostgresMigrationMixin:
             ON request_trace_events(request_id, sequence);
         CREATE INDEX IF NOT EXISTS ix_request_trace_user_created
             ON request_trace_events(user_id, created_at DESC);
+"""
+
+
+class PostgresMigrationMixin:
+    """Migration sequencing, history recording, and the shared DDL lock."""
+
+    def _migrate_all(self) -> None:
+        """Serialize the complete migration sequence across all processes.
+
+        Per-domain migration locks are not enough: one process can otherwise
+        create an observability index while another process is still altering
+        a runtime table referenced by that index.  The cluster-wide lock runs
+        on a dedicated connection so this also works when the runtime pool
+        has a maximum size of one.
         """
+        with self.schema_migration_lock():
+            self.migrate()
+            self.migrate_input_assets()
+            self.migrate_graph_revisions()
+            self.migrate_graph_sagas()
+            self.migrate_graph_patches()
+            self.migrate_evals()
+            self.migrate_experiments()
+            self.migrate_prompts()
+            self.migrate_works()
+            self.migrate_graph_event_waits()
+            self.migrate_execution_loop()
+            self.migrate_context_manifests()
+            self.migrate_memory_candidates()
+            self.migrate_event_triggers()
+            self.migrate_user_workflows()
+            self.migrate_loop_decisions()
+            self.migrate_verifications()
+            self.migrate_approvals()
+            self.migrate_reconciliations()
+            self.migrate_device_hosts()
+            self.migrate_device_host_controls()
+            self.migrate_artifact_uploads()
+            self.migrate_admins()
+            self.migrate_agents()
+            self.migrate_agent_teams()
+            self.migrate_plan_confirmations()
+            self.migrate_capabilities()
+            self.migrate_skills()
+            self.migrate_plugins()
+            self.migrate_model_providers()
+            self.migrate_model_gateway()
+            self.migrate_host_tools()
+            self.migrate_embedding_profiles()
+            self.migrate_remote_connections()
+            self.migrate_scenarios()
+            self.migrate_app_packs()
+            self.migrate_app_delegation()
+            self.migrate_app_callbacks()
+            self.migrate_app_market()
+            self.migrate_clarifications()
+            self.migrate_rate_limits()
+            self.migrate_observability()
+
+    @contextmanager
+    def schema_migration_lock(self) -> Iterator[None]:
+        """Hold the Core cluster-wide schema migration advisory lock."""
+        with psycopg.connect(
+            self.database_url,
+            autocommit=True,
+            application_name=f"{self.application_name}-migration-lock",
+        ) as lock_connection:
+            lock_connection.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_MIGRATION_LOCK_ID,))
+            try:
+                yield
+            finally:
+                lock_connection.execute(
+                    "SELECT pg_advisory_unlock(%s)", (SCHEMA_MIGRATION_LOCK_ID,)
+                )
+
+    def _record_migration(
+        self,
+        conn: Any,
+        *,
+        name: str,
+        version: int,
+        ddl: str,
+        description: str = "",
+    ) -> None:
+        record_migration(
+            conn, name=name, version=version, ddl=ddl, description=description
+        )
+
+    def _migration_is_recorded(
+        self,
+        conn: Any,
+        *,
+        name: str,
+        version: int,
+        ddl: str,
+        description: str = "",
+    ) -> bool:
+        """Return whether an immutable migration already exists, validating it.
+
+        Idempotent base DDL may still run on every startup to repair legacy
+        installations. Data migrations, generated-column replacements and
+        backfills must not: when recorded, they are validated and skipped.
+        """
+        return migration_is_recorded(
+            conn,
+            name=name,
+            version=version,
+            ddl=ddl,
+            description=description,
+        )
+
+    def migrate(self) -> None:
+        """Apply idempotent schema changes under a cluster-wide advisory lock."""
+        ddl = _RUNTIME_CORE_V3_DDL
         with self._pool.connection() as conn:
             with conn.transaction():
                 conn.execute("SELECT pg_advisory_xact_lock(%s)", (872341907,))

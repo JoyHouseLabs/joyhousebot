@@ -362,8 +362,10 @@ curl -X POST http://127.0.0.1:18790/v1/runs \
 ## 验证
 
 ```bash
+bash scripts/install-test-extensions.sh
 .venv/bin/python -m pytest
-.venv/bin/ruff check porthouse tests extensions/*/src
+.venv/bin/ruff check porthouse tests extensions/*/src scripts/check_complexity.py
+.venv/bin/python scripts/check_complexity.py --check
 cd apps/console && npm run build
 ```
 

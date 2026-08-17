@@ -98,31 +98,6 @@ class ContextBuilder:
         sources: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
 
-        def add_candidate(
-            candidate_id: str,
-            content: str,
-            linked_sources: list[dict[str, Any]],
-            *,
-            priority: int,
-            required: bool,
-            separator: str = "\n\n---\n\n",
-        ) -> None:
-            candidates.append(
-                context_candidate(
-                    candidate_id=candidate_id,
-                    target="system",
-                    content=content,
-                    source_keys=[
-                        (str(item["source_kind"]), str(item["source_id"]))
-                        for item in linked_sources
-                    ],
-                    priority=priority,
-                    required=required,
-                    order=len(candidates),
-                    separator=separator,
-                )
-            )
-
         identity = self._get_identity(context_timestamp)
         parts.append(identity)
         identity_source = source_entry(
@@ -136,7 +111,8 @@ class ContextBuilder:
             included_reason="required_system_policy",
         )
         sources.append(identity_source)
-        add_candidate(
+        self._add_system_candidate(
+            candidates,
             "system:identity",
             identity,
             [identity_source],
@@ -159,7 +135,8 @@ class ContextBuilder:
                 included_reason="selected_agent_revision",
             )
             sources.append(profile_source)
-            add_candidate(
+            self._add_system_candidate(
+                candidates,
                 "system:agent-revision",
                 profile,
                 [profile_source],
@@ -179,7 +156,8 @@ class ContextBuilder:
             memory_block = f"# Memory\n\n{memory}"
             parts.append(memory_block)
             sources.extend(memory_sources)
-            add_candidate(
+            self._add_system_candidate(
+                candidates,
                 "system:memory",
                 memory_block,
                 memory_sources,
@@ -187,7 +165,53 @@ class ContextBuilder:
                 required=False,
             )
 
-        # Skills are coordinator-selected prompt policies, not model-callable tools.
+        skill_parts, skill_sources, skill_candidates = self._build_skill_context(
+            skill_names=skill_names,
+            skill_refs=skill_refs,
+            candidate_offset=len(candidates),
+        )
+        parts.extend(skill_parts)
+        sources.extend(skill_sources)
+        candidates.extend(skill_candidates)
+        return "\n\n---\n\n".join(parts), sources, candidates
+
+    @staticmethod
+    def _add_system_candidate(
+        candidates: list[dict[str, Any]],
+        candidate_id: str,
+        content: str,
+        linked_sources: list[dict[str, Any]],
+        *,
+        priority: int,
+        required: bool,
+        separator: str = "\n\n---\n\n",
+    ) -> None:
+        candidates.append(
+            context_candidate(
+                candidate_id=candidate_id,
+                target="system",
+                content=content,
+                source_keys=[
+                    (str(item["source_kind"]), str(item["source_id"]))
+                    for item in linked_sources
+                ],
+                priority=priority,
+                required=required,
+                order=len(candidates),
+                separator=separator,
+            )
+        )
+
+    def _build_skill_context(
+        self,
+        *,
+        skill_names: list[str] | None,
+        skill_refs: list[dict[str, str]] | None,
+        candidate_offset: int,
+    ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+        parts: list[str] = []
+        sources: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         enabled_skill_names = self._get_enabled_skill_names()
         always_skills = self.skills.get_always_skills(allowed_names=enabled_skill_names)
         selected = list(dict.fromkeys([*always_skills, *(skill_names or [])]))
@@ -252,7 +276,8 @@ class ContextBuilder:
             if content:
                 active_skills = f"# Active Skills\n\n{content}"
                 parts.append(active_skills)
-                add_candidate(
+                self._add_system_candidate(
+                    candidates,
                     "system:active-skills",
                     active_skills,
                     active_skill_sources,
@@ -286,7 +311,8 @@ The catalog below is discovery metadata only; do not attempt to read host paths 
                 included_reason="skill_discovery_metadata",
             )
             sources.append(catalog_source)
-            add_candidate(
+            self._add_system_candidate(
+                candidates,
                 "system:skill-catalog",
                 catalog,
                 [catalog_source],
@@ -294,7 +320,9 @@ The catalog below is discovery metadata only; do not attempt to read host paths 
                 required=False,
             )
 
-        return "\n\n---\n\n".join(parts), sources, candidates
+        for index, candidate in enumerate(candidates, start=candidate_offset):
+            candidate["order"] = index
+        return parts, sources, candidates
 
     def _get_memory_context(self, scope_key: str | None = None) -> str:
         """Resolve scoped long-term memory and optional recent daily logs."""

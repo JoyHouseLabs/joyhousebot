@@ -27,7 +27,7 @@ def _env_int(name: str, default: int) -> int:
 class RuntimeMaintenanceMixin:
     async def _purge_old_runtime_data(self) -> None:
         """Periodically drop expired runtime rows; failures only get logged."""
-        expire_approvals = getattr(self.store, "expire_due_approval_requests", None)
+        expire_approvals = self.stores.maintenance.expire_due_approval_requests
         if expire_approvals is not None:
             try:
                 expired = await asyncio.to_thread(expire_approvals, limit=500)
@@ -66,7 +66,7 @@ class RuntimeMaintenanceMixin:
                     )
             except Exception:
                 logger.exception("Approval expiry failed")
-        expire_plans = getattr(self.store, "expire_plan_confirmations", None)
+        expire_plans = self.stores.maintenance.expire_plan_confirmations
         if expire_plans is not None:
             try:
                 expired_plans = await asyncio.to_thread(expire_plans, limit=200)
@@ -95,7 +95,7 @@ class RuntimeMaintenanceMixin:
                     )
             except Exception:
                 logger.exception("Plan confirmation expiry failed")
-        purge = getattr(self.store, "purge_old_runtime_data", None)
+        purge = self.stores.maintenance.purge_old_runtime_data
         if purge is None:
             return
         retention_days = _env_int("PORTHOUSE_RETENTION_DAYS", 30)

@@ -60,6 +60,65 @@ def _read_path(value: Any, path: str) -> Any:
     return current
 
 
+def _score_scorer(
+    scorer: dict[str, Any],
+    *,
+    output: Any,
+    case_expected: Any,
+    execution_status: str,
+    latency_ms: float | None,
+    cost_usd: float | None,
+) -> tuple[bool, Any, Any]:
+    scorer_type = str(scorer["type"])
+    actual: Any = output
+    expected = scorer.get("value", case_expected)
+    passed = False
+    try:
+        if scorer_type == "status":
+            expected, actual = str(scorer.get("value") or "completed"), execution_status
+            passed = actual == expected
+        elif scorer_type in {"exact_match", "json_path_equals"}:
+            actual = _read_path(output, str(scorer.get("path") or ""))
+            passed = actual == expected
+        elif scorer_type in {"contains", "not_contains", "matches_regex"}:
+            actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
+            expected = str(expected or "")
+            if scorer_type == "contains":
+                passed = bool(expected) and expected in actual
+            elif scorer_type == "not_contains":
+                passed = bool(expected) and expected not in actual
+            else:
+                passed = bool(expected) and re.search(expected, actual) is not None
+        elif scorer_type == "json_schema":
+            schema = scorer.get("schema")
+            if not isinstance(schema, dict):
+                raise ValueError("json_schema scorer requires schema")
+            Draft202012Validator.check_schema(schema)
+            candidate = _read_path(output, str(scorer.get("path") or ""))
+            Draft202012Validator(schema).validate(candidate)
+            actual, expected, passed = type(candidate).__name__, "schema_valid", True
+        elif scorer_type == "json_path_exists":
+            actual = _read_path(output, str(scorer.get("path") or ""))
+            expected, passed = "non_null", actual is not None
+        elif scorer_type == "list_min_items":
+            actual = _read_path(output, str(scorer.get("path") or ""))
+            expected = int(scorer.get("value") or 1)
+            passed = isinstance(actual, list) and len(actual) >= expected
+        elif scorer_type == "numeric_range":
+            actual = _read_path(output, str(scorer.get("path") or ""))
+            minimum = float(scorer.get("min", "-inf"))
+            maximum = float(scorer.get("max", "inf"))
+            expected = {"min": minimum, "max": maximum}
+            passed = minimum <= float(actual) <= maximum
+        elif scorer_type in {"max_latency_ms", "max_cost_usd"}:
+            actual = latency_ms if scorer_type == "max_latency_ms" else cost_usd
+            expected = float(scorer["value"])
+            passed = actual is not None and float(actual) <= expected
+    except (JsonSchemaError, TypeError, ValueError):
+        passed = False
+    return passed, actual, expected
+
+
 def _score_case(
     case: dict[str, Any],
     *,
@@ -69,83 +128,26 @@ def _score_case(
     cost_usd: float | None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
-    earned = 0.0
-    total = 0.0
+    earned = total = 0.0
     required_passed = True
     for index, scorer in enumerate(case["scorers"]):
-        scorer_type = str(scorer["type"])
         weight = float(scorer.get("weight", 1.0))
         required = bool(scorer.get("required", True))
-        passed = False
-        actual: Any = output
-        expected = scorer.get("value", case.get("expected"))
-        try:
-            if scorer_type == "status":
-                expected = str(scorer.get("value") or "completed")
-                actual = execution_status
-                passed = actual == expected
-            elif scorer_type == "exact_match":
-                actual = _read_path(output, str(scorer.get("path") or ""))
-                passed = actual == expected
-            elif scorer_type == "contains":
-                actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
-                expected = str(expected or "")
-                passed = bool(expected) and expected in actual
-            elif scorer_type == "not_contains":
-                actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
-                expected = str(expected or "")
-                passed = bool(expected) and expected not in actual
-            elif scorer_type == "matches_regex":
-                actual = str(_read_path(output, str(scorer.get("path") or "")) or "")
-                expected = str(expected or "")
-                passed = bool(expected) and re.search(expected, actual) is not None
-            elif scorer_type == "json_schema":
-                schema = scorer.get("schema")
-                if not isinstance(schema, dict):
-                    raise ValueError("json_schema scorer requires schema")
-                Draft202012Validator.check_schema(schema)
-                candidate = _read_path(output, str(scorer.get("path") or ""))
-                Draft202012Validator(schema).validate(candidate)
-                actual = type(candidate).__name__
-                expected = "schema_valid"
-                passed = True
-            elif scorer_type == "json_path_equals":
-                actual = _read_path(output, str(scorer.get("path") or ""))
-                passed = actual == expected
-            elif scorer_type == "json_path_exists":
-                actual = _read_path(output, str(scorer.get("path") or ""))
-                expected = "non_null"
-                passed = actual is not None
-            elif scorer_type == "list_min_items":
-                actual = _read_path(output, str(scorer.get("path") or ""))
-                expected = int(scorer.get("value") or 1)
-                passed = isinstance(actual, list) and len(actual) >= expected
-            elif scorer_type == "numeric_range":
-                actual = _read_path(output, str(scorer.get("path") or ""))
-                number = float(actual)
-                minimum = float(scorer.get("min", "-inf"))
-                maximum = float(scorer.get("max", "inf"))
-                expected = {"min": minimum, "max": maximum}
-                passed = minimum <= number <= maximum
-            elif scorer_type == "max_latency_ms":
-                actual = latency_ms
-                expected = float(scorer["value"])
-                passed = actual is not None and float(actual) <= expected
-            elif scorer_type == "max_cost_usd":
-                actual = cost_usd
-                expected = float(scorer["value"])
-                passed = actual is not None and float(actual) <= expected
-        except (JsonSchemaError, TypeError, ValueError):
-            passed = False
+        passed, actual, expected = _score_scorer(
+            scorer,
+            output=output,
+            case_expected=case.get("expected"),
+            execution_status=execution_status,
+            latency_ms=latency_ms,
+            cost_usd=cost_usd,
+        )
         total += weight
-        if passed:
-            earned += weight
-        if required and not passed:
-            required_passed = False
+        earned += weight if passed else 0.0
+        required_passed = required_passed and (passed or not required)
         results.append(
             {
                 "index": index,
-                "type": scorer_type,
+                "type": str(scorer["type"]),
                 "passed": passed,
                 "required": required,
                 "weight": weight,
@@ -154,8 +156,7 @@ def _score_case(
             }
         )
     score = earned / total if total else 0.0
-    minimum = float(case.get("min_score", 1.0))
-    passed = required_passed and score >= minimum
+    passed = required_passed and score >= float(case.get("min_score", 1.0))
     return {
         "status": "passed" if passed else "failed",
         "score": score,
@@ -191,6 +192,67 @@ async def require_release_gate(
     return decision
 
 
+def _suite_thresholds(value: Any) -> dict[str, float | None]:
+    thresholds = dict(value or {})
+    min_pass_rate = float(thresholds.get("min_pass_rate", 1.0))
+    min_average = float(thresholds.get("min_average_score", 0.0))
+    min_cost_coverage = float(thresholds.get("min_cost_coverage", 0.0))
+    max_total_cost = thresholds.get("max_total_cost_usd")
+    max_p95_latency = thresholds.get("max_p95_latency_ms")
+    if not 0 <= min_pass_rate <= 1 or not 0 <= min_average <= 1:
+        raise ValidationError("evaluation suite thresholds must be between 0 and 1")
+    if (
+        (max_total_cost is not None and float(max_total_cost) < 0)
+        or (max_p95_latency is not None and float(max_p95_latency) < 0)
+        or not 0 <= min_cost_coverage <= 1
+    ):
+        raise ValidationError("evaluation suite cost or latency thresholds are invalid")
+    return {
+        "min_pass_rate": min_pass_rate,
+        "min_average_score": min_average,
+        "max_total_cost_usd": float(max_total_cost) if max_total_cost is not None else None,
+        "max_p95_latency_ms": float(max_p95_latency)
+        if max_p95_latency is not None
+        else None,
+        "min_cost_coverage": min_cost_coverage,
+    }
+
+
+def _validate_suite_scorer(scorer: dict[str, Any]) -> None:
+    scorer_type = str(scorer.get("type") or "")
+    if scorer_type not in _SCORER_TYPES:
+        raise ValidationError(f"unsupported evaluation scorer: {scorer_type}")
+    if not 0 < float(scorer.get("weight", 1.0)) <= 100:
+        raise ValidationError("evaluation scorer weight must be between 0 and 100")
+    if scorer_type != "json_schema":
+        return
+    try:
+        Draft202012Validator.check_schema(dict(scorer.get("schema") or {}))
+    except JsonSchemaError as exc:
+        raise ValidationError("evaluation scorer schema is invalid") from exc
+
+
+def _normalized_suite_case(case: dict[str, Any], *, seen: set[str]) -> dict[str, Any]:
+    case_id = str(case.get("case_id") or "")
+    scorers = list(case.get("scorers") or [])
+    if not case_id or case_id in seen or not scorers or len(scorers) > 32:
+        raise ValidationError("evaluation case ids must be unique and have scorers")
+    seen.add(case_id)
+    for scorer in scorers:
+        _validate_suite_scorer(scorer)
+    normalized = {
+        "case_id": case_id,
+        "name": str(case.get("name") or case_id),
+        "input": dict(case.get("input") or {}),
+        "expected": case.get("expected"),
+        "scorers": scorers,
+        "tags": [str(item) for item in case.get("tags") or []],
+        "min_score": float(case.get("min_score", 1.0)),
+    }
+    _bounded_json(normalized, label=f"evaluation case {case_id}")
+    return normalized
+
+
 class EvalService:
     def __init__(self, store: Any) -> None:
         self.store = store
@@ -204,51 +266,9 @@ class EvalService:
             raise ValidationError("evaluation suite requires id, version, and 1-1000 cases")
         if not set(target_types) or not set(target_types) <= _TARGET_TYPES:
             raise ValidationError("evaluation suite target_types are invalid")
-        thresholds = dict(value.get("thresholds") or {})
-        min_pass_rate = float(thresholds.get("min_pass_rate", 1.0))
-        min_average = float(thresholds.get("min_average_score", 0.0))
-        max_total_cost = thresholds.get("max_total_cost_usd")
-        max_p95_latency = thresholds.get("max_p95_latency_ms")
-        min_cost_coverage = float(thresholds.get("min_cost_coverage", 0.0))
-        if not 0 <= min_pass_rate <= 1 or not 0 <= min_average <= 1:
-            raise ValidationError("evaluation suite thresholds must be between 0 and 1")
-        if (
-            (max_total_cost is not None and float(max_total_cost) < 0)
-            or (max_p95_latency is not None and float(max_p95_latency) < 0)
-            or not 0 <= min_cost_coverage <= 1
-        ):
-            raise ValidationError("evaluation suite cost or latency thresholds are invalid")
+        thresholds = _suite_thresholds(value.get("thresholds"))
         seen: set[str] = set()
-        normalized_cases: list[dict[str, Any]] = []
-        for case in cases:
-            case_id = str(case.get("case_id") or "")
-            scorers = list(case.get("scorers") or [])
-            if not case_id or case_id in seen or not scorers or len(scorers) > 32:
-                raise ValidationError("evaluation case ids must be unique and have scorers")
-            seen.add(case_id)
-            for scorer in scorers:
-                scorer_type = str(scorer.get("type") or "")
-                if scorer_type not in _SCORER_TYPES:
-                    raise ValidationError(f"unsupported evaluation scorer: {scorer_type}")
-                weight = float(scorer.get("weight", 1.0))
-                if not 0 < weight <= 100:
-                    raise ValidationError("evaluation scorer weight must be between 0 and 100")
-                if scorer_type == "json_schema":
-                    try:
-                        Draft202012Validator.check_schema(dict(scorer.get("schema") or {}))
-                    except JsonSchemaError as exc:
-                        raise ValidationError("evaluation scorer schema is invalid") from exc
-            normalized = {
-                "case_id": case_id,
-                "name": str(case.get("name") or case_id),
-                "input": dict(case.get("input") or {}),
-                "expected": case.get("expected"),
-                "scorers": scorers,
-                "tags": [str(item) for item in case.get("tags") or []],
-                "min_score": float(case.get("min_score", 1.0)),
-            }
-            _bounded_json(normalized, label=f"evaluation case {case_id}")
-            normalized_cases.append(normalized)
+        normalized_cases = [_normalized_suite_case(case, seen=seen) for case in cases]
         suite = {
             "suite_id": suite_id,
             "version": version,
@@ -256,17 +276,7 @@ class EvalService:
             "description": str(value.get("description") or ""),
             "status": str(value.get("status") or "active"),
             "target_types": target_types,
-            "thresholds": {
-                "min_pass_rate": min_pass_rate,
-                "min_average_score": min_average,
-                "max_total_cost_usd": (
-                    float(max_total_cost) if max_total_cost is not None else None
-                ),
-                "max_p95_latency_ms": (
-                    float(max_p95_latency) if max_p95_latency is not None else None
-                ),
-                "min_cost_coverage": min_cost_coverage,
-            },
+            "thresholds": thresholds,
             "created_by": actor_id,
         }
         try:

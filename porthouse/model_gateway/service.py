@@ -152,15 +152,21 @@ class HostModelGatewayService:
                 code="provider_error",
             ) from exc
         finally:
-            if provider is not None:
-                close = getattr(provider, "close", None)
-                if callable(close):
-                    try:
-                        result = close()
-                        if hasattr(result, "__await__"):
-                            await result
-                    except Exception as exc:
-                        logger.warning("model gateway provider close failed: {}", type(exc).__name__)
+            await self._close_provider(provider)
+
+    @staticmethod
+    async def _close_provider(provider: Any | None) -> None:
+        if provider is None:
+            return
+        close = getattr(provider, "close", None)
+        if not callable(close):
+            return
+        try:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as exc:
+            logger.warning("model gateway provider close failed: {}", type(exc).__name__)
 
     def _authenticate(self, token: str) -> Any:
         if not token.startswith("jhm_") or len(token) < 40:

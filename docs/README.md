@@ -7,6 +7,8 @@
 ### 架构与部署
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)：总体架构、身份边界、部署拓扑、公共 API 与工程约束。
+- [COMPLEXITY_REFACTOR_PLAN.md](COMPLEXITY_REFACTOR_PLAN.md)：复杂度门禁、执行链热点、Storage 组合化与去 mixin 重构计划。
+- [COMPONENT_LIFECYCLE.md](COMPONENT_LIFECYCLE.md)：API、PostgreSQL 表族与后台 Worker 的成熟度和删除准则。
 - [CORE_AND_EXTENSIONS.md](CORE_AND_EXTENSIONS.md)：Core、Extension 与独立 App 的代码和依赖边界。
 - [DATA_AND_ECOSYSTEM_BOUNDARIES.md](DATA_AND_ECOSYSTEM_BOUNDARIES.md)：统一数据库连接、表所有权、迁移与未来拆分边界。
 - [OPERATIONS.md](OPERATIONS.md)：PostgreSQL 优先的本地启动、角色扩容、健康检查与故障排查。

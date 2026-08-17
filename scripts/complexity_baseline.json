@@ -1,0 +1,10 @@
+{
+  "limits": {
+    "file_lines": 900,
+    "function_complexity": 40,
+    "function_lines": 200,
+    "function_nesting": 4
+  },
+  "version": 1,
+  "violations": {}
+}

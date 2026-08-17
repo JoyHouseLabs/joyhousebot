@@ -29,12 +29,14 @@ def _lease_alive(record: Any) -> bool:
 
 class RuntimeControlsMixin:
     async def cancel(self, run_id: str, reason: str = "cancelled by user") -> bool:
-        record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        record = await asyncio.to_thread(self.stores.runs.get_runtime_run, run_id)
         if record is None or record.status in {"completed", "failed", "cancelled", "timed_out"}:
             return False
         # Durable intent first (phase one): even if this process dies, the
         # owning worker or the recovery sweep finishes the terminal state.
-        request = await asyncio.to_thread(self.store.request_runtime_cancel, run_id, reason=reason)
+        request = await asyncio.to_thread(
+            self.stores.runs.request_runtime_cancel, run_id, reason=reason
+        )
         if request is None:
             return False
         active = await self.supervisor.cancel(run_id, reason)
@@ -55,7 +57,7 @@ class RuntimeControlsMixin:
             return True
         # No live lease (queued/waiting, or the owning worker is gone): a
         # non-owner terminal transition is permitted only in this case.
-        await asyncio.to_thread(self.store.cancel_runtime_tasks, run_id)
+        await asyncio.to_thread(self.stores.tasks.cancel_runtime_tasks, run_id)
         await self._finish_error(
             run_id,
             RunStatus.CANCELLED,
@@ -74,7 +76,9 @@ class RuntimeControlsMixin:
         """
         if _lease_alive(record):
             return
-        await asyncio.to_thread(self.store.cancel_runtime_tasks, record.run_id)
+        await asyncio.to_thread(
+            self.stores.tasks.cancel_runtime_tasks, record.run_id
+        )
         await self._finish_error(
             record.run_id,
             RunStatus.CANCELLED,
@@ -84,18 +88,19 @@ class RuntimeControlsMixin:
         )
 
     async def resume(self, run_id: str) -> Any:
-        current = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+        current = await asyncio.to_thread(self.stores.runs.get_runtime_run, run_id)
         if current is not None and current.kind == "graph":
-            get_saga = getattr(self.store, "get_runtime_saga", None)
-            saga = await asyncio.to_thread(get_saga, run_id) if get_saga else None
+            saga = await asyncio.to_thread(
+                self.stores.graphs.get_runtime_saga, run_id
+            )
             if saga is not None:
                 raise ValueError(
                     "Saga Graph runs cannot be resumed; submit a new Run after compensation"
                 )
         reset = await asyncio.to_thread(
-            self.store.reset_runtime_graph
+            self.stores.graphs.reset_runtime_graph
             if current is not None and current.kind == "graph"
-            else self.store.reset_runtime_run,
+            else self.stores.runs.reset_runtime_run,
             run_id,
         )
         if not reset:
@@ -106,8 +111,8 @@ class RuntimeControlsMixin:
         if self.worker_enabled:
             await self._schedule_record(run_id)
         else:
-            await asyncio.to_thread(self.store.notify_work, run_id)
-        return await asyncio.to_thread(self.store.get_runtime_run, run_id)
+            await asyncio.to_thread(self.stores.workers.notify_work, run_id)
+        return await asyncio.to_thread(self.stores.runs.get_runtime_run, run_id)
 
     async def wait(self, run_id: str, timeout: float | None = None) -> Any:
         deadline = time.monotonic() + timeout if timeout is not None else None
@@ -128,7 +133,9 @@ class RuntimeControlsMixin:
         }
         delay = 0.05
         while True:
-            record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
+            record = await asyncio.to_thread(
+                self.stores.runs.get_runtime_run, run_id
+            )
             if record is None or record.status in returnable:
                 return record
             if deadline is not None and time.monotonic() >= deadline:

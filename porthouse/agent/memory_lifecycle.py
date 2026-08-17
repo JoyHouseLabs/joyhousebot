@@ -61,186 +61,175 @@ class MemoryLifecycleMixin:
         messages.insert(0, {"role": "system", "content": extra})
         return extra
 
-    async def _consolidate_memory(
-        self,
-        session,
-        archive_all: bool = False,
-        run_context: RunContext | None = None,
-    ) -> None:
-        """Consolidate old messages into MEMORY.md + HISTORY.md.
-
-        Args:
-            archive_all: If True, clear all messages and reset session (for /new command).
-                       If False, only write to files without modifying session.
-        """
-        policy = EffectiveMemoryPolicy.from_dict(getattr(self, "memory_policy", None))
-        if not policy.can_consolidate:
-            logger.debug("Memory consolidation skipped: disabled by Agent memory policy")
-            return
-
+    def _memory_scope(self, session, run_context: RunContext | None) -> str | None:
         scope_key = run_context.memory_scope if run_context is not None else None
-        if scope_key is None and self.config:
-            retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
-            if retrieval:
-                mode = getattr(retrieval, "memory_scope", "user") or "user"
-                if mode == "session":
-                    scope_key = session.key
-                elif mode == "user":
-                    scope_key = (session.metadata or {}).get("last_memory_scope_key") or session.key
-        memory = MemoryStore(self.runtime_store, scope_key=scope_key)
-        if run_context is None:
-            raise RuntimeError("Memory consolidation requires an authenticated RunContext")
-        memory_timestamp = run_context.context_timestamp or datetime.now(timezone.utc).isoformat()
-        try:
-            memory_date = datetime.fromisoformat(
-                memory_timestamp.replace("Z", "+00:00")
-            ).date().isoformat()
-        except ValueError:
-            memory_date = datetime.now(timezone.utc).date().isoformat()
-        writer = MemoryWriteController(
-            self.runtime_store,
-            scope_key=memory.scope_key,
-            policy=policy,
-            context=run_context,
-        )
-        if policy.write_mode == "direct" and policy.layer_enabled("episodic", "write"):
-            memory.ensure_memory_structure()
+        if scope_key is not None or not self.config:
+            return scope_key
+        retrieval = getattr(getattr(self.config, "tools", None), "retrieval", None)
+        mode = getattr(retrieval, "memory_scope", "user") if retrieval else "user"
+        if mode == "session":
+            return session.key
+        if mode == "user":
+            return (session.metadata or {}).get("last_memory_scope_key") or session.key
+        return scope_key
 
+    def _messages_for_consolidation(
+        self, session, *, archive_all: bool
+    ) -> tuple[list[dict], int] | None:
         if archive_all:
-            old_messages = session.messages
-            keep_count = 0
             logger.info(
                 f"Memory consolidation (archive_all): {len(session.messages)} total messages archived"
             )
-        else:
-            keep_count = self.memory_window // 2
-            if len(session.messages) <= keep_count:
-                logger.debug(
-                    f"Session {session.key}: No consolidation needed (messages={len(session.messages)}, keep={keep_count})"
-                )
-                return
-
-            messages_to_process = len(session.messages) - session.last_consolidated
-            if messages_to_process <= 0:
-                logger.debug(
-                    f"Session {session.key}: No new messages to consolidate (last_consolidated={session.last_consolidated}, total={len(session.messages)})"
-                )
-                return
-
-            old_messages = session.messages[session.last_consolidated : -keep_count]
-            if not old_messages:
-                return
-            logger.info(
-                f"Memory consolidation started: {len(session.messages)} total, {len(old_messages)} new to consolidate, {keep_count} keep"
+            return session.messages, 0
+        keep_count = self.memory_window // 2
+        if len(session.messages) <= keep_count:
+            logger.debug(
+                f"Session {session.key}: No consolidation needed "
+                f"(messages={len(session.messages)}, keep={keep_count})"
             )
+            return None
+        if len(session.messages) - session.last_consolidated <= 0:
+            logger.debug(f"Session {session.key}: No new messages to consolidate")
+            return None
+        old_messages = session.messages[session.last_consolidated : -keep_count]
+        if not old_messages:
+            return None
+        logger.info(
+            f"Memory consolidation started: {len(session.messages)} total, "
+            f"{len(old_messages)} new to consolidate, {keep_count} keep"
+        )
+        return old_messages, keep_count
 
+    @staticmethod
+    def _conversation_text(messages: list[dict]) -> str:
         lines = []
-        for m in old_messages:
-            if not m.get("content"):
+        for message in messages:
+            if not message.get("content"):
                 continue
-            tools = f" [tools: {', '.join(m['tools_used'])}]" if m.get("tools_used") else ""
-            lines.append(
-                f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}"
+            tools = (
+                f" [tools: {', '.join(message['tools_used'])}]"
+                if message.get("tools_used")
+                else ""
             )
-        conversation = "\n".join(lines)
-        source_fingerprint = sha256(
-            f"{session.key}\0{conversation}".encode("utf-8")
-        ).hexdigest()
-        raw_memory = memory.read_long_term() if policy.layer_enabled("long_term", "read") else ""
-        raw_profile = memory.read_profile() if policy.layer_enabled("profile", "read") else ""
-        # Strip leading updated_at comment for prompt so LLM sees only body and does not echo it
-        if raw_memory.startswith("<!-- updated_at=") and " -->" in raw_memory:
-            current_memory = raw_memory.split(" -->", 1)[-1].lstrip("\n")
-        else:
-            current_memory = raw_memory
+            lines.append(
+                f"[{message.get('timestamp', '?')[:16]}] "
+                f"{message['role'].upper()}{tools}: {message['content']}"
+            )
+        return "\n".join(lines)
 
-        # Optionally capture durable notes before context consolidation.
-        flush_enabled = False
-        flush_system = ""
-        flush_prompt = ""
+    @staticmethod
+    def _memory_body(value: str) -> str:
+        if value.startswith("<!-- updated_at=") and " -->" in value:
+            return value.split(" -->", 1)[-1].lstrip("\n")
+        return value
+
+    @staticmethod
+    def _memory_date(timestamp: str) -> str:
+        try:
+            return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date().isoformat()
+        except ValueError:
+            return datetime.now(timezone.utc).date().isoformat()
+
+    @staticmethod
+    def _flush_settings() -> tuple[bool, str, str]:
         try:
             from porthouse.config.access import get_config
 
-            cfg = get_config()
-            retrieval = getattr(getattr(cfg, "tools", None), "retrieval", None)
-            if retrieval is not None:
-                flush_enabled = getattr(retrieval, "memory_flush_before_consolidation", False)
-                flush_system = (
-                    getattr(retrieval, "memory_flush_system_prompt", "")
-                    or "Session nearing compaction. Output only valid JSON."
-                )
-                flush_prompt = (
-                    getattr(retrieval, "memory_flush_prompt", "")
-                    or "Write any lasting notes: return JSON with optional keys daily_log_entry and memory_additions. If nothing to store, return {}."
-                )
+            retrieval = getattr(getattr(get_config(), "tools", None), "retrieval", None)
+            if retrieval is None:
+                return False, "", ""
+            return (
+                bool(getattr(retrieval, "memory_flush_before_consolidation", False)),
+                getattr(retrieval, "memory_flush_system_prompt", "")
+                or "Session nearing compaction. Output only valid JSON.",
+                getattr(retrieval, "memory_flush_prompt", "")
+                or (
+                    "Write any lasting notes: return JSON with optional keys "
+                    "daily_log_entry and memory_additions. If nothing to store, return {}."
+                ),
+            )
         except Exception:
-            pass
-        if flush_enabled and flush_prompt and policy.write_mode == "direct":
-            try:
-                flush_user = f"{flush_prompt}\n\n## Recent conversation\n{conversation[:4000]}"
-                flush_response = await self.provider.chat(
-                    messages=[
-                        {"role": "system", "content": flush_system},
-                        {"role": "user", "content": flush_user},
-                    ],
-                    model=self.model,
-                )
-                flush_text = (flush_response.content or "").strip()
-                if flush_text.startswith("```"):
-                    flush_text = flush_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                if flush_text:
-                    flush_result = json_repair.loads(flush_text)
-                    if isinstance(flush_result, dict):
-                        if (
-                            isinstance(flush_result.get("daily_log_entry"), str)
-                            and flush_result["daily_log_entry"].strip()
-                        ):
-                            date_str = memory_date
-                            writer.append(
-                                f"{date_str}.md",
-                                flush_result["daily_log_entry"].strip(),
-                                source_kind="consolidation.flush.daily",
-                                source_fingerprint=source_fingerprint,
-                            )
-                        if (
-                            isinstance(flush_result.get("memory_additions"), str)
-                            and flush_result["memory_additions"].strip()
-                        ):
-                            raw_memory = memory.read_long_term()
-                            body = (
-                                raw_memory.split(" -->", 1)[-1].lstrip("\n")
-                                if (
-                                    raw_memory.startswith("<!-- updated_at=")
-                                    and " -->" in raw_memory
-                                )
-                                else raw_memory
-                            )
-                            updated = (
-                                "<!-- updated_at="
-                                f"{memory_timestamp} -->\n"
-                                + body.rstrip()
-                                + "\n\n"
-                                + flush_result["memory_additions"].strip()
-                            )
-                            writer.replace(
-                                "MEMORY.md",
-                                updated,
-                                source_kind="consolidation.flush.long_term",
-                                source_fingerprint=source_fingerprint,
-                            )
-                            raw_memory = memory.read_long_term()
-                            current_memory = (
-                                raw_memory.split(" -->", 1)[-1].lstrip("\n")
-                                if (
-                                    raw_memory.startswith("<!-- updated_at=")
-                                    and " -->" in raw_memory
-                                )
-                                else raw_memory
-                            )
-            except Exception as e:
-                logger.debug(f"Memory flush before consolidation skipped: {e}")
+            return False, "", ""
 
-        prompt = f"""You are a memory consolidation agent. Process this conversation and return a JSON object with these keys:
+    def _apply_flush_result(
+        self,
+        result: dict,
+        *,
+        memory: MemoryStore,
+        writer: MemoryWriteController,
+        memory_date: str,
+        memory_timestamp: str,
+        source_fingerprint: str,
+    ) -> str:
+        daily = result.get("daily_log_entry")
+        if isinstance(daily, str) and daily.strip():
+            writer.append(
+                f"{memory_date}.md",
+                daily.strip(),
+                source_kind="consolidation.flush.daily",
+                source_fingerprint=source_fingerprint,
+            )
+        additions = result.get("memory_additions")
+        if not isinstance(additions, str) or not additions.strip():
+            return self._memory_body(memory.read_long_term())
+        body = self._memory_body(memory.read_long_term())
+        writer.replace(
+            "MEMORY.md",
+            f"<!-- updated_at={memory_timestamp} -->\n{body.rstrip()}\n\n{additions.strip()}",
+            source_kind="consolidation.flush.long_term",
+            source_fingerprint=source_fingerprint,
+        )
+        return self._memory_body(memory.read_long_term())
+
+    async def _flush_before_consolidation(
+        self,
+        *,
+        memory: MemoryStore,
+        writer: MemoryWriteController,
+        conversation: str,
+        memory_date: str,
+        memory_timestamp: str,
+        source_fingerprint: str,
+        policy: EffectiveMemoryPolicy,
+        current_memory: str,
+    ) -> str:
+        enabled, system, prompt = self._flush_settings()
+        if not enabled or not prompt or policy.write_mode != "direct":
+            return current_memory
+        try:
+            response = await self.provider.chat(
+                messages=[
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": f"{prompt}\n\n## Recent conversation\n{conversation[:4000]}",
+                    },
+                ],
+                model=self.model,
+            )
+            text = (response.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            result = json_repair.loads(text) if text else {}
+            if not isinstance(result, dict):
+                return current_memory
+            return self._apply_flush_result(
+                result,
+                memory=memory,
+                writer=writer,
+                memory_date=memory_date,
+                memory_timestamp=memory_timestamp,
+                source_fingerprint=source_fingerprint,
+            )
+        except Exception as exc:
+            logger.debug(f"Memory flush before consolidation skipped: {exc}")
+            return current_memory
+
+    @staticmethod
+    def _consolidation_prompt(
+        *, conversation: str, current_memory: str, raw_profile: str
+    ) -> str:
+        return f"""You are a memory consolidation agent. Process this conversation and return a JSON object with these keys:
 
 1. "history_entry": A paragraph (2-5 sentences) summarizing the key events/decisions/topics. Start with a timestamp like [YYYY-MM-DD HH:MM]. Include enough detail to be useful when found by search later. This will be appended to HISTORY.md and to memory/YYYY-MM-DD.md (daily log).
 
@@ -261,105 +250,175 @@ class MemoryLifecycleMixin:
 
 Respond with ONLY valid JSON, no markdown fences."""
 
+    async def _request_consolidation(self, prompt: str) -> dict | None:
+        response = await self.provider.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a memory consolidation agent. Respond only with valid JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            model=self.model,
+        )
+        text = (response.content or "").strip()
+        if not text:
+            logger.warning("Memory consolidation: LLM returned empty response, skipping")
+            return None
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        result = json_repair.loads(text)
+        if not isinstance(result, dict):
+            logger.warning(f"Memory consolidation: unexpected response: {text[:200]}")
+            return None
+        return result
+
+    @staticmethod
+    def _history_max_entries() -> int:
         try:
-            response = await self.provider.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a memory consolidation agent. Respond only with valid JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                model=self.model,
+            from porthouse.config.access import get_config
+
+            retrieval = getattr(getattr(get_config(), "tools", None), "retrieval", None)
+            return int(getattr(retrieval, "history_max_entries", 0) or 0)
+        except Exception:
+            return 0
+
+    def _write_consolidation(
+        self,
+        result: dict,
+        *,
+        writer: MemoryWriteController,
+        policy: EffectiveMemoryPolicy,
+        memory_date: str,
+        memory_timestamp: str,
+        source_fingerprint: str,
+        current_memory: str,
+        raw_profile: str,
+    ) -> None:
+        entry = result.get("history_entry")
+        if entry and policy.layer_enabled("episodic", "write"):
+            writer.append(
+                "HISTORY.md",
+                str(entry),
+                source_kind="consolidation.history",
+                source_fingerprint=source_fingerprint,
+                max_entries=self._history_max_entries(),
+                fact_type="episode",
             )
-            text = (response.content or "").strip()
-            if not text:
-                logger.warning("Memory consolidation: LLM returned empty response, skipping")
+            writer.append(
+                f"{memory_date}.md",
+                str(entry),
+                source_kind="consolidation.daily",
+                source_fingerprint=source_fingerprint,
+                fact_type="episode",
+            )
+        update = result.get("memory_update")
+        if update and update != current_memory and policy.layer_enabled("long_term", "write"):
+            writer.replace(
+                "MEMORY.md",
+                f"<!-- updated_at={memory_timestamp} -->\n{update}",
+                source_kind="consolidation.long_term",
+                source_fingerprint=source_fingerprint,
+                fact_type="long_term_fact",
+            )
+        profile = result.get("profile_update")
+        if profile and profile != raw_profile and policy.layer_enabled("profile", "write"):
+            writer.replace(
+                "PROFILE.md",
+                f"<!-- updated_at={memory_timestamp} -->\n{profile}",
+                source_kind="consolidation.profile",
+                source_fingerprint=source_fingerprint,
+                fact_type="profile_attribute",
+            )
+        abstract = result.get("l0_update")
+        if isinstance(abstract, str) and abstract.strip() and policy.layer_enabled(
+            "episodic", "write"
+        ):
+            writer.replace(
+                ".abstract",
+                abstract.strip(),
+                source_kind="consolidation.abstract",
+                source_fingerprint=source_fingerprint,
+                fact_type="memory_index",
+            )
+
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        run_context: RunContext | None = None,
+    ) -> None:
+        policy = EffectiveMemoryPolicy.from_dict(getattr(self, "memory_policy", None))
+        if not policy.can_consolidate:
+            logger.debug("Memory consolidation skipped: disabled by Agent memory policy")
+            return
+        if run_context is None:
+            raise RuntimeError("Memory consolidation requires an authenticated RunContext")
+        selection = self._messages_for_consolidation(session, archive_all=archive_all)
+        if selection is None:
+            return
+        old_messages, keep_count = selection
+        conversation = self._conversation_text(old_messages)
+        fingerprint = sha256(f"{session.key}\0{conversation}".encode()).hexdigest()
+        memory = MemoryStore(
+            self.runtime_store, scope_key=self._memory_scope(session, run_context)
+        )
+        timestamp = run_context.context_timestamp or datetime.now(timezone.utc).isoformat()
+        writer = MemoryWriteController(
+            self.runtime_store,
+            scope_key=memory.scope_key,
+            policy=policy,
+            context=run_context,
+        )
+        if policy.write_mode == "direct" and policy.layer_enabled("episodic", "write"):
+            memory.ensure_memory_structure()
+        raw_memory = memory.read_long_term() if policy.layer_enabled("long_term", "read") else ""
+        raw_profile = memory.read_profile() if policy.layer_enabled("profile", "read") else ""
+        current_memory = await self._flush_before_consolidation(
+            memory=memory,
+            writer=writer,
+            conversation=conversation,
+            memory_date=self._memory_date(timestamp),
+            memory_timestamp=timestamp,
+            source_fingerprint=fingerprint,
+            policy=policy,
+            current_memory=self._memory_body(raw_memory),
+        )
+        try:
+            result = await self._request_consolidation(
+                self._consolidation_prompt(
+                    conversation=conversation,
+                    current_memory=current_memory,
+                    raw_profile=raw_profile,
+                )
+            )
+            if result is None:
                 return
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if not isinstance(result, dict):
-                logger.warning(
-                    f"Memory consolidation: unexpected response type, skipping. Response: {text[:200]}"
-                )
-                return
-
-            history_max_entries = 0
-            try:
-                from porthouse.config.access import get_config
-
-                cfg = get_config()
-                retrieval = getattr(getattr(cfg, "tools", None), "retrieval", None)
-                if retrieval is not None:
-                    history_max_entries = getattr(retrieval, "history_max_entries", 0) or 0
-            except Exception:
-                pass
-
-            if (entry := result.get("history_entry")) and policy.layer_enabled("episodic", "write"):
-                writer.append(
-                    "HISTORY.md",
-                    str(entry),
-                    source_kind="consolidation.history",
-                    source_fingerprint=source_fingerprint,
-                    max_entries=history_max_entries,
-                    fact_type="episode",
-                )
-                date_str = memory_date
-                writer.append(
-                    f"{date_str}.md",
-                    str(entry),
-                    source_kind="consolidation.daily",
-                    source_fingerprint=source_fingerprint,
-                    fact_type="episode",
-                )
-            if (update := result.get("memory_update")) and policy.layer_enabled(
-                "long_term", "write"
-            ):
-                if update != current_memory:
-                    writer.replace(
-                        "MEMORY.md",
-                        "<!-- updated_at="
-                        f"{memory_timestamp} -->\n{update}",
-                        source_kind="consolidation.long_term",
-                        source_fingerprint=source_fingerprint,
-                        fact_type="long_term_fact",
-                    )
-            if (profile_update := result.get("profile_update")) and policy.layer_enabled(
-                "profile", "write"
-            ):
-                if profile_update != raw_profile:
-                    writer.replace(
-                        "PROFILE.md",
-                        "<!-- updated_at="
-                        f"{memory_timestamp} -->\n{profile_update}",
-                        source_kind="consolidation.profile",
-                        source_fingerprint=source_fingerprint,
-                        fact_type="profile_attribute",
-                    )
-            if (l0_update := result.get("l0_update")) and policy.layer_enabled("episodic", "write"):
-                if isinstance(l0_update, str) and l0_update.strip():
-                    writer.replace(
-                        ".abstract",
-                        l0_update.strip(),
-                        source_kind="consolidation.abstract",
-                        source_fingerprint=source_fingerprint,
-                        fact_type="memory_index",
-                    )
-
-            if archive_all:
-                session.last_consolidated = 0
-            else:
-                session.last_consolidated = len(session.messages) - keep_count
+            self._write_consolidation(
+                result,
+                writer=writer,
+                policy=policy,
+                memory_date=self._memory_date(timestamp),
+                memory_timestamp=timestamp,
+                source_fingerprint=fingerprint,
+                current_memory=current_memory,
+                raw_profile=raw_profile,
+            )
+            session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
             logger.info(
-                f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}"
+                f"Memory consolidation done: {len(session.messages)} messages, "
+                f"last_consolidated={session.last_consolidated}"
             )
-        except json.JSONDecodeError as e:
-            logger.error(f"Memory consolidation JSON parse error: {e}")
-        except LLMError as e:
-            logger.error(f"Memory consolidation LLM error [{e.code}]: {e.message}")
-        except ConnectionError as e:
-            logger.error(f"Memory consolidation connection error: {sanitize_error_message(str(e))}")
-        except Exception as e:
-            code, category, _ = classify_exception(e)
-            logger.error(f"Memory consolidation failed [{code}]: {sanitize_error_message(str(e))}")
+        except json.JSONDecodeError as exc:
+            logger.error(f"Memory consolidation JSON parse error: {exc}")
+        except LLMError as exc:
+            logger.error(f"Memory consolidation LLM error [{exc.code}]: {exc.message}")
+        except ConnectionError as exc:
+            logger.error(
+                f"Memory consolidation connection error: {sanitize_error_message(str(exc))}"
+            )
+        except Exception as exc:
+            code, _category, _ = classify_exception(exc)
+            logger.error(
+                f"Memory consolidation failed [{code}]: {sanitize_error_message(str(exc))}"
+            )

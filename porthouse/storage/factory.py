@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from porthouse.storage.runtime_store import RuntimeStore
+if TYPE_CHECKING:
+    from porthouse.storage.postgres_store import PostgresRuntimeStore
 
 
 def _auto_migrate(default: bool) -> bool:
@@ -20,7 +21,7 @@ def _auto_migrate(default: bool) -> bool:
     raise ValueError("PORTHOUSE_AUTO_MIGRATE must be true or false")
 
 
-def create_runtime_store(config: Any | None = None) -> RuntimeStore:
+def create_runtime_store(config: Any | None = None) -> PostgresRuntimeStore:
     runtime = getattr(config, "runtime", None)
     settings = getattr(runtime, "store", None)
     database_url = str(getattr(settings, "database_url", "") or "").strip()

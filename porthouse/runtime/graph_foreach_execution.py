@@ -121,7 +121,7 @@ async def execute_graph_foreach(
     previous = dict(task.result or {})
     if previous.get("stop_reason") == "foreach_expanded":
         result = await asyncio.to_thread(
-            runtime.store.complete_runtime_foreach,
+            runtime.stores.graphs.complete_runtime_foreach,
             run_id=run.run_id,
             task_id=task.task_id,
             worker_id=runtime.worker_id,
@@ -154,7 +154,7 @@ async def execute_graph_foreach(
     items = select_foreach_items(dict(task.payload["foreach"]), dependency_results)
     expansion_id, children = _foreach_children(task, items)
     outcome = await asyncio.to_thread(
-        runtime.store.expand_runtime_foreach,
+        runtime.stores.graphs.expand_runtime_foreach,
         run_id=run.run_id,
         task_id=task.task_id,
         expansion_id=expansion_id,

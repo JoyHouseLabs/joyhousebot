@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -69,6 +70,18 @@ _STOP_REASONS = {
     "tool_use": "tool_calls",
     "max_tokens": "length",
 }
+
+
+@dataclass(slots=True)
+class _AnthropicStreamState:
+    text_parts: list[str] = field(default_factory=list)
+    reasoning_parts: list[str] = field(default_factory=list)
+    reasoning_blocks: dict[int, dict[str, Any]] = field(default_factory=dict)
+    tool_blocks: dict[int, dict[str, Any]] = field(default_factory=dict)
+    raw_usage: dict[str, int] = field(default_factory=dict)
+    raw_events: list[dict[str, Any]] = field(default_factory=list)
+    stop_reason: str = "end_turn"
+    first_token_seen: bool = False
 
 
 class AnthropicProvider(LLMProvider):
@@ -247,95 +260,30 @@ class AnthropicProvider(LLMProvider):
             request_payload=payload,
             request_url=self._url(),
         )
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        reasoning_blocks: dict[int, dict[str, Any]] = {}
-        tool_blocks: dict[int, dict[str, Any]] = {}
-        stop_reason = "end_turn"
-        raw_usage: dict[str, int] = {}
-        raw_events: list[dict[str, Any]] = []
-        first_token_seen = False
+        state = _AnthropicStreamState()
         try:
             async with self._client.stream(
                 "POST", self._url(), headers=self._headers(), json=payload
             ) as response:
                 await self._raise_for_status(response)
                 async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
+                    event = self._stream_event(line, state)
+                    if event is None:
                         continue
-                    raw = line[5:].strip()
-                    if not raw:
-                        continue
-                    event = json.loads(raw)
-                    raw_events.append(event)
-                    event_type = event.get("type")
-                    if event_type == "message_start":
-                        self._merge_raw_usage(
-                            raw_usage, (event.get("message") or {}).get("usage")
-                        )
-                    elif event_type == "content_block_start":
-                        block = event.get("content_block") or {}
-                        if block.get("type") == "tool_use":
-                            tool_blocks[int(event.get("index") or 0)] = {
-                                "id": str(block.get("id") or ""),
-                                "name": str(block.get("name") or ""),
-                                "arguments": json.dumps(block.get("input") or {}),
-                            }
-                        elif block.get("type") in {"thinking", "redacted_thinking"}:
-                            reasoning_blocks[int(event.get("index") or 0)] = dict(block)
-                    elif event_type == "content_block_delta":
-                        delta = event.get("delta") or {}
-                        if delta.get("type") == "text_delta":
-                            text = str(delta.get("text") or "")
-                            if text:
-                                if not first_token_seen:
-                                    first_token_seen = True
-                                    await model_first_token(request_id)
-                                text_parts.append(text)
-                                yield "delta", text
-                        elif delta.get("type") == "thinking_delta":
-                            thinking = str(delta.get("thinking") or "")
-                            if thinking and not first_token_seen:
-                                first_token_seen = True
-                                await model_first_token(request_id)
-                            reasoning_parts.append(thinking)
-                            index = int(event.get("index") or 0)
-                            block = reasoning_blocks.setdefault(
-                                index, {"type": "thinking", "thinking": "", "signature": ""}
-                            )
-                            block["thinking"] = str(block.get("thinking") or "") + thinking
-                            if thinking:
-                                yield "reasoning_delta", thinking
-                        elif delta.get("type") == "signature_delta":
-                            index = int(event.get("index") or 0)
-                            block = reasoning_blocks.setdefault(
-                                index, {"type": "thinking", "thinking": "", "signature": ""}
-                            )
-                            block["signature"] = str(block.get("signature") or "") + str(
-                                delta.get("signature") or ""
-                            )
-                        elif delta.get("type") == "input_json_delta":
-                            index = int(event.get("index") or 0)
-                            block = tool_blocks.setdefault(
-                                index, {"id": "", "name": "", "arguments": ""}
-                            )
-                            existing = str(block["arguments"])
-                            if existing == "{}":
-                                existing = ""
-                            block["arguments"] = existing + str(delta.get("partial_json") or "")
-                    elif event_type == "message_delta":
-                        stop_reason = str(
-                            (event.get("delta") or {}).get("stop_reason") or stop_reason
-                        )
-                        self._merge_raw_usage(raw_usage, event.get("usage"))
-            usage = self._usage(raw_usage)
+                    emitted = await self._apply_stream_event(event, state, request_id)
+                    if emitted is not None:
+                        yield emitted
+            usage = self._usage(state.raw_usage)
             final = LLMResponse(
-                content="".join(text_parts) or None,
-                tool_calls=self._stream_tool_calls(tool_blocks, aliases),
-                finish_reason=_STOP_REASONS.get(stop_reason, stop_reason),
+                content="".join(state.text_parts) or None,
+                tool_calls=self._stream_tool_calls(state.tool_blocks, aliases),
+                finish_reason=_STOP_REASONS.get(state.stop_reason, state.stop_reason),
                 usage=usage,
-                reasoning_content="".join(reasoning_parts) or None,
-                reasoning_blocks=[reasoning_blocks[index] for index in sorted(reasoning_blocks)],
+                reasoning_content="".join(state.reasoning_parts) or None,
+                reasoning_blocks=[
+                    state.reasoning_blocks[index]
+                    for index in sorted(state.reasoning_blocks)
+                ],
             )
             await model_request_finished(
                 request_id=request_id,
@@ -346,18 +294,18 @@ class AnthropicProvider(LLMProvider):
                 has_tool_calls=bool(final.tool_calls),
                 provider_request_id=response.headers.get("request-id")
                 or response.headers.get("x-request-id"),
-                response_payload={"stream_events": raw_events},
+                response_payload={"stream_events": state.raw_events},
                 reasoning_content=final.reasoning_content,
                 reasoning_blocks=final.reasoning_blocks,
                 provider_block_type="thinking_delta",
             )
             yield "done", final
         except Exception as exc:
-            failed_usage = partial_usage(self._usage(raw_usage))
+            failed_usage = partial_usage(self._usage(state.raw_usage))
             if failed_usage.get("usage_status") == "missing":
                 failed_usage = self._error_usage(exc)
             raw_error = getattr(exc, "raw_response", None)
-            failure_payload: Any = {"stream_events": raw_events}
+            failure_payload: Any = {"stream_events": state.raw_events}
             if raw_error is not None:
                 failure_payload["provider_error"] = raw_error
             await model_request_failed(
@@ -378,6 +326,117 @@ class AnthropicProvider(LLMProvider):
                     **error_metadata(exc),
                 ),
             )
+
+    @staticmethod
+    def _stream_event(line: str, state: _AnthropicStreamState) -> dict[str, Any] | None:
+        if not line.startswith("data:"):
+            return None
+        raw = line[5:].strip()
+        if not raw:
+            return None
+        event = json.loads(raw)
+        state.raw_events.append(event)
+        return event
+
+    async def _apply_stream_event(
+        self,
+        event: dict[str, Any],
+        state: _AnthropicStreamState,
+        request_id: str,
+    ) -> tuple[str, str] | None:
+        event_type = event.get("type")
+        if event_type == "message_start":
+            self._merge_raw_usage(
+                state.raw_usage, (event.get("message") or {}).get("usage")
+            )
+            return None
+        if event_type == "content_block_start":
+            self._start_stream_block(event, state)
+            return None
+        if event_type == "content_block_delta":
+            return await self._apply_stream_delta(event, state, request_id)
+        if event_type == "message_delta":
+            state.stop_reason = str(
+                (event.get("delta") or {}).get("stop_reason") or state.stop_reason
+            )
+            self._merge_raw_usage(state.raw_usage, event.get("usage"))
+        return None
+
+    @staticmethod
+    def _start_stream_block(event: dict[str, Any], state: _AnthropicStreamState) -> None:
+        block = event.get("content_block") or {}
+        index = int(event.get("index") or 0)
+        if block.get("type") == "tool_use":
+            state.tool_blocks[index] = {
+                "id": str(block.get("id") or ""),
+                "name": str(block.get("name") or ""),
+                "arguments": json.dumps(block.get("input") or {}),
+            }
+        elif block.get("type") in {"thinking", "redacted_thinking"}:
+            state.reasoning_blocks[index] = dict(block)
+
+    async def _apply_stream_delta(
+        self,
+        event: dict[str, Any],
+        state: _AnthropicStreamState,
+        request_id: str,
+    ) -> tuple[str, str] | None:
+        delta = event.get("delta") or {}
+        delta_type = delta.get("type")
+        if delta_type == "text_delta":
+            text = str(delta.get("text") or "")
+            if not text:
+                return None
+            await self._mark_first_stream_token(state, request_id)
+            state.text_parts.append(text)
+            return "delta", text
+        if delta_type == "thinking_delta":
+            thinking = str(delta.get("thinking") or "")
+            if thinking:
+                await self._mark_first_stream_token(state, request_id)
+            state.reasoning_parts.append(thinking)
+            block = self._reasoning_stream_block(event, state)
+            block["thinking"] = str(block.get("thinking") or "") + thinking
+            return ("reasoning_delta", thinking) if thinking else None
+        if delta_type == "signature_delta":
+            block = self._reasoning_stream_block(event, state)
+            block["signature"] = str(block.get("signature") or "") + str(
+                delta.get("signature") or ""
+            )
+        elif delta_type == "input_json_delta":
+            self._append_tool_arguments(event, state)
+        return None
+
+    @staticmethod
+    def _reasoning_stream_block(
+        event: dict[str, Any], state: _AnthropicStreamState
+    ) -> dict[str, Any]:
+        return state.reasoning_blocks.setdefault(
+            int(event.get("index") or 0),
+            {"type": "thinking", "thinking": "", "signature": ""},
+        )
+
+    @staticmethod
+    def _append_tool_arguments(
+        event: dict[str, Any], state: _AnthropicStreamState
+    ) -> None:
+        delta = event.get("delta") or {}
+        block = state.tool_blocks.setdefault(
+            int(event.get("index") or 0), {"id": "", "name": "", "arguments": ""}
+        )
+        existing = str(block["arguments"])
+        block["arguments"] = ("" if existing == "{}" else existing) + str(
+            delta.get("partial_json") or ""
+        )
+
+    @staticmethod
+    async def _mark_first_stream_token(
+        state: _AnthropicStreamState, request_id: str
+    ) -> None:
+        if state.first_token_seen:
+            return
+        state.first_token_seen = True
+        await model_first_token(request_id)
 
     @staticmethod
     def _convert_messages(

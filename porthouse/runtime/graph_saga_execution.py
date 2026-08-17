@@ -15,10 +15,14 @@ def saga_mode(run: Any) -> bool:
 async def reconcile_graph_saga(runtime: Any, run: Any) -> dict[str, Any] | None:
     if not saga_mode(run):
         return None
-    state = await asyncio.to_thread(runtime.store.trigger_runtime_saga, run.run_id)
+    state = await asyncio.to_thread(
+        runtime.stores.graphs.trigger_runtime_saga, run.run_id
+    )
     if state is None:
         return None
-    state = await asyncio.to_thread(runtime.store.reconcile_runtime_saga, run.run_id)
+    state = await asyncio.to_thread(
+        runtime.stores.graphs.reconcile_runtime_saga, run.run_id
+    )
     assert state is not None
     common = {
         "saga_id": state["saga_id"],
@@ -38,7 +42,7 @@ async def reconcile_graph_saga(runtime: Any, run: Any) -> dict[str, Any] | None:
         )
     )
     tasks = await asyncio.to_thread(
-        runtime.store.list_runtime_tasks, run_id=run.run_id, limit=5000
+        runtime.stores.tasks.list_runtime_tasks, run_id=run.run_id, limit=5000
     )
     for task in tasks:
         if str(task.payload.get("saga_id") or "") != state["saga_id"]:

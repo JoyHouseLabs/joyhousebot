@@ -31,7 +31,7 @@ async def execute_graph_capability(
     )
     turn_id = durable_turn_id(run.run_id, task.task_id, task.attempt)
     turn, _ = await asyncio.to_thread(
-        runtime.store.create_runtime_turn,
+        runtime.stores.execution.create_runtime_turn,
         turn_id=turn_id,
         run_id=run.run_id,
         task_id=task.task_id,
@@ -58,7 +58,7 @@ async def execute_graph_capability(
     if registry is None:
         raise RuntimeError(f"agent has no capability registry: {task.agent_id}")
     scenario_state = await asyncio.to_thread(
-        runtime.store.get_run_scenario_state,
+        runtime.stores.scenarios.get_run_scenario_state,
         run.run_id,
         expected_user_id=run.user_id,
     )

@@ -375,16 +375,21 @@ import {
   type MemoryLayer,
 } from '../api/memory'
 import { listActiveModels, type ModelCatalogItem } from '../api/modelProviders'
+import {
+  buildAgentRevisionPayload,
+  createBlankAgentDraft,
+  fillAgentDraft,
+  type AgentRole,
+  type DefinitionStatus,
+} from '../composables/agentEditorModel'
 
 type EditorTab = 'profile' | 'model' | 'abilities' | 'planning' | 'monitor' | 'memory' | 'memoryData' | 'skills' | 'revisions'
-type AgentRole = AdminAgent['role']
 const roleDefinitions: Array<{ id: AgentRole; label: string; en: string; title: string; summary: string; detail: string; boundary: string }> = [
   { id: 'coordinator', label: '协调器', en: 'Coordinator', title: '拆解、路由与汇总', summary: '负责理解目标并组织执行', detail: '分析用户目标，拆成可执行步骤，选择合适的 Agent、Skill 或 Tool，并汇总结果。', boundary: '默认负责规划和委派，不直接承担大部分业务操作。' },
   { id: 'executor', label: '执行器', en: 'Executor', title: '完成具体任务', summary: '负责调用工具并产出结果', detail: '接收明确的任务，按指令调用已授权的工具、外部 MCP 或 Skill，返回可验证的执行结果。', boundary: '只使用绑定的能力，不负责重新规划整个任务。' },
   { id: 'specialist', label: '专家', en: 'Specialist', title: '处理受限领域问题', summary: '在专业范围内提供判断', detail: '围绕一个领域、知识库或工作流提供专业分析和建议，输出应遵循该领域的规则与格式。', boundary: '能力范围应通过 Skill、Tool 白名单和提示词明确限制。' },
 ]
 const selectedRoleDefinition = computed(() => roleDefinitions.find((item) => item.id === draft.role) || roleDefinitions[1])
-type DefinitionStatus = AdminAgent['status']
 
 const message = useMessage()
 const loading = ref(false)
@@ -420,28 +425,7 @@ const memoryLayerOptions: Array<{ id: MemoryLayer; label: string }> = [
   { id: 'agent', label: 'Agent 经验' },
 ]
 
-const blankDraft = () => ({
-  agent_id: '', revision_id: '', version: 1, name: '', description: '',
-  role: 'executor' as AgentRole, definition_status: 'active' as DefinitionStatus,
-  tone: 'helpful', language: 'follow-user', instructions: '',
-  primary_model: '', fallback_models: '', temperature: 0.3, max_tokens: 4096,
-  max_tool_iterations: 20, reasoning_effort: 'none', thinking_budget_tokens: 0,
-  capture_reasoning: false, cache_enabled: true, cache_ttl_seconds: 300, capability_mode: 'allowlist',
-  allowed_capabilities: [] as string[], granted_permissions: [] as string[], allow_subagents: true, max_steps: 32,
-  max_replans: 2,
-  max_fan_out: 10, tool_execution_mode: 'sequential', max_parallel_calls: 4, memory_enabled: false, memory_mode: 'task_only', memory_scope: 'user_agent',
-  memory_episodic: false, memory_profile: false, memory_long_term: false, memory_agent: false,
-  memory_read_mode: 'none', memory_write: 'none', memory_top_k: 10, memory_max_tokens: 6000,
-  rerank_enabled: false, rerank_version: '', rerank_candidate_limit: 20, rerank_top_k: 20,
-  rerank_failure_mode: 'fallback',
-  monitor_enabled: false, monitor_every_minutes: 30, monitor_context_mode: 'light',
-  monitor_preflight_mode: 'runtime_attention', monitor_session_mode: 'isolated',
-  monitor_delivery: 'none', monitor_message: 'Review Runtime attention and act if needed.',
-  monitor_active_hours_enabled: false, monitor_active_hours_start: '08:00',
-  monitor_active_hours_end: '22:00', monitor_active_hours_timezone: 'Asia/Shanghai',
-})
-
-const draft = reactive(blankDraft())
+const draft = reactive(createBlankAgentDraft())
 const policyBase = reactive({
   persona: {} as Record<string, unknown>, model: {} as Record<string, unknown>,
   planning: {} as Record<string, unknown>, capability: {} as Record<string, unknown>,
@@ -530,68 +514,6 @@ function runUnitTest() {
   if (rerankPolicyProblem.value) { checks.push(rerankPolicyProblem.value); ok = false } else if (draft.rerank_enabled) checks.push('Rerank 精确版本、运行就绪状态与能力授权均有效')
   unitTest.value = { ok, checks }
 }
-function splitList(value: string) { return value.split(',').map((item) => item.trim()).filter(Boolean) }
-function numberValue(value: unknown, fallback: number) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback }
-function boolValue(value: unknown, fallback: boolean) { return typeof value === 'boolean' ? value : fallback }
-
-function fillDraft(agent: AdminAgent | undefined, revision: AgentRevision | undefined, revisionId: string, version: number) {
-  const model = revision?.model_policy || {}
-  const planning = revision?.planning_policy || {}
-  const ability = revision?.capability_policy || {}
-  const memory = revision?.memory_policy || {}
-  const monitor = revision?.monitor_policy || {}
-  const persona = revision?.persona || {}
-  Object.assign(policyBase, {
-    persona: { ...persona }, model: { ...model }, planning: { ...planning },
-    capability: { ...ability }, memory: { ...memory }, monitor: { ...monitor }, output: { ...(revision?.output_policy || {}) },
-  })
-  Object.assign(draft, blankDraft(), {
-    agent_id: agent?.agent_id || '', revision_id: revisionId, version,
-    name: agent?.name || '', description: agent?.description || '', role: agent?.role || 'executor',
-    definition_status: agent?.status || 'active', tone: String(persona.tone || 'helpful'),
-    language: String(persona.language || 'follow-user'), instructions: revision?.instructions || '',
-    primary_model: String(model.primary || ''), fallback_models: Array.isArray(model.fallbacks) ? model.fallbacks.join(', ') : '',
-    temperature: numberValue(model.temperature, 0.3), max_tokens: numberValue(model.max_tokens, 4096),
-    max_tool_iterations: numberValue(model.max_tool_iterations, 20), reasoning_effort: String(model.reasoning_effort || 'none'),
-    thinking_budget_tokens: numberValue(model.thinking_budget_tokens, 0), capture_reasoning: boolValue(model.capture_reasoning, false),
-    cache_enabled: boolValue(model.cache_enabled, true), cache_ttl_seconds: numberValue(model.cache_ttl_seconds, 300), capability_mode: String(ability.mode || 'catalog'),
-    allowed_capabilities: Array.isArray(ability.allowed) ? ability.allowed.map(String) : [],
-    granted_permissions: Array.isArray(ability.permissions) ? ability.permissions.map(String) : [],
-    allow_subagents: boolValue(planning.allow_subagents, true), max_steps: numberValue(planning.max_steps, 32),
-    max_replans: numberValue(planning.max_replans, 2),
-    max_fan_out: numberValue(planning.max_fan_out, 10),
-    tool_execution_mode: String((model.tool_execution as any)?.mode || 'sequential'),
-    max_parallel_calls: numberValue((model.tool_execution as any)?.max_parallel_calls, 4),
-    memory_enabled: memory.enabled !== false && memory.read !== false,
-    memory_mode: String(memory.mode || (memory.enabled === false ? 'task_only' : 'personalized')),
-    memory_scope: String(memory.scope || 'user_agent'),
-    memory_episodic: boolValue(memory.layers && (memory.layers as any).episodic?.read, memory.read !== false),
-    memory_profile: boolValue(memory.layers && (memory.layers as any).profile?.read, memory.read !== false),
-    memory_long_term: boolValue(memory.layers && (memory.layers as any).long_term?.read, memory.read !== false),
-    memory_agent: boolValue(memory.layers && (memory.layers as any).agent?.read, false),
-    memory_read_mode: String(memory.read_mode || (memory.read === false ? 'none' : 'auto')),
-    memory_write: String(memory.write_mode || (memory.write === false ? 'none' : 'candidate')),
-    memory_top_k: numberValue((memory.retrieval as any)?.top_k, 10),
-    memory_max_tokens: numberValue((memory.retrieval as any)?.max_tokens, 6000),
-    rerank_enabled: Boolean((memory.retrieval as any)?.rerank?.enabled),
-    rerank_version: String((memory.retrieval as any)?.rerank?.version || ''),
-    rerank_candidate_limit: numberValue((memory.retrieval as any)?.rerank?.candidate_limit, 20),
-    rerank_top_k: numberValue((memory.retrieval as any)?.rerank?.top_k, 20),
-    rerank_failure_mode: String((memory.retrieval as any)?.rerank?.failure_mode || 'fallback'),
-    monitor_enabled: monitor.enabled === true,
-    monitor_every_minutes: Math.max(1, numberValue((monitor.schedule as any)?.every_ms, 1800000) / 60000),
-    monitor_context_mode: String(monitor.context_mode || 'light'),
-    monitor_preflight_mode: String(monitor.preflight_mode || 'runtime_attention'),
-    monitor_session_mode: String(monitor.session_mode || 'isolated'),
-    monitor_delivery: String(monitor.delivery || 'none'),
-    monitor_message: String(monitor.message || 'Review Runtime attention and act if needed.'),
-    monitor_active_hours_enabled: Boolean(monitor.active_hours),
-    monitor_active_hours_start: String((monitor.active_hours as any)?.start || '08:00'),
-    monitor_active_hours_end: String((monitor.active_hours as any)?.end || '22:00'),
-    monitor_active_hours_timezone: String((monitor.active_hours as any)?.timezone || 'Asia/Shanghai'),
-  })
-}
-
 async function loadCatalog() {
   loading.value = true; error.value = ''
   try {
@@ -611,7 +533,7 @@ async function selectAgent(agentId: string) {
     const base = latestDraft || agent?.revision || revisions.value.find((item) => item.status === 'published')
     const nextVersion = Math.max(0, ...revisions.value.map((item) => item.version)) + 1
     const targetId = latestDraft?.revision_id || `${agentId}:v${nextVersion}`
-    fillDraft(agent, base, targetId, latestDraft?.version || nextVersion)
+    fillAgentDraft(draft, policyBase, agent, base, targetId, latestDraft?.version || nextVersion)
     if (base) {
       skillBindings.value = await getAgentSkillBindings(agentId, base.revision_id)
       skillBindingsSourceRevision.value = base.revision_id
@@ -622,7 +544,7 @@ async function selectAgent(agentId: string) {
 
 function createAgent() {
   selectedAgentId.value = ''; revisions.value = []; skillBindings.value = []; skillBindingsSourceRevision.value = ''; savedFingerprint.value = ''
-  Object.assign(draft, blankDraft()); Object.assign(policyBase, { persona: {}, model: {}, planning: {}, capability: {}, memory: {}, monitor: {}, output: {} }); resetMemoryData(); editorTab.value = 'profile'
+  Object.assign(draft, createBlankAgentDraft()); Object.assign(policyBase, { persona: {}, model: {}, planning: {}, capability: {}, memory: {}, monitor: {}, output: {} }); resetMemoryData(); editorTab.value = 'profile'
 }
 
 function resetDraft() { if (selectedAgentId.value) void selectAgent(selectedAgentId.value); else createAgent() }
@@ -637,72 +559,6 @@ function setRerankEnabled(enabled: boolean) {
   }
 }
 
-function payload() {
-  return {
-    revision_id: draft.revision_id, version: draft.version, name: draft.name, description: draft.description,
-    role: draft.role, definition_status: draft.definition_status,
-    persona: { ...policyBase.persona, tone: draft.tone, language: draft.language }, instructions: draft.instructions,
-    model_policy: {
-      ...policyBase.model, primary: draft.primary_model, fallbacks: splitList(draft.fallback_models), temperature: draft.temperature,
-      max_tokens: draft.max_tokens, max_tool_iterations: draft.max_tool_iterations,
-      capture_reasoning: draft.capture_reasoning, thinking_budget_tokens: draft.thinking_budget_tokens,
-      reasoning_effort: draft.reasoning_effort, cache_enabled: draft.cache_enabled, cache_ttl_seconds: draft.cache_ttl_seconds,
-      tool_execution: {
-        mode: draft.tool_execution_mode,
-        max_parallel_calls: Math.max(1, Math.min(128, Number(draft.max_parallel_calls) || 1)),
-      },
-    },
-    planning_policy: { ...policyBase.planning, allow_subagents: draft.allow_subagents, max_steps: draft.max_steps, max_fan_out: draft.max_fan_out, max_replans: Math.max(0, Math.min(10, Number(draft.max_replans) || 0)) },
-    capability_policy: { ...policyBase.capability, mode: draft.capability_mode, allowed: draft.allowed_capabilities, permissions: draft.granted_permissions },
-    memory_policy: {
-      ...policyBase.memory,
-      enabled: draft.memory_enabled,
-      mode: draft.memory_mode,
-      scope: draft.memory_scope,
-      read_mode: draft.memory_enabled ? draft.memory_read_mode : 'none',
-      write_mode: draft.memory_enabled ? draft.memory_write : 'none',
-      layers: {
-        working: { read: true, write: false, persist: false },
-        session: { read: true, write: false, persist: true },
-        episodic: { read: draft.memory_enabled && draft.memory_episodic, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
-        profile: { read: draft.memory_enabled && draft.memory_profile, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
-        long_term: { read: draft.memory_enabled && draft.memory_long_term, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
-        agent: { read: draft.memory_enabled && draft.memory_agent, write: draft.memory_enabled && draft.memory_write !== 'none', persist: true },
-      },
-      retrieval: {
-        top_k: draft.memory_top_k,
-        max_tokens: draft.memory_max_tokens,
-        ...(draft.rerank_enabled ? {
-          rerank: {
-            enabled: true,
-            capability_id: 'retrieval.rerank',
-            version: draft.rerank_version,
-            candidate_limit: Math.max(1, Math.min(50, Number(draft.rerank_candidate_limit) || 20)),
-            top_k: Math.max(1, Math.min(Number(draft.rerank_candidate_limit) || 20, Number(draft.rerank_top_k) || 20)),
-            failure_mode: draft.rerank_failure_mode,
-          },
-        } : {}),
-      },
-    },
-    monitor_policy: {
-      ...policyBase.monitor,
-      enabled: draft.monitor_enabled,
-      schedule: { kind: 'every', every_ms: Math.max(60000, Math.round(Number(draft.monitor_every_minutes) * 60000)) },
-      message: draft.monitor_message,
-      context_mode: draft.monitor_context_mode,
-      preflight_mode: draft.monitor_preflight_mode,
-      session_mode: draft.monitor_session_mode,
-      delivery: draft.monitor_delivery,
-      active_hours: draft.monitor_active_hours_enabled ? {
-        start: draft.monitor_active_hours_start,
-        end: draft.monitor_active_hours_end,
-        timezone: draft.monitor_active_hours_timezone,
-      } : null,
-    },
-    output_policy: { ...policyBase.output },
-  }
-}
-
 async function saveDraft() {
   if (!canSave.value) return
   saving.value = true
@@ -710,7 +566,11 @@ async function saveDraft() {
     const inheritedBindings = !activeRevision.value
       ? skillBindings.value.map((item) => ({ ...item, configuration: { ...item.configuration } }))
       : []
-    await saveAgentRevision(draft.agent_id, draft.revision_id, payload())
+    await saveAgentRevision(
+      draft.agent_id,
+      draft.revision_id,
+      buildAgentRevisionPayload(draft, policyBase),
+    )
     if (inheritedBindings.length) {
       await Promise.all(inheritedBindings.map((item) => bindAgentSkill(draft.agent_id, draft.revision_id, {
         skill_id: item.skill_id, skill_version: item.skill_version,

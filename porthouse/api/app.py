@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from porthouse.api.dependencies import _bearer_token
+from porthouse.api.lifecycle import annotate_api_lifecycle
 from porthouse.api.mcp_gateway import MCPGateway
 from porthouse.api.rate_limit import RateLimitMiddleware
 from porthouse.api.routers import (
@@ -142,17 +143,11 @@ def _cors_origins(injected: ApplicationContainer | None) -> list[str]:
     return list(getattr(gateway, "cors_origins", []) or [])
 
 
-def create_app(
-    container: ApplicationContainer | None = None,
-    *,
-    surface: Literal["combined", "public", "control"] = "combined",
-) -> FastAPI:
-    injected = container
-    validate_deployment_security(
-        surface=surface,
-        config=getattr(injected, "config", None),
-    )
-
+def _app_lifespan(
+    injected: ApplicationContainer | None,
+    surface: Literal["combined", "public", "control"],
+    mcp_gateway: MCPGateway,
+):
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         active = injected or build_api_container()
@@ -176,17 +171,10 @@ def create_app(
         finally:
             await mcp_gateway.close()
             await active.close()
+    return lifespan
 
-    app = FastAPI(
-        title=f"Porthouse {surface.title()} API",
-        version="1.0.0",
-        description="Multi-user distributed Agent runtime",
-        lifespan=lifespan,
-    )
-    app.state.metrics_cache = {"expires_at": 0.0, "data": None, "lock": asyncio.Lock()}
-    app.state.surface = surface
-    mcp_gateway = MCPGateway(cors_origins=_cors_origins(injected))
-    app.state.mcp_gateway = mcp_gateway
+
+def _configure_middleware(app: FastAPI, injected: ApplicationContainer | None) -> None:
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -210,6 +198,8 @@ def create_app(
         expose_headers=["Location", "Preference-Applied", "X-Request-Id", "X-Tracker-Id"],
     )
 
+
+def _register_request_tracking(app: FastAPI) -> None:
     @app.middleware("http")
     async def request_tracking(request: Request, call_next):
         request_id = normalize_request_id(request.headers.get("x-request-id"), prefix="req")
@@ -238,6 +228,8 @@ def create_app(
         response.headers["X-Tracker-Id"] = tracker_id
         return response
 
+
+def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApplicationError)
     async def application_error_handler(request: Request, exc: ApplicationError) -> JSONResponse:
         status = 400
@@ -269,6 +261,20 @@ def create_app(
             content={"error": {"code": "internal_error", "message": "internal server error"}},
         )
 
+
+async def _cached_operational_metrics(request: Request) -> dict:
+    cache = request.app.state.metrics_cache
+    async with cache["lock"]:
+        now = time.monotonic()
+        if cache["data"] is None or now >= cache["expires_at"]:
+            cache["data"] = await asyncio.to_thread(
+                request.app.state.container.store.operational_metrics
+            )
+            cache["expires_at"] = now + 5.0
+        return cache["data"]
+
+
+def _register_probes(app: FastAPI) -> None:
     @app.get("/healthz", tags=["system"])
     async def healthz():
         return {"ok": True, "service": "porthouse-api"}
@@ -292,30 +298,27 @@ def create_app(
             _bearer_token(request.headers.get("authorization")), metrics_token
         ):
             return Response(status_code=401, content="metrics authentication required\n")
-        cache = request.app.state.metrics_cache
-        async with cache["lock"]:
-            now = time.monotonic()
-            if cache["data"] is not None and now < cache["expires_at"]:
-                data = cache["data"]
-            else:
-                try:
-                    data = await asyncio.to_thread(
-                        request.app.state.container.store.operational_metrics
-                    )
-                except Exception:
-                    # Keep the scrape endpoint observable during a database outage. The
-                    # process is alive, but the data plane is not ready.
-                    logger.exception("failed to collect operational metrics")
-                    return Response(
-                        content="# HELP porthouse_up API process readiness.\n"
-                        "# TYPE porthouse_up gauge\nporthouse_up 0\n",
-                        status_code=503,
-                        media_type="text/plain; version=0.0.4",
-                    )
-                cache["data"] = data
-                cache["expires_at"] = now + 5.0
+        try:
+            data = await _cached_operational_metrics(request)
+        except Exception:
+            # Keep the scrape endpoint observable during a database outage. The
+            # process is alive, but the data plane is not ready.
+            logger.exception("failed to collect operational metrics")
+            return Response(
+                content="# HELP porthouse_up API process readiness.\n"
+                "# TYPE porthouse_up gauge\nporthouse_up 0\n",
+                status_code=503,
+                media_type="text/plain; version=0.0.4",
+            )
         return Response(content=render_prometheus(data), media_type="text/plain; version=0.0.4")
 
+
+def _register_routers(
+    app: FastAPI,
+    *,
+    surface: Literal["combined", "public", "control"],
+    mcp_gateway: MCPGateway,
+) -> None:
     prefix = "/v1"
     app.include_router(system.router, prefix=prefix)
     if surface in {"combined", "control"}:
@@ -354,9 +357,41 @@ def create_app(
         app.include_router(workflows.router, prefix=prefix)
         app.mount("/mcp", mcp_gateway.asgi_app, name="mcp")
 
+
+def _mount_control_ui(
+    app: FastAPI, surface: Literal["combined", "public", "control"]
+) -> None:
     ui_dir = Path(__file__).resolve().parent.parent / "static" / "ui"
     if surface in {"combined", "control"} and ui_dir.exists():
         app.mount("/ui", SPAStaticFiles(directory=str(ui_dir), html=True), name="ui")
+
+
+def create_app(
+    container: ApplicationContainer | None = None,
+    *,
+    surface: Literal["combined", "public", "control"] = "combined",
+) -> FastAPI:
+    validate_deployment_security(
+        surface=surface,
+        config=getattr(container, "config", None),
+    )
+    mcp_gateway = MCPGateway(cors_origins=_cors_origins(container))
+    app = FastAPI(
+        title=f"Porthouse {surface.title()} API",
+        version="1.0.0",
+        description="Multi-user distributed Agent runtime",
+        lifespan=_app_lifespan(container, surface, mcp_gateway),
+    )
+    app.state.metrics_cache = {"expires_at": 0.0, "data": None, "lock": asyncio.Lock()}
+    app.state.surface = surface
+    app.state.mcp_gateway = mcp_gateway
+    _configure_middleware(app, container)
+    _register_request_tracking(app)
+    _register_error_handlers(app)
+    _register_probes(app)
+    _register_routers(app, surface=surface, mcp_gateway=mcp_gateway)
+    annotate_api_lifecycle(app)
+    _mount_control_ui(app, surface)
     configure_telemetry(service_name=f"porthouse-api-{surface}", app=app)
     return app
 

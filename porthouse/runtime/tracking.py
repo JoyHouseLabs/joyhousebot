@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from porthouse.storage.contracts import TraceStorePort
+
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SENSITIVE_KEYS = {
     "authorization",
@@ -43,7 +45,7 @@ class RequestTrackingContext:
     parent_request_id: str | None = None
     user_id: str | None = None
     run_id: str | None = None
-    store: Any = None
+    store: TraceStorePort | None = None
 
 
 def new_request_id(prefix: str = "req") -> str:
@@ -118,7 +120,7 @@ def safe_trace_data(value: Any, *, max_bytes: int = 32_768) -> dict[str, Any]:
 
 def append_trace_event(
     *,
-    store: Any = None,
+    store: TraceStorePort | None = None,
     tracker_id: str | None = None,
     request_id: str | None = None,
     parent_request_id: str | None = None,

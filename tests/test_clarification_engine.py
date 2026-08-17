@@ -11,7 +11,7 @@ from porthouse.domain.scenarios import (
     ScenarioVersion,
 )
 from porthouse.orchestration import ClarificationEngine, ScenarioRouter
-from porthouse.runtime.request_coordination import _enforce_routed_scenario
+from porthouse.runtime.coordination_preparation import _enforce_routed_scenario
 from tests.support.postgres_store import PostgresTestStore
 
 

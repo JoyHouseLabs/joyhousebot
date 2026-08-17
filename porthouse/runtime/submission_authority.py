@@ -6,10 +6,11 @@ from dataclasses import replace
 from typing import Any
 
 from porthouse.runtime.models import TaskGraphSpec
+from porthouse.storage.contracts import AgentCatalogStorePort
 
 
 def resolve_graph_agent_authority(
-    store: Any,
+    store: AgentCatalogStorePort,
     spec: TaskGraphSpec,
     *,
     top_level: bool,

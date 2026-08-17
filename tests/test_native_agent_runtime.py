@@ -877,7 +877,9 @@ async def test_execution_aborts_when_cancel_lands_between_claim_and_start(
     store.request_runtime_cancel("cancel-at-start", reason="cancelled before start")
 
     with pytest.raises(asyncio.CancelledError):
-        await runtime._execute_agent_record(claimed, CancellationToken())
+        await runtime.services.execution._execute_agent_record(
+            claimed, CancellationToken()
+        )
 
     assert "never runs" not in agent.calls
     record = store.get_runtime_run("cancel-at-start")

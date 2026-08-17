@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+
+from porthouse.storage.contracts import WorkerStorePort
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +25,7 @@ class RuntimeWorkSignal:
 
     def __init__(
         self,
-        store: Any,
+        store: WorkerStorePort,
         *,
         fallback_poll_seconds: float,
         max_poll_seconds: float = 2.0,

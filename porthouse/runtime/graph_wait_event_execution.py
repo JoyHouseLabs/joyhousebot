@@ -28,7 +28,7 @@ async def execute_graph_wait_event(runtime: Any, run: Any, task: Any) -> None:
     )
     wait_id = f"eventwait_{_hash(f'{task.task_id}:{task.lease_version}:{config_hash}')}"
     record = await asyncio.to_thread(
-        runtime.store.suspend_graph_task_for_event,
+        runtime.stores.graphs.suspend_graph_task_for_event,
         run_id=run.run_id,
         task_id=task.task_id,
         wait_id=wait_id,

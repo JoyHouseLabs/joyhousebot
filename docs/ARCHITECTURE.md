@@ -595,7 +595,7 @@ api / bootstrap / channel adapter
        dedicated repositories
 ```
 
-所有 Python 模块由架构测试限制在 650 行内。`NativeAgentExecutor` 按模型调用、工具运行、轮次引擎、消息处理和记忆生命周期组合；原生 Runtime 按提交、Agent 执行、协调、任务图与控制组合；PG Store 均按 Run、Task/Event、Operations 聚合拆分。Memory、Schedule、Channel、Knowledge、Profile Health 使用独立 Repository。
+常规生产文件以 600 行为目标、900 行为默认硬上限；函数以 100 行为目标、200 行为默认硬上限，分支复杂度默认不得超过 40。`scripts/check_complexity.py` 对历史超限项采用基线递减门禁：不得新增或恶化，完成治理后必须收紧基线。长度不是机械拆分目标，事务、迁移、Schema 和协议聚合可以记录有边界的例外，但不能因此豁免函数复杂度或跨层依赖。`NativeAgentExecutor` 按模型调用、工具运行、轮次引擎、消息处理和记忆生命周期组合；原生 Runtime 按提交、Agent 执行、协调、任务图与控制组合；PG Store 均按 Run、Task/Event、Operations 聚合拆分。Memory、Schedule、Channel、Knowledge、Profile Health 使用独立 Repository。
 
 ## 当前代码实现映射
 

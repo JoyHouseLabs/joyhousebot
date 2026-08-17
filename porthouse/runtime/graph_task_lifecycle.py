@@ -30,7 +30,7 @@ async def graph_task_heartbeat(
     while True:
         await asyncio.sleep(max(1.0, runtime.lease_seconds / 3))
         owned = await asyncio.to_thread(
-            runtime.store.heartbeat_runtime_task,
+            runtime.stores.tasks.heartbeat_runtime_task,
             task.task_id,
             worker_id=runtime.worker_id,
             lease_seconds=runtime.lease_seconds,

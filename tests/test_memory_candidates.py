@@ -234,7 +234,9 @@ async def test_consolidation_stages_each_durable_layer_without_direct_write(
         context_timestamp="2026-08-08T11:00:00+00:00",
     )
 
-    await executor._consolidate_memory(session, archive_all=True, run_context=context)
+    await executor.services.memory._consolidate_memory(
+        session, archive_all=True, run_context=context
+    )
 
     candidates = store.list_memory_candidates(user_id="memory-owner")
     assert {item.document_path for item in candidates} == {

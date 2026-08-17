@@ -13,6 +13,7 @@ from porthouse.application.run_commands import (
     ScenarioRunTarget,
     TeamRunTarget,
 )
+from porthouse.storage.contracts import AgentCatalogStorePort
 
 
 @dataclass(slots=True)
@@ -26,7 +27,7 @@ class ResolvedRunTarget:
 
 
 async def resolve_run_target(
-    store: Any, router: Any, target: RunTarget, *, prompt: str
+    store: AgentCatalogStorePort, router: Any, target: RunTarget, *, prompt: str
 ) -> ResolvedRunTarget:
     if isinstance(target, AgentRunTarget):
         if target.revision_id:

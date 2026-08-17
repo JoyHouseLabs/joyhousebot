@@ -12,15 +12,20 @@ from porthouse.runtime.models import AgentEvent, EventType
 async def prepare_graph_compensation(runtime: Any, run: Any, task: Any) -> dict[str, Any]:
     source_id = control_source_id(dict(task.payload.get("compensation") or {}))
     source_task_id = f"{run.run_id}:{source_id}"
-    source_task = await asyncio.to_thread(runtime.store.get_runtime_task, source_task_id)
+    source_task = await asyncio.to_thread(
+        runtime.stores.tasks.get_runtime_task, source_task_id
+    )
     if source_task is None or source_task.status != "completed":
         raise RuntimeError("compensation source Task is not completed")
-    actions = await asyncio.to_thread(runtime.store.list_action_intents, run.run_id)
+    actions = await asyncio.to_thread(
+        runtime.stores.reconciliations.list_action_intents, run.run_id
+    )
     candidates = [item for item in actions if item.task_id == source_task_id]
     source_action = None
     for action in reversed(candidates):
         observation = await asyncio.to_thread(
-            runtime.store.get_action_observation, action.action_id
+            runtime.stores.reconciliations.get_action_observation,
+            action.action_id,
         )
         if observation is not None and observation.status == "succeeded":
             source_action = action
@@ -62,7 +67,9 @@ async def complete_graph_compensation(
     task: Any,
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    actions = await asyncio.to_thread(runtime.store.list_action_intents, run.run_id)
+    actions = await asyncio.to_thread(
+        runtime.stores.reconciliations.list_action_intents, run.run_id
+    )
     candidates = [item for item in actions if item.task_id == task.task_id]
     compensation_action = candidates[-1] if candidates else None
     if compensation_action is None:

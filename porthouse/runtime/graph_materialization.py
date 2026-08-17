@@ -25,7 +25,9 @@ class GraphMaterializationMixin:
         lease_version: int | None = None,
     ) -> Any:
         ordered = validate_and_order_graph(spec.tasks)
-        catalog = await asyncio.to_thread(self.store.list_capability_definitions)
+        catalog = await asyncio.to_thread(
+            self.stores.catalog.list_capability_definitions
+        )
         validate_saga_declarations(
             ordered,
             catalog,
@@ -33,7 +35,9 @@ class GraphMaterializationMixin:
             max_concurrent=spec.max_concurrent,
         )
         record = await asyncio.to_thread(
-            self.store.get_runtime_run, run_id, expected_user_id=spec.user_id
+            self.stores.runs.get_runtime_run,
+            run_id,
+            expected_user_id=spec.user_id,
         )
         if record is None:
             raise ValueError("planning run not found")
@@ -47,7 +51,7 @@ class GraphMaterializationMixin:
         options = graph_options(dict(record.options or {}), spec, revision)
         rows = graph_task_rows(run_id, revision)
         materialized = await asyncio.to_thread(
-            self.store.materialize_runtime_graph,
+            self.stores.graphs.materialize_runtime_graph,
             run_id=run_id,
             user_id=spec.user_id,
             options=options,
@@ -85,5 +89,5 @@ class GraphMaterializationMixin:
                     data={"name": task.name or task.id, "dependencies": task.dependencies},
                 )
             )
-        await asyncio.to_thread(self.store.notify_work, run_id)
+        await asyncio.to_thread(self.stores.workers.notify_work, run_id)
         return materialized

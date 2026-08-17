@@ -28,10 +28,14 @@ class RunPlanMixin:
     async def plan(self, context: RequestContext, run_id: str) -> dict[str, Any]:
         """Return the frozen plan preview and its confirmation state."""
         run = await self.get(context, run_id)
-        confirmation = await asyncio.to_thread(self.store.get_plan_confirmation, run_id)
+        confirmation = await asyncio.to_thread(
+            self.stores.plan_confirmations.get_plan_confirmation, run_id
+        )
         if confirmation is None:
             raise NotFoundError("plan not ready")
-        artifacts = await asyncio.to_thread(self.store.list_runtime_artifacts, run_id)
+        artifacts = await asyncio.to_thread(
+            self.stores.execution.list_runtime_artifacts, run_id
+        )
         by_id = {str(item["artifact_id"]): item for item in artifacts}
         plan_artifact = by_id.get(confirmation["plan_artifact_id"])
         spec_artifact = by_id.get(confirmation["graph_spec_artifact_id"])
@@ -88,7 +92,9 @@ class RunPlanMixin:
         if action not in {"confirm", "regenerate", "cancel"}:
             raise ValidationError("action must be confirm, regenerate or cancel")
         run = await self.get(context, run_id)
-        confirmation = await asyncio.to_thread(self.store.get_plan_confirmation, run_id)
+        confirmation = await asyncio.to_thread(
+            self.stores.plan_confirmations.get_plan_confirmation, run_id
+        )
         if confirmation is None:
             raise NotFoundError("plan not ready")
         resolved_status = {
@@ -116,7 +122,7 @@ class RunPlanMixin:
             if int(confirmation["plan_version"]) >= _MAX_PLAN_GENERATIONS:
                 raise ValidationError("plan_regeneration_exhausted")
         resolved = await asyncio.to_thread(
-            self.store.act_plan_confirmation,
+            self.stores.plan_confirmations.act_plan_confirmation,
             run_id=run_id,
             user_id=context.user_id,
             action=action,
@@ -125,7 +131,9 @@ class RunPlanMixin:
         if resolved is None:
             raise ConflictError("plan_already_actioned")
         if action == "confirm":
-            await asyncio.to_thread(self.store.queue_plan_confirmed_run, run_id)
+            await asyncio.to_thread(
+                self.stores.plan_confirmations.queue_plan_confirmed_run, run_id
+            )
             await self.runtime.events.publish(
                 AgentEvent(
                     run_id=run_id,
@@ -136,7 +144,9 @@ class RunPlanMixin:
             )
         elif action == "regenerate":
             bumped = await asyncio.to_thread(
-                self.store.requeue_plan_regeneration, run_id, feedback=trimmed
+                self.stores.plan_confirmations.requeue_plan_regeneration,
+                run_id,
+                feedback=trimmed,
             )
             if bumped is None:
                 raise ConflictError("plan_already_actioned")

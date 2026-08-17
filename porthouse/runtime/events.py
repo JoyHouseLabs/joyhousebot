@@ -7,10 +7,10 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import Protocol
 
 from porthouse.runtime.models import AgentEvent, EventType
 from porthouse.runtime.narrative import prepare_event
+from porthouse.storage.contracts import EventStorePort
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
 _SUSPENDED_STATUSES = frozenset(
@@ -22,23 +22,11 @@ _RUN_IDENTITY_MAX = 10_000
 _MAX_SUBSCRIPTION_SECONDS = 3600.0
 
 
-class EventStore(Protocol):
-    def append_runtime_event(self, event: AgentEvent) -> AgentEvent: ...
-
-    def list_runtime_events(
-        self,
-        run_id: str,
-        *,
-        after_sequence: int = 0,
-        limit: int = 1000,
-    ) -> list[AgentEvent]: ...
-
-
 class EventBroker:
     """Persist events first, then fan them out to bounded live subscribers."""
 
-    def __init__(self, store: EventStore, *, subscriber_buffer: int = 256) -> None:
-        self.store = store
+    def __init__(self, store: EventStorePort, *, subscriber_buffer: int = 256) -> None:
+        self._store = store
         self.subscriber_buffer = max(1, subscriber_buffer)
         self._subscribers: dict[str, set[asyncio.Queue[AgentEvent]]] = defaultdict(set)
         self._run_identity: dict[str, tuple[str, str | None, str | None, str, str, str]] = {}
@@ -48,8 +36,7 @@ class EventBroker:
         """Attach durable run identity and the safe public narrative."""
         identity = self._run_identity.get(event.run_id)
         if identity is None:
-            getter = getattr(self.store, "get_runtime_run", None)
-            record = await asyncio.to_thread(getter, event.run_id) if getter is not None else None
+            record = await asyncio.to_thread(self._store.get_runtime_run, event.run_id)
             if record is not None:
                 identity = (
                     record.root_run_id or record.run_id,
@@ -97,21 +84,18 @@ class EventBroker:
 
     async def publish(self, event: AgentEvent) -> AgentEvent:
         event = await self.prepare(event)
-        persisted = await asyncio.to_thread(self.store.append_runtime_event, event)
+        persisted = await asyncio.to_thread(self._store.append_runtime_event, event)
         return await self.fanout(persisted)
 
     async def _subscription_finished(self, run_id: str, cursor: int) -> bool:
         """True when a terminal run has no more durable events to deliver."""
-        getter = getattr(self.store, "get_runtime_run", None)
-        if getter is None:
-            return False
-        record = await asyncio.to_thread(getter, run_id)
+        record = await asyncio.to_thread(self._store.get_runtime_run, run_id)
         if record is None:
             return True
         if record.status not in _TERMINAL_STATUSES | _SUSPENDED_STATUSES:
             return False
         remaining = await asyncio.to_thread(
-            self.store.list_runtime_events,
+            self._store.list_runtime_events,
             run_id,
             after_sequence=cursor,
             limit=1,
@@ -120,10 +104,7 @@ class EventBroker:
 
     async def _history_purged(self, run_id: str) -> bool:
         """True when retention tombstoned this run's event/log history."""
-        getter = getattr(self.store, "get_runtime_run", None)
-        if getter is None:
-            return False
-        record = await asyncio.to_thread(getter, run_id)
+        record = await asyncio.to_thread(self._store.get_runtime_run, run_id)
         if record is None:
             return False
         metadata = dict((getattr(record, "options", None) or {}).get("metadata") or {})
@@ -152,7 +133,7 @@ class EventBroker:
                     data={"reason": "runtime events and logs purged by retention"},
                 )
             history = await asyncio.to_thread(
-                self.store.list_runtime_events,
+                self._store.list_runtime_events,
                 run_id,
                 after_sequence=cursor,
                 limit=1000,
@@ -172,7 +153,7 @@ class EventBroker:
                     # Another FastAPI worker may own the run. Polling the
                     # durable log makes its events visible to this SSE client.
                     pending = await asyncio.to_thread(
-                        self.store.list_runtime_events,
+                        self._store.list_runtime_events,
                         run_id,
                         after_sequence=cursor,
                         limit=1000,

@@ -81,8 +81,9 @@ class RuntimeCoordinatorMixin(
         if wake_source == "poll":
             # Idle fallback wake: probe before paying for the claim CTE and
             # the lease sweeps.  NOTIFY/local wakes go straight to claiming.
-            probe = getattr(self.store, "has_claimable_runtime_task", None)
-            if probe is not None and not await asyncio.to_thread(probe):
+            if not await asyncio.to_thread(
+                self.stores.tasks.has_claimable_runtime_task
+            ):
                 return
             self.work_signal.note_activity()
         while not self._closing:
@@ -91,7 +92,7 @@ class RuntimeCoordinatorMixin(
                 return
             claim_started = time.monotonic()
             task = await asyncio.to_thread(
-                self.store.claim_runtime_task,
+                self.stores.tasks.claim_runtime_task,
                 worker_id=self.worker_id,
                 lease_seconds=self.lease_seconds,
             )
@@ -118,7 +119,9 @@ class RuntimeCoordinatorMixin(
             task = await self._graph_task_queue.get()
             self._graph_active_count += 1
             try:
-                run = await asyncio.to_thread(self.store.get_runtime_run, task.run_id)
+                run = await asyncio.to_thread(
+                    self.stores.runs.get_runtime_run, task.run_id
+                )
                 options = dict(run.options or {}) if run is not None else {}
                 with telemetry_span(
                     "porthouse.graph_task.execute",
@@ -161,8 +164,9 @@ class RuntimeCoordinatorMixin(
                     # Idle fallback wake: run the expensive fair-queue scan
                     # only when the cheap probe sees pending work, or when the
                     # deep-scan safety net comes due for missed notifications.
-                    probe = getattr(self.store, "has_incomplete_runtime_work", None)
-                    pending = await asyncio.to_thread(probe) if probe is not None else True
+                    pending = await asyncio.to_thread(
+                        self.stores.tasks.has_incomplete_runtime_work
+                    )
                     if pending:
                         self.work_signal.note_activity()
                         await self._scan_incomplete_runs(wake_source=wake.source)
@@ -177,18 +181,14 @@ class RuntimeCoordinatorMixin(
                 now = time.monotonic()
                 if now - last_worker_reconcile_at >= _WORKER_RECONCILE_INTERVAL_SECONDS:
                     last_worker_reconcile_at = now
-                    expire_workers = getattr(self.store, "expire_stale_runtime_workers", None)
-                    if expire_workers is not None:
-                        await asyncio.to_thread(
-                            expire_workers,
-                            stale_after_seconds=max(120, self.lease_seconds * 2),
-                        )
+                    await asyncio.to_thread(
+                        self.stores.workers.expire_stale_runtime_workers,
+                        stale_after_seconds=max(120, self.lease_seconds * 2),
+                    )
                     if self.maintenance_enabled:
-                        reconcile_rollouts = getattr(
-                            self.store, "reconcile_configuration_rollouts", None
+                        await asyncio.to_thread(
+                            self.stores.maintenance.reconcile_configuration_rollouts
                         )
-                        if reconcile_rollouts is not None:
-                            await asyncio.to_thread(reconcile_rollouts)
                 if self.maintenance_enabled and now - last_purge_at >= _PURGE_INTERVAL_SECONDS:
                     last_purge_at = now
                     await self._purge_old_runtime_data()
@@ -218,7 +218,9 @@ class RuntimeCoordinatorMixin(
         that run queued forever, so the worker continuously gives queued agent
         runs another scheduling opportunity.
         """
-        records = await asyncio.to_thread(self.store.list_incomplete_runtime_runs)
+        records = await asyncio.to_thread(
+            self.stores.runs.list_incomplete_runtime_runs
+        )
         active_run_ids = set(await self.supervisor.active_run_ids())
         available_agent_slots = (
             max(0, self.max_concurrent_runs - len(active_run_ids))
@@ -250,36 +252,38 @@ class RuntimeCoordinatorMixin(
                 continue
             if not self.scheduler_enabled:
                 continue
-            expire_waits = getattr(self.store, "expire_due_graph_event_waits", None)
-            if expire_waits is not None:
-                expired_waits = await asyncio.to_thread(
-                    expire_waits, run_id=record.run_id, limit=128
+            expired_waits = await asyncio.to_thread(
+                self.stores.graphs.expire_due_graph_event_waits,
+                run_id=record.run_id,
+                limit=128,
+            )
+            for wait in expired_waits:
+                await self.events.publish(
+                    AgentEvent(
+                        run_id=wait.run_id,
+                        task_id=wait.task_id,
+                        type=EventType.EVENT_EXPIRED.value,
+                        status="expired",
+                        data={
+                            "wait_id": wait.wait_id,
+                            "event_type": wait.event_type,
+                            "deadline_at": wait.deadline_at,
+                        },
+                    )
                 )
-                for wait in expired_waits:
-                    await self.events.publish(
-                        AgentEvent(
-                            run_id=wait.run_id,
-                            task_id=wait.task_id,
-                            type=EventType.EVENT_EXPIRED.value,
-                            status="expired",
-                            data={
-                                "wait_id": wait.wait_id,
-                                "event_type": wait.event_type,
-                                "deadline_at": wait.deadline_at,
-                            },
-                        )
+                await self.events.publish(
+                    AgentEvent(
+                        run_id=wait.run_id,
+                        task_id=wait.task_id,
+                        type=EventType.TASK_FAILED.value,
+                        status="failed",
+                        data={"reason": "event_deadline_expired"},
                     )
-                    await self.events.publish(
-                        AgentEvent(
-                            run_id=wait.run_id,
-                            task_id=wait.task_id,
-                            type=EventType.TASK_FAILED.value,
-                            status="failed",
-                            data={"reason": "event_deadline_expired"},
-                        )
-                    )
+                )
             if self._graph_deadline_exceeded(record):
-                await asyncio.to_thread(self.store.cancel_runtime_tasks, record.run_id)
+                await asyncio.to_thread(
+                    self.stores.tasks.cancel_runtime_tasks, record.run_id
+                )
                 await self._finish_error(
                     record.run_id,
                     RunStatus.TIMED_OUT,
@@ -288,11 +292,13 @@ class RuntimeCoordinatorMixin(
                     record.started_at or record.created_at,
                 )
                 continue
-            counts = await asyncio.to_thread(self.store.reconcile_runtime_graph, record.run_id)
+            counts = await asyncio.to_thread(
+                self.stores.graphs.reconcile_runtime_graph, record.run_id
+            )
             if dict(record.options.get("failure_policy") or {}).get("mode") == "saga":
                 await reconcile_graph_saga(self, record)
                 counts = await asyncio.to_thread(
-                    self.store.reconcile_runtime_graph, record.run_id
+                    self.stores.graphs.reconcile_runtime_graph, record.run_id
                 )
             observed_tasks = sum(int(value) for value in counts.values())
             if (
@@ -317,13 +323,13 @@ class RuntimeCoordinatorMixin(
 
     async def _recover_planning_run(self, record: Any) -> None:
         state = await asyncio.to_thread(
-            self.store.get_run_scenario_state,
+            self.stores.scenarios.get_run_scenario_state,
             record.run_id,
             expected_user_id=record.user_id,
         )
         scenario = (
             await asyncio.to_thread(
-                self.store.get_scenario_version,
+                self.stores.scenarios.get_scenario_version,
                 state.scenario_id,
                 state.scenario_version,
             )
@@ -333,7 +339,7 @@ class RuntimeCoordinatorMixin(
         if state is None or scenario is None or state.status != "ready":
             return
         graph = await asyncio.to_thread(
-            ScenarioPlanner(self.store).build_graph,
+            ScenarioPlanner(self.stores.catalog).build_graph,
             scenario,
             goal=record.prompt,
             inputs=state.collected_inputs,
@@ -347,10 +353,10 @@ class RuntimeCoordinatorMixin(
             await self.materialize_graph(record.run_id, graph)
             return
         queued = await asyncio.to_thread(
-            self.store.update_runtime_run, record.run_id, status="queued"
+            self.stores.runs.update_runtime_run, record.run_id, status="queued"
         )
         if queued:
-            await asyncio.to_thread(self.store.notify_work, record.run_id)
+            await asyncio.to_thread(self.stores.workers.notify_work, record.run_id)
 
 
     async def _publish_graph_progress(
@@ -358,7 +364,9 @@ class RuntimeCoordinatorMixin(
     ) -> None:
         """Publish exact progress only when the task graph has a known total."""
 
-        tasks = await asyncio.to_thread(self.store.list_runtime_tasks, run_id=run_id, limit=5000)
+        tasks = await asyncio.to_thread(
+            self.stores.tasks.list_runtime_tasks, run_id=run_id, limit=5000
+        )
         terminal = {"completed", "failed", "cancelled", "timed_out", "skipped"}
         completed = sum(1 for task in tasks if task.status in terminal)
         await self.events.publish(

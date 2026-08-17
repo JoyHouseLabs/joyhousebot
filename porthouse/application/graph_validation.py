@@ -8,6 +8,7 @@ from porthouse.domain.capabilities.models import CapabilityRef
 from porthouse.orchestration.bounded_loop import bounded_loop_template_capability
 from porthouse.orchestration.control_nodes import validate_compensation_declarations
 from porthouse.orchestration.foreach import foreach_template_capability
+from porthouse.storage.contracts import AgentCatalogStorePort
 
 
 def task_executables(task: Any) -> tuple[list[CapabilityRef], list[str], list[str]]:
@@ -31,7 +32,9 @@ def task_executables(task: Any) -> tuple[list[CapabilityRef], list[str], list[st
     return pinned, tools, skills
 
 
-def validate_graph_catalog(store: Any, tasks: list[Any]) -> list[dict[str, Any]]:
+def validate_graph_catalog(
+    store: AgentCatalogStorePort, tasks: list[Any]
+) -> list[dict[str, Any]]:
     """Require every executable reference to resolve to a published definition."""
     latest = store.list_capability_definitions()
     latest_by_id = {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass, field
 from typing import Any
 
 from porthouse.domain.capabilities import CapabilityRef, InvocationStatus
@@ -44,9 +45,273 @@ from porthouse.runtime.models import AgentEvent, AgentUsage, EventType, TaskStat
 from porthouse.runtime.verification import verify_output
 
 
+def _optional_int(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    return int(value) if value is not None else None
+
+
+def _optional_float(payload: dict[str, Any], key: str) -> float | None:
+    value = payload.get(key)
+    return float(value) if value is not None else None
+
+
+@dataclass(slots=True)
+class GraphTaskExecutionState:
+    capability: CapabilityRef | None
+    capability_result: Any = None
+    direct_turn_id: str | None = None
+    suspended: bool = False
+    result_metadata: dict[str, Any] = field(default_factory=dict)
+    structured_output: Any = None
+    content: str | None = None
+    tools: list[str] = field(default_factory=list)
+    usage: AgentUsage = field(default_factory=AgentUsage)
+    node_type: str = "agent"
+
+
 class GraphTaskExecutionMixin:
     async def _execute_claimed_graph_task(self, task: Any) -> None:
-        run = await asyncio.to_thread(self.store.get_runtime_run, task.run_id)
+        run = await self._load_executable_graph_run(task)
+        if run is None:
+            return
+        cancellation = CancellationToken()
+        owner_task = asyncio.current_task()
+        heartbeat = asyncio.create_task(
+            graph_task_heartbeat(self, run, task, cancellation, owner_task),
+            name=f"task-heartbeat:{task.task_id}",
+        )
+        await publish_task_started(self, task, run)
+        state = GraphTaskExecutionState(
+            capability=(
+                CapabilityRef.from_dict(dict(task.payload["capability"]))
+                if task.payload.get("capability")
+                else None
+            )
+        )
+        try:
+            await self._run_graph_task_node(run, task, state, cancellation)
+        except asyncio.CancelledError:
+            raise
+        except (ActionApprovalRequiredError, ActionOutcomeUnknownError) as exc:
+            await self._finish_suspended_direct_turn(state.direct_turn_id, exc)
+            await self._suspend_graph_action(run, task, exc, cancellation)
+            state.suspended = True
+        except Exception as exc:
+            await self._fail_or_retry_graph_task(
+                run,
+                task,
+                exc,
+                capability=state.capability,
+                capability_result=state.capability_result,
+                direct_turn_id=state.direct_turn_id,
+            )
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+        await reconcile_after_graph_task(self, run, task=task, suspended=state.suspended)
+
+    async def _run_graph_task_node(
+        self,
+        run: Any,
+        task: Any,
+        state: GraphTaskExecutionState,
+        cancellation: CancellationToken,
+    ) -> None:
+        prompt, dependency_context = await graph_task_prompt(self, task)
+        spec_id = str(task.payload.get("spec_id") or task.task_id)
+        state.node_type = str(task.payload.get("node_type") or "agent")
+        handled = await self._execute_graph_control_node(
+            run, task, state, prompt, dependency_context, cancellation
+        )
+        if not handled and state.capability is not None:
+            await self._execute_graph_capability_node(
+                run, task, state, dependency_context, spec_id, cancellation
+            )
+        elif not handled:
+            await self._execute_graph_agent_node(
+                run, task, state, prompt, spec_id, cancellation
+            )
+        if not state.suspended and state.node_type not in {
+            "branch",
+            "bounded_loop",
+            "foreach",
+            "wait_event",
+            "approval",
+            "verify",
+        }:
+            await self._complete_graph_task(
+                run,
+                task,
+                content=state.content,
+                tools=state.tools,
+                usage=state.usage,
+                capability_result=state.capability_result,
+                result_metadata=state.result_metadata,
+                structured_output_override=state.structured_output,
+            )
+
+    async def _execute_graph_control_node(
+        self,
+        run: Any,
+        task: Any,
+        state: GraphTaskExecutionState,
+        prompt: str,
+        dependency_context: dict[str, Any],
+        cancellation: CancellationToken,
+    ) -> bool:
+        node_type = state.node_type
+        if node_type == "branch":
+            await execute_graph_branch(self, run, task, dependency_context)
+        elif node_type == "bounded_loop":
+            await execute_graph_bounded_loop(self, run, task, dependency_context)
+        elif node_type == "foreach":
+            await execute_graph_foreach(self, run, task, dependency_context)
+        elif node_type == "wait_event":
+            await execute_graph_wait_event(self, run, task)
+            state.suspended = True
+        elif node_type == "approval":
+            await execute_graph_approval(self, run, task, dependency_context)
+            state.suspended = True
+        elif node_type == "verify":
+            await execute_graph_verify(self, run, task, dependency_context)
+        elif node_type == "aggregate":
+            (
+                state.content,
+                state.tools,
+                state.usage,
+                state.structured_output,
+                state.result_metadata,
+            ) = await execute_graph_aggregate(
+                self, run, task, dependency_context, cancellation
+            )
+        elif node_type == "subrun":
+            result = await execute_graph_subrun(
+                self, run, task, prompt, dependency_context
+            )
+            if result is None:
+                state.suspended = True
+            else:
+                (
+                    state.content,
+                    state.tools,
+                    state.usage,
+                    state.structured_output,
+                    state.result_metadata,
+                ) = result
+        else:
+            return False
+        return True
+
+    async def _execute_graph_capability_node(
+        self,
+        run: Any,
+        task: Any,
+        state: GraphTaskExecutionState,
+        dependency_context: dict[str, Any],
+        spec_id: str,
+        cancellation: CancellationToken,
+    ) -> None:
+        compensation_context = (
+            await prepare_graph_compensation(self, run, task)
+            if state.node_type == "compensation"
+            else None
+        )
+        state.direct_turn_id = durable_turn_id(run.run_id, task.task_id, task.attempt)
+        (
+            state.content,
+            state.tools,
+            state.usage,
+            state.capability_result,
+            returned_turn_id,
+        ) = await execute_graph_capability(
+            self,
+            run,
+            task,
+            state.capability,
+            dependency_context,
+            spec_id,
+            cancellation,
+        )
+        if returned_turn_id != state.direct_turn_id:
+            raise RuntimeError("Graph Task durable Turn identity changed")
+        if compensation_context is not None:
+            state.result_metadata = await complete_graph_compensation(
+                self, run, task, compensation_context
+            )
+        await self._verify_graph_capability_output(
+            run, task, state.content, turn_id=state.direct_turn_id
+        )
+        await asyncio.to_thread(
+            self.stores.execution.finish_runtime_turn,
+            state.direct_turn_id,
+            status="completed",
+            stop_reason="capability_completed",
+        )
+
+    async def _execute_graph_agent_node(
+        self,
+        run: Any,
+        task: Any,
+        state: GraphTaskExecutionState,
+        prompt: str,
+        spec_id: str,
+        cancellation: CancellationToken,
+    ) -> None:
+        metadata = dict(task.payload.get("metadata") or {})
+        state.content, state.tools, state.usage = await self._call_agent(
+            run_id=run.run_id,
+            task_id=task.task_id,
+            prompt=prompt,
+            user_id=run.user_id,
+            session_id=f"{run.session_id}:task:{spec_id}",
+            agent_id=task.agent_id,
+            agent_revision_id=str(metadata.get("agent_revision_id") or "") or None,
+            channel="runtime",
+            chat_id=spec_id,
+            model=None,
+            system_prompt=None,
+            output_schema=(
+                dict(task.payload["output_schema"])
+                if task.payload.get("output_schema")
+                else None
+            ),
+            timeout_seconds=float(task.payload.get("timeout_seconds") or 300),
+            max_turns=None,
+            max_input_tokens=_optional_int(task.payload, "max_input_tokens"),
+            max_output_tokens=_optional_int(task.payload, "max_output_tokens"),
+            max_cost_usd=_optional_float(task.payload, "max_cost_usd"),
+            permission_mode="default",
+            allowed_tools=[str(item) for item in task.payload.get("allowed_tools") or []],
+            disallowed_tools=[],
+            cancellation=cancellation,
+            metadata={
+                **metadata,
+                "skill_names": list(task.payload.get("skill_names") or []),
+            },
+            verification_policy=dict(task.payload.get("verification_policy") or {}),
+            max_repairs=_optional_int(task.payload, "max_repairs"),
+            task_lease_version=task.lease_version,
+        )
+
+    async def _finish_suspended_direct_turn(
+        self,
+        direct_turn_id: str | None,
+        exc: ActionApprovalRequiredError | ActionOutcomeUnknownError,
+    ) -> None:
+        if not direct_turn_id:
+            return
+        approval_required = isinstance(exc, ActionApprovalRequiredError)
+        await asyncio.to_thread(
+            self.stores.execution.finish_runtime_turn,
+            direct_turn_id,
+            status="waiting_approval" if approval_required else "waiting_external",
+            stop_reason="approval_required" if approval_required else "outcome_unknown",
+        )
+
+    async def _load_executable_graph_run(self, task: Any) -> Any | None:
+        run = await asyncio.to_thread(
+            self.stores.runs.get_runtime_run, task.run_id
+        )
         if (
             run is None
             or run.kind != "graph"
@@ -59,222 +324,21 @@ class GraphTaskExecutionMixin:
             }
         ):
             await asyncio.to_thread(
-                self.store.update_runtime_task,
+                self.stores.tasks.update_runtime_task,
                 task.task_id,
                 status=TaskStatus.CANCELLED.value,
                 error={"message": "parent run is not executable"},
                 worker_id=self.worker_id,
                 lease_version=task.lease_version,
             )
-            return
+            return None
         await self._start_graph_if_needed(run)
-        cancellation = CancellationToken()
-        owner_task = asyncio.current_task()
-        heartbeat = asyncio.create_task(
-            graph_task_heartbeat(self, run, task, cancellation, owner_task),
-            name=f"task-heartbeat:{task.task_id}",
-        )
-        await publish_task_started(self, task, run)
-        capability = (
-            CapabilityRef.from_dict(dict(task.payload["capability"]))
-            if task.payload.get("capability")
-            else None
-        )
-        capability_result = None
-        direct_turn_id: str | None = None
-        suspended = False
-        result_metadata: dict[str, Any] = {}
-        structured_output_override: Any = None
-        try:
-            prompt, dependency_context = await graph_task_prompt(self, task)
-            spec_id = str(task.payload.get("spec_id") or task.task_id)
-            node_type = str(task.payload.get("node_type") or "agent")
-            if node_type == "branch":
-                await execute_graph_branch(self, run, task, dependency_context)
-            elif node_type == "bounded_loop":
-                await execute_graph_bounded_loop(self, run, task, dependency_context)
-            elif node_type == "foreach":
-                await execute_graph_foreach(self, run, task, dependency_context)
-            elif node_type == "wait_event":
-                await execute_graph_wait_event(self, run, task)
-                suspended = True
-            elif node_type == "approval":
-                await execute_graph_approval(self, run, task, dependency_context)
-                suspended = True
-            elif node_type == "verify":
-                await execute_graph_verify(self, run, task, dependency_context)
-            elif node_type == "aggregate":
-                (
-                    content,
-                    tools,
-                    usage,
-                    structured_output_override,
-                    result_metadata,
-                ) = await execute_graph_aggregate(
-                    self, run, task, dependency_context, cancellation
-                )
-            elif node_type == "subrun":
-                subrun_result = await execute_graph_subrun(
-                    self, run, task, prompt, dependency_context
-                )
-                if subrun_result is None:
-                    suspended = True
-                else:
-                    (
-                        content,
-                        tools,
-                        usage,
-                        structured_output_override,
-                        result_metadata,
-                    ) = subrun_result
-            elif capability is not None:
-                compensation_context = (
-                    await prepare_graph_compensation(self, run, task)
-                    if node_type == "compensation"
-                    else None
-                )
-                direct_turn_id = durable_turn_id(run.run_id, task.task_id, task.attempt)
-                (
-                    content,
-                    tools,
-                    usage,
-                    capability_result,
-                    returned_turn_id,
-                ) = await execute_graph_capability(
-                    self,
-                    run,
-                    task,
-                    capability,
-                    dependency_context,
-                    spec_id,
-                    cancellation,
-                )
-                if returned_turn_id != direct_turn_id:
-                    raise RuntimeError("Graph Task durable Turn identity changed")
-                if compensation_context is not None:
-                    result_metadata = await complete_graph_compensation(
-                        self, run, task, compensation_context
-                    )
-                await self._verify_graph_capability_output(
-                    run,
-                    task,
-                    content,
-                    turn_id=direct_turn_id,
-                )
-                await asyncio.to_thread(
-                    self.store.finish_runtime_turn,
-                    direct_turn_id,
-                    status="completed",
-                    stop_reason="capability_completed",
-                )
-            else:
-                content, tools, usage = await self._call_agent(
-                    run_id=run.run_id,
-                    task_id=task.task_id,
-                    prompt=prompt,
-                    user_id=run.user_id,
-                    session_id=f"{run.session_id}:task:{spec_id}",
-                    agent_id=task.agent_id,
-                    agent_revision_id=(
-                        str(dict(task.payload.get("metadata") or {}).get("agent_revision_id") or "")
-                        or None
-                    ),
-                    channel="runtime",
-                    chat_id=spec_id,
-                    model=None,
-                    system_prompt=None,
-                    output_schema=(
-                        dict(task.payload["output_schema"])
-                        if task.payload.get("output_schema")
-                        else None
-                    ),
-                    timeout_seconds=float(task.payload.get("timeout_seconds") or 300),
-                    max_turns=None,
-                    max_input_tokens=(
-                        int(task.payload["max_input_tokens"])
-                        if task.payload.get("max_input_tokens") is not None
-                        else None
-                    ),
-                    max_output_tokens=(
-                        int(task.payload["max_output_tokens"])
-                        if task.payload.get("max_output_tokens") is not None
-                        else None
-                    ),
-                    max_cost_usd=(
-                        float(task.payload["max_cost_usd"])
-                        if task.payload.get("max_cost_usd") is not None
-                        else None
-                    ),
-                    permission_mode="default",
-                    allowed_tools=[str(item) for item in task.payload.get("allowed_tools") or []],
-                    disallowed_tools=[],
-                    cancellation=cancellation,
-                    metadata={
-                        **dict(task.payload.get("metadata") or {}),
-                        "skill_names": list(task.payload.get("skill_names") or []),
-                    },
-                    verification_policy=dict(task.payload.get("verification_policy") or {}),
-                    max_repairs=(
-                        int(task.payload["max_repairs"])
-                        if task.payload.get("max_repairs") is not None
-                        else None
-                    ),
-                    task_lease_version=task.lease_version,
-                )
-            if not suspended and node_type not in {
-                "branch",
-                "bounded_loop",
-                "foreach",
-                "wait_event",
-                "approval",
-                "verify",
-            }:
-                await self._complete_graph_task(
-                    run,
-                    task,
-                    content=content,
-                    tools=tools,
-                    usage=usage,
-                    capability_result=capability_result,
-                    result_metadata=result_metadata,
-                    structured_output_override=structured_output_override,
-                )
-        except asyncio.CancelledError:
-            raise
-        except (ActionApprovalRequiredError, ActionOutcomeUnknownError) as exc:
-            if direct_turn_id:
-                await asyncio.to_thread(
-                    self.store.finish_runtime_turn,
-                    direct_turn_id,
-                    status=(
-                        "waiting_approval"
-                        if isinstance(exc, ActionApprovalRequiredError)
-                        else "waiting_external"
-                    ),
-                    stop_reason=(
-                        "approval_required"
-                        if isinstance(exc, ActionApprovalRequiredError)
-                        else "outcome_unknown"
-                    ),
-                )
-            await self._suspend_graph_action(run, task, exc, cancellation)
-            suspended = True
-        except Exception as exc:
-            await self._fail_or_retry_graph_task(
-                run,
-                task,
-                exc,
-                capability=capability,
-                capability_result=capability_result,
-                direct_turn_id=direct_turn_id,
-            )
-        finally:
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
-        await reconcile_after_graph_task(self, run, task=task, suspended=suspended)
+        return run
 
     async def _start_graph_if_needed(self, run: Any) -> None:
-        started = await asyncio.to_thread(self.store.start_runtime_graph, run.run_id)
+        started = await asyncio.to_thread(
+            self.stores.graphs.start_runtime_graph, run.run_id
+        )
         if not started:
             return
         await self.events.publish(
@@ -322,7 +386,7 @@ class GraphTaskExecutionMixin:
             session_id=run.session_id,
             channel="runtime",
             chat_id=str(task.payload.get("spec_id") or task.task_id),
-            trace_store=self.store,
+            trace_store=self.stores.execution,
             output_schema=schema,
             verification_policy=policy,
             worker_id=self.worker_id,
@@ -374,7 +438,7 @@ class GraphTaskExecutionMixin:
         if capability_result is not None:
             await asyncio.to_thread(
                 materialize_capability_artifacts,
-                self.store,
+                self.stores.execution,
                 run_id=run.run_id,
                 task_id=task.task_id,
                 agent_id=task.agent_id,
@@ -382,7 +446,7 @@ class GraphTaskExecutionMixin:
                 capability_id=(tools[0] if len(tools) == 1 else None),
             )
         await asyncio.to_thread(
-            self.store.add_runtime_artifact,
+            self.stores.execution.add_runtime_artifact,
             artifact_id=f"{task.task_id}:output",
             run_id=run.run_id,
             task_id=task.task_id,
@@ -447,7 +511,7 @@ class GraphTaskExecutionMixin:
                 ),
             }
         saved = await asyncio.to_thread(
-            self.store.update_runtime_task,
+            self.stores.tasks.update_runtime_task,
             task.task_id,
             status=TaskStatus.COMPLETED.value,
             result=value,
@@ -478,7 +542,7 @@ class GraphTaskExecutionMixin:
     ) -> None:
         if isinstance(exc, ActionApprovalRequiredError):
             transitioned = await asyncio.to_thread(
-                self.store.suspend_graph_task_for_approval,
+                self.stores.graphs.suspend_graph_task_for_approval,
                 run_id=run.run_id,
                 task_id=task.task_id,
                 approval_id=exc.approval_id,
@@ -496,12 +560,13 @@ class GraphTaskExecutionMixin:
             }
         else:
             reconciliation = await asyncio.to_thread(
-                self.store.get_action_reconciliation, exc.action_id
+                self.stores.reconciliations.get_action_reconciliation,
+                exc.action_id,
             )
             if reconciliation is None:
                 raise RuntimeError(f"Action reconciliation missing: {exc.action_id}")
             transitioned = await asyncio.to_thread(
-                self.store.suspend_graph_task_for_reconciliation,
+                self.stores.graphs.suspend_graph_task_for_reconciliation,
                 run_id=run.run_id,
                 task_id=task.task_id,
                 reconciliation_id=reconciliation.reconciliation_id,
@@ -572,7 +637,7 @@ class GraphTaskExecutionMixin:
         )
         if direct_turn_id:
             await asyncio.to_thread(
-                self.store.finish_runtime_turn,
+                self.stores.execution.finish_runtime_turn,
                 direct_turn_id,
                 status="failed",
                 stop_reason="task_retry" if retry else "task_failed",
@@ -609,7 +674,7 @@ class GraphTaskExecutionMixin:
             )
         )
         saved = await asyncio.to_thread(
-            self.store.update_runtime_task,
+            self.stores.tasks.update_runtime_task,
             task.task_id,
             status=status,
             result=(

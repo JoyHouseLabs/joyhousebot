@@ -42,7 +42,7 @@ class PlanConfirmationMixin:
             "plan_generation": generation,
         }
         await asyncio.to_thread(
-            self.store.add_runtime_artifact,
+            self.stores.execution.add_runtime_artifact,
             artifact_id=plan_artifact_id,
             run_id=record.run_id,
             name="coordinator-plan",
@@ -51,7 +51,7 @@ class PlanConfirmationMixin:
             provenance=provenance,
         )
         await asyncio.to_thread(
-            self.store.add_runtime_artifact,
+            self.stores.execution.add_runtime_artifact,
             artifact_id=spec_artifact_id,
             run_id=record.run_id,
             name="coordinator-graph-spec",
@@ -60,7 +60,7 @@ class PlanConfirmationMixin:
             provenance=provenance,
         )
         confirmation = await asyncio.to_thread(
-            self.store.create_plan_confirmation,
+            self.stores.plan_confirmations.create_plan_confirmation,
             run_id=record.run_id,
             user_id=record.user_id,
             team_id=team.team_id,
@@ -70,7 +70,7 @@ class PlanConfirmationMixin:
             graph_spec_artifact_id=spec_artifact_id,
         )
         transitioned = await asyncio.to_thread(
-            self.store.update_runtime_run,
+            self.stores.runs.update_runtime_run,
             record.run_id,
             status="waiting_input",
             worker_id=self.worker_id,

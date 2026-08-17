@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from porthouse.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
 from porthouse.domain.scenarios.clarification_conditions import condition_matches
+from porthouse.storage.contracts import ClarificationStorePort
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +24,7 @@ class ClarificationStep:
 
 
 class ClarificationEngine:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: ClarificationStorePort) -> None:
         self.store = store
 
     def evaluate(
@@ -332,9 +333,7 @@ class ClarificationEngine:
         # Wake any coordinator replica immediately.  The run status is durable
         # (planning/queued), but relying only on the polling interval makes a
         # resolved clarification appear stuck to callers of resolve().
-        notifier = getattr(self.store, "notify_work", None)
-        if callable(notifier):
-            notifier(run_id)
+        self.store.notify_work(run_id)
         next_request = (
             self.create_request(run_id=run_id, user_id=user_id, scenario=scenario, step=step)
             if step.node

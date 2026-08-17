@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 from porthouse.domain.identity import canonical_json
 from porthouse.session.models import Session
 
-if TYPE_CHECKING:
-    from porthouse.storage.runtime_store import RuntimeStore
+
+class SessionStateStore(Protocol):
+    def get_session_state(self, storage_key: str) -> dict[str, Any] | None: ...
+
+    def save_session_state(self, storage_key: str, **kwargs: Any) -> None: ...
+
+    def delete_session_state(self, storage_key: str) -> bool: ...
+
+    def list_session_states(self, **kwargs: Any) -> list[dict[str, Any]]: ...
 
 
 # conversation_sessions.state is a consolidation cache, not the system of
@@ -25,7 +32,7 @@ SESSION_STATE_MAX_MESSAGE_BYTES = 256 * 1024
 class RuntimeSessionManager:
     """Stateless manager backed by the shared runtime store."""
 
-    def __init__(self, store: RuntimeStore, *, namespace: str = "default") -> None:
+    def __init__(self, store: SessionStateStore, *, namespace: str = "default") -> None:
         self.store = store
         self.namespace = namespace or "default"
 

@@ -281,61 +281,13 @@ class AppMarketService(AppMarketUpdateMixin):
         )
         if registry is None or registry["status"] != "active":
             raise NotFoundError("active Market Registry not found")
-        contract = dict(
-            dict(registry.get("discovery") or {}).get("contract_keys") or {}
-        ).get("installation")
-        if not isinstance(contract, dict):
-            raise ValidationError("trusted Market installation contract key is missing")
-        key_id = str(contract.get("key_id") or "")
-        public_key = str(contract.get("public_key") or "")
-        try:
-            payload, signer = verify_json_contract(
-                installation_grant.get("envelope") or {},
-                payload_type=INSTALLATION_GRANT_MEDIA_TYPE,
-                public_keys={key_id: public_key},
-            )
-        except ValueError as exc:
-            raise ValidationError(f"invalid Installation Grant: {exc}") from exc
-        if signer != key_id:
-            raise ValidationError("Installation Grant signer does not match trusted Registry")
-        supplied_payload = installation_grant.get("payload")
-        if supplied_payload is not None and supplied_payload != payload:
-            raise ValidationError("Installation Grant payload does not match its signed envelope")
-        try:
-            expires_at = datetime.fromisoformat(
-                str(payload["expires_at"]).replace("Z", "+00:00")
-            )
-        except (KeyError, ValueError) as exc:
-            raise ValidationError("Installation Grant expires_at is invalid") from exc
-        if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):
-            raise ConflictError("Installation Grant has expired")
-        release = dict(payload.get("release") or {})
-        expected_permissions = sorted({str(item) for item in granted_permissions})
-        expected = {
-            "market_id": str(registry["market_id"]),
-            "publisher_id": str(acquisition["publisher_id"]),
-            "app_id": str(acquisition["app_id"]),
-            "version": str(acquisition.get("resolved_version") or ""),
-            "bundle_digest": str(acquisition.get("bundle_digest") or ""),
-            "entitlement_id": str(acquisition.get("entitlement_id") or ""),
-            "permission_digest": canonical_sha256(expected_permissions),
-        }
-        actual = {
-            "market_id": str(payload.get("market_id") or ""),
-            "publisher_id": str(release.get("publisher_id") or ""),
-            "app_id": str(release.get("app_id") or ""),
-            "version": str(release.get("version") or ""),
-            "bundle_digest": str(release.get("bundle_digest") or ""),
-            "entitlement_id": str(payload.get("entitlement_id") or ""),
-            "permission_digest": str(payload.get("permission_digest") or ""),
-        }
-        if actual != expected:
-            raise ConflictError("Installation Grant does not match the verified acquisition")
-        if str(payload.get("desired_state") or "") not in {"installed", "updated"}:
-            raise ConflictError("Installation Grant does not authorize installation")
-        grant_id = str(payload.get("grant_id") or "")
-        if not grant_id:
-            raise ValidationError("Installation Grant is missing grant_id")
+        payload = self._verified_installation_grant(registry, installation_grant)
+        expected_permissions, expected, grant_id = self._validate_installation_grant(
+            payload,
+            acquisition=acquisition,
+            registry=registry,
+            granted_permissions=granted_permissions,
+        )
         request_hash = canonical_sha256(
             {
                 "acquisition_id": acquisition_id,
@@ -354,8 +306,7 @@ class AppMarketService(AppMarketUpdateMixin):
             if prior["request_hash"] != request_hash:
                 raise ConflictError("Installation Grant idempotency conflict")
             return dict(prior["result"])
-        app_id = expected["app_id"]
-        version = expected["version"]
+        app_id, version = expected["app_id"], expected["version"]
         local_release = await asyncio.to_thread(self.store.get_app_release, app_id, version)
         if local_release is None:
             raise NotFoundError("imported App release not found")
@@ -396,6 +347,77 @@ class AppMarketService(AppMarketUpdateMixin):
         except ValueError as exc:
             raise ConflictError(str(exc)) from exc
         return dict(saved["result"])
+
+    @staticmethod
+    def _verified_installation_grant(
+        registry: dict[str, Any], installation_grant: dict[str, Any]
+    ) -> dict[str, Any]:
+        contract = dict(
+            dict(registry.get("discovery") or {}).get("contract_keys") or {}
+        ).get("installation")
+        if not isinstance(contract, dict):
+            raise ValidationError("trusted Market installation contract key is missing")
+        key_id = str(contract.get("key_id") or "")
+        public_key = str(contract.get("public_key") or "")
+        try:
+            payload, signer = verify_json_contract(
+                installation_grant.get("envelope") or {},
+                payload_type=INSTALLATION_GRANT_MEDIA_TYPE,
+                public_keys={key_id: public_key},
+            )
+        except ValueError as exc:
+            raise ValidationError(f"invalid Installation Grant: {exc}") from exc
+        if signer != key_id:
+            raise ValidationError("Installation Grant signer does not match trusted Registry")
+        supplied_payload = installation_grant.get("payload")
+        if supplied_payload is not None and supplied_payload != payload:
+            raise ValidationError("Installation Grant payload does not match its signed envelope")
+        return payload
+
+    @staticmethod
+    def _validate_installation_grant(
+        payload: dict[str, Any],
+        *,
+        acquisition: dict[str, Any],
+        registry: dict[str, Any],
+        granted_permissions: list[str],
+    ) -> tuple[list[str], dict[str, str], str]:
+        try:
+            expires_at = datetime.fromisoformat(
+                str(payload["expires_at"]).replace("Z", "+00:00")
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValidationError("Installation Grant expires_at is invalid") from exc
+        if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):
+            raise ConflictError("Installation Grant has expired")
+        release = dict(payload.get("release") or {})
+        expected_permissions = sorted({str(item) for item in granted_permissions})
+        expected = {
+            "market_id": str(registry["market_id"]),
+            "publisher_id": str(acquisition["publisher_id"]),
+            "app_id": str(acquisition["app_id"]),
+            "version": str(acquisition.get("resolved_version") or ""),
+            "bundle_digest": str(acquisition.get("bundle_digest") or ""),
+            "entitlement_id": str(acquisition.get("entitlement_id") or ""),
+            "permission_digest": canonical_sha256(expected_permissions),
+        }
+        actual = {
+            "market_id": str(payload.get("market_id") or ""),
+            "publisher_id": str(release.get("publisher_id") or ""),
+            "app_id": str(release.get("app_id") or ""),
+            "version": str(release.get("version") or ""),
+            "bundle_digest": str(release.get("bundle_digest") or ""),
+            "entitlement_id": str(payload.get("entitlement_id") or ""),
+            "permission_digest": str(payload.get("permission_digest") or ""),
+        }
+        if actual != expected:
+            raise ConflictError("Installation Grant does not match the verified acquisition")
+        if str(payload.get("desired_state") or "") not in {"installed", "updated"}:
+            raise ConflictError("Installation Grant does not authorize installation")
+        grant_id = str(payload.get("grant_id") or "")
+        if not grant_id:
+            raise ValidationError("Installation Grant is missing grant_id")
+        return expected_permissions, expected, grant_id
 
     async def request_acquisition(
         self,

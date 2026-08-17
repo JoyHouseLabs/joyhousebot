@@ -10,6 +10,61 @@ from porthouse.domain.capabilities.models import CapabilityRef
 from porthouse.domain.skills import SkillRef
 
 
+def _scenario_field_from_dict(item: dict[str, Any]) -> "ScenarioField":
+    return ScenarioField(
+        name=str(item["name"]),
+        value_type=str(item["value_type"]),
+        required=bool(item.get("required")),
+        label=str(item.get("label") or ""),
+        description=str(item.get("description") or ""),
+        placeholder=str(item.get("placeholder") or ""),
+        default=item.get("default"),
+        enum=tuple(item.get("enum") or ()),
+        input_mode=str(item.get("input_mode") or "auto"),
+        options=tuple(dict(option) for option in item.get("options") or ()),
+        allow_other=bool(item.get("allow_other")),
+        min_selections=(
+            int(item["min_selections"])
+            if item.get("min_selections") is not None
+            else None
+        ),
+        max_selections=(
+            int(item["max_selections"])
+            if item.get("max_selections") is not None
+            else None
+        ),
+        validation=dict(item.get("validation") or {}),
+        sensitive=bool(item.get("sensitive")),
+        suggestion_provider=dict(item.get("suggestion_provider") or {}),
+        normalization=dict(item.get("normalization") or {}),
+        visibility=dict(item.get("visibility") or {}),
+        constraint_policy=dict(item.get("constraint_policy") or {}),
+        confirmation_policy=str(item.get("confirmation_policy") or "none"),
+        examples=tuple(str(example) for example in item.get("examples") or ()),
+        group=str(item.get("group") or ""),
+        order=int(item.get("order") or 0),
+    )
+
+
+def _clarification_node_from_dict(item: dict[str, Any]) -> "ClarificationNode":
+    return ClarificationNode(
+        node_id=str(item["node_id"]),
+        kind=str(item["kind"]),
+        question=str(item.get("question") or ""),
+        field_names=tuple(item.get("field_names") or ()),
+        configuration=dict(item.get("configuration") or {}),
+    )
+
+
+def _clarification_edge_from_dict(item: dict[str, Any]) -> "ClarificationEdge":
+    return ClarificationEdge(
+        source_node_id=str(item["source_node_id"]),
+        target_node_id=str(item["target_node_id"]),
+        condition=str(item.get("condition") or "true"),
+        priority=int(item.get("priority") or 100),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ScenarioField:
     name: str
@@ -226,61 +281,9 @@ class ScenarioVersion:
             version=int(value["version"]),
             name=str(value["name"]),
             description=str(value.get("description") or ""),
-            fields=tuple(
-                ScenarioField(
-                    name=str(item["name"]),
-                    value_type=str(item["value_type"]),
-                    required=bool(item.get("required")),
-                    label=str(item.get("label") or ""),
-                    description=str(item.get("description") or ""),
-                    placeholder=str(item.get("placeholder") or ""),
-                    default=item.get("default"),
-                    enum=tuple(item.get("enum") or ()),
-                    input_mode=str(item.get("input_mode") or "auto"),
-                    options=tuple(dict(option) for option in item.get("options") or ()),
-                    allow_other=bool(item.get("allow_other")),
-                    min_selections=(
-                        int(item["min_selections"])
-                        if item.get("min_selections") is not None
-                        else None
-                    ),
-                    max_selections=(
-                        int(item["max_selections"])
-                        if item.get("max_selections") is not None
-                        else None
-                    ),
-                    validation=dict(item.get("validation") or {}),
-                    sensitive=bool(item.get("sensitive")),
-                    suggestion_provider=dict(item.get("suggestion_provider") or {}),
-                    normalization=dict(item.get("normalization") or {}),
-                    visibility=dict(item.get("visibility") or {}),
-                    constraint_policy=dict(item.get("constraint_policy") or {}),
-                    confirmation_policy=str(item.get("confirmation_policy") or "none"),
-                    examples=tuple(str(example) for example in item.get("examples") or ()),
-                    group=str(item.get("group") or ""),
-                    order=int(item.get("order") or 0),
-                )
-                for item in value.get("fields") or ()
-            ),
-            nodes=tuple(
-                ClarificationNode(
-                    node_id=str(item["node_id"]),
-                    kind=str(item["kind"]),
-                    question=str(item.get("question") or ""),
-                    field_names=tuple(item.get("field_names") or ()),
-                    configuration=dict(item.get("configuration") or {}),
-                )
-                for item in value.get("nodes") or ()
-            ),
-            edges=tuple(
-                ClarificationEdge(
-                    source_node_id=str(item["source_node_id"]),
-                    target_node_id=str(item["target_node_id"]),
-                    condition=str(item.get("condition") or "true"),
-                    priority=int(item.get("priority") or 100),
-                )
-                for item in value.get("edges") or ()
-            ),
+            fields=tuple(_scenario_field_from_dict(item) for item in value.get("fields") or ()),
+            nodes=tuple(_clarification_node_from_dict(item) for item in value.get("nodes") or ()),
+            edges=tuple(_clarification_edge_from_dict(item) for item in value.get("edges") or ()),
             allowed_capabilities=tuple(
                 CapabilityRef.from_dict(dict(item))
                 for item in value.get("allowed_capabilities") or ()

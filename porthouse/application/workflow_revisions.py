@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from porthouse.application.errors import ValidationError
+from porthouse.storage.contracts import AgentCatalogStorePort
 
 
 def freeze_workflow_agent_revision(
-    store: Any,
+    store: AgentCatalogStorePort,
     agent_id: str,
     revision_id: str | None,
     *,

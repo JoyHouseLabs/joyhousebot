@@ -26,6 +26,7 @@ from porthouse.runtime.context import (
 )
 from porthouse.runtime.models import AgentEvent, AgentOptions, AgentUsage, EventType
 from porthouse.runtime.structured import StructuredOutputError
+from porthouse.storage.contracts import AgentCatalogStorePort, PlanningStorePort
 
 _SCOPE_PREFIX = "coordinator_plan"
 _DEFAULT_MAX_REPLANS = 2
@@ -47,6 +48,24 @@ class CoordinatorPlanningResult:
     usage: AgentUsage
 
 
+@dataclass(slots=True)
+class _PlanningLoopState:
+    runtime: Any
+    record: Any
+    options: AgentOptions
+    cancellation: CancellationToken
+    user_prompt: str
+    scenarios: list[dict[str, Any]]
+    capabilities: list[dict[str, Any]]
+    routing_decision: dict[str, Any]
+    normalize: Callable[[dict[str, Any]], dict[str, Any]]
+    scope: str
+    max_replans: int
+    decisions: list[Any]
+    replans_used: int
+    previous_reason: str | None
+
+
 async def run_coordinator_planning(
     runtime: Any,
     *,
@@ -60,8 +79,7 @@ async def run_coordinator_planning(
     normalize: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> CoordinatorPlanningResult:
     """Return one accepted plan or fail after the persisted replan budget."""
-
-    max_replans = await _effective_max_replans(runtime.store, record.run_id, options)
+    max_replans = await _effective_max_replans(runtime.stores.catalog, record.run_id, options)
     scope = _planning_scope(
         user_prompt,
         scenarios,
@@ -70,10 +88,40 @@ async def run_coordinator_planning(
         generation=int(options.metadata.get("plan_generation") or 0),
     )
     decisions = await asyncio.to_thread(
-        runtime.store.list_loop_decisions,
+        runtime.stores.planning.list_loop_decisions,
         record.run_id,
         scope=scope,
     )
+    replayed = await _replay_terminal_planning_decision(
+        runtime, decisions=decisions, max_replans=max_replans
+    )
+    if replayed is not None:
+        return replayed
+    state = _PlanningLoopState(
+        runtime=runtime,
+        record=record,
+        options=options,
+        cancellation=cancellation,
+        user_prompt=user_prompt,
+        scenarios=scenarios,
+        capabilities=capabilities,
+        routing_decision=routing_decision,
+        normalize=normalize,
+        scope=scope,
+        max_replans=max_replans,
+        decisions=decisions,
+        replans_used=sum(item.decision == "replan" for item in decisions),
+        previous_reason=next(
+            (item.reason_code for item in reversed(decisions) if item.decision == "replan"),
+            None,
+        ),
+    )
+    return await _run_planning_loop(state)
+
+
+async def _replay_terminal_planning_decision(
+    runtime: Any, *, decisions: list[Any], max_replans: int
+) -> CoordinatorPlanningResult | None:
     accepted = next(
         (
             item
@@ -100,208 +148,257 @@ async def run_coordinator_planning(
     if exhausted is not None:
         await _publish_decision(runtime, exhausted)
         raise PlannerLoopExhaustedError(max_replans, exhausted.attempt)
+    return None
 
-    replans_used = sum(item.decision == "replan" for item in decisions)
-    previous_reason = next(
-        (item.reason_code for item in reversed(decisions) if item.decision == "replan"),
-        None,
-    )
+
+async def _run_planning_loop(state: _PlanningLoopState) -> CoordinatorPlanningResult:
     while True:
-        attempt = replans_used + 1
-        attempt_prompt = _attempt_prompt(user_prompt, attempt, previous_reason)
+        attempt = state.replans_used + 1
+        attempt_prompt = _attempt_prompt(
+            state.user_prompt, attempt, state.previous_reason
+        )
         full_prompt = build_coordinator_prompt(
             attempt_prompt,
-            scenarios=scenarios,
-            capabilities=capabilities,
-            routing_decision=routing_decision,
+            scenarios=state.scenarios,
+            capabilities=state.capabilities,
+            routing_decision=state.routing_decision,
             team={
-                "team_ref": dict(options.metadata.get("team_ref") or {}),
-                "members": list(options.metadata.get("team_members") or []),
-                "budget_policy": dict(options.metadata.get("team_budget_policy") or {}),
-                "approval_policy": dict(options.metadata.get("team_approval_policy") or {}),
+                "team_ref": dict(state.options.metadata.get("team_ref") or {}),
+                "members": list(state.options.metadata.get("team_members") or []),
+                "budget_policy": dict(
+                    state.options.metadata.get("team_budget_policy") or {}
+                ),
+                "approval_policy": dict(
+                    state.options.metadata.get("team_approval_policy") or {}
+                ),
                 "collaboration_blueprint": frozen_enforced_blueprint(
-                    options.metadata.get("team_collaboration_blueprint")
+                    state.options.metadata.get("team_collaboration_blueprint")
                 ),
             }
-            if options.metadata.get("team_ref")
+            if state.options.metadata.get("team_ref")
             else None,
         )
         try:
-            content, _, _ = await runtime._call_agent(
-                run_id=record.run_id,
-                task_id=None,
-                prompt=full_prompt,
-                user_id=record.user_id,
-                session_id=f"{options.session_id}:coordinator",
-                agent_id=record.agent_id,
-                channel="runtime",
-                chat_id="coordinator",
-                model=options.model,
-                system_prompt=None,
-                output_schema=COORDINATOR_OUTPUT_SCHEMA,
-                timeout_seconds=min(options.timeout_seconds, 90),
-                max_turns=1,
-                max_input_tokens=options.max_input_tokens,
-                max_output_tokens=min(options.max_output_tokens or 2048, 2048),
-                max_cost_usd=options.max_cost_usd,
-                permission_mode="coordinator",
-                allowed_tools=[],
-                disallowed_tools=[],
-                cancellation=cancellation,
-                sender_id=options.sender_id or record.user_id,
-                metadata={"phase": "coordination", "planning_attempt": attempt},
-                max_repairs=0,
-                run_lease_version=record.lease_version,
-                turn_scope=f"{scope}:{attempt}",
+            plan = await _execute_planning_attempt(
+                state, attempt=attempt, full_prompt=full_prompt
             )
-            plan = normalize(_structured_plan(content))
         except _FATAL_PLANNING_ERRORS as exc:
-            decision = await _record_decision(
-                runtime,
-                record=record,
-                decisions=decisions,
-                scope=scope,
-                attempt=attempt,
-                decision="escalate",
-                reason_code="plan_boundary_violation",
-                summary="协调器计划越过 Blueprint 协作边界，运行失败关闭",
-                input_hash=payload_hash(full_prompt),
-                output_hash=await _attempt_output_hash(
-                    runtime.store, record.run_id, scope, attempt
-                ),
-                max_replans=max_replans,
-                details={
-                    "violations": [
-                        {"code": item.code, "message": item.message}
-                        for item in exc.violations
-                    ],
-                    "usage": (
-                        await _planning_usage(runtime.store, record.run_id)
-                    ).to_dict(),
-                },
+            await _record_fatal_planning_error(
+                state, attempt=attempt, full_prompt=full_prompt, exc=exc
             )
-            decisions.append(decision)
-            await _publish_decision(runtime, decision)
             raise
         except _PLANNING_ERRORS as exc:
-            usage = await _planning_usage(runtime.store, record.run_id)
-            budget_reason = _budget_reason(options, usage)
-            if budget_reason is not None:
-                decision = await _record_decision(
-                    runtime,
-                    record=record,
-                    decisions=decisions,
-                    scope=scope,
-                    attempt=attempt,
-                    decision="escalate",
-                    reason_code="planning_budget_exceeded",
-                    summary="规划阶段已达到运行预算上限",
-                    input_hash=payload_hash(full_prompt),
-                    output_hash=await _attempt_output_hash(
-                        runtime.store, record.run_id, scope, attempt
-                    ),
-                    max_replans=max_replans,
-                    details={"budget": budget_reason, "usage": usage.to_dict()},
-                )
-                decisions.append(decision)
-                await _publish_decision(runtime, decision)
-                raise RunBudgetExceededError(budget_reason) from exc
-            reason_code, summary = _planning_failure(exc)
-            if replans_used < max_replans:
-                decision = await _record_decision(
-                    runtime,
-                    record=record,
-                    decisions=decisions,
-                    scope=scope,
-                    attempt=attempt,
-                    decision="replan",
-                    reason_code=reason_code,
-                    summary=summary,
-                    input_hash=payload_hash(full_prompt),
-                    output_hash=await _attempt_output_hash(
-                        runtime.store, record.run_id, scope, attempt
-                    ),
-                    max_replans=max_replans,
-                    details={
-                        "failed_attempt": attempt,
-                        "next_attempt": attempt + 1,
-                        "error_type": type(exc).__name__,
-                        "usage": usage.to_dict(),
-                    },
-                )
-                decisions.append(decision)
-                await _publish_decision(runtime, decision)
-                replans_used += 1
-                previous_reason = reason_code
+            if await _handle_planning_error(
+                state, attempt=attempt, full_prompt=full_prompt, exc=exc
+            ):
                 continue
-            decision = await _record_decision(
-                runtime,
-                record=record,
-                decisions=decisions,
-                scope=scope,
-                attempt=attempt,
-                decision="escalate",
-                reason_code="max_replans_exhausted",
-                summary="协调器计划未通过校验，重规划次数已耗尽",
-                input_hash=payload_hash(full_prompt),
-                output_hash=await _attempt_output_hash(
-                    runtime.store, record.run_id, scope, attempt
-                ),
-                max_replans=max_replans,
-                details={
-                    "last_reason_code": reason_code,
-                    "attempts": attempt,
-                    "replans_used": replans_used,
-                    "usage": usage.to_dict(),
-                },
-            )
-            decisions.append(decision)
-            await _publish_decision(runtime, decision)
-            raise PlannerLoopExhaustedError(max_replans, attempt) from exc
+        return await _accept_planning_result(
+            state, attempt=attempt, full_prompt=full_prompt, plan=plan
+        )
 
-        usage = await _planning_usage(runtime.store, record.run_id)
-        budget_reason = _budget_reason(options, usage)
-        if budget_reason is not None:
-            decision = await _record_decision(
-                runtime,
-                record=record,
-                decisions=decisions,
-                scope=scope,
-                attempt=attempt,
-                decision="escalate",
-                reason_code="planning_budget_exceeded",
-                summary="规划阶段已达到运行预算上限",
-                input_hash=payload_hash(full_prompt),
-                output_hash=payload_hash(plan),
-                max_replans=max_replans,
-                details={"budget": budget_reason, "usage": usage.to_dict()},
-            )
-            await _publish_decision(runtime, decision)
-            raise RunBudgetExceededError(budget_reason)
-        decision = await _record_decision(
-            runtime,
-            record=record,
-            decisions=decisions,
-            scope=scope,
+
+async def _execute_planning_attempt(
+    state: _PlanningLoopState, *, attempt: int, full_prompt: str
+) -> dict[str, Any]:
+    options, record = state.options, state.record
+    content, _, _ = await state.runtime._call_agent(
+        run_id=record.run_id,
+        task_id=None,
+        prompt=full_prompt,
+        user_id=record.user_id,
+        session_id=f"{options.session_id}:coordinator",
+        agent_id=record.agent_id,
+        channel="runtime",
+        chat_id="coordinator",
+        model=options.model,
+        system_prompt=None,
+        output_schema=COORDINATOR_OUTPUT_SCHEMA,
+        timeout_seconds=min(options.timeout_seconds, 90),
+        max_turns=1,
+        max_input_tokens=options.max_input_tokens,
+        max_output_tokens=min(options.max_output_tokens or 2048, 2048),
+        max_cost_usd=options.max_cost_usd,
+        permission_mode="coordinator",
+        allowed_tools=[],
+        disallowed_tools=[],
+        cancellation=state.cancellation,
+        sender_id=options.sender_id or record.user_id,
+        metadata={"phase": "coordination", "planning_attempt": attempt},
+        max_repairs=0,
+        run_lease_version=record.lease_version,
+        turn_scope=f"{state.scope}:{attempt}",
+    )
+    return state.normalize(_structured_plan(content))
+
+
+async def _record_fatal_planning_error(
+    state: _PlanningLoopState,
+    *,
+    attempt: int,
+    full_prompt: str,
+    exc: PlanBoundaryViolationError,
+) -> None:
+    usage = await _planning_usage(state.runtime.stores.planning, state.record.run_id)
+    decision = await _save_attempt_decision(
+        state,
+        attempt=attempt,
+        decision="escalate",
+        reason_code="plan_boundary_violation",
+        summary="协调器计划越过 Blueprint 协作边界，运行失败关闭",
+        full_prompt=full_prompt,
+        details={
+            "violations": [
+                {"code": item.code, "message": item.message} for item in exc.violations
+            ],
+            "usage": usage.to_dict(),
+        },
+    )
+    state.decisions.append(decision)
+    await _publish_decision(state.runtime, decision)
+
+
+async def _handle_planning_error(
+    state: _PlanningLoopState,
+    *,
+    attempt: int,
+    full_prompt: str,
+    exc: BaseException,
+) -> bool:
+    usage = await _planning_usage(state.runtime.stores.planning, state.record.run_id)
+    budget_reason = _budget_reason(state.options, usage)
+    if budget_reason is not None:
+        decision = await _save_attempt_decision(
+            state,
             attempt=attempt,
-            decision="continue",
-            reason_code="plan_accepted",
-            summary="协调器计划已通过结构化校验",
-            input_hash=payload_hash(full_prompt),
-            output_hash=payload_hash(plan),
-            max_replans=max_replans,
+            decision="escalate",
+            reason_code="planning_budget_exceeded",
+            summary="规划阶段已达到运行预算上限",
+            full_prompt=full_prompt,
+            details={"budget": budget_reason, "usage": usage.to_dict()},
+        )
+        state.decisions.append(decision)
+        await _publish_decision(state.runtime, decision)
+        raise RunBudgetExceededError(budget_reason) from exc
+    reason_code, summary = _planning_failure(exc)
+    if state.replans_used < state.max_replans:
+        decision = await _save_attempt_decision(
+            state,
+            attempt=attempt,
+            decision="replan",
+            reason_code=reason_code,
+            summary=summary,
+            full_prompt=full_prompt,
             details={
-                "plan": plan,
+                "failed_attempt": attempt,
+                "next_attempt": attempt + 1,
+                "error_type": type(exc).__name__,
                 "usage": usage.to_dict(),
-                "attempts": attempt,
-                "replans_used": replans_used,
             },
         )
-        await _publish_decision(runtime, decision)
-        return CoordinatorPlanningResult(plan=plan, usage=usage)
+        state.decisions.append(decision)
+        await _publish_decision(state.runtime, decision)
+        state.replans_used += 1
+        state.previous_reason = reason_code
+        return True
+    decision = await _save_attempt_decision(
+        state,
+        attempt=attempt,
+        decision="escalate",
+        reason_code="max_replans_exhausted",
+        summary="协调器计划未通过校验，重规划次数已耗尽",
+        full_prompt=full_prompt,
+        details={
+            "last_reason_code": reason_code,
+            "attempts": attempt,
+            "replans_used": state.replans_used,
+            "usage": usage.to_dict(),
+        },
+    )
+    state.decisions.append(decision)
+    await _publish_decision(state.runtime, decision)
+    raise PlannerLoopExhaustedError(state.max_replans, attempt) from exc
 
 
-async def _effective_max_replans(store: Any, run_id: str, options: AgentOptions) -> int:
+async def _save_attempt_decision(
+    state: _PlanningLoopState,
+    *,
+    attempt: int,
+    decision: str,
+    reason_code: str,
+    summary: str,
+    full_prompt: str,
+    details: dict[str, Any],
+) -> Any:
+    return await _record_decision(
+        state.runtime,
+        record=state.record,
+        decisions=state.decisions,
+        scope=state.scope,
+        attempt=attempt,
+        decision=decision,
+        reason_code=reason_code,
+        summary=summary,
+        input_hash=payload_hash(full_prompt),
+        output_hash=await _attempt_output_hash(
+            state.runtime.stores.planning, state.record.run_id, state.scope, attempt
+        ),
+        max_replans=state.max_replans,
+        details=details,
+    )
+
+
+async def _accept_planning_result(
+    state: _PlanningLoopState,
+    *,
+    attempt: int,
+    full_prompt: str,
+    plan: dict[str, Any],
+) -> CoordinatorPlanningResult:
+    usage = await _planning_usage(state.runtime.stores.planning, state.record.run_id)
+    budget_reason = _budget_reason(state.options, usage)
+    if budget_reason is not None:
+        decision = await _record_decision(
+            state.runtime,
+            record=state.record,
+            decisions=state.decisions,
+            scope=state.scope,
+            attempt=attempt,
+            decision="escalate",
+            reason_code="planning_budget_exceeded",
+            summary="规划阶段已达到运行预算上限",
+            input_hash=payload_hash(full_prompt),
+            output_hash=payload_hash(plan),
+            max_replans=state.max_replans,
+            details={"budget": budget_reason, "usage": usage.to_dict()},
+        )
+        await _publish_decision(state.runtime, decision)
+        raise RunBudgetExceededError(budget_reason)
+    decision = await _record_decision(
+        state.runtime,
+        record=state.record,
+        decisions=state.decisions,
+        scope=state.scope,
+        attempt=attempt,
+        decision="continue",
+        reason_code="plan_accepted",
+        summary="协调器计划已通过结构化校验",
+        input_hash=payload_hash(full_prompt),
+        output_hash=payload_hash(plan),
+        max_replans=state.max_replans,
+        details={
+            "plan": plan,
+            "usage": usage.to_dict(),
+            "attempts": attempt,
+            "replans_used": state.replans_used,
+        },
+    )
+    await _publish_decision(state.runtime, decision)
+    return CoordinatorPlanningResult(plan=plan, usage=usage)
+
+
+async def _effective_max_replans(
+    store: AgentCatalogStorePort, run_id: str, options: AgentOptions
+) -> int:
     if options.max_replans is not None:
         return max(0, min(_MAX_REPLANS, int(options.max_replans)))
     snapshot = await asyncio.to_thread(store.get_run_execution_snapshot, run_id)
@@ -394,7 +491,7 @@ async def _record_decision(
         }
     )[:32]
     saved = await asyncio.to_thread(
-        runtime.store.record_loop_decision,
+        runtime.stores.planning.record_loop_decision,
         decision_id=decision_id,
         run_id=record.run_id,
         task_id=None,
@@ -469,7 +566,7 @@ async def _publish_decision(runtime: Any, record: Any) -> None:
         )
 
 
-async def _planning_usage(store: Any, run_id: str) -> AgentUsage:
+async def _planning_usage(store: PlanningStorePort, run_id: str) -> AgentUsage:
     turns = await asyncio.to_thread(store.list_runtime_turns, run_id)
     usage = AgentUsage()
     for turn in turns:
@@ -482,7 +579,7 @@ async def _planning_usage(store: Any, run_id: str) -> AgentUsage:
 
 
 async def _attempt_output_hash(
-    store: Any, run_id: str, scope: str, attempt: int
+    store: PlanningStorePort, run_id: str, scope: str, attempt: int
 ) -> str | None:
     turns = await asyncio.to_thread(store.list_runtime_turns, run_id)
     turn_scope = f"{scope}:{attempt}"

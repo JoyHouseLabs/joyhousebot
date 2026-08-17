@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+from porthouse.domain.agent_teams import AgentTeamRevision
+
 COORDINATOR_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -213,194 +215,200 @@ def build_coordinator_prompt(
     )
 
 
-def normalize_coordinator_plan(
-    value: dict[str, Any],
-    capabilities: list[dict[str, Any]],
-    scenarios: list[dict[str, Any]] | None = None,
-    team: Any | None = None,
-) -> dict[str, Any]:
+def _capability_identity(value: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        str(value.get(field) or "")
+        for field in (
+            "capability_id",
+            "version",
+            "kind",
+            "plugin_id",
+            "plugin_version",
+            "plugin_build_digest",
+        )
+    )
+
+
+def _selected_catalog_items(
+    value: dict[str, Any], capabilities: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str]]:
     known = {
-        (
-            str(item.get("ref", {}).get("capability_id")),
-            str(item.get("ref", {}).get("version")),
-            str(item.get("ref", {}).get("kind")),
-            str(item.get("ref", {}).get("plugin_id")),
-            str(item.get("ref", {}).get("plugin_version")),
-            str(item.get("ref", {}).get("plugin_build_digest")),
-        ): dict(item.get("ref") or {})
+        _capability_identity(dict(item["ref"])): dict(item["ref"])
         for item in capabilities
         if isinstance(item.get("ref"), dict)
-    }
-    known_skills = {
-        str(item.get("skill_id") or "").removeprefix("skill.")
-        for item in capabilities
-        if str(item.get("skill_id") or "").startswith("skill.")
     }
     selected = []
     for item in value.get("selected_capabilities") or []:
         if not isinstance(item, dict):
             continue
-        identity = (
-            str(item.get("capability_id") or ""), str(item.get("version") or ""),
-            str(item.get("kind") or ""), str(item.get("plugin_id") or ""),
-            str(item.get("plugin_version") or ""), str(item.get("plugin_build_digest") or ""),
-        )
-        ref = known.get(identity)
+        ref = known.get(_capability_identity(item))
         if ref and ref.get("kind") in {"tool", "connector"}:
             selected.append(ref)
+    known_skills = {
+        str(item.get("skill_id") or "").removeprefix("skill.")
+        for item in capabilities
+        if str(item.get("skill_id") or "").startswith("skill.")
+    }
     skills = [
         str(item).removeprefix("skill.")
         for item in value.get("selected_skills") or []
         if str(item).removeprefix("skill.") in known_skills
     ]
-    steps = []
-    step_ids: set[str] = set()
-    team_members = {item.member_id: item for item in team.members} if team else {}
-    coordinator = team.coordinator if team else None
-    allowed_targets = (
-        {coordinator.member_id, *coordinator.allowed_handoffs} if coordinator else set()
-    )
-    max_steps = int(team.budget_policy["max_tasks"]) if team else 32
-    source_steps = value.get("planned_steps") or []
-    for index, item in enumerate(source_steps):
-        if not isinstance(item, dict) or not str(item.get("objective") or "").strip():
-            continue
-        if team:
-            required_contract = {
-                "id",
-                "phase",
-                "kind",
-                "member_id",
-                "depends_on",
-                "acceptance_criteria",
-            }
-            missing_contract = required_contract - set(item)
-            if missing_contract:
-                raise ValueError(
-                    "AgentTeam planned step is missing contract fields: "
-                    f"{sorted(missing_contract)}"
-                )
-        raw_id = str(item.get("id") or "").strip()
-        if team and not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", raw_id):
-            raise ValueError("AgentTeam planned step requires a stable id")
-        step_id = raw_id or f"step-{index + 1}"
-        if step_id in step_ids:
-            raise ValueError(f"coordinator planned duplicate step id: {step_id}")
-        step_ids.add(step_id)
-        kind = str(item.get("kind") or "produce")
-        if kind not in {"produce", "review", "revise", "synthesize", "checkpoint"}:
-            raise ValueError(f"coordinator planned unsupported step kind: {kind}")
-        depends_on = list(
-            dict.fromkeys(str(value) for value in item.get("depends_on") or ())
-        )
-        review_of = list(
-            dict.fromkeys(str(value) for value in item.get("review_of") or ())
-        )
-        revision_of = str(item.get("revision_of") or "").strip() or None
-        criteria = [
+    return selected, skills
+
+
+def _planned_step(
+    item: dict[str, Any],
+    *,
+    index: int,
+    team: AgentTeamRevision | None,
+    step_ids: set[str],
+) -> dict[str, Any]:
+    if team:
+        required = {"id", "phase", "kind", "member_id", "depends_on", "acceptance_criteria"}
+        missing = required - set(item)
+        if missing:
+            raise ValueError(
+                f"AgentTeam planned step is missing contract fields: {sorted(missing)}"
+            )
+    raw_id = str(item.get("id") or "").strip()
+    if team and not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", raw_id):
+        raise ValueError("AgentTeam planned step requires a stable id")
+    step_id = raw_id or f"step-{index + 1}"
+    if step_id in step_ids:
+        raise ValueError(f"coordinator planned duplicate step id: {step_id}")
+    step_ids.add(step_id)
+    kind = str(item.get("kind") or "produce")
+    if kind not in {"produce", "review", "revise", "synthesize", "checkpoint"}:
+        raise ValueError(f"coordinator planned unsupported step kind: {kind}")
+    step = {
+        "id": step_id,
+        "name": str(item.get("name") or "step")[:128],
+        "objective": str(item.get("objective") or "")[:2000],
+        "phase": str(item.get("phase") or "execution")[:128],
+        "kind": kind,
+        "can_run_in_parallel": bool(item.get("can_run_in_parallel")),
+        "depends_on": list(dict.fromkeys(str(value) for value in item.get("depends_on") or ())),
+        "acceptance_criteria": [
             str(value).strip()[:500]
             for value in item.get("acceptance_criteria") or ()
             if str(value).strip()
-        ][:16]
-        review_round = max(0, int(item.get("review_round") or 0))
-        step = {
-            "id": step_id,
-            "name": str(item.get("name") or "step")[:128],
-            "objective": str(item.get("objective") or "")[:2000],
-            "phase": str(item.get("phase") or "execution")[:128],
-            "kind": kind,
-            "can_run_in_parallel": bool(item.get("can_run_in_parallel")),
-            "depends_on": depends_on,
-            "acceptance_criteria": criteria,
-            "review_of": review_of,
-            "revision_of": revision_of,
-            "review_round": review_round,
-            "output_schema": (
-                dict(item["output_schema"])
-                if isinstance(item.get("output_schema"), dict)
-                else None
-            ),
-        }
-        if team:
-            member_id = str(item.get("member_id") or team.coordinator_member_id)
-            if member_id not in team_members:
-                raise ValueError(f"coordinator selected an unknown AgentTeam member: {member_id}")
-            if member_id not in allowed_targets:
-                raise ValueError(f"coordinator is not allowed to hand off to member: {member_id}")
-            step["member_id"] = member_id
-        steps.append(step)
+        ][:16],
+        "review_of": list(dict.fromkeys(str(value) for value in item.get("review_of") or ())),
+        "revision_of": str(item.get("revision_of") or "").strip() or None,
+        "review_round": max(0, int(item.get("review_round") or 0)),
+        "output_schema": dict(item["output_schema"])
+        if isinstance(item.get("output_schema"), dict)
+        else None,
+    }
+    if team:
+        member_id = str(item.get("member_id") or team.coordinator_member_id)
+        members = {member.member_id for member in team.members}
+        allowed = {team.coordinator.member_id, *team.coordinator.allowed_handoffs}
+        if member_id not in members:
+            raise ValueError(f"coordinator selected an unknown AgentTeam member: {member_id}")
+        if member_id not in allowed:
+            raise ValueError(f"coordinator is not allowed to hand off to member: {member_id}")
+        step["member_id"] = member_id
+    return step
+
+
+def _validate_team_step(
+    step: dict[str, Any], *, known_step_ids: set[str], team: AgentTeamRevision
+) -> None:
+    references = set(step["depends_on"])
+    unknown = references - known_step_ids
+    if unknown:
+        raise ValueError(f"AgentTeam step {step['id']} has unknown dependencies: {sorted(unknown)}")
+    if step["id"] in references:
+        raise ValueError(f"AgentTeam step {step['id']} cannot depend on itself")
+    review_targets = set(step["review_of"])
+    if review_targets and not review_targets <= references:
+        raise ValueError(
+            f"AgentTeam review step {step['id']} must depend on every review_of target"
+        )
+    revision_target = step["revision_of"]
+    if revision_target and revision_target not in references:
+        raise ValueError(f"AgentTeam revision step {step['id']} must depend on revision_of")
+    if step["kind"] == "review" and not review_targets:
+        raise ValueError(f"AgentTeam review step {step['id']} requires review_of")
+    if step["kind"] == "revise" and not revision_target:
+        raise ValueError(f"AgentTeam revise step {step['id']} requires revision_of")
+    if step["kind"] in {"synthesize", "checkpoint"} and (
+        step.get("member_id") != team.coordinator_member_id
+    ):
+        raise ValueError(f"AgentTeam {step['kind']} step {step['id']} must use the coordinator")
+    if step["kind"] in {"review", "revise", "checkpoint"} and not step[
+        "acceptance_criteria"
+    ]:
+        raise ValueError(f"AgentTeam {step['kind']} step {step['id']} requires acceptance criteria")
+    if step["review_round"] > int(team.budget_policy["max_review_rounds"]):
+        raise ValueError("coordinator plan exceeds the AgentTeam review-round budget")
+
+
+def _planned_steps(
+    value: dict[str, Any], team: AgentTeamRevision | None
+) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    step_ids: set[str] = set()
+    max_steps = int(team.budget_policy["max_tasks"]) if team else 32
+    for index, item in enumerate(value.get("planned_steps") or []):
+        if not isinstance(item, dict) or not str(item.get("objective") or "").strip():
+            continue
+        steps.append(_planned_step(item, index=index, team=team, step_ids=step_ids))
         if len(steps) > max_steps:
             raise ValueError("coordinator plan exceeds the AgentTeam task budget")
     if team:
         known_step_ids = {str(item["id"]) for item in steps}
         for step in steps:
-            references = set(step["depends_on"])
-            unknown = references - known_step_ids
-            if unknown:
-                raise ValueError(
-                    f"AgentTeam step {step['id']} has unknown dependencies: {sorted(unknown)}"
-                )
-            if step["id"] in references:
-                raise ValueError(f"AgentTeam step {step['id']} cannot depend on itself")
-            review_targets = set(step["review_of"])
-            if review_targets and not review_targets <= references:
-                raise ValueError(
-                    f"AgentTeam review step {step['id']} must depend on every review_of target"
-                )
-            revision_target = step["revision_of"]
-            if revision_target and revision_target not in references:
-                raise ValueError(
-                    f"AgentTeam revision step {step['id']} must depend on revision_of"
-                )
-            if step["kind"] == "review" and not review_targets:
-                raise ValueError(f"AgentTeam review step {step['id']} requires review_of")
-            if step["kind"] == "revise" and not revision_target:
-                raise ValueError(f"AgentTeam revise step {step['id']} requires revision_of")
-            if (
-                step["kind"] in {"synthesize", "checkpoint"}
-                and step.get("member_id") != team.coordinator_member_id
-            ):
-                raise ValueError(
-                    f"AgentTeam {step['kind']} step {step['id']} must use the coordinator"
-                )
-            if step["kind"] in {"review", "revise", "checkpoint"} and not step[
-                "acceptance_criteria"
-            ]:
-                raise ValueError(
-                    f"AgentTeam {step['kind']} step {step['id']} requires acceptance criteria"
-                )
-            if step["review_round"] > int(team.budget_policy["max_review_rounds"]):
-                raise ValueError("coordinator plan exceeds the AgentTeam review-round budget")
-        handoffs = sum(
-            item.get("member_id") != team.coordinator_member_id for item in steps
-        )
+            _validate_team_step(step, known_step_ids=known_step_ids, team=team)
+        handoffs = sum(item.get("member_id") != team.coordinator_member_id for item in steps)
         if handoffs > int(team.budget_policy["max_handoffs"]):
             raise ValueError("coordinator plan exceeds the AgentTeam handoff budget")
-    execution_class = str(value.get("execution_class") or "interactive")
-    if execution_class not in {"immediate", "interactive", "background"}:
-        execution_class = "interactive"
-    scenario_map = {str(item.get("scenario_id")): item for item in (scenarios or [])}
-    requested_scenario = str(value.get("scenario_id") or "").strip()
-    scenario = scenario_map.get(requested_scenario)
+    return steps
+
+
+def _scenario_selection(
+    value: dict[str, Any], scenarios: list[dict[str, Any]] | None
+) -> tuple[str | None, dict[str, Any]]:
+    scenario_map = {str(item.get("scenario_id")): item for item in scenarios or []}
+    requested = str(value.get("scenario_id") or "").strip()
+    scenario = scenario_map.get(requested)
     known_fields = {str(item.get("name")) for item in (scenario or {}).get("fields") or []}
-    scenario_inputs = {
+    inputs = {
         str(key): item
         for key, item in dict(value.get("scenario_inputs") or {}).items()
         if str(key) in known_fields
     }
+    return (requested if scenario is not None else None), inputs
+
+
+def normalize_coordinator_plan(
+    value: dict[str, Any],
+    capabilities: list[dict[str, Any]],
+    scenarios: list[dict[str, Any]] | None = None,
+    team: AgentTeamRevision | None = None,
+) -> dict[str, Any]:
+    selected, skills = _selected_catalog_items(value, capabilities)
+    steps = _planned_steps(value, team)
+    scenario_id, scenario_inputs = _scenario_selection(value, scenarios)
+    execution_class = str(value.get("execution_class") or "interactive")
+    if execution_class not in {"immediate", "interactive", "background"}:
+        execution_class = "interactive"
+    selected_by_identity = {
+        (item["capability_id"], item["version"], item["plugin_id"], item["plugin_version"]): item
+        for item in selected
+    }
     return {
         "intent": str(value.get("intent") or "general")[:128],
-        "scenario_id": requested_scenario if scenario is not None else None,
+        "scenario_id": scenario_id,
         "scenario_inputs": scenario_inputs,
         "summary": str(value.get("summary") or "理解并处理用户请求")[:1000],
         "execution_class": execution_class,
         "estimated_duration_seconds": max(
             0, min(int(value.get("estimated_duration_seconds") or 60), 7 * 86400)
         ),
-        "selected_capabilities": list({
-            (item["capability_id"], item["version"], item["plugin_id"], item["plugin_version"]): item
-            for item in selected
-        }.values()),
+        "selected_capabilities": list(selected_by_identity.values()),
         "selected_skills": list(dict.fromkeys(skills)),
         "planned_steps": steps,
         "clarification": _normalize_clarification(value.get("clarification")),
@@ -417,60 +425,10 @@ def _normalize_clarification(value: Any) -> dict[str, Any] | None:
     fields: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in source_fields[:4]:
-        if not isinstance(raw, dict):
-            continue
-        name = str(raw.get("name") or "").strip()
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) or name in seen:
-            continue
-        value_type = str(raw.get("value_type") or "string")
-        input_mode = str(raw.get("input_mode") or "text")
-        if value_type not in {"string", "integer", "number", "boolean", "array"}:
-            continue
-        if input_mode not in {"text", "textarea", "single_choice", "multi_choice", "boolean", "number"}:
-            input_mode = "text"
-        if input_mode == "multi_choice":
-            value_type = "array"
-        elif input_mode == "single_choice":
-            value_type = "string"
-        elif input_mode == "boolean":
-            value_type = "boolean"
-        elif input_mode == "number" and value_type not in {"integer", "number"}:
-            value_type = "number"
-        options = []
-        for option in raw.get("options") or []:
-            if not isinstance(option, dict):
-                continue
-            option_value = str(option.get("value") or "").strip()[:128]
-            label = str(option.get("label") or option_value).strip()[:256]
-            if option_value and label and all(item["value"] != option_value for item in options):
-                options.append({
-                    "value": option_value,
-                    "label": label,
-                    "description": str(option.get("description") or "").strip()[:512],
-                })
-        if input_mode in {"single_choice", "multi_choice"} and not options:
-            continue
-        minimum = raw.get("min_selections")
-        maximum = raw.get("max_selections")
-        min_selections = max(0, int(minimum)) if isinstance(minimum, int) else None
-        max_selections = max(1, int(maximum)) if isinstance(maximum, int) else None
-        if min_selections is not None and max_selections is not None and min_selections > max_selections:
-            continue
-        fields.append({
-            "name": name,
-            "value_type": value_type,
-            "required": bool(raw.get("required", True)),
-            "description": str(raw.get("label") or name).strip()[:256],
-            "input_mode": input_mode,
-            "options": options,
-            "allow_other": bool(raw.get("allow_other")),
-            "min_selections": min_selections,
-            "max_selections": max_selections,
-            "enum": [item["value"] for item in options],
-            "validation": {},
-            "sensitive": False,
-        })
-        seen.add(name)
+        field = _normalize_clarification_field(raw, seen=seen)
+        if field is not None:
+            fields.append(field)
+            seen.add(field["name"])
     if not fields:
         return None
     return {
@@ -478,3 +436,88 @@ def _normalize_clarification(value: Any) -> dict[str, Any] | None:
         "help_text": str(value.get("help_text") or "").strip()[:2000],
         "fields": fields,
     }
+
+
+def _normalize_clarification_field(
+    raw: Any, *, seen: set[str]
+) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) or name in seen:
+        return None
+    value_type = str(raw.get("value_type") or "string")
+    if value_type not in {"string", "integer", "number", "boolean", "array"}:
+        return None
+    input_mode, value_type = _clarification_field_types(raw, value_type=value_type)
+    options = _clarification_options(raw.get("options"))
+    if input_mode in {"single_choice", "multi_choice"} and not options:
+        return None
+    min_selections, max_selections = _selection_limits(raw)
+    if (
+        min_selections is not None
+        and max_selections is not None
+        and min_selections > max_selections
+    ):
+        return None
+    return {
+        "name": name,
+        "value_type": value_type,
+        "required": bool(raw.get("required", True)),
+        "description": str(raw.get("label") or name).strip()[:256],
+        "input_mode": input_mode,
+        "options": options,
+        "allow_other": bool(raw.get("allow_other")),
+        "min_selections": min_selections,
+        "max_selections": max_selections,
+        "enum": [item["value"] for item in options],
+        "validation": {},
+        "sensitive": False,
+    }
+
+
+def _clarification_field_types(
+    raw: dict[str, Any], *, value_type: str
+) -> tuple[str, str]:
+    input_mode = str(raw.get("input_mode") or "text")
+    modes = {"text", "textarea", "single_choice", "multi_choice", "boolean", "number"}
+    if input_mode not in modes:
+        input_mode = "text"
+    forced_types = {
+        "multi_choice": "array",
+        "single_choice": "string",
+        "boolean": "boolean",
+    }
+    if input_mode in forced_types:
+        value_type = forced_types[input_mode]
+    elif input_mode == "number" and value_type not in {"integer", "number"}:
+        value_type = "number"
+    return input_mode, value_type
+
+
+def _clarification_options(value: Any) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    for option in value or []:
+        if not isinstance(option, dict):
+            continue
+        option_value = str(option.get("value") or "").strip()[:128]
+        label = str(option.get("label") or option_value).strip()[:256]
+        if not option_value or not label or any(item["value"] == option_value for item in options):
+            continue
+        options.append(
+            {
+                "value": option_value,
+                "label": label,
+                "description": str(option.get("description") or "").strip()[:512],
+            }
+        )
+    return options
+
+
+def _selection_limits(raw: dict[str, Any]) -> tuple[int | None, int | None]:
+    minimum = raw.get("min_selections")
+    maximum = raw.get("max_selections")
+    return (
+        max(0, int(minimum)) if isinstance(minimum, int) else None,
+        max(1, int(maximum)) if isinstance(maximum, int) else None,
+    )

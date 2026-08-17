@@ -113,39 +113,44 @@ class WhatsAppChannelPlugin(BaseChannelPlugin):
 
         while self._running:
             try:
-                async with self._bridge.connect() as ws:
-                    self._ws = ws
-                    self._reconnect_count = 0
-                    self._set_connected(True)
-                    logger.info(f"[{self.id}] Connected to bridge")
-
-                    async for message in ws:
-                        try:
-                            await self._handle_bridge_message(message)
-                        except Exception as e:
-                            logger.error(f"[{self.id}] Bridge message error: {e}")
-
-                    self._fail_pending_sends("WhatsApp bridge disconnected")
-
+                await self._run_bridge_session()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self._set_connected(False)
-                self._ws = None
-                self._fail_pending_sends("WhatsApp bridge connection failed")
-                self._reconnect_count += 1
-
-                if self._reconnect_count <= 1 or self._reconnect_count % 6 == 0:
-                    logger.warning(f"[{self.id}] Bridge connection error: {e}")
-                else:
-                    logger.debug(f"[{self.id}] Bridge connection error: {e}")
-
-                if self._running:
-                    if self._reconnect_count <= 1:
-                        logger.info(f"[{self.id}] Reconnecting in 5 seconds...")
-                    await asyncio.sleep(5)
+                await self._handle_bridge_failure(e)
 
         self._log_stopped()
+
+    async def _run_bridge_session(self) -> None:
+        if self._bridge is None:
+            raise RuntimeError("WhatsApp bridge client is unavailable")
+        async with self._bridge.connect() as ws:
+            self._ws = ws
+            self._reconnect_count = 0
+            self._set_connected(True)
+            logger.info(f"[{self.id}] Connected to bridge")
+            async for message in ws:
+                await self._handle_bridge_message_safely(message)
+            self._fail_pending_sends("WhatsApp bridge disconnected")
+
+    async def _handle_bridge_message_safely(self, message: str) -> None:
+        try:
+            await self._handle_bridge_message(message)
+        except Exception as exc:
+            logger.error(f"[{self.id}] Bridge message error: {exc}")
+
+    async def _handle_bridge_failure(self, exc: Exception) -> None:
+        self._set_connected(False)
+        self._ws = None
+        self._fail_pending_sends("WhatsApp bridge connection failed")
+        self._reconnect_count += 1
+        log = logger.warning if self._reconnect_count <= 1 or self._reconnect_count % 6 == 0 else logger.debug
+        log(f"[{self.id}] Bridge connection error: {exc}")
+        if not self._running:
+            return
+        if self._reconnect_count <= 1:
+            logger.info(f"[{self.id}] Reconnecting in 5 seconds...")
+        await asyncio.sleep(5)
 
     async def stop(self) -> None:
         self._log_stop()

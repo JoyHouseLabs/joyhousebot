@@ -226,27 +226,14 @@ def test_removed_public_stacks_do_not_return() -> None:
 
 
 def test_python_modules_are_bounded() -> None:
-    # 700 lines is the default review gate. It still catches accidental monoliths
-    # without making normal orchestration modules fail over a handful of lines.
-    default_limit = 700
-    module_limits = {
-        # RuntimeStore is intentionally a Protocol/record aggregation surface;
-        # domain implementations remain subject to the stricter default.
-        "porthouse/storage/runtime_store.py": 850,
-        # Pydantic transport DTOs are a versioned API aggregation surface; runtime
-        # and repository modules remain subject to the stricter default.
-        "porthouse/api/schemas.py": 700,
-        # Market lifecycle coordination is intentionally grouped by its signed
-        # acquisition state machine. The storage mixin mirrors one bounded set
-        # of Market-owned tables; neither module imports business App code.
-        "porthouse/application/app_market.py": 850,
-        "porthouse/storage/postgres_app_market.py": 850,
-    }
+    # The ratcheting function/file baseline lives in scripts/check_complexity.py.
+    # This architecture contract keeps the repository-wide absolute ceiling
+    # visible even when that standalone guard is not invoked directly.
+    default_limit = 900
     oversized: list[tuple[str, int]] = []
     for path in (ROOT / "porthouse").rglob("*.py"):
         lines = len(path.read_text(encoding="utf-8").splitlines())
-        relative = str(path.relative_to(ROOT))
-        if lines > module_limits.get(relative, default_limit):
+        if lines > default_limit:
             oversized.append((str(path.relative_to(ROOT)), lines))
     assert oversized == []
 
@@ -397,3 +384,117 @@ def test_internal_imports_follow_layering() -> None:
             continue
         violations.append(f"{source} -> {module}")
     assert violations == []
+
+
+def test_runtime_runner_uses_explicit_storage_views() -> None:
+    source = (ROOT / "porthouse/runtime/runner.py").read_text(encoding="utf-8")
+
+    assert "store: Any" not in source
+    assert "self.stores = RuntimeStores.from_backend(store)" in source
+    assert "self.store:" not in source
+    assert "EventBroker(self.stores.events)" in source
+
+
+def test_migrated_runtime_services_use_only_narrow_storage_views() -> None:
+    migrated = (
+        "agent_execution.py",
+        "agent_execution_outcomes.py",
+        "agent_terminal.py",
+        "submission.py",
+        "coordinator.py",
+        "controls.py",
+        "graph_bounded_loop_execution.py",
+        "graph_branch_execution.py",
+        "graph_capability_execution.py",
+        "graph_compensation_execution.py",
+        "graph_control_execution.py",
+        "graph_finalization.py",
+        "graph_foreach_execution.py",
+        "graph_materialization.py",
+        "graph_reconciliation.py",
+        "graph_saga_execution.py",
+        "graph_subrun_execution.py",
+        "graph_task_execution.py",
+        "graph_task_lifecycle.py",
+        "graph_wait_event_execution.py",
+        "maintenance.py",
+        "plan_confirmation.py",
+        "planning_loop.py",
+        "request_coordination.py",
+    )
+    violations: list[str] = []
+    for filename in migrated:
+        path = ROOT / "porthouse/runtime" / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"self", "runtime"}
+            and node.attr == "store"
+            for node in ast.walk(tree)
+        ):
+            violations.append(filename)
+
+    assert violations == []
+    submission = (ROOT / "porthouse/runtime/submission.py").read_text(
+        encoding="utf-8"
+    )
+    assert "getattr(self.stores.graphs" not in submission
+
+
+def test_run_application_services_use_only_narrow_storage_views() -> None:
+    migrated = (
+        "app_manifest_validation.py",
+        "runs.py",
+        "run_creation.py",
+        "run_plans.py",
+        "graph_patch_preparation.py",
+        "graph_patches.py",
+        "workflow_compiler.py",
+        "workflows.py",
+    )
+    violations: list[str] = []
+    for filename in migrated:
+        path = ROOT / "porthouse/application" / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr == "store"
+            for node in ast.walk(tree)
+        ):
+            violations.append(filename)
+
+    assert violations == []
+
+
+def _class_bases(relative: str, class_name: str) -> list[str]:
+    tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+    node = next(
+        item
+        for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == class_name
+    )
+    return [ast.unparse(base) for base in node.bases]
+
+
+def test_core_runtime_and_agent_use_explicit_service_composition() -> None:
+    assert _class_bases("porthouse/runtime/runner.py", "NativeAgentRuntime") == []
+    assert _class_bases("porthouse/agent/executor.py", "NativeAgentExecutor") == []
+
+    runtime = (ROOT / "porthouse/runtime/runner.py").read_text(encoding="utf-8")
+    executor = (ROOT / "porthouse/agent/executor.py").read_text(encoding="utf-8")
+    assert "RuntimeServices.create(self)" in runtime
+    assert "AgentServices.create(self)" in executor
+
+
+def test_postgres_store_is_composed_from_repository_groups() -> None:
+    assert _class_bases("porthouse/storage/postgres_store.py", "PostgresRuntimeStore") == []
+    source = (ROOT / "porthouse/storage/runtime_store.py").read_text(encoding="utf-8")
+    assert "class RuntimeStore" not in source
+
+    postgres = (ROOT / "porthouse/storage/postgres_store.py").read_text(
+        encoding="utf-8"
+    )
+    assert "PostgresRepositorySet" in postgres

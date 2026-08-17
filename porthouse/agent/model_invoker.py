@@ -170,6 +170,265 @@ class ModelInvokerMixin:
         ordered = available if available else in_cooldown
         return [None] + ordered
 
+    def _ordered_model_candidates(self, primary_model: str) -> list[str]:
+        candidates = [primary_model] + [
+            model for model in self.model_fallbacks if model != primary_model
+        ]
+        now = time.time()
+        available = [
+            model for model in candidates if self._model_cooldown_until.get(model, 0.0) <= now
+        ]
+        return available or candidates
+
+    async def _cached_model_response(
+        self,
+        *,
+        cache_policy: dict[str, Any],
+        cache_key: str,
+        candidate: str,
+        provider_name: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        lifecycle_callback: Callable[[str, dict], Awaitable[None]] | None,
+        turn_id: str | None,
+        attempt_index: int,
+    ) -> LLMResponse | None:
+        if not cache_policy or not hasattr(self.runtime_store, "get_model_response_cache"):
+            return None
+        cached = await asyncio.to_thread(self.runtime_store.get_model_response_cache, cache_key)
+        if not cached:
+            return None
+        payload = dict(cached["response"])
+        payload["source_invocation_id"] = cached.get("source_invocation_id")
+        response = self._cached_response(payload)
+        if lifecycle_callback:
+            await lifecycle_callback("cache_hit", {"model": candidate, "cache_key": cache_key})
+        with bind_model_observation(
+            turn_id=turn_id, attempt=attempt_index, provider=provider_name
+        ):
+            response.usage = await model_cache_hit(
+                provider=provider_name,
+                model=candidate,
+                operation="model.cache.hit",
+                messages=messages,
+                tools=tools,
+                response_payload=payload,
+                reasoning_content=response.reasoning_content,
+            )
+        return response
+
+    async def _stream_model_response(
+        self,
+        provider: LLMProvider,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        candidate: str,
+        provider_name: str,
+        stream_callback: Callable[[str], Awaitable[None]],
+        lifecycle_callback: Callable[[str, dict], Awaitable[None]] | None,
+        turn_id: str | None,
+        attempt_index: int,
+    ) -> LLMResponse:
+        try:
+            with bind_model_observation(
+                turn_id=turn_id, attempt=attempt_index, provider=provider_name
+            ):
+                response = await self._consume_model_stream(
+                    provider,
+                    messages=messages,
+                    tools=tools,
+                    candidate=candidate,
+                    stream_callback=stream_callback,
+                    lifecycle_callback=lifecycle_callback,
+                )
+        except asyncio.TimeoutError:
+            response = LLMResponse(content="Stream timeout", finish_reason="error")
+            logger.warning(f"Stream timeout for model {candidate}")
+        except ConnectionError as exc:
+            response = LLMResponse(
+                content=f"Connection error: {sanitize_error_message(str(exc))}",
+                finish_reason="error",
+            )
+            logger.error(f"Stream connection error for model {candidate}")
+        except Exception as exc:
+            code, _, _ = classify_exception(exc)
+            sanitized = sanitize_error_message(str(exc))
+            response = LLMResponse(
+                content=f"Stream error [{code}]: {sanitized}", finish_reason="error"
+            )
+            logger.error(f"Stream error [{code}] for model {candidate}: {sanitized}")
+        return response or LLMResponse(
+            content="Stream ended without response", finish_reason="error"
+        )
+
+    async def _consume_model_stream(
+        self,
+        provider: LLMProvider,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        candidate: str,
+        stream_callback: Callable[[str], Awaitable[None]],
+        lifecycle_callback: Callable[[str, dict], Awaitable[None]] | None,
+    ) -> LLMResponse | None:
+        async for kind, data in provider.chat_stream(
+            messages=messages,
+            tools=tools,
+            model=candidate,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        ):
+            if kind == "delta" and isinstance(data, str):
+                await stream_callback(data)
+            elif kind == "reasoning_delta" and isinstance(data, str):
+                await self._emit_reasoning_delta(
+                    lifecycle_callback, content=data, candidate=candidate
+                )
+            elif kind == "done" and data is not None:
+                return data
+        return None
+
+    @staticmethod
+    async def _emit_reasoning_delta(
+        lifecycle_callback: Callable[[str, dict], Awaitable[None]] | None,
+        *,
+        content: str,
+        candidate: str,
+    ) -> None:
+        if lifecycle_callback is not None:
+            await lifecycle_callback(
+                "reasoning_delta", {"content": content, "model": candidate}
+            )
+
+    async def _direct_model_response(
+        self,
+        provider: LLMProvider,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        candidate: str,
+        provider_name: str,
+        turn_id: str | None,
+        attempt_index: int,
+    ) -> LLMResponse:
+        with bind_model_observation(
+            turn_id=turn_id, attempt=attempt_index, provider=provider_name
+        ):
+            return await provider.chat(
+                messages=messages,
+                tools=tools,
+                model=candidate,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+
+    async def _cache_successful_response(
+        self,
+        response: LLMResponse,
+        *,
+        cache_policy: dict[str, Any],
+        cache_key: str,
+        provider_name: str,
+        candidate: str,
+    ) -> None:
+        if not cache_policy or not hasattr(self.runtime_store, "put_model_response_cache"):
+            return
+        ttl_seconds = max(1, int(cache_policy.get("cache_ttl_seconds") or 300))
+        await asyncio.to_thread(
+            self.runtime_store.put_model_response_cache,
+            cache_key,
+            provider=provider_name,
+            model=candidate,
+            response=self._cache_payload(response),
+            expires_at=(datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat(),
+        )
+
+    def _record_model_success(
+        self, *, candidate: str, primary_model: str, profile_id: str | None, provider: str
+    ) -> None:
+        if profile_id:
+            if self._profile_health_repository is not None:
+                self._auth_profile_usage[profile_id] = (
+                    self._profile_health_repository.mark_success(profile_id, provider)
+                )
+            else:
+                mark_profile_success(self._auth_profile_usage, profile_id)
+        self._mark_model_success(candidate)
+        if candidate != primary_model:
+            logger.warning(f"Model fallback selected: {primary_model} -> {candidate}")
+
+    async def _retry_compact_tool_error(
+        self,
+        response: LLMResponse,
+        provider: LLMProvider,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        candidate: str,
+        provider_name: str,
+        lifecycle_callback: Callable[[str, dict], Awaitable[None]] | None,
+        turn_id: str | None,
+        attempt_index: int,
+    ) -> LLMResponse | None:
+        error = str(response.content or "").lower()
+        if "invalid 'tools[" not in error or "function.name" not in error or len(messages) <= 8:
+            return None
+        compact = [message for message in messages[-6:] if isinstance(message, dict)]
+        if messages and messages[0].get("role") == "system":
+            compact.insert(0, messages[0])
+        try:
+            if lifecycle_callback:
+                await lifecycle_callback(
+                    "model_retry",
+                    {"model": candidate, "reason": "provider_tool_name_validation"},
+                )
+            retry = await self._direct_model_response(
+                provider,
+                messages=compact,
+                tools=tools,
+                candidate=candidate,
+                provider_name=provider_name,
+                turn_id=turn_id,
+                attempt_index=attempt_index + 1,
+            )
+            if retry.finish_reason != "error":
+                logger.warning(
+                    "Recovered from provider tool-name validation error by using compact history"
+                )
+                return retry
+        except Exception:
+            return None
+        return None
+
+    def _record_model_failure(
+        self,
+        response: LLMResponse,
+        *,
+        candidate: str,
+        profile_id: str | None,
+        provider_name: str,
+    ) -> None:
+        reason = str(response.error_kind or "").strip() or classify_failover_reason(
+            response.content or ""
+        )
+        if profile_id and self.config is not None:
+            if self._profile_health_repository is not None:
+                self._auth_profile_usage[profile_id] = (
+                    self._profile_health_repository.mark_failure(
+                        profile_id, provider_name, reason, self.config
+                    )
+                )
+            else:
+                mark_profile_failure(
+                    self._auth_profile_usage,
+                    profile_id=profile_id,
+                    provider=provider_name,
+                    reason=reason,
+                    config=self.config,
+                )
+        self._mark_model_failure(candidate)
+
     async def _call_provider_with_fallback(
         self,
         *,
@@ -181,25 +440,9 @@ class ModelInvokerMixin:
         lifecycle_callback: Callable[[str, dict], Awaitable[None]] | None = None,
         turn_id: str | None = None,
     ) -> tuple[LLMResponse, str]:
-        candidates = [primary_model] + [m for m in self.model_fallbacks if m != primary_model]
-        now = time.time()
-        available: list[str] = []
-        in_cooldown: list[str] = []
-        for candidate in candidates:
-            until = self._model_cooldown_until.get(candidate, 0.0)
-            if until > now:
-                in_cooldown.append(candidate)
-            else:
-                available.append(candidate)
-        # Prefer non-cooled models. If all are cooled, still try to avoid deadlock.
-        if available:
-            candidates = available
-        elif in_cooldown:
-            candidates = in_cooldown
+        candidates = self._ordered_model_candidates(primary_model)
         last_response: LLMResponse | None = None
-        stream_used = False
         cache_policy = self._model_cache_policy()
-        tool_definitions = tools
         for idx, candidate in enumerate(candidates):
             provider_name = self._resolve_provider_name_for_model(candidate)
             profile_candidates = self._resolve_profile_candidates(provider_name)
@@ -223,202 +466,86 @@ class ModelInvokerMixin:
                     provider=provider_name,
                     model=candidate,
                     messages=messages,
-                    tools=tool_definitions,
+                    tools=tools,
                 )
-                if cache_policy and hasattr(self.runtime_store, "get_model_response_cache"):
-                    cached = await asyncio.to_thread(
-                        self.runtime_store.get_model_response_cache, cache_key
-                    )
-                    if cached:
-                        response_payload = dict(cached["response"])
-                        response_payload["source_invocation_id"] = cached.get(
-                            "source_invocation_id"
-                        )
-                        response = self._cached_response(response_payload)
-                        if lifecycle_callback:
-                            await lifecycle_callback(
-                                "cache_hit",
-                                {"model": candidate, "cache_key": cache_key},
-                            )
-                        with bind_model_observation(
-                            turn_id=turn_id,
-                            attempt=attempt_index,
-                            provider=provider_name,
-                        ):
-                            response.usage = await model_cache_hit(
-                                provider=provider_name,
-                                model=candidate,
-                                operation="model.cache.hit",
-                                messages=messages,
-                                tools=tool_definitions,
-                                response_payload=response_payload,
-                                reasoning_content=response.reasoning_content,
-                            )
-                        return response, candidate
+                cached = await self._cached_model_response(
+                    cache_policy=cache_policy,
+                    cache_key=cache_key,
+                    candidate=candidate,
+                    provider_name=provider_name,
+                    messages=messages,
+                    tools=tools,
+                    lifecycle_callback=lifecycle_callback,
+                    turn_id=turn_id,
+                    attempt_index=attempt_index,
+                )
+                if cached is not None:
+                    return cached, candidate
                 use_stream = (
                     allow_stream
                     and stream_callback is not None
-                    and not stream_used
                     and idx == 0
                     and pidx == 0
+                    and hasattr(runtime_provider, "chat_stream")
                 )
-                if use_stream and hasattr(runtime_provider, "chat_stream"):
-                    response: LLMResponse | None = None
-                    stream_buffer: list[str] = []
-                    try:
-                        with bind_model_observation(
-                            turn_id=turn_id,
-                            attempt=attempt_index,
-                            provider=provider_name,
-                        ):
-                            async for kind, data in runtime_provider.chat_stream(
-                                messages=messages,
-                                tools=tools,
-                                model=candidate,
-                                temperature=self.temperature,
-                                max_tokens=self.max_tokens,
-                            ):
-                                if kind == "delta" and isinstance(data, str):
-                                    stream_buffer.append(data)
-                                    if stream_callback is not None:
-                                        await stream_callback(data)
-                                elif kind == "reasoning_delta" and isinstance(data, str):
-                                    if lifecycle_callback is not None:
-                                        await lifecycle_callback(
-                                            "reasoning_delta",
-                                            {"content": data, "model": candidate},
-                                        )
-                                elif kind == "done" and data is not None:
-                                    response = data
-                                    break
-                    except asyncio.TimeoutError:
-                        response = LLMResponse(content="Stream timeout", finish_reason="error")
-                        logger.warning(f"Stream timeout for model {candidate}")
-                    except ConnectionError as e:
-                        response = LLMResponse(
-                            content=f"Connection error: {sanitize_error_message(str(e))}",
-                            finish_reason="error",
-                        )
-                        logger.error(f"Stream connection error for model {candidate}")
-                    except Exception as e:
-                        code, _, _ = classify_exception(e)
-                        sanitized = sanitize_error_message(str(e))
-                        response = LLMResponse(
-                            content=f"Stream error [{code}]: {sanitized}", finish_reason="error"
-                        )
-                        logger.error(f"Stream error [{code}] for model {candidate}: {sanitized}")
-                    if response is None:
-                        response = LLMResponse(
-                            content="Stream ended without response", finish_reason="error"
-                        )
-                    stream_used = True
-                else:
-                    with bind_model_observation(
+                response = (
+                    await self._stream_model_response(
+                        runtime_provider,
+                        messages=messages,
+                        tools=tools,
+                        candidate=candidate,
+                        provider_name=provider_name,
+                        stream_callback=stream_callback,
+                        lifecycle_callback=lifecycle_callback,
                         turn_id=turn_id,
-                        attempt=attempt_index,
-                        provider=provider_name,
-                    ):
-                        response = await runtime_provider.chat(
-                            messages=messages,
-                            tools=tools,
-                            model=candidate,
-                            temperature=self.temperature,
-                            max_tokens=self.max_tokens,
-                        )
-                if response.finish_reason != "error":
-                    if cache_policy and hasattr(self.runtime_store, "put_model_response_cache"):
-                        ttl_seconds = max(1, int(cache_policy.get("cache_ttl_seconds") or 300))
-                        await asyncio.to_thread(
-                            self.runtime_store.put_model_response_cache,
-                            cache_key,
-                            provider=provider_name,
-                            model=candidate,
-                            response=self._cache_payload(response),
-                            expires_at=(
-                                datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
-                            ).isoformat(),
-                        )
-                    if profile_id:
-                        if self._profile_health_repository is not None:
-                            self._auth_profile_usage[profile_id] = (
-                                self._profile_health_repository.mark_success(
-                                    profile_id, provider_name
-                                )
-                            )
-                        else:
-                            mark_profile_success(self._auth_profile_usage, profile_id)
-                    self._mark_model_success(candidate)
-                    if candidate != primary_model:
-                        logger.warning(f"Model fallback selected: {primary_model} -> {candidate}")
-                    return response, candidate
-                # DeepSeek occasionally reports invalid tool names in long sessions.
-                # Retry once with a shorter context (keep system + most recent turns).
-                err_text = str(response.content or "")
-                if (
-                    "invalid 'tools[" in err_text.lower()
-                    and "function.name" in err_text.lower()
-                    and len(messages) > 8
-                ):
-                    compact_messages: list[dict[str, Any]] = []
-                    if (
-                        messages
-                        and isinstance(messages[0], dict)
-                        and messages[0].get("role") == "system"
-                    ):
-                        compact_messages.append(messages[0])
-                    recent = [m for m in messages[-6:] if isinstance(m, dict)]
-                    compact_messages.extend(recent)
-                    try:
-                        if lifecycle_callback:
-                            await lifecycle_callback(
-                                "model_retry",
-                                {
-                                    "model": candidate,
-                                    "reason": "provider_tool_name_validation",
-                                },
-                            )
-                        with bind_model_observation(
-                            turn_id=turn_id,
-                            attempt=attempt_index + 1,
-                            provider=provider_name,
-                        ):
-                            retry_response = await runtime_provider.chat(
-                                messages=compact_messages,
-                                tools=tools,
-                                model=candidate,
-                                temperature=self.temperature,
-                                max_tokens=self.max_tokens,
-                            )
-                        if retry_response.finish_reason != "error":
-                            logger.warning(
-                                "Recovered from provider tool-name validation error by using compact history"
-                            )
-                            return retry_response, candidate
-                    except Exception:
-                        pass
-                last_response = response
-                reason = str(response.error_kind or "").strip() or classify_failover_reason(
-                    response.content or ""
+                        attempt_index=attempt_index,
+                    )
+                    if use_stream and stream_callback is not None
+                    else await self._direct_model_response(
+                        runtime_provider,
+                        messages=messages,
+                        tools=tools,
+                        candidate=candidate,
+                        provider_name=provider_name,
+                        turn_id=turn_id,
+                        attempt_index=attempt_index,
+                    )
                 )
-                if profile_id and self.config is not None:
-                    if self._profile_health_repository is not None:
-                        self._auth_profile_usage[profile_id] = (
-                            self._profile_health_repository.mark_failure(
-                                profile_id,
-                                provider_name,
-                                reason,
-                                self.config,
-                            )
-                        )
-                    else:
-                        mark_profile_failure(
-                            self._auth_profile_usage,
-                            profile_id=profile_id,
-                            provider=provider_name,
-                            reason=reason,
-                            config=self.config,
-                        )
-                self._mark_model_failure(candidate)
+                if response.finish_reason != "error":
+                    await self._cache_successful_response(
+                        response,
+                        cache_policy=cache_policy,
+                        cache_key=cache_key,
+                        provider_name=provider_name,
+                        candidate=candidate,
+                    )
+                    self._record_model_success(
+                        candidate=candidate,
+                        primary_model=primary_model,
+                        profile_id=profile_id,
+                        provider=provider_name,
+                    )
+                    return response, candidate
+                retry = await self._retry_compact_tool_error(
+                    response,
+                    runtime_provider,
+                    messages=messages,
+                    tools=tools,
+                    candidate=candidate,
+                    provider_name=provider_name,
+                    lifecycle_callback=lifecycle_callback,
+                    turn_id=turn_id,
+                    attempt_index=attempt_index,
+                )
+                if retry is not None:
+                    return retry, candidate
+                last_response = response
+                self._record_model_failure(
+                    response,
+                    candidate=candidate,
+                    profile_id=profile_id,
+                    provider_name=provider_name,
+                )
                 if pidx < len(profile_candidates) - 1:
                     logger.warning(
                         f"Model call failed on {candidate} profile={profile_id}, trying next profile"

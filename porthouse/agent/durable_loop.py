@@ -11,6 +11,7 @@ from porthouse.agent.context_manifest import build_turn_manifest
 from porthouse.providers.base import LLMResponse, ToolCallRequest
 from porthouse.runtime.action_identity import payload_hash
 from porthouse.runtime.context import AgentLoopStalledError, RunContext
+from porthouse.storage.contracts import ExecutionStorePort
 
 
 def durable_response_payload(response: LLMResponse) -> dict[str, Any]:
@@ -53,7 +54,7 @@ def response_from_durable_payload(value: dict[str, Any]) -> LLMResponse:
 
 @dataclass(slots=True)
 class DurableTurnJournal:
-    store: Any | None
+    store: ExecutionStorePort | None
     context: RunContext
     last_manifest: Any | None = None
 

@@ -46,7 +46,7 @@ async def execute_graph_approval(
         "description": description,
     }
     record = await asyncio.to_thread(
-        runtime.store.suspend_graph_task_for_explicit_approval,
+        runtime.stores.graphs.suspend_graph_task_for_explicit_approval,
         run_id=run.run_id,
         task_id=task.task_id,
         approval_id=approval_id,
@@ -141,7 +141,7 @@ async def execute_graph_verify(
         session_id=run.session_id,
         channel="runtime",
         chat_id=str(task.payload.get("spec_id") or task.task_id),
-        trace_store=runtime.store,
+        trace_store=runtime.stores.execution,
         output_schema=schema,
         verification_policy=dict(task.payload.get("verification_policy") or {}),
         worker_id=runtime.worker_id,
@@ -172,7 +172,7 @@ async def execute_graph_verify(
         "verification_input_hash": decision.input_hash,
     }
     saved = await asyncio.to_thread(
-        runtime.store.update_runtime_task,
+        runtime.stores.tasks.update_runtime_task,
         task.task_id,
         status=TaskStatus.COMPLETED.value,
         result=result,

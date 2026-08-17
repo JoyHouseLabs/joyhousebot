@@ -43,19 +43,27 @@ def sanitize_messages(
             message["content"] = ""
         calls = message.get("tool_calls")
         if isinstance(calls, list):
-            normalized = []
-            for call in calls:
-                current = dict(call) if isinstance(call, dict) else call
-                if isinstance(current, dict) and isinstance(current.get("function"), dict):
-                    function = dict(current["function"])
-                    name = str(function.get("name") or "")
-                    if name:
-                        function["name"] = name_map.get(name) or safe_tool_name(name)
-                    current["function"] = function
-                normalized.append(current)
-            message["tool_calls"] = normalized
+            message["tool_calls"] = _sanitize_tool_calls(calls, name_map=name_map)
         result.append(message)
     return result
+
+
+def _sanitize_tool_calls(
+    calls: list[Any], *, name_map: dict[str, str]
+) -> list[Any]:
+    normalized = []
+    for call in calls:
+        current = dict(call) if isinstance(call, dict) else call
+        if not isinstance(current, dict) or not isinstance(current.get("function"), dict):
+            normalized.append(current)
+            continue
+        function = dict(current["function"])
+        name = str(function.get("name") or "")
+        if name:
+            function["name"] = name_map.get(name) or safe_tool_name(name)
+        current["function"] = function
+        normalized.append(current)
+    return normalized
 
 
 def safe_tool_name(name: str) -> str:

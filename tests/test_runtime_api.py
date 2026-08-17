@@ -63,6 +63,17 @@ def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
     assert "/v1/action-items" not in control_paths
 
 
+def test_every_openapi_operation_declares_component_lifecycle() -> None:
+    document = create_app(surface="combined").openapi()
+    states = {
+        operation["x-porthouse-lifecycle"]
+        for methods in document["paths"].values()
+        for operation in methods.values()
+    }
+
+    assert states == {"stable", "experimental", "extension-only", "incubating"}
+
+
 def test_production_rejects_combined_or_insecure_api_surfaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

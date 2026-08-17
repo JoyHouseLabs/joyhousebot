@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
+from porthouse.storage.contracts import ExecutionStorePort
+
 
 class RunCancelledError(asyncio.CancelledError):
     """Raised when a runtime cancellation token has been cancelled."""
@@ -179,7 +181,7 @@ class RunContext:
     tracker_id: str | None = None
     parent_request_id: str | None = None
     parent_span_id: str | None = None
-    trace_store: Any = field(default=None, repr=False, compare=False)
+    trace_store: ExecutionStorePort | None = field(default=None, repr=False, compare=False)
     model: str | None = None
     system_prompt: str | None = None
     output_schema: dict[str, Any] | None = None

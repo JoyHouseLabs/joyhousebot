@@ -10,13 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from porthouse.agent.context import ContextBuilder
-from porthouse.agent.memory_lifecycle import MemoryLifecycleMixin
-from porthouse.agent.message_processor import MessageProcessorMixin
-from porthouse.agent.model_invoker import ModelInvokerMixin
 from porthouse.agent.profile_health_repository import ProfileHealthRepository
+from porthouse.agent.services import AgentServices
 from porthouse.agent.subagent import SubagentManager
-from porthouse.agent.tool_runtime import ToolRuntimeMixin
-from porthouse.agent.turn_engine import TurnEngineMixin
 from porthouse.capabilities import CapabilityRegistry
 from porthouse.config.extensions import (
     deployment_allowed_extension_ids,
@@ -34,13 +30,7 @@ if TYPE_CHECKING:
     from porthouse.cron.service import CronService
 
 
-class NativeAgentExecutor(
-    ModelInvokerMixin,
-    ToolRuntimeMixin,
-    TurnEngineMixin,
-    MessageProcessorMixin,
-    MemoryLifecycleMixin,
-):
+class NativeAgentExecutor:
     """
     The agent loop is the core processing engine.
 
@@ -73,10 +63,11 @@ class NativeAgentExecutor(
         self.outbound_sink = outbound_sink
         self.provider = provider
         self.agent_revision = agent_revision
+        self.services = AgentServices.create(self)
         self.memory_policy = dict(getattr(agent_revision, "memory_policy", {}) or {})
         self.scratch_root = scratch_root
         self.model = model or provider.get_default_model()
-        self.model_fallbacks = self._normalize_model_fallbacks(model_fallbacks)
+        self.model_fallbacks = self.services.models._normalize_model_fallbacks(model_fallbacks)
         # Only configured models (primary + fallback chain) share the cooldown
         # table; per-request user-supplied model names must not poison it.
         self._tracked_models = {self.model, *self.model_fallbacks}
@@ -161,6 +152,25 @@ class NativeAgentExecutor(
             if isinstance(configured_concurrency, int) and configured_concurrency > 0
             else None
         )
+
+    def _resolve_service_method(self, name: str, *, requester: object | None = None) -> Any:
+        return self.services.resolve(name, requester=requester)
+
+    async def process_direct(self, *args: Any, **kwargs: Any) -> str | None:
+        """Submit an inbound message through the composed message service."""
+        return await self.services.messages.process_direct(*args, **kwargs)
+
+    async def reload_tool_connectors(self) -> None:
+        """Reload connector catalogs through the composed tool service."""
+        await self.services.tools.reload_tool_connectors()
+
+    async def close_tool_connectors(self) -> None:
+        """Close connector and provider lifecycles through the turn service."""
+        await self.services.turns.close_tool_connectors()
+
+    def stop(self) -> None:
+        """Stop new Agent work through the turn service."""
+        self.services.turns.stop()
 
     def _effective_tool_connector_settings(self) -> dict[str, dict[str, Any]]:
         settings = {

@@ -8,8 +8,8 @@ from uuid import uuid4
 import psycopg
 import pytest
 
+from porthouse.storage.migration_history import migration_checksum
 from porthouse.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
-from porthouse.storage.postgres_migrations import migration_checksum
 from porthouse.storage.postgres_store import PostgresRuntimeStore
 from porthouse.storage.runtime_store import destructive_migrate_enabled
 from tests.support.postgres_store import TEST_DATABASE_URL

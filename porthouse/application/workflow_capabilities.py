@@ -7,6 +7,7 @@ from typing import Any
 from porthouse.application.errors import ValidationError
 from porthouse.domain.aggregation import normalize_aggregation_policy
 from porthouse.runtime.models import GraphTaskSpec
+from porthouse.storage.contracts import AgentCatalogStorePort
 
 _MODEL_NODE_KINDS = {"agent", "team", "scenario"}
 
@@ -30,7 +31,7 @@ def capability_task_spec(node: dict[str, Any]) -> GraphTaskSpec:
 
 
 def resolve_capability_reference(
-    store: Any, raw_value: Any, *, node_id: str
+    store: AgentCatalogStorePort, raw_value: Any, *, node_id: str
 ) -> dict[str, Any]:
     """Freeze a Workflow capability node to the current published definition."""
 

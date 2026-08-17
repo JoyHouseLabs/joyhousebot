@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from porthouse.storage.contracts import ExecutionStorePort
+
 
 def materialize_capability_artifacts(
-    store: Any,
+    store: ExecutionStorePort,
     *,
     run_id: str,
     task_id: str | None,

@@ -8,6 +8,7 @@ from typing import Any
 
 from porthouse.domain.agent_teams import AgentTeamRevision
 from porthouse.domain.capabilities import resolve_capability_policy
+from porthouse.storage.contracts import AgentCatalogStorePort
 
 
 @dataclass(slots=True)
@@ -20,7 +21,7 @@ class TeamCoordinationScope:
 
 
 async def resolve_team_coordination_scope(
-    store: Any,
+    store: AgentCatalogStorePort,
     *,
     record: Any,
     metadata: dict[str, Any],

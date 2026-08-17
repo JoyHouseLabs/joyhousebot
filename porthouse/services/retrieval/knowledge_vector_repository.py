@@ -363,6 +363,152 @@ class KnowledgeVectorRepositoryMixin:
             ).fetchone()
         return float(row["cost"] or 0)
 
+    def _stage_vector_index(
+        self, profile: Any
+    ) -> tuple[str, int, dict[str, Any], str | None]:
+        configuration = dict(profile["configuration"])
+        profile_id = str(profile["revision_id"])
+        dimensions = int(configuration["dimensions"])
+        min_rows = int(configuration.get("ann_min_rows") or 10_000)
+        with self._connection() as connection:
+            row_count = int(
+                connection.execute(
+                    """SELECT count(*) AS count FROM knowledge_revision_embeddings
+                       WHERE embedding_profile_id=%s AND dimensions=%s""",
+                    (profile_id, dimensions),
+                ).fetchone()["count"]
+            )
+            now_ms = int(time.time() * 1000)
+            if row_count < min_rows:
+                connection.execute(
+                    """INSERT INTO knowledge_vector_indexes
+                           (embedding_profile_id,dimensions,algorithm,status,index_name,
+                            row_count,min_rows,configuration,updated_at_ms)
+                       VALUES (%s,%s,'exact','not_required',NULL,%s,%s,%s,%s)
+                       ON CONFLICT(embedding_profile_id) DO UPDATE SET
+                           dimensions=excluded.dimensions,algorithm='exact',
+                           status='not_required',row_count=excluded.row_count,
+                           min_rows=excluded.min_rows,configuration=excluded.configuration,
+                           error=NULL,updated_at_ms=excluded.updated_at_ms""",
+                    (
+                        profile_id,
+                        dimensions,
+                        row_count,
+                        min_rows,
+                        Jsonb(configuration),
+                        now_ms,
+                    ),
+                )
+                return profile_id, dimensions, configuration, None
+            index_name = "ix_kemb_hnsw_" + __import__("hashlib").sha256(
+                profile_id.encode()
+            ).hexdigest()[:20]
+            connection.execute(
+                """INSERT INTO knowledge_vector_indexes
+                       (embedding_profile_id,dimensions,algorithm,status,index_name,
+                        row_count,min_rows,configuration,updated_at_ms)
+                   VALUES (%s,%s,'hnsw','building',%s,%s,%s,%s,%s)
+                   ON CONFLICT(embedding_profile_id) DO UPDATE SET
+                       dimensions=excluded.dimensions,algorithm='hnsw',status='building',
+                       index_name=excluded.index_name,row_count=excluded.row_count,
+                       min_rows=excluded.min_rows,configuration=excluded.configuration,
+                       error=NULL,updated_at_ms=excluded.updated_at_ms""",
+                (
+                    profile_id,
+                    dimensions,
+                    index_name,
+                    row_count,
+                    min_rows,
+                    Jsonb(configuration),
+                    now_ms,
+                ),
+            )
+        return profile_id, dimensions, configuration, index_name
+
+    @staticmethod
+    def _vector_index_statement(
+        *, profile_id: str, dimensions: int, configuration: dict[str, Any], index_name: str
+    ) -> Any:
+        return sql.SQL(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS {index} "
+            "ON knowledge_revision_embeddings "
+            "USING hnsw (((embedding::real[])::vector({dimensions})) vector_cosine_ops) "
+            "WITH (m={m},ef_construction={ef}) WHERE embedding_profile_id={profile}"
+        ).format(
+            index=sql.Identifier(index_name),
+            dimensions=sql.Literal(dimensions),
+            m=sql.Literal(int(configuration.get("hnsw_m") or 16)),
+            ef=sql.Literal(int(configuration.get("hnsw_ef_construction") or 64)),
+            profile=sql.Literal(profile_id),
+        )
+
+    @staticmethod
+    def _create_locked_vector_index(
+        connection: Any, *, profile_id: str, index_name: str, statement: Any
+    ) -> None:
+        valid = connection.execute(
+            """SELECT index.indisvalid FROM pg_index index
+               JOIN pg_class relation ON relation.oid=index.indexrelid
+               WHERE relation.relname=%s""",
+            (index_name,),
+        ).fetchone()
+        if valid is not None and not bool(valid[0]):
+            connection.execute(
+                sql.SQL("DROP INDEX CONCURRENTLY {}").format(sql.Identifier(index_name))
+            )
+        connection.execute(statement)
+        valid = connection.execute(
+            """SELECT index.indisvalid FROM pg_index index
+               JOIN pg_class relation ON relation.oid=index.indexrelid
+               WHERE relation.relname=%s""",
+            (index_name,),
+        ).fetchone()
+        if valid is None or not bool(valid[0]):
+            raise RuntimeError("HNSW index build did not become valid")
+
+    def _build_vector_index(
+        self, *, profile_id: str, index_name: str, statement: Any
+    ) -> bool:
+        with psycopg.connect(self.store.database_url, autocommit=True) as connection:
+            acquired = bool(
+                connection.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(%s),%s)",
+                    (profile_id, 711_903),
+                ).fetchone()[0]
+            )
+            if not acquired:
+                return False
+            try:
+                self._create_locked_vector_index(
+                    connection,
+                    profile_id=profile_id,
+                    index_name=index_name,
+                    statement=statement,
+                )
+            finally:
+                connection.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s),%s)",
+                    (profile_id, 711_903),
+                )
+        return True
+
+    def _set_vector_index_result(
+        self, profile_id: str, *, error: Exception | None = None
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """UPDATE knowledge_vector_indexes SET status=%s,error=%s,
+                   updated_at_ms=%s WHERE embedding_profile_id=%s""",
+                (
+                    "failed" if error else "ready",
+                    Jsonb({"type": type(error).__name__, "message": str(error)[:1000]})
+                    if error
+                    else None,
+                    int(time.time() * 1000),
+                    profile_id,
+                ),
+            )
+
     def reconcile_vector_indexes(self, *, limit: int = 1) -> int:
         """Select exact search for small profiles and materialize HNSW when warranted."""
         with self._connection() as connection:
@@ -375,133 +521,28 @@ class KnowledgeVectorRepositoryMixin:
             ).fetchall()
         processed = 0
         for profile in profiles:
-            configuration = dict(profile["configuration"])
-            profile_id = str(profile["revision_id"])
-            dimensions = int(configuration["dimensions"])
-            min_rows = int(configuration.get("ann_min_rows") or 10_000)
-            with self._connection() as connection:
-                row_count = int(
-                    connection.execute(
-                        """SELECT count(*) AS count FROM knowledge_revision_embeddings
-                           WHERE embedding_profile_id=%s AND dimensions=%s""",
-                        (profile_id, dimensions),
-                    ).fetchone()["count"]
-                )
-                now_ms = int(time.time() * 1000)
-                if row_count < min_rows:
-                    connection.execute(
-                        """INSERT INTO knowledge_vector_indexes
-                               (embedding_profile_id,dimensions,algorithm,status,index_name,
-                                row_count,min_rows,configuration,updated_at_ms)
-                           VALUES (%s,%s,'exact','not_required',NULL,%s,%s,%s,%s)
-                           ON CONFLICT(embedding_profile_id) DO UPDATE SET
-                               dimensions=excluded.dimensions,algorithm='exact',
-                               status='not_required',row_count=excluded.row_count,
-                               min_rows=excluded.min_rows,configuration=excluded.configuration,
-                               error=NULL,updated_at_ms=excluded.updated_at_ms""",
-                        (
-                            profile_id,
-                            dimensions,
-                            row_count,
-                            min_rows,
-                            Jsonb(configuration),
-                            now_ms,
-                        ),
-                    )
-                    processed += 1
-                    continue
-                index_name = "ix_kemb_hnsw_" + __import__("hashlib").sha256(
-                    profile_id.encode()
-                ).hexdigest()[:20]
-                connection.execute(
-                    """INSERT INTO knowledge_vector_indexes
-                           (embedding_profile_id,dimensions,algorithm,status,index_name,
-                            row_count,min_rows,configuration,updated_at_ms)
-                       VALUES (%s,%s,'hnsw','building',%s,%s,%s,%s,%s)
-                       ON CONFLICT(embedding_profile_id) DO UPDATE SET
-                           dimensions=excluded.dimensions,algorithm='hnsw',status='building',
-                           index_name=excluded.index_name,row_count=excluded.row_count,
-                           min_rows=excluded.min_rows,configuration=excluded.configuration,
-                           error=NULL,updated_at_ms=excluded.updated_at_ms""",
-                    (
-                        profile_id,
-                        dimensions,
-                        index_name,
-                        row_count,
-                        min_rows,
-                        Jsonb(configuration),
-                        now_ms,
-                    ),
-                )
-            statement = sql.SQL(
-                "CREATE INDEX CONCURRENTLY IF NOT EXISTS {index} "
-                "ON knowledge_revision_embeddings "
-                "USING hnsw (((embedding::real[])::vector({dimensions})) vector_cosine_ops) "
-                "WITH (m={m},ef_construction={ef}) WHERE embedding_profile_id={profile}"
-            ).format(
-                index=sql.Identifier(index_name),
-                dimensions=sql.Literal(dimensions),
-                m=sql.Literal(int(configuration.get("hnsw_m") or 16)),
-                ef=sql.Literal(int(configuration.get("hnsw_ef_construction") or 64)),
-                profile=sql.Literal(profile_id),
+            profile_id, dimensions, configuration, index_name = self._stage_vector_index(
+                profile
+            )
+            if index_name is None:
+                processed += 1
+                continue
+            statement = self._vector_index_statement(
+                profile_id=profile_id,
+                dimensions=dimensions,
+                configuration=configuration,
+                index_name=index_name,
             )
             try:
-                # Concurrent index DDL cannot run inside a transaction. A session
-                # advisory lock elects one builder across all Worker replicas;
-                # an interrupted invalid index is discarded before retry.
-                with psycopg.connect(self.store.database_url, autocommit=True) as connection:
-                    acquired = bool(
-                        connection.execute(
-                            "SELECT pg_try_advisory_lock(hashtext(%s),%s)",
-                            (profile_id, 711_903),
-                        ).fetchone()[0]
-                    )
-                    if not acquired:
-                        continue
-                    try:
-                        valid = connection.execute(
-                            """SELECT index.indisvalid FROM pg_index index
-                               JOIN pg_class relation ON relation.oid=index.indexrelid
-                               WHERE relation.relname=%s""",
-                            (index_name,),
-                        ).fetchone()
-                        if valid is not None and not bool(valid[0]):
-                            connection.execute(
-                                sql.SQL("DROP INDEX CONCURRENTLY {}").format(
-                                    sql.Identifier(index_name)
-                                )
-                            )
-                        connection.execute(statement)
-                        valid = connection.execute(
-                            """SELECT index.indisvalid FROM pg_index index
-                               JOIN pg_class relation ON relation.oid=index.indexrelid
-                               WHERE relation.relname=%s""",
-                            (index_name,),
-                        ).fetchone()
-                        if valid is None or not bool(valid[0]):
-                            raise RuntimeError("HNSW index build did not become valid")
-                    finally:
-                        connection.execute(
-                            "SELECT pg_advisory_unlock(hashtext(%s),%s)",
-                            (profile_id, 711_903),
-                        )
-                with self._connection() as connection:
-                    connection.execute(
-                        """UPDATE knowledge_vector_indexes SET status='ready',error=NULL,
-                           updated_at_ms=%s WHERE embedding_profile_id=%s""",
-                        (int(time.time() * 1000), profile_id),
-                    )
+                if not self._build_vector_index(
+                    profile_id=profile_id,
+                    index_name=index_name,
+                    statement=statement,
+                ):
+                    continue
+                self._set_vector_index_result(profile_id)
             except Exception as exc:
-                with self._connection() as connection:
-                    connection.execute(
-                        """UPDATE knowledge_vector_indexes SET status='failed',error=%s,
-                           updated_at_ms=%s WHERE embedding_profile_id=%s""",
-                        (
-                            Jsonb({"type": type(exc).__name__, "message": str(exc)[:1000]}),
-                            int(time.time() * 1000),
-                            profile_id,
-                        ),
-                    )
+                self._set_vector_index_result(profile_id, error=exc)
                 raise
             processed += 1
         return processed

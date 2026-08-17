@@ -116,7 +116,66 @@ class MessageProcessorMixin:
             msg.sender_id,
             len(msg.content),
         )
+        session, scope_key, run_context = await self._prepare_message_context(
+            msg, session_key=session_key, run_context=run_context
+        )
+        context_mode = self._context_mode(run_context)
+        handled, command_response = await self._native_command(
+            msg, session=session, run_context=run_context
+        )
+        if handled:
+            return command_response
+        if context_mode != "light" and len(session.messages) > self.memory_window:
+            await self._consolidate_memory(session, run_context=run_context)
+        initial_messages, run_context = self._build_run_context_messages(
+            msg,
+            session=session,
+            scope_key=scope_key,
+            run_context=run_context,
+            context_mode=context_mode,
+        )
+        final_content, tools_used, aborted, last_response = await self._run_agent_loop(
+            initial_messages,
+            stream_callback=stream_callback,
+            execution_stream_callback=execution_stream_callback,
+            check_abort_requested=check_abort_requested,
+            run_context=run_context,
+        )
+        if aborted:
+            return None
+        final_content = self._final_response_content(final_content)
+        logger.info(
+            "Agent response ready: channel={} sender={} content_chars={}",
+            msg.channel,
+            msg.sender_id,
+            len(final_content),
+        )
+        await self._save_message_response(
+            session,
+            msg=msg,
+            content=final_content,
+            tools_used=tools_used,
+            last_response=last_response,
+        )
+        reply_to = None
+        if msg.metadata and "message_id" in msg.metadata:
+            message_id = msg.metadata["message_id"]
+            reply_to = str(message_id) if message_id is not None else None
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            reply_to=reply_to,
+            metadata=msg.metadata or {},
+        )
 
+    async def _prepare_message_context(
+        self,
+        msg: InboundMessage,
+        *,
+        session_key: str | None,
+        run_context: RunContext | None,
+    ) -> tuple[Session, str | None, RunContext]:
         key = session_key or msg.session_key
         session = await asyncio.to_thread(self.sessions.get_or_create, key)
         scope_key = self._resolve_memory_scope_key(
@@ -133,7 +192,7 @@ class MessageProcessorMixin:
             )
             if retrieval and getattr(retrieval, "memory_scope", "shared") == "user":
                 session.metadata["last_memory_scope_key"] = scope_key
-        run_context = (
+        prepared = (
             replace(
                 run_context,
                 session_key=key,
@@ -155,9 +214,11 @@ class MessageProcessorMixin:
                 memory_policy=dict(getattr(self, "memory_policy", {})),
             )
         )
-        context_mode = self._context_mode(run_context)
+        return session, scope_key, prepared
 
-        # Handle slash commands (only when config.commands.native is not False)
+    async def _native_command(
+        self, msg: InboundMessage, *, session: Session, run_context: RunContext
+    ) -> tuple[bool, OutboundMessage | None]:
         cmd = msg.content.strip().lower()
         commands_config = getattr(self.config, "commands", None) if self.config else None
         native_enabled = (
@@ -166,7 +227,6 @@ class MessageProcessorMixin:
             or getattr(commands_config, "native", "auto") == "auto"
         )
         if native_enabled and cmd == "/new":
-            # Capture messages before clearing (avoid race condition with background task)
             messages_to_archive = session.messages.copy()
             session.clear()
             await asyncio.to_thread(self.sessions.save, session)
@@ -177,25 +237,31 @@ class MessageProcessorMixin:
             await self._consolidate_memory(
                 temp_session, archive_all=True, run_context=run_context
             )
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="New session started. Memory consolidation completed.",
+            return True, OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id,
+                content="New session started. Memory consolidation completed."
             )
         if native_enabled and cmd == "/help":
-            return OutboundMessage(
+            return True, OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content="🐈 porthouse commands:\n/new — Start a new conversation\n/help — Show available commands",
             )
         if (cmd == "/new" or cmd == "/help") and not native_enabled:
-            return OutboundMessage(
+            return True, OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content="Commands are disabled."
             )
+        return False, None
 
-        if context_mode != "light" and len(session.messages) > self.memory_window:
-            await self._consolidate_memory(session, run_context=run_context)
-
+    def _build_run_context_messages(
+        self,
+        msg: InboundMessage,
+        *,
+        session: Session,
+        scope_key: str | None,
+        run_context: RunContext,
+        context_mode: str,
+    ) -> tuple[list[dict[str, Any]], RunContext]:
         (
             initial_messages,
             context_sources,
@@ -242,7 +308,7 @@ class MessageProcessorMixin:
                     separator="\n\n",
                 )
             )
-        run_context = replace(
+        prepared = replace(
             run_context,
             context_sources=tuple(context_sources),
             context_candidates=tuple(context_candidates),
@@ -252,21 +318,11 @@ class MessageProcessorMixin:
                 "priority_budget_v1" if self.max_context_tokens else "unbounded_v1"
             ),
         )
-        final_content, tools_used, aborted, last_response = await self._run_agent_loop(
-            initial_messages,
-            stream_callback=stream_callback,
-            execution_stream_callback=execution_stream_callback,
-            check_abort_requested=check_abort_requested,
-            run_context=run_context,
-        )
+        return initial_messages, prepared
 
-        if aborted:
-            return None
-
+    def _final_response_content(self, final_content: str | None) -> str:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
-
-        # Prepend response_prefix from config (e.g. "[{model}] ")
         messages_config = getattr(self.config, "messages", None) if self.config else None
         if messages_config and getattr(messages_config, "response_prefix", None):
             prefix_template = (messages_config.response_prefix or "").strip()
@@ -288,35 +344,23 @@ class MessageProcessorMixin:
                 )
                 if prefix:
                     final_content = prefix + "\n" + final_content
+        return final_content
 
-        logger.info(
-            "Agent response ready: channel={} sender={} content_chars={}",
-            msg.channel,
-            msg.sender_id,
-            len(final_content),
-        )
-
+    async def _save_message_response(
+        self,
+        session: Session,
+        *,
+        msg: InboundMessage,
+        content: str,
+        tools_used: list[str],
+        last_response: Any,
+    ) -> None:
         session.add_message("user", msg.content)
         usage_kw: dict[str, Any] = {"tools_used": tools_used if tools_used else None}
         if last_response and last_response.usage:
             usage_kw["usage"] = dict(last_response.usage)
-        session.add_message("assistant", final_content, **usage_kw)
+        session.add_message("assistant", content, **usage_kw)
         await asyncio.to_thread(self.sessions.save, session)
-
-        reply_to: str | None = None
-        if msg.metadata and "message_id" in msg.metadata:
-            mid = msg.metadata["message_id"]
-            reply_to = str(mid) if mid is not None else None
-
-        outbound = OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            reply_to=reply_to,
-            metadata=msg.metadata or {},
-        )
-
-        return outbound
 
     async def _process_system_message(
         self,

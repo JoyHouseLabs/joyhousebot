@@ -1,4 +1,4 @@
-"""Durable scoped Agent memory backed exclusively by RuntimeStore."""
+"""Durable scoped Agent memory backed by the shared PostgreSQL repository set."""
 
 from __future__ import annotations
 

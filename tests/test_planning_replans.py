@@ -17,6 +17,7 @@ from porthouse.runtime.context import CancellationToken, VerificationFailedError
 from porthouse.runtime.models import AgentOptions, AgentUsage
 from porthouse.runtime.planning_loop import run_coordinator_planning
 from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.storage.contracts import RuntimeStores
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -154,7 +155,7 @@ class _PlanningRuntimeStub:
         fail: bool,
         events: Any,
     ) -> None:
-        self.store = store
+        self.stores = RuntimeStores.from_backend(store)
         self.worker_id = worker_id
         self.fail = fail
         self.events = events

@@ -67,34 +67,57 @@ class MarketClient:
         )
         try:
             for _ in range(6):
-                ok, error = validate_url(current)
-                if not ok:
-                    raise SsrfBlockedError(error)
-                async with client.stream(
-                    method,
-                    current,
+                redirect, result = await self._request_once(
+                    client,
+                    method=method,
+                    current=current,
                     headers=headers,
-                    json=json_value,
-                ) as response:
-                    if response.status_code in _REDIRECTS and response.headers.get("location"):
-                        current = urljoin(current, response.headers["location"])
-                        continue
-                    response.raise_for_status()
-                    length = response.headers.get("content-length", "")
-                    if length.isdigit() and int(length) > maximum:
-                        raise ResponseTooLargeError("Market response exceeds the size limit")
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in response.aiter_bytes():
-                        total += len(chunk)
-                        if total > maximum:
-                            raise ResponseTooLargeError("Market response exceeds the size limit")
-                        chunks.append(chunk)
-                    return response, b"".join(chunks)
+                    json_value=json_value,
+                    maximum=maximum,
+                )
+                if redirect is None:
+                    return result
+                current = redirect
             raise ValueError("Market response exceeded the redirect limit")
         finally:
             if owns:
                 await client.aclose()
+
+    async def _request_once(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        method: str,
+        current: str,
+        headers: dict[str, str],
+        json_value: dict[str, Any] | None,
+        maximum: int,
+    ) -> tuple[str | None, tuple[httpx.Response, bytes]]:
+        ok, error = validate_url(current)
+        if not ok:
+            raise SsrfBlockedError(error)
+        async with client.stream(
+            method, current, headers=headers, json=json_value
+        ) as response:
+            location = response.headers.get("location")
+            if response.status_code in _REDIRECTS and location:
+                return urljoin(current, location), (response, b"")
+            response.raise_for_status()
+            return None, (response, await self._bounded_response_body(response, maximum))
+
+    @staticmethod
+    async def _bounded_response_body(response: httpx.Response, maximum: int) -> bytes:
+        length = response.headers.get("content-length", "")
+        if length.isdigit() and int(length) > maximum:
+            raise ResponseTooLargeError("Market response exceeds the size limit")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > maximum:
+                raise ResponseTooLargeError("Market response exceeds the size limit")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     async def discovery(self) -> dict[str, Any]:
         _, body = await self._request("GET", "/.well-known/porthouse-market")
@@ -219,6 +242,34 @@ class MarketClient:
         discovery: dict[str, Any],
         resolution: dict[str, Any],
     ) -> tuple[AppBundle, bytes, dict[str, Any]]:
+        root, timestamp, snapshot, targets = await self._verified_tuf_metadata(
+            trusted_root=trusted_root, minimum_versions=minimum_versions
+        )
+        contract_keys, resolution_payload = self._verified_resolution(
+            discovery=discovery, resolution=resolution
+        )
+        verified, bundle, target_path, release = await self._verified_release_target(
+            targets=targets, resolution_payload=resolution_payload
+        )
+        self._verify_market_attestation(
+            contract_keys=contract_keys,
+            resolution_payload=resolution_payload,
+            bundle_digest=str(release.get("bundle_digest") or ""),
+        )
+        versions = {
+            "root": root.signed.version,
+            "timestamp": timestamp.signed.version,
+            "snapshot": snapshot.signed.version,
+            "targets": targets.signed.version,
+        }
+        return verified, bundle, {"tuf_versions": versions, "target_path": target_path}
+
+    async def _verified_tuf_metadata(
+        self,
+        *,
+        trusted_root: dict[str, Any],
+        minimum_versions: dict[str, int],
+    ) -> tuple[Metadata[Root], Metadata[Timestamp], Metadata[Snapshot], Metadata[Targets]]:
         root = Metadata.from_dict(dict(trusted_root))
         if not isinstance(root.signed, Root):
             raise ValueError("pinned Market root is not TUF root metadata")
@@ -238,6 +289,29 @@ class MarketClient:
         root.verify_delegate("timestamp", timestamp)
         root.verify_delegate("snapshot", snapshot)
         root.verify_delegate("targets", targets)
+        self._verify_metadata_freshness(
+            root=root,
+            timestamp=timestamp,
+            snapshot=snapshot,
+            targets=targets,
+            minimum_versions=minimum_versions,
+        )
+        timestamp.signed.snapshot_meta.verify_length_and_hashes(snapshot_raw)
+        target_meta = snapshot.signed.meta.get("targets.json")
+        if target_meta is None:
+            raise ValueError("TUF snapshot does not bind targets metadata")
+        target_meta.verify_length_and_hashes(targets_raw)
+        return root, timestamp, snapshot, targets
+
+    @staticmethod
+    def _verify_metadata_freshness(
+        *,
+        root: Metadata[Root],
+        timestamp: Metadata[Timestamp],
+        snapshot: Metadata[Snapshot],
+        targets: Metadata[Targets],
+        minimum_versions: dict[str, int],
+    ) -> None:
         for name, metadata in (
             ("root", root),
             ("timestamp", timestamp),
@@ -249,12 +323,11 @@ class MarketClient:
             minimum = int(minimum_versions.get(name) or 0)
             if metadata.signed.version < minimum:
                 raise ValueError(f"TUF {name} metadata rollback detected")
-        timestamp.signed.snapshot_meta.verify_length_and_hashes(snapshot_raw)
-        target_meta = snapshot.signed.meta.get("targets.json")
-        if target_meta is None:
-            raise ValueError("TUF snapshot does not bind targets metadata")
-        target_meta.verify_length_and_hashes(targets_raw)
 
+    @staticmethod
+    def _verified_resolution(
+        *, discovery: dict[str, Any], resolution: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         contract_keys = dict(discovery.get("contract_keys") or {})
         resolution_key = dict(contract_keys.get("resolution") or {})
         resolution_payload, _ = verify_json_contract(
@@ -268,6 +341,14 @@ class MarketClient:
         )
         if resolution_payload != dict(resolution.get("payload") or {}):
             raise ValueError("Resolution envelope and payload differ")
+        return contract_keys, resolution_payload
+
+    async def _verified_release_target(
+        self,
+        *,
+        targets: Metadata[Targets],
+        resolution_payload: dict[str, Any],
+    ) -> tuple[AppBundle, bytes, str, dict[str, Any]]:
         release = dict(resolution_payload.get("release") or {})
         target_path = str(release.get("target_path") or "")
         target_parts = PurePosixPath(target_path)
@@ -300,6 +381,15 @@ class MarketClient:
                 expected_market_id=self.base_url,
                 expected_publisher_id=str(release.get("publisher_id") or ""),
             )
+        return verified, bundle, target_path, release
+
+    @staticmethod
+    def _verify_market_attestation(
+        *,
+        contract_keys: dict[str, Any],
+        resolution_payload: dict[str, Any],
+        bundle_digest: str,
+    ) -> None:
         attestation = dict(resolution_payload.get("market_attestation") or {})
         attestation_key = dict(contract_keys.get("attestation") or {})
         attestation_payload, _ = verify_json_contract(
@@ -315,17 +405,10 @@ class MarketClient:
             raise ValueError("Market Attestation envelope and payload differ")
         if (
             dict(attestation_payload.get("subject") or {}).get("bundle_digest")
-            != release.get("bundle_digest")
+            != bundle_digest
             or attestation_payload.get("decision") != "approved"
         ):
             raise ValueError("Market Attestation does not approve the resolved bundle")
-        versions = {
-            "root": root.signed.version,
-            "timestamp": timestamp.signed.version,
-            "snapshot": snapshot.signed.version,
-            "targets": targets.signed.version,
-        }
-        return verified, bundle, {"tuf_versions": versions, "target_path": target_path}
 
     async def verify_entitlement(
         self,

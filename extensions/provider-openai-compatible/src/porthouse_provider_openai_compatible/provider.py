@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -111,6 +112,17 @@ OPENAI_COMPATIBLE_PROVIDER_SPECS = (
     ),
     ModelProviderSpec("groq", ("groq",), "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
 )
+
+
+@dataclass(slots=True)
+class _OpenAIStreamState:
+    content_parts: list[str] = field(default_factory=list)
+    reasoning_parts: list[str] = field(default_factory=list)
+    calls: dict[int, dict[str, str]] = field(default_factory=dict)
+    raw_events: list[dict[str, Any]] = field(default_factory=list)
+    finish_reason: str = "stop"
+    usage: dict[str, Any] = field(default_factory=missing_usage)
+    first_token_seen: bool = False
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -384,63 +396,27 @@ class OpenAICompatibleProvider(LLMProvider):
             request_payload=payload,
             request_url=self._url(),
         )
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        calls: dict[int, dict[str, str]] = {}
-        finish_reason = "stop"
-        usage: dict[str, Any] = missing_usage()
-        raw_events: list[dict[str, Any]] = []
-        first_token_seen = False
+        state = _OpenAIStreamState()
         try:
             async with self._client.stream(
                 "POST", self._url(), headers=self._headers(), json=payload
             ) as response:
                 await self._raise_for_status(response)
                 async for line in response.aiter_lines():
-                    if not line.startswith("data:"):
+                    event = self._openai_stream_event(line, state)
+                    if event is None:
                         continue
-                    raw = line[5:].strip()
-                    if not raw or raw == "[DONE]":
-                        continue
-                    event = json.loads(raw)
-                    raw_events.append(event)
-                    if isinstance(event.get("usage"), dict):
-                        usage = self._usage(event["usage"])
-                    choices = event.get("choices") or []
-                    if not choices:
-                        continue
-                    choice = choices[0]
-                    delta = choice.get("delta") or {}
-                    text = delta.get("content")
-                    if isinstance(text, str) and text:
-                        if not first_token_seen:
-                            first_token_seen = True
-                            await model_first_token(request_id)
-                        content_parts.append(text)
-                        yield "delta", text
-                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                    if isinstance(reasoning, str):
-                        if reasoning and not first_token_seen:
-                            first_token_seen = True
-                            await model_first_token(request_id)
-                        reasoning_parts.append(reasoning)
-                        if reasoning:
-                            yield "reasoning_delta", reasoning
-                    for call in delta.get("tool_calls") or []:
-                        index = int(call.get("index") or 0)
-                        current = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        current["id"] += str(call.get("id") or "")
-                        function = call.get("function") or {}
-                        current["name"] += str(function.get("name") or "")
-                        current["arguments"] += str(function.get("arguments") or "")
-                    if choice.get("finish_reason"):
-                        finish_reason = str(choice["finish_reason"])
+                    emitted = await self._apply_openai_stream_event(
+                        event, state, request_id
+                    )
+                    for item in emitted:
+                        yield item
             final = LLMResponse(
-                content="".join(content_parts) or None,
-                tool_calls=self._parse_stream_calls(calls, aliases),
-                finish_reason=finish_reason,
-                usage=usage,
-                reasoning_content="".join(reasoning_parts) or None,
+                content="".join(state.content_parts) or None,
+                tool_calls=self._parse_stream_calls(state.calls, aliases),
+                finish_reason=state.finish_reason,
+                usage=state.usage,
+                reasoning_content="".join(state.reasoning_parts) or None,
             )
             await model_request_finished(
                 request_id=request_id,
@@ -451,18 +427,18 @@ class OpenAICompatibleProvider(LLMProvider):
                 has_tool_calls=bool(final.tool_calls),
                 provider_request_id=response.headers.get("x-request-id")
                 or response.headers.get("request-id"),
-                response_payload={"stream_events": raw_events},
+                response_payload={"stream_events": state.raw_events},
                 reasoning_content=final.reasoning_content,
                 reasoning_blocks=final.reasoning_blocks,
                 provider_block_type="reasoning_content_delta",
             )
             yield "done", final
         except Exception as exc:
-            failed_usage = partial_usage(usage)
+            failed_usage = partial_usage(state.usage)
             if failed_usage.get("usage_status") == "missing":
                 failed_usage = self._error_usage(exc)
             raw_error = getattr(exc, "raw_response", None)
-            failure_payload: Any = {"stream_events": raw_events}
+            failure_payload: Any = {"stream_events": state.raw_events}
             if raw_error is not None:
                 failure_payload["provider_error"] = raw_error
             await model_request_failed(
@@ -483,6 +459,70 @@ class OpenAICompatibleProvider(LLMProvider):
                     **error_metadata(exc),
                 ),
             )
+
+    @staticmethod
+    def _openai_stream_event(
+        line: str, state: _OpenAIStreamState
+    ) -> dict[str, Any] | None:
+        if not line.startswith("data:"):
+            return None
+        raw = line[5:].strip()
+        if not raw or raw == "[DONE]":
+            return None
+        event = json.loads(raw)
+        state.raw_events.append(event)
+        return event
+
+    async def _apply_openai_stream_event(
+        self,
+        event: dict[str, Any],
+        state: _OpenAIStreamState,
+        request_id: str,
+    ) -> list[tuple[str, str]]:
+        if isinstance(event.get("usage"), dict):
+            state.usage = self._usage(event["usage"])
+        choices = event.get("choices") or []
+        if not choices:
+            return []
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+        emitted: list[tuple[str, str]] = []
+        text = delta.get("content")
+        if isinstance(text, str) and text:
+            await self._mark_openai_first_token(state, request_id)
+            state.content_parts.append(text)
+            emitted.append(("delta", text))
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if isinstance(reasoning, str):
+            if reasoning:
+                await self._mark_openai_first_token(state, request_id)
+                emitted.append(("reasoning_delta", reasoning))
+            state.reasoning_parts.append(reasoning)
+        self._append_openai_tool_calls(delta.get("tool_calls"), state)
+        if choice.get("finish_reason"):
+            state.finish_reason = str(choice["finish_reason"])
+        return emitted
+
+    @staticmethod
+    def _append_openai_tool_calls(value: Any, state: _OpenAIStreamState) -> None:
+        for call in value or []:
+            index = int(call.get("index") or 0)
+            current = state.calls.setdefault(
+                index, {"id": "", "name": "", "arguments": ""}
+            )
+            current["id"] += str(call.get("id") or "")
+            function = call.get("function") or {}
+            current["name"] += str(function.get("name") or "")
+            current["arguments"] += str(function.get("arguments") or "")
+
+    @staticmethod
+    async def _mark_openai_first_token(
+        state: _OpenAIStreamState, request_id: str
+    ) -> None:
+        if state.first_token_seen:
+            return
+        state.first_token_seen = True
+        await model_first_token(request_id)
 
     @staticmethod
     async def _raise_for_status(response: httpx.Response) -> None:

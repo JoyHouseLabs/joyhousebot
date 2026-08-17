@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from typing import Any
-from uuid import uuid4
 
 from porthouse.runtime.agent_execution_outcomes import (
     fail_loop_guard,
@@ -21,23 +20,23 @@ from porthouse.runtime.context import (
     CancellationToken,
     PlannerLoopExhaustedError,
     RunBudgetExceededError,
-    RunContext,
     VerificationFailedError,
 )
-from porthouse.runtime.execution_metadata import build_execution_metadata
-from porthouse.runtime.identity import conversation_key as build_conversation_key
+from porthouse.runtime.execution_context import (
+    AgentCallContextRequest,
+    prepare_agent_call_context,
+)
 from porthouse.runtime.models import (
     AgentEvent,
     AgentOptions,
     AgentResult,
     AgentUsage,
     EventType,
-    EventVisibility,
     RunStatus,
     utc_now,
 )
 from porthouse.runtime.structured import StructuredOutputError, parse_structured_output
-from porthouse.runtime.tracking import append_trace_event_async, ensure_tracking_ids
+from porthouse.runtime.tracking import append_trace_event_async
 from porthouse.runtime.verification import verify_output
 
 
@@ -49,144 +48,10 @@ class AgentExecutionMixin(AgentTerminalMixin):
     ) -> AgentResult:
         options = AgentOptions.from_dict(record.options)
         started_at = utc_now()
-        claimed = await asyncio.to_thread(
-            self.store.update_runtime_run,
-            record.run_id,
-            status="running",
-            worker_id=self.worker_id,
-            lease_version=record.lease_version,
-        )
-        if not claimed:
-            # The run was cancelled or reached a terminal state between the
-            # claim and execution start. Abort before any model/tool call;
-            # the fenced terminal commit is a no-op when another worker won.
-            await self._finish_error(
-                record.run_id,
-                RunStatus.CANCELLED,
-                EventType.RUN_CANCELLED,
-                record.cancel_reason or "run was cancelled before execution started",
-                started_at,
-                worker_id=self.worker_id,
-                lease_version=record.lease_version,
-            )
-            cancellation.cancel("run was cancelled before execution started")
-            raise asyncio.CancelledError(cancellation.reason)
-        await self._log(
-            record.run_id,
-            "run.started",
-            "Agent run claimed",
-            data={"lease_version": record.lease_version},
-        )
-        await self.events.publish(
-            AgentEvent(
-                run_id=record.run_id,
-                type=EventType.RUN_CLAIMED.value,
-                status=RunStatus.RUNNING.value,
-                worker_id=self.worker_id,
-                lease_version=record.lease_version,
-                data={
-                    "lease_version": record.lease_version,
-                    **self._run_claim_details.pop(record.run_id, {}),
-                },
-            )
-        )
-        await self.events.publish(
-            AgentEvent(
-                run_id=record.run_id,
-                type=EventType.PHASE_STARTED.value,
-                phase="planning",
-                data={"name": "planning"},
-            )
-        )
-        if record.lease_version > 1:
-            await self.events.publish(
-                AgentEvent(
-                    run_id=record.run_id,
-                    type=EventType.LEASE_TAKEOVER.value,
-                    worker_id=self.worker_id,
-                    lease_version=record.lease_version,
-                    data={"lease_version": record.lease_version},
-                )
-            )
-        await self.events.publish(
-            AgentEvent(
-                run_id=record.run_id,
-                type=EventType.RUN_STARTED.value,
-                status=RunStatus.RUNNING.value,
-                worker_id=self.worker_id,
-                lease_version=record.lease_version,
-                data={"session_id": options.session_id, "kind": "agent"},
-            )
-        )
+        await self._start_agent_record(record, options, cancellation, started_at)
         try:
-            (
-                execution_prompt,
-                selected_tools,
-                execution_metadata,
-                coordinator_usage,
-            ) = await self._prepare_execution(record, options, cancellation)
-            if execution_prompt is None:
-                current = await asyncio.to_thread(self.store.get_runtime_run, record.run_id)
-                current_status = (
-                    RunStatus(current.status) if current is not None else RunStatus.WAITING_INPUT
-                )
-                return AgentResult(
-                    run_id=record.run_id,
-                    status=current_status,
-                    stop_reason=(
-                        "delegated_to_graph"
-                        if current_status == RunStatus.QUEUED
-                        else current_status.value
-                    ),
-                    usage=coordinator_usage,
-                    started_at=started_at,
-                )
-            content, tools_used, usage = await self._call_agent(
-                run_id=record.run_id,
-                task_id=None,
-                prompt=execution_prompt,
-                user_id=record.user_id,
-                session_id=options.session_id,
-                agent_id=record.agent_id,
-                channel=options.channel,
-                chat_id=options.chat_id,
-                model=options.model,
-                system_prompt=options.system_prompt,
-                output_schema=options.output_schema,
-                timeout_seconds=options.timeout_seconds,
-                max_turns=options.max_turns,
-                max_input_tokens=options.max_input_tokens,
-                max_output_tokens=options.max_output_tokens,
-                max_cost_usd=options.max_cost_usd,
-                permission_mode=options.permission_mode,
-                allowed_tools=selected_tools,
-                disallowed_tools=options.disallowed_tools,
-                cancellation=cancellation,
-                sender_id=options.sender_id or record.user_id,
-                media=options.media,
-                metadata=execution_metadata,
-                verification_policy=options.verification_policy,
-                max_repairs=options.max_repairs,
-                run_lease_version=record.lease_version,
-            )
-            usage.add(coordinator_usage)
-            await self._ensure_run_owned(
-                record.run_id, cancellation, lease_version=record.lease_version
-            )
-            structured_output = (
-                parse_structured_output(content, options.output_schema)
-                if options.output_schema
-                else None
-            )
-            return await finalize_agent_result(
-                self,
-                record=record,
-                cancellation=cancellation,
-                content=content,
-                structured_output=structured_output,
-                usage=usage,
-                tools_used=tools_used,
-                started_at=started_at,
+            return await self._run_agent_record(
+                record, options, cancellation, started_at
             )
         except TimeoutError:
             return await self._finish_error(
@@ -275,6 +140,162 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 lease_version=record.lease_version,
             )
 
+    async def _run_agent_record(
+        self,
+        record: Any,
+        options: AgentOptions,
+        cancellation: CancellationToken,
+        started_at: str,
+    ) -> AgentResult:
+        (
+            execution_prompt,
+            selected_tools,
+            execution_metadata,
+            coordinator_usage,
+        ) = await self._prepare_execution(record, options, cancellation)
+        if execution_prompt is None:
+            current = await asyncio.to_thread(
+                self.stores.runs.get_runtime_run, record.run_id
+            )
+            current_status = (
+                RunStatus(current.status) if current is not None else RunStatus.WAITING_INPUT
+            )
+            return AgentResult(
+                run_id=record.run_id,
+                status=current_status,
+                stop_reason=(
+                    "delegated_to_graph"
+                    if current_status == RunStatus.QUEUED
+                    else current_status.value
+                ),
+                usage=coordinator_usage,
+                started_at=started_at,
+            )
+        content, tools_used, usage = await self._call_agent(
+            run_id=record.run_id,
+            task_id=None,
+            prompt=execution_prompt,
+            user_id=record.user_id,
+            session_id=options.session_id,
+            agent_id=record.agent_id,
+            channel=options.channel,
+            chat_id=options.chat_id,
+            model=options.model,
+            system_prompt=options.system_prompt,
+            output_schema=options.output_schema,
+            timeout_seconds=options.timeout_seconds,
+            max_turns=options.max_turns,
+            max_input_tokens=options.max_input_tokens,
+            max_output_tokens=options.max_output_tokens,
+            max_cost_usd=options.max_cost_usd,
+            permission_mode=options.permission_mode,
+            allowed_tools=selected_tools,
+            disallowed_tools=options.disallowed_tools,
+            cancellation=cancellation,
+            sender_id=options.sender_id or record.user_id,
+            media=options.media,
+            metadata=execution_metadata,
+            verification_policy=options.verification_policy,
+            max_repairs=options.max_repairs,
+            run_lease_version=record.lease_version,
+        )
+        usage.add(coordinator_usage)
+        await self._ensure_run_owned(
+            record.run_id, cancellation, lease_version=record.lease_version
+        )
+        structured_output = (
+            parse_structured_output(content, options.output_schema)
+            if options.output_schema
+            else None
+        )
+        return await finalize_agent_result(
+            self,
+            record=record,
+            cancellation=cancellation,
+            content=content,
+            structured_output=structured_output,
+            usage=usage,
+            tools_used=tools_used,
+            started_at=started_at,
+        )
+
+    async def _start_agent_record(
+        self,
+        record: Any,
+        options: AgentOptions,
+        cancellation: CancellationToken,
+        started_at: str,
+    ) -> None:
+        claimed = await asyncio.to_thread(
+            self.stores.runs.update_runtime_run,
+            record.run_id,
+            status="running",
+            worker_id=self.worker_id,
+            lease_version=record.lease_version,
+        )
+        if not claimed:
+            # The run was cancelled or reached a terminal state between the
+            # claim and execution start. Abort before any model/tool call;
+            # the fenced terminal commit is a no-op when another worker won.
+            await self._finish_error(
+                record.run_id,
+                RunStatus.CANCELLED,
+                EventType.RUN_CANCELLED,
+                record.cancel_reason or "run was cancelled before execution started",
+                started_at,
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+            )
+            cancellation.cancel("run was cancelled before execution started")
+            raise asyncio.CancelledError(cancellation.reason)
+        await self._log(
+            record.run_id,
+            "run.started",
+            "Agent run claimed",
+            data={"lease_version": record.lease_version},
+        )
+        await self.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.RUN_CLAIMED.value,
+                status=RunStatus.RUNNING.value,
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+                data={
+                    "lease_version": record.lease_version,
+                    **self._run_claim_details.pop(record.run_id, {}),
+                },
+            )
+        )
+        await self.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.PHASE_STARTED.value,
+                phase="planning",
+                data={"name": "planning"},
+            )
+        )
+        if record.lease_version > 1:
+            await self.events.publish(
+                AgentEvent(
+                    run_id=record.run_id,
+                    type=EventType.LEASE_TAKEOVER.value,
+                    worker_id=self.worker_id,
+                    lease_version=record.lease_version,
+                    data={"lease_version": record.lease_version},
+                )
+            )
+        await self.events.publish(
+            AgentEvent(
+                run_id=record.run_id,
+                type=EventType.RUN_STARTED.value,
+                status=RunStatus.RUNNING.value,
+                worker_id=self.worker_id,
+                lease_version=record.lease_version,
+                data={"session_id": options.session_id, "kind": "agent"},
+            )
+        )
+
     async def _call_agent(
         self,
         *,
@@ -308,288 +329,43 @@ class AgentExecutionMixin(AgentTerminalMixin):
         task_lease_version: int | None = None,
         turn_scope: str = "execution",
     ) -> tuple[str | None, list[str], AgentUsage]:
-        tools_used: list[str] = []
-        usage = AgentUsage(model=model)
-
-        async def _observe(method: str, *args: Any, **kwargs: Any) -> Any:
-            try:
-                return await asyncio.to_thread(getattr(self.store, method), *args, **kwargs)
-            except Exception:
-                return None
-
-        async def _execution_event(event_type: str, payload: dict[str, Any]) -> None:
-            nonlocal usage
-            mapping = {
-                "llm_delta": EventType.MESSAGE_DELTA.value,
-                "model_request_start": EventType.MODEL_REQUEST_STARTED.value,
-                "thinking_start": EventType.MODEL_THINKING_STARTED.value,
-                "thinking_end": EventType.MODEL_THINKING_COMPLETED.value,
-                "reasoning_delta": EventType.MODEL_REASONING_DELTA.value,
-                "model_response_end": EventType.MODEL_RESPONSE_COMPLETED.value,
-                "provider_fallback": EventType.MODEL_PROVIDER_FALLBACK.value,
-                "model_retry": EventType.MODEL_RETRY_SCHEDULED.value,
-                "cache_hit": EventType.MODEL_CACHE_HIT.value,
-                "context_built": EventType.CONTEXT_BUILT.value,
-                "turn_started": EventType.TURN_STARTED.value,
-                "turn_recovered": EventType.TURN_RECOVERED.value,
-                "turn_completed": EventType.TURN_COMPLETED.value,
-                "verification_started": EventType.VERIFICATION_STARTED.value,
-                "verification_passed": EventType.VERIFICATION_PASSED.value,
-                "verification_failed": EventType.VERIFICATION_FAILED.value,
-                "loop_stalled": EventType.LOOP_STALLED.value,
-                "loop_exhausted": EventType.LOOP_EXHAUSTED.value,
-                "tool_requested": EventType.CAPABILITY_REQUESTED.value,
-                "permission_requested": EventType.CAPABILITY_PERMISSION_REQUESTED.value,
-                "permission_resolved": EventType.CAPABILITY_PERMISSION_RESOLVED.value,
-                "tool_start": EventType.CAPABILITY_STARTED.value,
-                "tool_output": EventType.CAPABILITY_PROGRESS.value,
-                "tool_end": EventType.CAPABILITY_COMPLETED.value,
-                "final": EventType.MESSAGE_COMPLETED.value,
-                "usage": EventType.USAGE_UPDATED.value,
-            }
-            if event_type == "tool_start" and payload.get("tool"):
-                tools_used.append(str(payload["tool"]))
-            payload = dict(payload)
-            if payload.get("tool") and not payload.get("capability_id"):
-                payload["capability_id"] = payload["tool"]
-            if event_type == "tool_end" and payload.get("ok") is False:
-                mapped = EventType.CAPABILITY_FAILED.value
-            else:
-                mapped = mapping.get(event_type, event_type)
-            if event_type == "tool_start" and payload.get("span_id"):
-                await _observe(
-                    "start_execution_span",
-                    span_id=str(payload["span_id"]),
-                    trace_id=tracker_id,
-                    parent_span_id=execution_span_id,
-                    run_id=run_id,
-                    task_id=task_id,
-                    turn_id=str(payload.get("turn_id") or "") or None,
-                    span_kind="tool",
-                    name=str(payload.get("tool") or "capability"),
-                    worker_id=self.worker_id,
-                    attributes={
-                        "tool_call_id": payload.get("tool_call_id"),
-                        "arguments": payload.get("args") or {},
-                    },
-                )
-            elif event_type == "tool_end" and payload.get("span_id"):
-                await _observe(
-                    "finish_execution_span",
-                    str(payload["span_id"]),
-                    status="completed" if payload.get("ok") is not False else "failed",
-                    duration_ms=payload.get("duration_ms"),
-                    error=(
-                        {"code": payload.get("error_code"), "message": payload.get("error")}
-                        if payload.get("ok") is False
-                        else None
-                    ),
-                    attributes={
-                        "invocation_id": payload.get("invocation_id"),
-                        "result": payload.get("result"),
-                    },
-                )
-            if event_type == "usage":
-                received = AgentUsage.from_dict(payload)
-                received.model = str(payload.get("model") or model or "") or None
-                usage = received
-            await self.events.publish(
-                AgentEvent(
-                    run_id=run_id,
-                    task_id=task_id,
-                    type=mapped,
-                    data=payload,
-                    event_id=(
-                        str(payload["event_id"])
-                        if payload.get("event_id")
-                        else f"{payload['verification_id']}:{mapped}"
-                        if payload.get("verification_id")
-                        and mapped
-                        in {
-                            EventType.VERIFICATION_STARTED.value,
-                            EventType.VERIFICATION_PASSED.value,
-                            EventType.VERIFICATION_FAILED.value,
-                        }
-                        else uuid4().hex
-                    ),
-                    turn_id=str(payload.get("turn_id") or "") or None,
-                    span_id=str(payload.get("span_id") or "") or None,
-                    parent_span_id=str(payload.get("parent_span_id") or "") or None,
-                    tool_call_id=str(payload.get("tool_call_id") or "") or None,
-                    attempt=(
-                        int(payload["attempt"]) if payload.get("attempt") is not None else None
-                    ),
-                    status=(
-                        "failed"
-                        if (
-                            mapped
-                            in {
-                                EventType.CAPABILITY_FAILED.value,
-                                EventType.LOOP_STALLED.value,
-                                EventType.LOOP_EXHAUSTED.value,
-                                EventType.VERIFICATION_FAILED.value,
-                            }
-                            or (
-                                mapped == EventType.MODEL_RESPONSE_COMPLETED.value
-                                and payload.get("finish_reason") == "error"
-                            )
-                        )
-                        else "completed"
-                        if mapped
-                        in {
-                            EventType.CAPABILITY_COMPLETED.value,
-                            EventType.MODEL_RESPONSE_COMPLETED.value,
-                            EventType.MESSAGE_COMPLETED.value,
-                            EventType.TURN_COMPLETED.value,
-                            EventType.VERIFICATION_PASSED.value,
-                        }
-                        else "running"
-                    ),
-                    visibility=(
-                        EventVisibility.PRIVATE.value
-                        if mapped == EventType.MODEL_REASONING_DELTA.value
-                        else EventVisibility.PUBLIC.value
-                    ),
-                    worker_id=self.worker_id,
-                )
-            )
-            if event_type not in {"llm_delta", "reasoning_delta"}:
-                level = (
-                    "error"
-                    if mapped
-                    in {
-                        EventType.CAPABILITY_FAILED.value,
-                        EventType.VERIFICATION_FAILED.value,
-                    }
-                    else "info"
-                )
-                await self._log(
-                    run_id,
-                    mapped,
-                    f"Execution event: {mapped}",
-                    level=level,
-                    task_id=task_id,
-                    data=payload,
-                )
-
-        runtime_record = await asyncio.to_thread(self.store.get_runtime_run, run_id)
-        stored_options = dict(runtime_record.options or {}) if runtime_record else {}
-        snapshot_reader = getattr(self.store, "get_run_execution_snapshot", None)
-        execution_snapshot = (
-            await asyncio.to_thread(snapshot_reader, run_id)
-            if snapshot_reader is not None
-            else None
-        )
-        # Prompt content is copied into the accepted Run snapshot.  Resolve it
-        # here, rather than consulting mutable control-plane bindings during a
-        # Worker retry, so replay and lease takeover execute the same policy.
-        frozen_prompt_bindings = (
-            tuple(getattr(execution_snapshot, "prompt_bindings", ()) or ())
-            if execution_snapshot is not None
-            and agent_id in {"default", execution_snapshot.agent_id}
-            else ()
-        )
-        frozen_prompt_content = [
-            str(item.get("content") or "").strip()
-            for item in frozen_prompt_bindings
-            if isinstance(item, dict) and str(item.get("content") or "").strip()
-        ]
-        if frozen_prompt_content:
-            system_prompt = "\n\n---\n\n".join(
-                [*frozen_prompt_content, *([system_prompt] if system_prompt else [])]
-            )
-        request_id, tracker_id = ensure_tracking_ids(
-            request_id=stored_options.get("request_id") or f"req_{run_id}",
-            tracker_id=stored_options.get("tracker_id"),
-        )
-        execution_span_id = f"span_exec_{uuid4().hex}"
-        granted_permissions = await self._execution_permissions(run_id, agent_id, agent_revision_id)
-        scenario_state = await asyncio.to_thread(
-            self.store.get_run_scenario_state,
-            run_id,
-            expected_user_id=user_id,
-        )
-        scenario_execution_policy: dict[str, Any] = {}
-        if scenario_state is not None and getattr(scenario_state, "scenario_id", None):
-            scenario = await asyncio.to_thread(
-                self.store.get_scenario_version,
-                str(scenario_state.scenario_id),
-                int(getattr(scenario_state, "scenario_version", 0) or 0),
-            )
-            if scenario is not None:
-                scenario_execution_policy = dict(getattr(scenario, "execution_policy", {}) or {})
-        execution_metadata = build_execution_metadata(
-            metadata,
-            scenario_state=scenario_state,
-            scenario_execution_policy=scenario_execution_policy,
-        )
-        if frozen_prompt_bindings:
-            # Tool/connector metadata carries only immutable identifiers and
-            # digests, never full Prompt text.
-            execution_metadata["prompt_revisions"] = [
-                {
-                    "prompt_id": str(item.get("prompt_id") or ""),
-                    "revision_id": str(item.get("revision_id") or ""),
-                    "content_sha256": str(item.get("content_sha256") or ""),
-                    "purpose": str(item.get("purpose") or "system_instruction"),
-                }
-                for item in frozen_prompt_bindings
-                if isinstance(item, dict)
-            ]
-        context = RunContext(
-            run_id=run_id,
-            task_id=task_id,
-            turn_scope=turn_scope,
-            root_run_id=(runtime_record.root_run_id if runtime_record else None) or run_id,
-            parent_run_id=runtime_record.parent_run_id if runtime_record else None,
-            parent_task_id=runtime_record.parent_task_id if runtime_record else None,
-            request_id=request_id,
-            tracker_id=tracker_id,
-            parent_request_id=stored_options.get("parent_request_id"),
-            parent_span_id=execution_span_id,
-            trace_store=self.store,
-            user_id=user_id,
-            agent_id=agent_id,
-            session_key=build_conversation_key(user_id, agent_id, session_id),
-            session_id=session_id,
-            channel=channel,
-            chat_id=chat_id,
-            model=model,
-            system_prompt=system_prompt,
-            output_schema=output_schema,
-            verification_policy=dict(verification_policy or {}),
-            max_repairs=max_repairs,
-            max_turns=max_turns,
-            max_input_tokens=max_input_tokens,
-            max_output_tokens=max_output_tokens,
-            max_cost_usd=max_cost_usd,
-            permission_mode=permission_mode,
-            allowed_tools=frozenset(allowed_tools),
-            disallowed_tools=frozenset(disallowed_tools),
-            granted_permissions=granted_permissions,
-            cancellation=cancellation,
-            worker_id=self.worker_id,
-            run_lease_version=run_lease_version,
-            task_lease_version=task_lease_version,
-            context_timestamp=runtime_record.created_at if runtime_record else None,
-            skill_names=tuple(str(item) for item in (metadata or {}).get("skill_names", [])),
-            skill_refs=tuple(
-                dict(item)
-                for item in (metadata or {}).get("skill_refs", [])
-                if isinstance(item, dict)
+        context, event_bridge = await prepare_agent_call_context(
+            self,
+            AgentCallContextRequest(
+                run_id=run_id,
+                task_id=task_id,
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id,
+                agent_revision_id=agent_revision_id,
+                channel=channel,
+                chat_id=chat_id,
+                model=model,
+                system_prompt=system_prompt,
+                output_schema=output_schema,
+                max_turns=max_turns,
+                max_input_tokens=max_input_tokens,
+                max_output_tokens=max_output_tokens,
+                max_cost_usd=max_cost_usd,
+                permission_mode=permission_mode,
+                allowed_tools=tuple(allowed_tools),
+                disallowed_tools=tuple(disallowed_tools),
+                cancellation=cancellation,
+                metadata=dict(metadata or {}),
+                verification_policy=dict(verification_policy or {}),
+                max_repairs=max_repairs,
+                run_lease_version=run_lease_version,
+                task_lease_version=task_lease_version,
+                turn_scope=turn_scope,
             ),
-            # Retrieval policy is part of the Agent revision snapshot.  It
-            # must reach CapabilityContext unchanged so optional rerank
-            # choices cannot be supplied or changed by a model tool call.
-            memory_policy=dict(
-                getattr(execution_snapshot, "memory_policy", {}) or {}
-            ),
-            metadata=execution_metadata,
         )
+        request_id = context.request_id or f"req_{run_id}"
+        tracker_id = context.tracker_id or request_id
+        execution_span_id = context.parent_span_id or f"span_exec_{run_id}"
         conversation_key = context.session_key
         try:
-            await _observe(
-                "start_execution_span",
+            await event_bridge.observe(
+                self.stores.observability.start_execution_span,
                 span_id=execution_span_id,
                 trace_id=tracker_id,
                 run_id=run_id,
@@ -600,7 +376,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 attributes={"agent_id": agent_id, "model": model, "channel": channel},
             )
             await append_trace_event_async(
-                store=self.store,
+                store=self.stores.traces,
                 tracker_id=tracker_id,
                 request_id=request_id,
                 parent_request_id=context.parent_request_id,
@@ -631,7 +407,7 @@ class AgentExecutionMixin(AgentTerminalMixin):
                     sender_id=sender_id or user_id,
                     media=media,
                     metadata=metadata,
-                    execution_stream_callback=_execution_event,
+                    execution_stream_callback=event_bridge.handle,
                     run_context=context,
                 )
                 verification = await verify_output(
@@ -639,12 +415,12 @@ class AgentExecutionMixin(AgentTerminalMixin):
                     content,
                     turn_id=None,
                     attempt=None,
-                    event_callback=_execution_event,
+                    event_callback=event_bridge.handle,
                 )
                 if not verification.passed:
                     raise VerificationFailedError(verification.failures, verification.attempt)
             await append_trace_event_async(
-                store=self.store,
+                store=self.stores.traces,
                 tracker_id=tracker_id,
                 request_id=request_id,
                 parent_request_id=context.parent_request_id,
@@ -657,22 +433,26 @@ class AgentExecutionMixin(AgentTerminalMixin):
                 status="completed",
                 data={"task_id": task_id, "content_length": len(content or "")},
             )
-            await _observe(
-                "finish_execution_span",
+            await event_bridge.observe(
+                self.stores.observability.finish_execution_span,
                 execution_span_id,
                 status="completed",
                 attributes={"content_length": len(content or "")},
             )
-            return content, list(dict.fromkeys(tools_used)), usage
+            return (
+                content,
+                list(dict.fromkeys(event_bridge.tools_used)),
+                event_bridge.usage,
+            )
         except BaseException as exc:
-            await _observe(
-                "finish_execution_span",
+            await event_bridge.observe(
+                self.stores.observability.finish_execution_span,
                 execution_span_id,
                 status="failed",
                 error={"type": type(exc).__name__, "message": str(exc)},
             )
             await append_trace_event_async(
-                store=self.store,
+                store=self.stores.traces,
                 tracker_id=tracker_id,
                 request_id=request_id,
                 parent_request_id=context.parent_request_id,

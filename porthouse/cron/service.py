@@ -159,190 +159,161 @@ class CronService:
             lease_ms=self.lease_ms,
         )
 
-    async def _execute_claimed_job(
+    @staticmethod
+    async def _stop_renewal(renewal: asyncio.Task[None]) -> None:
+        renewal.cancel()
+        await asyncio.gather(renewal, return_exceptions=True)
+
+    async def _schedule_skip(
         self,
         job: CronJob,
         *,
-        enabled_after_run: bool | None = None,
-        ignore_active_hours: bool = False,
-    ) -> None:
-        async def renew() -> None:
-            while True:
-                await asyncio.sleep(max(1.0, self.lease_ms / 3000))
-                if not await asyncio.to_thread(self._renew_claimed_job, job):
-                    return
-
-        occurrence_id = job.state.occurrence_id or job.id
-        renewal = asyncio.create_task(renew(), name=f"schedule-renew:{occurrence_id}")
-        run_id: str | None = None
-        status = "submitted"
-        error: str | None = None
-        cancelled = False
-        finished = await asyncio.to_thread(self.repository.db_now_ms)
-        if job.state.claim_scope == "schedule":
-            if (
-                job.payload.kind == "agent_monitor"
-                and not ignore_active_hours
-                and not is_within_active_hours(job.payload.active_hours, finished)
-            ):
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                await self._settle_without_run(
-                    job,
-                    status="skipped_inactive_hours",
-                    error="outside configured active hours",
-                    enabled_after_run=enabled_after_run,
-                )
-                return
-            lateness = max(0, finished - int(job.state.scheduled_for_ms or finished))
-            if (
-                job.policy.misfire_policy == "skip"
-                and lateness > max(0, job.policy.misfire_grace_ms)
-            ):
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                await self._settle_without_run(
-                    job,
-                    status="skipped_misfire",
-                    error=f"late by {lateness}ms",
-                    enabled_after_run=enabled_after_run,
-                )
-                return
-            if job.policy.overlap_policy == "skip" and await asyncio.to_thread(
-                self.repository.has_active_occurrence,
-                job.id,
-                exclude_occurrence_id=occurrence_id,
-            ):
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                await self._settle_without_run(
-                    job,
-                    status="skipped_overlap",
-                    error="previous occurrence is still active",
-                    enabled_after_run=enabled_after_run,
-                )
-                return
+        occurrence_id: str,
+        finished: int,
+        ignore_active_hours: bool,
+    ) -> tuple[str, str] | None:
+        if job.state.claim_scope != "schedule":
+            return None
         if (
+            job.payload.kind == "agent_monitor"
+            and not ignore_active_hours
+            and not is_within_active_hours(job.payload.active_hours, finished)
+        ):
+            return "skipped_inactive_hours", "outside configured active hours"
+        lateness = max(0, finished - int(job.state.scheduled_for_ms or finished))
+        if job.policy.misfire_policy == "skip" and lateness > max(
+            0, job.policy.misfire_grace_ms
+        ):
+            return "skipped_misfire", f"late by {lateness}ms"
+        if job.policy.overlap_policy != "skip":
+            return None
+        active = await asyncio.to_thread(
+            self.repository.has_active_occurrence,
+            job.id,
+            exclude_occurrence_id=occurrence_id,
+        )
+        return ("skipped_overlap", "previous occurrence is still active") if active else None
+
+    async def _monitor_preflight(
+        self,
+        job: CronJob,
+        *,
+        occurrence_id: str,
+        enabled_after_run: bool | None,
+    ) -> bool:
+        required = (
             job.payload.kind == "agent_monitor"
             and job.payload.preflight_mode == "runtime_attention"
             and job.state.claim_scope == "schedule"
-        ):
-            preflight = await asyncio.to_thread(
-                self.monitors.evaluate_runtime_attention,
-                schedule_id=job.id,
-                occurrence_id=occurrence_id,
-                user_id=job.user_id,
-                worker_id=self.worker_id,
-                lease_version=job.lease_version,
-            )
-            if preflight is None:
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                return
-            job.state.monitor_observation_hash = str(preflight["hash"])
-            job.state.monitor_observation = dict(preflight["observation"])
-            if not preflight["should_run"]:
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                await self._settle_without_run(
-                    job,
-                    status="skipped_unchanged",
-                    error=str(preflight["reason"]),
-                    enabled_after_run=enabled_after_run,
-                )
-                return
-        if job.payload.kind == "agent_monitor" and job.payload.defer_when_busy:
-            target_agent_id = (
-                job.agent_id
-                if job.agent_id and job.agent_id != "default"
-                else self.default_agent_id
-            )
-            target_session_id = schedule_run_session_id(job)
-            busy = await asyncio.to_thread(
-                self.repository.has_active_runtime_session,
-                user_id=job.user_id,
-                agent_id=target_agent_id,
-                session_id=target_session_id,
-            )
-            if busy:
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                now_ms = await asyncio.to_thread(self.repository.db_now_ms)
-                lateness = max(0, now_ms - int(job.state.scheduled_for_ms or now_ms))
-                if (
-                    job.policy.misfire_policy == "skip"
-                    and lateness > max(0, job.policy.misfire_grace_ms)
-                ):
-                    await self._settle_without_run(
-                        job,
-                        status="skipped_busy",
-                        error=f"target session remained busy for {lateness}ms",
-                        enabled_after_run=enabled_after_run,
-                    )
-                else:
-                    await self._defer_monitor(job, enabled_after_run=enabled_after_run)
-                return
-        if job.payload.kind == "agent_monitor":
-            monitor_context = await asyncio.to_thread(
-                self.monitors.freeze_scratch,
-                schedule_id=job.id,
-                occurrence_id=occurrence_id,
-                user_id=job.user_id,
-                worker_id=self.worker_id,
-                lease_version=job.lease_version,
-            )
-            if monitor_context is None:
-                renewal.cancel()
-                await asyncio.gather(renewal, return_exceptions=True)
-                return
-            job.state.monitor_scratch_revision = int(
-                monitor_context["scratch_revision"]
-            )
-        prepared = await asyncio.to_thread(
-            self.repository.begin_submit, job, worker_id=self.worker_id
         )
-        if prepared is None:
-            renewal.cancel()
-            await asyncio.gather(renewal, return_exceptions=True)
-            return
+        if not required:
+            return True
+        preflight = await asyncio.to_thread(
+            self.monitors.evaluate_runtime_attention,
+            schedule_id=job.id,
+            occurrence_id=occurrence_id,
+            user_id=job.user_id,
+            worker_id=self.worker_id,
+            lease_version=job.lease_version,
+        )
+        if preflight is None:
+            return False
+        job.state.monitor_observation_hash = str(preflight["hash"])
+        job.state.monitor_observation = dict(preflight["observation"])
+        if preflight["should_run"]:
+            return True
+        await self._settle_without_run(
+            job,
+            status="skipped_unchanged",
+            error=str(preflight["reason"]),
+            enabled_after_run=enabled_after_run,
+        )
+        return False
+
+    async def _defer_busy_monitor_if_needed(
+        self, job: CronJob, *, enabled_after_run: bool | None
+    ) -> bool:
+        if job.payload.kind != "agent_monitor" or not job.payload.defer_when_busy:
+            return False
+        target_agent_id = (
+            job.agent_id
+            if job.agent_id and job.agent_id != "default"
+            else self.default_agent_id
+        )
+        busy = await asyncio.to_thread(
+            self.repository.has_active_runtime_session,
+            user_id=job.user_id,
+            agent_id=target_agent_id,
+            session_id=schedule_run_session_id(job),
+        )
+        if not busy:
+            return False
+        now_ms = await asyncio.to_thread(self.repository.db_now_ms)
+        lateness = max(0, now_ms - int(job.state.scheduled_for_ms or now_ms))
+        if job.policy.misfire_policy == "skip" and lateness > max(
+            0, job.policy.misfire_grace_ms
+        ):
+            await self._settle_without_run(
+                job,
+                status="skipped_busy",
+                error=f"target session remained busy for {lateness}ms",
+                enabled_after_run=enabled_after_run,
+            )
+        else:
+            await self._defer_monitor(job, enabled_after_run=enabled_after_run)
+        return True
+
+    async def _freeze_monitor_context(self, job: CronJob, occurrence_id: str) -> bool:
+        if job.payload.kind != "agent_monitor":
+            return True
+        context = await asyncio.to_thread(
+            self.monitors.freeze_scratch,
+            schedule_id=job.id,
+            occurrence_id=occurrence_id,
+            user_id=job.user_id,
+            worker_id=self.worker_id,
+            lease_version=job.lease_version,
+        )
+        if context is None:
+            return False
+        job.state.monitor_scratch_revision = int(context["scratch_revision"])
+        return True
+
+    async def _invoke_claimed_job(
+        self, job: CronJob, *, enabled_after_run: bool | None
+    ) -> tuple[str | None, str, str | None, bool, bool]:
+        run_id: str | None = None
+        status, error, cancelled, settled = "submitted", None, False, False
         try:
             if self.on_job:
                 run_id = await self.on_job(job)
         except asyncio.CancelledError:
-            # Worker shutdown must still settle the claimed occurrence so the
-            # job does not linger in a claimed state until the lease expires.
-            status = "error"
-            error = "worker shutdown"
-            cancelled = True
+            status, error, cancelled = "error", "worker shutdown", True
         except ScheduleAppUnavailableError as exc:
-            # A structurally unavailable App (uninstalled, suspended, or with
-            # drifted dependencies) must not enter the generic retry path:
-            # every tick would fail the same resolve and back off forever.
-            # Settle terminally and disable the schedule; re-enable or
-            # reinstall is the explicit recovery.
-            renewal.cancel()
-            await asyncio.gather(renewal, return_exceptions=True)
             await self._settle_without_run(
                 job,
                 status="skipped_app_unavailable",
                 error=f"app entrypoint unavailable: {exc.reason}",
                 enabled_after_run=False,
             )
-            return
+            settled = True
         except Exception as exc:
-            status = "error"
-            error = str(exc)
+            status, error = "error", str(exc)
             logger.exception("Schedule execution failed: {}", job.id)
-        finally:
-            renewal.cancel()
-            await asyncio.gather(renewal, return_exceptions=True)
+        return run_id, status, error, cancelled, settled
 
+    async def _finish_claimed_job(
+        self,
+        job: CronJob,
+        *,
+        run_id: str | None,
+        status: str,
+        error: str | None,
+        cancelled: bool,
+        enabled_after_run: bool | None,
+    ) -> None:
         finished = await asyncio.to_thread(self.repository.db_now_ms)
         remains_enabled = job.enabled if enabled_after_run is None else enabled_after_run
-        # Recompute the next occurrence from the schedule definition.  A
-        # one-shot ``at`` job whose time is still in the future (manual "run
-        # now" ahead of schedule) keeps that planned occurrence; a due ``at``
-        # job yields None and is disabled as consumed.
         next_run = (
             _compute_next_run(job.schedule, finished)
             if remains_enabled and job.state.claim_scope == "schedule"
@@ -350,10 +321,8 @@ class CronService:
         )
         next_attempt_at_ms: int | None = None
         delivery_content: str | None = None
-        if (
-            status == "error"
-            and not cancelled
-            and job.state.submit_attempt < max(1, job.policy.max_submit_attempts)
+        if status == "error" and not cancelled and (
+            job.state.submit_attempt < max(1, job.policy.max_submit_attempts)
         ):
             status = "retry_wait"
             backoff = min(
@@ -379,6 +348,68 @@ class CronService:
         )
         if cancelled:
             raise asyncio.CancelledError(error)
+
+    async def _execute_claimed_job(
+        self,
+        job: CronJob,
+        *,
+        enabled_after_run: bool | None = None,
+        ignore_active_hours: bool = False,
+    ) -> None:
+        async def renew() -> None:
+            while True:
+                await asyncio.sleep(max(1.0, self.lease_ms / 3000))
+                if not await asyncio.to_thread(self._renew_claimed_job, job):
+                    return
+
+        occurrence_id = job.state.occurrence_id or job.id
+        renewal = asyncio.create_task(renew(), name=f"schedule-renew:{occurrence_id}")
+        finished = await asyncio.to_thread(self.repository.db_now_ms)
+        skip = await self._schedule_skip(
+            job,
+            occurrence_id=occurrence_id,
+            finished=finished,
+            ignore_active_hours=ignore_active_hours,
+        )
+        if skip is not None:
+            await self._stop_renewal(renewal)
+            await self._settle_without_run(
+                job, status=skip[0], error=skip[1], enabled_after_run=enabled_after_run
+            )
+            return
+        if not await self._monitor_preflight(
+            job, occurrence_id=occurrence_id, enabled_after_run=enabled_after_run
+        ):
+            await self._stop_renewal(renewal)
+            return
+        if await self._defer_busy_monitor_if_needed(
+            job, enabled_after_run=enabled_after_run
+        ):
+            await self._stop_renewal(renewal)
+            return
+        if not await self._freeze_monitor_context(job, occurrence_id):
+            await self._stop_renewal(renewal)
+            return
+        prepared = await asyncio.to_thread(
+            self.repository.begin_submit, job, worker_id=self.worker_id
+        )
+        if prepared is None:
+            await self._stop_renewal(renewal)
+            return
+        run_id, status, error, cancelled, settled = await self._invoke_claimed_job(
+            job, enabled_after_run=enabled_after_run
+        )
+        await self._stop_renewal(renewal)
+        if settled:
+            return
+        await self._finish_claimed_job(
+            job,
+            run_id=run_id,
+            status=status,
+            error=error,
+            cancelled=cancelled,
+            enabled_after_run=enabled_after_run,
+        )
 
     async def _settle_without_run(
         self,
