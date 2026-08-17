@@ -7,16 +7,22 @@ import json
 from typing import Any
 
 from porthouse.domain.capabilities import capability_id, capability_kind
+from porthouse.domain.collaboration_blueprints import frozen_enforced_blueprint
+from porthouse.orchestration.blueprint_compiler import (
+    apply_blueprint_boundary,
+    enforce_final_plan_boundary,
+)
 from porthouse.orchestration.clarification import ClarificationEngine
 from porthouse.orchestration.coordinator_agent import normalize_coordinator_plan
 from porthouse.orchestration.planner import ScenarioPlanner, build_coordinator_graph
 from porthouse.runtime.context import CancellationToken
 from porthouse.runtime.models import AgentEvent, AgentOptions, AgentUsage, EventType
+from porthouse.runtime.plan_confirmation import PlanConfirmationMixin
 from porthouse.runtime.planning_loop import run_coordinator_planning
 from porthouse.runtime.team_coordination import resolve_team_coordination_scope
 
 
-class RequestCoordinationMixin:
+class RequestCoordinationMixin(PlanConfirmationMixin):
     async def _publish_coordination_progress(
         self,
         run_id: str,
@@ -271,29 +277,46 @@ class RequestCoordinationMixin:
         scenario_values = [item.to_dict() for item in scenarios]
         routing_decision = dict(options.metadata.get("routing_decision") or {})
 
+        frozen_blueprint = (
+            frozen_enforced_blueprint(options.metadata.get("team_collaboration_blueprint"))
+            if team is not None
+            else {}
+        )
+
         def normalize(raw_plan: dict[str, Any]) -> dict[str, Any]:
             normalized = normalize_coordinator_plan(
                 raw_plan, planning_catalog, scenario_values, team=team
             )
             # A deterministic route is a contract, not merely a model hint.
-            return _enforce_routed_scenario(
+            normalized = _enforce_routed_scenario(
                 normalized,
                 scenarios=scenarios,
                 routing_decision=routing_decision,
                 supplied_inputs=dict(options.metadata.get("scenario_inputs") or {}),
             )
+            if team is not None and frozen_blueprint:
+                apply_blueprint_boundary(normalized, frozen_blueprint, team=team)
+            return normalized
 
+        planning_prompt = options.prompt
+        if dynamic_inputs:
+            planning_prompt = (
+                f"{options.prompt}\n\n## Answers already supplied by the user\n"
+                f"{json.dumps(dynamic_inputs, ensure_ascii=False)}"
+            )
+        plan_regeneration = dict(options.metadata.get("plan_regeneration") or {})
+        if plan_regeneration.get("feedback"):
+            planning_prompt = (
+                f"{planning_prompt}\n\n## Prior plan user feedback\n"
+                f"The user rejected the previous plan. Address this feedback in the "
+                f"replacement plan:\n{str(plan_regeneration['feedback'])[:4000]}"
+            )
         planning = await run_coordinator_planning(
             self,
             record=record,
             options=options,
             cancellation=cancellation,
-            user_prompt=(
-                f"{options.prompt}\n\n## Answers already supplied by the user\n"
-                f"{json.dumps(dynamic_inputs, ensure_ascii=False)}"
-                if dynamic_inputs
-                else options.prompt
-            ),
+            user_prompt=planning_prompt,
             scenarios=scenario_values,
             capabilities=planning_catalog,
             routing_decision=routing_decision,
@@ -577,6 +600,29 @@ class RequestCoordinationMixin:
                 team_workspace_run_id=record.run_id if team is not None else None,
             )
         if graph_to_materialize is not None:
+            if team is not None and frozen_blueprint:
+                # Final gate: only compiler-approved plans reach the scheduler.
+                enforce_final_plan_boundary(plan, frozen_blueprint, team=team)
+                if frozen_blueprint.get("guardrails", {}).get("require_plan_confirmation"):
+                    generation = int(options.metadata.get("plan_generation") or 0) + 1
+                    confirmation = await asyncio.to_thread(
+                        self.store.get_plan_confirmation, record.run_id
+                    )
+                    confirmed_for_generation = (
+                        confirmation is not None
+                        and confirmation["status"] == "confirmed"
+                        and int(confirmation["plan_version"]) == generation
+                    )
+                    if not confirmed_for_generation:
+                        await self._await_plan_confirmation(
+                            record,
+                            options=options,
+                            team=team,
+                            plan=plan,
+                            graph=graph_to_materialize,
+                            generation=generation,
+                        )
+                        return None, tools, metadata, coordination_usage
             graph_to_materialize.metadata["coordination_usage"] = coordination_usage.to_dict()
             await self.materialize_graph(
                 record.run_id,

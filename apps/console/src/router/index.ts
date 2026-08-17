@@ -31,6 +31,7 @@ const router = createRouter({
         { path: 'chat', name: 'Chat', component: () => import('../views/Chat.vue') },
         { path: 'agents', name: 'Agents', component: () => import('../views/Agents.vue') },
         { path: 'teams', name: 'AgentTeams', component: () => import('../views/Teams.vue') },
+        { path: 'teams/compose', name: 'TeamComposer', component: () => import('../views/TeamComposer.vue') },
         { path: 'workflows', name: 'Workflows', component: () => import('../views/Workflows.vue') },
         { path: 'skills', name: 'Skills', component: () => import('../views/Skills.vue') },
         { path: 'tools', name: 'Tools', component: () => import('../views/CapabilityEditor.vue') },

@@ -59,6 +59,62 @@ def render_prometheus(data: dict[str, Any]) -> str:
             f"porthouse_workers_stale_total {int(data.get('workers_stale', 0))}",
         ]
     )
+    capacity = data.get("capacity") or {}
+    lines.extend(
+        [
+            f"porthouse_workers_reporting_total {int(capacity.get('reporting_workers', 0))}",
+            f"porthouse_agent_slots_total {int(capacity.get('agent_slots', 0))}",
+            f"porthouse_agent_slots_active {int(capacity.get('agent_active', 0))}",
+            f"porthouse_agent_slots_waiting {int(capacity.get('agent_waiting', 0))}",
+            f"porthouse_graph_slots_total {int(capacity.get('graph_slots', 0))}",
+            f"porthouse_graph_slots_active {int(capacity.get('graph_active', 0))}",
+            f"porthouse_graph_tasks_buffered {int(capacity.get('graph_buffered', 0))}",
+            f"porthouse_worker_process_cpu_percent_avg {float(capacity.get('worker_cpu_percent_avg', 0))}",
+            f"porthouse_worker_process_rss_bytes {int(capacity.get('worker_rss_bytes', 0))}",
+        ]
+    )
+    database_pool = data.get("database_pool") or {}
+    lines.extend(
+        [
+            f"porthouse_database_pool_size {int(database_pool.get('size', 0))}",
+            f"porthouse_database_pool_available {int(database_pool.get('available', 0))}",
+            f"porthouse_database_pool_waiting {int(database_pool.get('waiting', 0))}",
+            f"porthouse_database_pool_max_size {int(database_pool.get('max_size', 0))}",
+        ]
+    )
+    for row in data.get("provider_errors_24h") or []:
+        labels = f'provider="{_label(row["provider"])}",model="{_label(row["model"])}"'
+        lines.append(f"porthouse_provider_failures_24h_total{{{labels}}} {int(row['failed'])}")
+        lines.append(f"porthouse_provider_failure_rate_24h{{{labels}}} {float(row['failure_rate'])}")
+    for row in data.get("team_runs") or []:
+        lines.append(
+            f'porthouse_team_runs_total{{status="{_label(row["status"])}"}} {int(row["count"])}'
+        )
+    for row in data.get("team_plan_actions") or []:
+        lines.append(
+            f'porthouse_team_plan_actions_total{{action="{_label(row["action"])}"}} {int(row["count"])}'
+        )
+    team_planning = data.get("team_planning") or {}
+    if team_planning:
+        lines.extend(
+            [
+                "# TYPE porthouse_team_planning_duration_seconds gauge",
+                "porthouse_team_planning_duration_seconds"
+                f'{{quantile="p95"}} {float(team_planning.get("planning_duration_seconds_p95", 0))}',
+                "porthouse_team_planning_duration_seconds"
+                f'{{quantile="avg"}} {float(team_planning.get("planning_duration_seconds_avg", 0))}',
+                "porthouse_team_plan_confirmation_wait_seconds "
+                f'{float(team_planning.get("confirmation_wait_seconds_p95", 0))}',
+            ]
+        )
+    for row in data.get("team_tasks") or []:
+        labels = f'kind="{_label(row["kind"])}",status="{_label(row["status"])}"'
+        lines.append(f"porthouse_team_tasks_total{{{labels}}} {int(row['count'])}")
+    for row in data.get("coordinator_replans") or []:
+        lines.append(
+            f'porthouse_coordinator_replans_total{{reason_code="{_label(row["reason_code"])}"}}'
+            f" {int(row['count'])}"
+        )
     for key, title in (
         ("actions", "Durable Actions"),
         ("approvals", "Approval requests"),

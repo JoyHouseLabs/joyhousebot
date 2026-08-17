@@ -48,6 +48,28 @@
         <div class="detail-facts">
           <div><span>Agent</span><strong>{{ selected.agent_id }}</strong></div><div><span>Session</span><strong>{{ selected.session_id }}</strong></div><div><span>类型</span><strong>{{ selected.kind || 'agent' }}</strong></div><div><span>更新时间</span><strong>{{ formatDate(selected.updated_at || selected.created_at) }}</strong></div>
         </div>
+        <section v-if="runPlan" class="plan-strip panel">
+          <header>
+            <span class="eyebrow">PLAN</span>
+            <strong>执行计划 v{{ runPlan.plan_version }}</strong>
+            <span :class="['plan-state', runPlan.status]">{{ planStatusLabel(runPlan.status) }}</span>
+            <small v-if="runPlan.plan.summary">{{ runPlan.plan.summary }}</small>
+          </header>
+          <div class="plan-meta">
+            <span>{{ runPlan.estimate.task_count }} 个任务</span>
+            <span>{{ runPlan.estimate.phase_count }} 个协作阶段</span>
+            <span v-if="runPlan.confirmation.expires_at">确认窗口至 {{ formatDate(runPlan.confirmation.expires_at) }}</span>
+          </div>
+          <div v-if="runPlan.awaiting_confirmation" class="plan-actions">
+            <button class="primary-button" type="button" :disabled="planActing" @click="actPlan('confirm')">确认执行</button>
+            <button class="secondary-button" type="button" :disabled="planActing" @click="planFeedbackVisible = !planFeedbackVisible">带反馈重新生成</button>
+            <button class="danger-button" type="button" :disabled="planActing" @click="actPlan('cancel')">取消计划</button>
+          </div>
+          <div v-if="planFeedbackVisible && runPlan.awaiting_confirmation" class="plan-feedback">
+            <textarea v-model="planFeedback" rows="2" placeholder="告诉 Coordinator 需要如何修改计划（必填）" />
+            <button class="primary-button" type="button" :disabled="planActing" @click="actPlan('regenerate')">提交反馈并重新生成</button>
+          </div>
+        </section>
         <div class="trace-metrics">
           <div><span>模型调用</span><strong>{{ modelInvocations.length }}</strong></div>
           <div><span>模型耗时</span><strong>{{ totalModelDuration.toLocaleString() }} ms</strong></div>
@@ -178,6 +200,7 @@ import {
   type TraceBlob,
 } from '../api/admin'
 import { listGraphPatchProposals, resolveGraphPatchProposal, type GraphPatchProposal, type RunFeedback, type RuntimeArtifact, type RuntimeEvent, type RuntimeInvocation, type RuntimeLog, type RuntimeRun, type RuntimeTask } from '../api/runtime'
+import { type RunPlan, actRunPlan, getRunPlan } from '../api/plans'
 import ExecutionTimeline from '../components/ExecutionTimeline.vue'
 
 const route = useRoute(); const router = useRouter(); const message = useMessage()
@@ -185,6 +208,13 @@ const statuses = ['queued', 'running', 'completed', 'failed', 'cancelled', 'time
 const runs = ref<RuntimeRun[]>([]); const agents = ref<AgentListItem[]>([]); const loading = ref(false); const error = ref('')
 const statusFilter = ref(''); const agentFilter = ref(''); const search = ref(''); const selected = ref<RuntimeRun | null>(null)
 const pageSize = 10; const page = ref(1); const totalRuns = ref(0); const totalPages = ref(1)
+const runPlan = ref<RunPlan | null>(null)
+const planFeedback = ref('')
+const planFeedbackVisible = ref(false)
+const planActing = ref(false)
+function planStatusLabel(status: string) { return ({ awaiting_confirmation: '等待确认', confirmed: '已确认', regenerate_requested: '重新生成中', cancelled: '已取消', expired: '已过期', superseded: '已替代' } as Record<string, string>)[status] || status }
+async function loadPlan(runId: string) { try { runPlan.value = await getRunPlan(runId) } catch { runPlan.value = null } }
+async function actPlan(action: 'confirm' | 'regenerate' | 'cancel') { if (!selected.value) return; if (action === 'regenerate' && !planFeedback.value.trim()) { error.value = '重新生成计划需要填写反馈'; return } planActing.value = true; error.value = ''; try { await actRunPlan(selected.value.run_id, action, action === 'regenerate' ? planFeedback.value.trim() : undefined); planFeedback.value = ''; planFeedbackVisible.value = false; await loadPlan(selected.value.run_id) } catch (cause) { error.value = cause instanceof Error ? cause.message : '计划操作失败' } finally { planActing.value = false } }
 const directRunId = computed(() => typeof route.params.runId === 'string' ? route.params.runId : '')
 const events = ref<RuntimeEvent[]>([]); const tasks = ref<RuntimeTask[]>([]); const logs = ref<RuntimeLog[]>([]); const artifacts = ref<RuntimeArtifact[]>([]); const activeTab = ref('timeline')
 const invocations = ref<RuntimeInvocation[]>([]); const traces = ref<Array<Record<string, unknown>>>([]); const children = ref<RuntimeRun[]>([])
@@ -211,7 +241,7 @@ const traceRange = computed(() => {
 async function loadRuns() { loading.value = true; error.value = ''; try { const response = await listAdminRuns({ status: statusFilter.value || undefined, agentId: agentFilter.value || undefined, search: search.value || undefined, page: page.value, limit: pageSize }); runs.value = response.items; page.value = response.pagination.page; totalRuns.value = response.pagination.total; totalPages.value = response.pagination.total_pages; if (selected.value) selected.value = runs.value.find((item) => item.run_id === selected.value?.run_id) ?? selected.value } catch (e) { error.value = e instanceof Error ? e.message : '读取平台运行失败' } finally { loading.value = false } }
 function resetAndLoad() { page.value = 1; void loadRuns() }
 function goToPage(value: number) { page.value = Math.max(1, Math.min(totalPages.value, value)); void loadRuns() }
-async function openRun(run: Pick<RuntimeRun, 'run_id'>) { streamAbort?.abort(); loading.value = true; try { const detail = await getAdminRunDiagnostics(run.run_id); selected.value = detail.run; events.value = detail.events; tasks.value = detail.tasks; logs.value = detail.logs; artifacts.value = detail.artifacts; invocations.value = detail.invocations; traces.value = detail.traces; children.value = detail.children; spans.value = detail.spans || []; modelInvocations.value = detail.model_invocations || []; reasoning.value = detail.reasoning || []; replays.value = detail.replays || []; feedback.value = detail.feedback || []; graphProposals.value = await listGraphPatchProposals(run.run_id).catch(() => []); rawViewer.value = null; replayPrompt.value = ''; seenEvents.clear(); events.value.forEach((event) => seenEvents.add(event.event_id)); activeTab.value = 'timeline'; if (!directRunId.value) await router.push({ name: 'RunDetail', params: { runId: run.run_id } }); streamAbort = new AbortController(); const cursor = Math.max(0, ...events.value.map((event) => event.sequence || 0)); void streamAdminRunEvents(run.run_id, (event) => { if (!seenEvents.has(event.event_id)) { seenEvents.add(event.event_id); events.value.push(event); if (event.type === 'model.reasoning.delta' && event.data.content) reasoning.value.push({ segment_id: event.event_id, invocation_id: '', run_id: run.run_id, sequence: event.sequence, source: 'provider_native', kind: 'analysis', content_format: 'text', fidelity: 'exact', content: String(event.data.content), created_at: event.created_at }) } }, { afterSequence: cursor, signal: streamAbort.signal }).catch(() => undefined) } catch (e) { error.value = e instanceof Error ? e.message : '读取 Run 详情失败' } finally { loading.value = false } }
+async function openRun(run: Pick<RuntimeRun, 'run_id'>) { streamAbort?.abort(); loading.value = true; try { const detail = await getAdminRunDiagnostics(run.run_id); selected.value = detail.run; runPlan.value = null; if (String(detail.run.status) === 'waiting_input' || String(detail.run.kind) === 'graph') void loadPlan(run.run_id); events.value = detail.events; tasks.value = detail.tasks; logs.value = detail.logs; artifacts.value = detail.artifacts; invocations.value = detail.invocations; traces.value = detail.traces; children.value = detail.children; spans.value = detail.spans || []; modelInvocations.value = detail.model_invocations || []; reasoning.value = detail.reasoning || []; replays.value = detail.replays || []; feedback.value = detail.feedback || []; graphProposals.value = await listGraphPatchProposals(run.run_id).catch(() => []); rawViewer.value = null; replayPrompt.value = ''; seenEvents.clear(); events.value.forEach((event) => seenEvents.add(event.event_id)); activeTab.value = 'timeline'; if (!directRunId.value) await router.push({ name: 'RunDetail', params: { runId: run.run_id } }); streamAbort = new AbortController(); const cursor = Math.max(0, ...events.value.map((event) => event.sequence || 0)); void streamAdminRunEvents(run.run_id, (event) => { if (!seenEvents.has(event.event_id)) { seenEvents.add(event.event_id); events.value.push(event); if (event.type === 'model.reasoning.delta' && event.data.content) reasoning.value.push({ segment_id: event.event_id, invocation_id: '', run_id: run.run_id, sequence: event.sequence, source: 'provider_native', kind: 'analysis', content_format: 'text', fidelity: 'exact', content: String(event.data.content), created_at: event.created_at }) } }, { afterSequence: cursor, signal: streamAbort.signal }).catch(() => undefined) } catch (e) { error.value = e instanceof Error ? e.message : '读取 Run 详情失败' } finally { loading.value = false } }
 function closeDetail() { streamAbort?.abort(); selected.value = null; if (directRunId.value) { void router.push({ name: 'Runs' }); return } void router.replace({ query: { ...route.query, run: undefined } }) }
 async function cancelSelected() { if (!selected.value) return; try { selected.value = await cancelAdminRun(selected.value.run_id); message.success('已提交平台取消请求'); await loadRuns() } catch (e) { message.error(e instanceof Error ? e.message : '取消失败') } }
 function statusLabel(status: string) { return ({ queued: '排队', blocked: '阻塞', running: '运行中', completed: '完成', failed: '失败', cancelled: '取消', timed_out: '超时', skipped: '跳过', paused: '暂停', waiting_input: '等待输入' } as Record<string, string>)[status] ?? status }
@@ -243,4 +273,5 @@ onUnmounted(() => { streamAbort?.abort() })
 .run-detail.standalone { position: relative; inset: auto; width: 100%; height: auto; min-height: calc(100vh - 110px); border: 1px solid var(--border); border-radius: 18px; box-shadow: none; }
 .patch-proposal-list { display: grid; gap: 10px; }.patch-proposal-list article { padding: 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }.patch-proposal-list header,.proposal-actions { display: flex; align-items: center; justify-content: space-between; gap: 9px; }.patch-proposal-list header>div { display: flex; align-items: center; gap: 8px; }.patch-proposal-list p,.patch-proposal-list small { color: var(--text-muted); font-size: 10px; }.proposal-actions { justify-content: flex-start; margin-top: 10px; }.artifact-to-work { display: inline-block; margin-top: 7px; color: var(--accent); font-size: 10px; }
 @media (max-width: 700px) { .pagination-bar { align-items: flex-start; flex-direction: column; } }
+.plan-strip{display:grid;gap:9px;margin:0 16px;padding:12px 14px}.plan-strip header{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}.plan-strip .eyebrow{color:var(--accent)}.plan-strip strong{color:var(--text-strong);font-size:11px}.plan-state{padding:3px 7px;border-radius:999px;font:8px var(--font-mono)}.plan-state.awaiting_confirmation{color:var(--accent);background:var(--accent-subtle)}.plan-state.confirmed{color:var(--success);background:rgba(50,182,122,.1)}.plan-state.cancelled,.plan-state.expired{color:var(--danger);background:rgba(226,88,62,.1)}.plan-strip small{color:var(--text-muted);font-size:9px}.plan-meta{display:flex;flex-wrap:wrap;gap:7px}.plan-meta span{padding:4px 7px;color:var(--text-muted);background:var(--surface-raised);border-radius:6px;font-size:9px}.plan-actions{display:flex;flex-wrap:wrap;gap:8px}.plan-feedback{display:grid;gap:8px}.plan-feedback textarea{width:100%;padding:9px 11px;color:var(--text);background:var(--input);border:1px solid var(--border-strong);border-radius:8px;resize:vertical;font-size:10px}
 </style>

@@ -155,6 +155,102 @@ class PostgresAgentTeamStoreMixin:
                     event_type="published",
                     actor_id=actor_id,
                 )
+                # Teams activate immediately; the rollout exists so Workers
+                # preheat and acknowledge the exact revision before it serves
+                # new Runs (publish governance parity with Agents).
+                self._append_configuration_event(
+                    conn,
+                    "agent_team",
+                    team_id,
+                    revision_id,
+                    "publish.requested",
+                    actor_id,
+                )
+                self._create_configuration_rollout(
+                    conn,
+                    aggregate_type="agent_team",
+                    aggregate_id=team_id,
+                    revision_id=revision_id,
+                    actor_id=actor_id,
+                    require_healthy_workers=False,
+                    auto_rollback=False,
+                )
+                self._notify(conn, f"config:agent_team:{team_id}")
+        stored = self.get_agent_team_revision(revision_id)
+        assert stored is not None
+        return stored
+
+    def migrate_team_blueprint(self, team_id: str, *, actor_id: str) -> AgentTeamRevision:
+        """Create the next draft with an explicit default collaboration blueprint.
+
+        Legacy revisions without an explicit blueprint resolve to an implicit
+        default that does not constrain the Coordinator. Migration materializes
+        that default into a new draft (published revisions stay immutable) and
+        appends an audit event; publishing the draft makes it binding.
+        """
+        from porthouse.domain.collaboration_blueprints import default_blueprint
+
+        with self._pool.connection() as conn:
+            definition = conn.execute(
+                "SELECT current_revision_id FROM agent_team_definitions WHERE team_id=%s",
+                (team_id,),
+            ).fetchone()
+        if definition is None or definition["current_revision_id"] is None:
+            raise ValueError("team has no published revision to migrate")
+        base = self.get_agent_team_revision(str(definition["current_revision_id"]))
+        assert base is not None
+        with self._pool.connection() as conn, conn.transaction():
+            existing_draft = conn.execute(
+                """SELECT revision_id FROM agent_team_revisions
+                   WHERE team_id=%s AND status='draft' LIMIT 1""",
+                (team_id,),
+            ).fetchone()
+            if existing_draft is not None:
+                raise ValueError("team already has a draft revision")
+            row = conn.execute(
+                """SELECT COALESCE(max(version),0) AS max_version FROM agent_team_revisions
+                   WHERE team_id=%s""",
+                (team_id,),
+            ).fetchone()
+            version = int(row["max_version"]) + 1
+            revision_id = f"{team_id}:v{version}"
+            migrated = AgentTeamRevision(
+                team_id=base.team_id,
+                revision_id=revision_id,
+                version=version,
+                name=base.name,
+                description=base.description,
+                coordinator_member_id=base.coordinator_member_id,
+                members=base.members,
+                context_policy=dict(base.context_policy),
+                budget_policy=dict(base.budget_policy),
+                approval_policy=dict(base.approval_policy),
+                collaboration_blueprint=default_blueprint(
+                    member_ids=[item.member_id for item in base.members],
+                    coordinator_member_id=base.coordinator_member_id,
+                    budget_policy=base.budget_policy,
+                ),
+                status="draft",
+                created_by=actor_id,
+            )
+            conn.execute(
+                """INSERT INTO agent_team_revisions
+                       (revision_id,team_id,version,status,definition,created_by)
+                   VALUES (%s,%s,%s,'draft',%s,%s)""",
+                (revision_id, team_id, version, Jsonb(migrated.definition_dict()), actor_id),
+            )
+            self._append_team_event(
+                conn,
+                team_id=team_id,
+                revision_id=revision_id,
+                event_type="blueprint_migrated",
+                actor_id=actor_id,
+                details={
+                    "from": "implicit:parallel_synthesize",
+                    "to": "explicit:parallel_synthesize",
+                    "new_revision_id": revision_id,
+                },
+            )
         stored = self.get_agent_team_revision(revision_id)
         assert stored is not None
         return stored

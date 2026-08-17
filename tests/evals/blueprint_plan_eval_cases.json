@@ -1,0 +1,424 @@
+{
+  "schema_version": 1,
+  "description": "Labeled corpus for the Blueprint plan compiler; deterministic, no model calls.",
+  "member_ids": [
+    "coordinator",
+    "author_a",
+    "author_b",
+    "reviewer"
+  ],
+  "coordinator_member_id": "coordinator",
+  "budget_policy": {
+    "max_tasks": 16,
+    "max_parallel_tasks": 4,
+    "max_handoffs": 16,
+    "max_review_rounds": 2
+  },
+  "cases": [
+    {
+      "id": "valid-review-revise-synthesize",
+      "expectation": "pass",
+      "blueprint": {
+        "preset": "parallel_review_revise_synthesize",
+        "role_bindings": {
+          "producers": [
+            "author_a",
+            "author_b"
+          ],
+          "reviewers": [
+            "reviewer"
+          ]
+        },
+        "guardrails": {
+          "max_parallel_tasks": 2
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "a.produce",
+          "kind": "produce",
+          "member_id": "author_a",
+          "depends_on": []
+        },
+        {
+          "id": "b.produce",
+          "kind": "produce",
+          "member_id": "author_b",
+          "depends_on": []
+        },
+        {
+          "id": "review",
+          "kind": "review",
+          "member_id": "reviewer",
+          "depends_on": [
+            "a.produce",
+            "b.produce"
+          ],
+          "review_of": [
+            "a.produce",
+            "b.produce"
+          ]
+        },
+        {
+          "id": "a.revise",
+          "kind": "revise",
+          "member_id": "author_a",
+          "depends_on": [
+            "review"
+          ],
+          "revision_of": "a.produce"
+        },
+        {
+          "id": "synthesize",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": [
+            "a.revise"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reviewer-also-produces",
+      "expectation": "violation:blueprint_step_member_not_in_phase",
+      "blueprint": {
+        "preset": "parallel_review_revise_synthesize",
+        "role_bindings": {
+          "producers": [
+            "author_a",
+            "author_b"
+          ],
+          "reviewers": [
+            "reviewer"
+          ]
+        },
+        "guardrails": {
+          "max_parallel_tasks": 2
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "a.produce",
+          "kind": "produce",
+          "member_id": "author_a",
+          "depends_on": []
+        },
+        {
+          "id": "r.produce",
+          "kind": "produce",
+          "member_id": "reviewer",
+          "depends_on": []
+        },
+        {
+          "id": "review",
+          "kind": "review",
+          "member_id": "reviewer",
+          "depends_on": [
+            "a.produce",
+            "r.produce"
+          ],
+          "review_of": [
+            "a.produce",
+            "r.produce"
+          ]
+        },
+        {
+          "id": "a.revise",
+          "kind": "revise",
+          "member_id": "author_a",
+          "depends_on": [
+            "review"
+          ],
+          "revision_of": "a.produce"
+        },
+        {
+          "id": "synthesize",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": [
+            "a.revise"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "missing-revise-phase",
+      "expectation": "violation:blueprint_missing_phase",
+      "blueprint": {
+        "preset": "parallel_review_revise_synthesize",
+        "role_bindings": {
+          "producers": [
+            "author_a",
+            "author_b"
+          ],
+          "reviewers": [
+            "reviewer"
+          ]
+        },
+        "guardrails": {
+          "max_parallel_tasks": 2
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "a.produce",
+          "kind": "produce",
+          "member_id": "author_a",
+          "depends_on": []
+        },
+        {
+          "id": "b.produce",
+          "kind": "produce",
+          "member_id": "author_b",
+          "depends_on": []
+        },
+        {
+          "id": "review",
+          "kind": "review",
+          "member_id": "reviewer",
+          "depends_on": [
+            "a.produce",
+            "b.produce"
+          ],
+          "review_of": [
+            "a.produce",
+            "b.produce"
+          ]
+        },
+        {
+          "id": "synthesize",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": [
+            "review"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "synthesis-skips-review",
+      "expectation": "violation:blueprint_phase_order_violation",
+      "blueprint": {
+        "preset": "parallel_review_revise_synthesize",
+        "role_bindings": {
+          "producers": [
+            "author_a",
+            "author_b"
+          ],
+          "reviewers": [
+            "reviewer"
+          ]
+        },
+        "guardrails": {
+          "max_parallel_tasks": 2
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "a.produce",
+          "kind": "produce",
+          "member_id": "author_a",
+          "depends_on": []
+        },
+        {
+          "id": "b.produce",
+          "kind": "produce",
+          "member_id": "author_b",
+          "depends_on": []
+        },
+        {
+          "id": "review",
+          "kind": "review",
+          "member_id": "reviewer",
+          "depends_on": [
+            "a.produce",
+            "b.produce"
+          ],
+          "review_of": [
+            "a.produce",
+            "b.produce"
+          ]
+        },
+        {
+          "id": "a.revise",
+          "kind": "revise",
+          "member_id": "author_a",
+          "depends_on": [
+            "review"
+          ],
+          "revision_of": "a.produce"
+        },
+        {
+          "id": "synthesize",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": []
+        }
+      ]
+    },
+    {
+      "id": "parallel-width-over-guardrail",
+      "expectation": "violation:blueprint_parallel_budget_exceeded",
+      "blueprint": {
+        "preset": "research_challenge_decide",
+        "role_bindings": {
+          "producers": [
+            "author_a",
+            "author_b"
+          ],
+          "challengers": [
+            "reviewer"
+          ]
+        },
+        "guardrails": {
+          "max_parallel_tasks": 1
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "a.research",
+          "kind": "produce",
+          "member_id": "author_a",
+          "depends_on": []
+        },
+        {
+          "id": "b.research",
+          "kind": "produce",
+          "member_id": "author_b",
+          "depends_on": []
+        },
+        {
+          "id": "challenge",
+          "kind": "review",
+          "member_id": "reviewer",
+          "depends_on": [
+            "a.research",
+            "b.research"
+          ],
+          "review_of": [
+            "a.research",
+            "b.research"
+          ]
+        },
+        {
+          "id": "decide",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": [
+            "challenge"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "self-review",
+      "expectation": "violation:blueprint_review_independence",
+      "blueprint": {
+        "phases": [
+          {
+            "id": "research",
+            "kind": "produce",
+            "participants": [
+              "author_a",
+              "author_b"
+            ],
+            "mode": "parallel",
+            "depends_on": []
+          },
+          {
+            "id": "challenge",
+            "kind": "review",
+            "participants": [
+              "author_a"
+            ],
+            "mode": "sequential",
+            "depends_on": [
+              "research"
+            ]
+          },
+          {
+            "id": "decide",
+            "kind": "synthesize",
+            "participants": [
+              "coordinator"
+            ],
+            "mode": "sequential",
+            "depends_on": [
+              "challenge"
+            ]
+          }
+        ],
+        "guardrails": {
+          "max_parallel_tasks": 2,
+          "require_review": true
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "a.research",
+          "kind": "produce",
+          "member_id": "author_a",
+          "depends_on": []
+        },
+        {
+          "id": "b.research",
+          "kind": "produce",
+          "member_id": "author_b",
+          "depends_on": []
+        },
+        {
+          "id": "a.challenge",
+          "kind": "review",
+          "member_id": "author_a",
+          "depends_on": [
+            "a.research",
+            "b.research"
+          ],
+          "review_of": [
+            "a.research",
+            "b.research"
+          ]
+        },
+        {
+          "id": "decide",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": [
+            "a.challenge"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ghost-member-fence",
+      "expectation": "violation:blueprint_boundary_violation",
+      "blueprint": {
+        "preset": "parallel_synthesize",
+        "role_bindings": {
+          "producers": [
+            "author_a"
+          ]
+        },
+        "guardrails": {
+          "max_parallel_tasks": 2
+        }
+      },
+      "plan_steps": [
+        {
+          "id": "ghost.produce",
+          "kind": "produce",
+          "member_id": "ghost",
+          "depends_on": []
+        },
+        {
+          "id": "synthesize",
+          "kind": "synthesize",
+          "member_id": "coordinator",
+          "depends_on": [
+            "ghost.produce"
+          ]
+        }
+      ]
+    }
+  ]
+}

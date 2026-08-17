@@ -21,6 +21,12 @@ async def test_supervisor_enforces_concurrency_and_waits() -> None:
 
     await supervisor.submit("one", work)
     await supervisor.submit("two", work)
+    await asyncio.sleep(0)
+    assert supervisor.capacity_snapshot(fallback_slots=4) == {
+        "slots": 1,
+        "active": 1,
+        "waiting": 1,
+    }
     assert await supervisor.wait("one") == "ok"
     assert await supervisor.wait("two") == "ok"
     assert max_active == 1

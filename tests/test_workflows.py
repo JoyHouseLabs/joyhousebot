@@ -699,3 +699,405 @@ def _owner_context() -> RequestContext:
         principal=Principal(subject="owner-a", user_id="owner-a"),
         request_id="req-workflow-capability",
     )
+
+
+def test_workflow_capability_nodes_freeze_published_reference(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "workflow-capability.db")
+    store.publish_capability(_panel_definition(), actor_id="test:workflow-fixture")
+    service = WorkflowService(None, store, default_agent_id="default")
+
+    frozen = service._normalize_graph(
+        {
+            "name": "Panel refresh",
+            "summary": "Deterministic refresh",
+            "risk_level": "low",
+            "estimated_duration_minutes": 1,
+            "nodes": [
+                _workflow_node(
+                    "refresh",
+                    "capability",
+                    [],
+                    capability="workflow_panel_refresh",
+                    capability_input={"topic": "llm"},
+                    max_attempts=3,
+                )
+            ],
+            "policies": {"max_concurrent": 2, "fail_fast": True, "aggregate": True},
+        }
+    )
+    node = frozen["nodes"][0]
+    assert node["capability"]["capability_id"] == "workflow_panel_refresh"
+    assert node["capability"]["version"] == "1.0.0"
+    assert node["capability"]["plugin_id"] == "test.workflow-capability"
+    assert node["capability_input"] == {"topic": "llm"}
+    assert node["max_attempts"] == 3
+    defaulted = service._normalize_graph(
+        {
+            "name": "Default attempts", "summary": "", "risk_level": "low",
+            "estimated_duration_minutes": 1,
+            "nodes": [
+                {
+                    "id": "refresh",
+                    "name": "refresh",
+                    "kind": "capability",
+                    "agent_id": None,
+                    "dependencies": [],
+                    "capability": "workflow_panel_refresh",
+                }
+            ],
+            "policies": {"max_concurrent": 1, "fail_fast": True, "aggregate": True},
+        }
+    )
+    assert defaulted["nodes"][0]["max_attempts"] == 3
+    tasks = service._graph_tasks(frozen, goal="refresh")
+    assert [task.node_type for task in tasks] == ["capability"]
+    assert tasks[0].capability is not None and tasks[0].capability.version == "1.0.0"
+
+    with pytest.raises(Exception, match="not published"):
+        service._normalize_graph(
+            {
+                "name": "missing", "summary": "", "risk_level": "low",
+                "estimated_duration_minutes": 1,
+                "nodes": [
+                    _workflow_node("refresh", "capability", [], capability="missing.tool")
+                ],
+                "policies": {"max_concurrent": 1, "fail_fast": True, "aggregate": True},
+            }
+        )
+    with pytest.raises(Exception, match="expects version"):
+        service._normalize_graph(
+            {
+                "name": "stale", "summary": "", "risk_level": "low",
+                "estimated_duration_minutes": 1,
+                "nodes": [
+                    _workflow_node(
+                        "refresh",
+                        "capability",
+                        [],
+                        capability={"capability_id": "workflow_panel_refresh", "version": "9.9.9"},
+                    )
+                ],
+                "policies": {"max_concurrent": 1, "fail_fast": True, "aggregate": True},
+            }
+        )
+
+
+class _CaptureRuntime:
+    def __init__(self) -> None:
+        self.spec: TaskGraphSpec | None = None
+
+    async def submit_graph(self, spec: TaskGraphSpec) -> Any:
+        self.spec = spec
+        return type("Submitted", (), {"run_id": "run-capture"})()
+
+
+async def _saved_capability_workflow(
+    store: PostgresTestStore, service: WorkflowService, *, policies: dict
+) -> tuple[str, str]:
+    saved = await service.save(
+        _owner_context(),
+        None,
+        {
+            "name": "Panel refresh pipeline",
+            "goal": "Refresh the panel without a model",
+            "graph": {
+                "name": "Panel refresh pipeline",
+                "summary": "Deterministic refresh",
+                "risk_level": "low",
+                "estimated_duration_minutes": 1,
+                "nodes": [
+                    _workflow_node(
+                        "refresh",
+                        "capability",
+                        [],
+                        capability="workflow_panel_refresh",
+                        capability_input={"topic": "llm"},
+                    )
+                ],
+                "policies": policies,
+            },
+        },
+    )
+    revision_id = str(saved["revisions"][-1]["revision_id"])
+    return str(saved["workflow_id"]), revision_id
+
+
+@pytest.mark.asyncio
+async def test_workflow_aggregation_defaults_to_raw_without_model_nodes(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "workflow-raw-aggregation.db")
+    store.publish_capability(_panel_definition(), actor_id="test:workflow-fixture")
+    runtime = _CaptureRuntime()
+    service = WorkflowService(runtime, store, default_agent_id="default")
+
+    workflow_id, revision_id = await _saved_capability_workflow(
+        store,
+        service,
+        policies={"max_concurrent": 2, "fail_fast": True, "aggregate": True},
+    )
+    await service.execute(
+        _owner_context(), workflow_id, {"preview": True, "revision_id": revision_id}
+    )
+    assert runtime.spec is not None
+    assert runtime.spec.aggregation_policy == {"mode": "raw", "version": "v1"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_explicit_aggregation_policy_overrides_inference(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "workflow-explicit-aggregation.db")
+    store.publish_capability(_panel_definition(), actor_id="test:workflow-fixture")
+    runtime = _CaptureRuntime()
+    service = WorkflowService(runtime, store, default_agent_id="default")
+
+    workflow_id, revision_id = await _saved_capability_workflow(
+        store,
+        service,
+        policies={
+            "max_concurrent": 2,
+            "fail_fast": True,
+            "aggregate": True,
+            "aggregation": {"mode": "rank_and_select", "score_path": "rows"},
+        },
+    )
+    stored = service._normalize_graph(
+        {
+            "name": "check", "summary": "", "risk_level": "low",
+            "estimated_duration_minutes": 1,
+            "nodes": [
+                _workflow_node(
+                    "refresh", "capability", [], capability="workflow_panel_refresh"
+                )
+            ],
+            "policies": {
+                "max_concurrent": 1,
+                "fail_fast": True,
+                "aggregate": True,
+                "aggregation": {"mode": "rank_and_select", "score_path": "rows"},
+            },
+        }
+    )
+    assert stored["policies"]["aggregation"]["mode"] == "rank_and_select"
+    await service.execute(
+        _owner_context(), workflow_id, {"preview": True, "revision_id": revision_id}
+    )
+    assert runtime.spec is not None
+    assert runtime.spec.aggregation_policy["mode"] == "rank_and_select"
+
+    with pytest.raises(Exception, match="aggregation"):
+        service._normalize_graph(
+            {
+                "name": "bad", "summary": "", "risk_level": "low",
+                "estimated_duration_minutes": 1,
+                "nodes": [
+                    _workflow_node(
+                        "refresh", "capability", [], capability="workflow_panel_refresh"
+                    )
+                ],
+                "policies": {
+                    "max_concurrent": 1,
+                    "fail_fast": True,
+                    "aggregate": True,
+                    "aggregation": {"mode": "made_up_mode"},
+                },
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_workflow_mixed_graph_keeps_llm_synthesis(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "workflow-mixed-aggregation.db")
+    store.publish_capability(_panel_definition(), actor_id="test:workflow-fixture")
+    runtime = _CaptureRuntime()
+    service = WorkflowService(runtime, store, default_agent_id="default")
+
+    saved = await service.save(
+        _owner_context(),
+        None,
+        {
+            "name": "Mixed pipeline",
+            "goal": "Refresh then summarize",
+            "graph": {
+                "name": "Mixed pipeline",
+                "summary": "Capability plus agent",
+                "risk_level": "low",
+                "estimated_duration_minutes": 5,
+                "nodes": [
+                    _workflow_node(
+                        "refresh",
+                        "capability",
+                        [],
+                        capability="workflow_panel_refresh",
+                        capability_input={"topic": "llm"},
+                    ),
+                    _workflow_node("summary", "agent", ["refresh"]),
+                ],
+                "policies": {"max_concurrent": 2, "fail_fast": True, "aggregate": True},
+            },
+        },
+    )
+    await service.execute(
+        _owner_context(),
+        str(saved["workflow_id"]),
+        {
+            "preview": True,
+            "revision_id": str(saved["revisions"][-1]["revision_id"]),
+        },
+    )
+    assert runtime.spec is not None
+    assert runtime.spec.aggregation_policy == {"mode": "llm_synthesis", "version": "v1"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_capability_only_execution_completes_without_model(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "workflow-capability-e2e.db")
+    tool = _PanelRefreshTool()
+    agent = _ZeroModelAgent(store, tool)
+    runtime = NativeAgentRuntime(agent=agent, store=store, max_concurrent_runs=1)
+    service = WorkflowService(runtime, store, default_agent_id="default")
+
+    saved = await service.save(
+        _owner_context(),
+        None,
+        {
+            "name": "Panel refresh pipeline",
+            "goal": "Refresh the panel twice deterministically",
+            "graph": {
+                "name": "Panel refresh pipeline",
+                "summary": "Two deterministic refresh steps",
+                "risk_level": "low",
+                "estimated_duration_minutes": 1,
+                "nodes": [
+                    _workflow_node(
+                        "first",
+                        "capability",
+                        [],
+                        capability="workflow_panel_refresh",
+                        capability_input={"topic": "llm"},
+                    ),
+                    _workflow_node(
+                        "second",
+                        "capability",
+                        ["first"],
+                        capability="workflow_panel_refresh",
+                        capability_input={"topic": "agents"},
+                    ),
+                ],
+                "policies": {"max_concurrent": 2, "fail_fast": True, "aggregate": True},
+            },
+        },
+    )
+    try:
+        await runtime.start()
+        executed = await service.execute(
+            _owner_context(),
+            str(saved["workflow_id"]),
+            {
+                "preview": True,
+                "revision_id": str(saved["revisions"][-1]["revision_id"]),
+            },
+        )
+        completed = await runtime.wait(executed.run_id, timeout=5)
+        assert completed.status == "completed", completed.error
+        assert tool.calls == ["llm", "agents"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_workflow_team_node_waits_for_owner_plan_confirmation(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "workflow-team-confirmation.db")
+    teams = AgentTeamService(store)
+    await teams.save_draft(
+        AgentTeamRevision.from_dict(
+            {
+                **_teaching_team().to_dict(),
+                "collaboration_blueprint": {
+                    "preset": "parallel_review_revise_synthesize",
+                    "role_bindings": {
+                        "producers": ["psychologist", "curriculum", "game"],
+                        "reviewers": ["evaluator"],
+                    },
+                    "guardrails": {"require_plan_confirmation": True},
+                },
+            }
+        )
+    )
+    await teams.publish("team.teaching-design", "team.teaching-design:v1", actor_id="test")
+    runtime = NativeAgentRuntime(agent=_TeachingTeamAgent(), store=store)
+    service = WorkflowService(runtime, store, default_agent_id="default")
+    graph = service._normalize_graph(
+        {
+            "name": "Confirmed teaching plan",
+            "summary": "Wait for the owner to confirm the Team plan before executing.",
+            "risk_level": "medium",
+            "estimated_duration_minutes": 20,
+            "nodes": [
+                _workflow_node(
+                    "teaching-team",
+                    "team",
+                    [],
+                    team_id="team.teaching-design",
+                )
+            ],
+            "policies": {"max_concurrent": 2, "fail_fast": True, "aggregate": False},
+        }
+    )
+    submitted = await runtime.submit_graph(
+        TaskGraphSpec(
+            goal="Design a teaching plan for a seven-year-old learner.",
+            tasks=service._graph_tasks(graph, goal="Design a teaching plan."),
+            user_id="opc-user",
+            session_id="workflow-confirm",
+            agent_id="default",
+            max_concurrent=2,
+            aggregate=False,
+        )
+    )
+    try:
+        # The parent suspends while the child parks on plan confirmation and
+        # no executable Task exists in either Run.
+        child_run_id = ""
+        for _ in range(200):
+            parent_tasks = store.list_runtime_tasks(run_id=submitted.run_id)
+            if parent_tasks and parent_tasks[0].status == "waiting_external":
+                child_run_id = str(parent_tasks[0].result.get("child_run_id") or "")
+                child = store.get_runtime_run(child_run_id)
+                if child is not None and str(child.status) == "waiting_input":
+                    break
+            await asyncio.sleep(0.05)
+        assert child_run_id, "parent task never suspended for the team subrun"
+        confirmation = store.get_plan_confirmation(child_run_id)
+        assert confirmation is not None and confirmation["status"] == "awaiting_confirmation"
+        assert store.list_runtime_tasks(run_id=child_run_id) == []
+
+        resolved = store.act_plan_confirmation(
+            run_id=child_run_id, user_id="opc-user", action="confirm"
+        )
+        assert resolved is not None and resolved["status"] == "confirmed"
+        assert store.queue_plan_confirmed_run(child_run_id)
+
+        for _ in range(200):
+            completed = await runtime.wait(submitted.run_id, timeout=1)
+            if completed.status in {"completed", "failed", "cancelled", "timed_out"}:
+                break
+            await asyncio.sleep(0.05)
+        assert completed.status == "completed", (completed.error, completed.result)
+        parent_task = store.list_runtime_tasks(run_id=submitted.run_id)[0]
+        assert parent_task.status == "completed", parent_task.error
+        assert parent_task.result.get("child_run_id") == child_run_id
+        # Downstream nodes can reference the confirmed child artifacts by id.
+        child_artifacts = [
+            item["artifact_id"]
+            for item in store.list_runtime_artifacts(child_run_id)
+            if item["name"] not in ("coordinator-plan", "coordinator-graph-spec")
+        ]
+        assert set(parent_task.result.get("child_artifact_ids") or []) == set(child_artifacts)
+    finally:
+        await asyncio.wait_for(runtime.close(), timeout=10)

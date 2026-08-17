@@ -23,6 +23,7 @@ _ROLLOUT_TYPES = (
     "plugin",
     "model_provider",
     "remote_connection",
+    "agent_team",
 )
 
 
@@ -48,14 +49,36 @@ class PostgresRolloutStoreMixin(PostgresRolloutPrimitiveStoreMixin):
             for row in rows
         ]
 
-    def list_configuration_rollouts(self, *, limit: int = 100) -> list[ConfigurationRolloutRecord]:
+    def list_configuration_rollouts(
+        self, *, limit: int = 100, aggregate_type: str | None = None
+    ) -> list[ConfigurationRolloutRecord]:
         with self._pool.connection() as conn:
-            rows = conn.execute(
-                """SELECT * FROM configuration_rollouts
-                   ORDER BY created_at DESC LIMIT %s""",
-                (max(1, min(1000, limit)),),
-            ).fetchall()
+            if aggregate_type:
+                rows = conn.execute(
+                    """SELECT * FROM configuration_rollouts
+                       WHERE aggregate_type=%s
+                       ORDER BY created_at DESC LIMIT %s""",
+                    (aggregate_type, max(1, min(1000, limit))),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM configuration_rollouts
+                       ORDER BY created_at DESC LIMIT %s""",
+                    (max(1, min(1000, limit)),),
+                ).fetchall()
         return [self._configuration_rollout(row) for row in rows]
+
+    def get_latest_configuration_rollout(
+        self, aggregate_type: str, aggregate_id: str
+    ) -> ConfigurationRolloutRecord | None:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                """SELECT * FROM configuration_rollouts
+                   WHERE aggregate_type=%s AND aggregate_id=%s
+                   ORDER BY created_at DESC LIMIT 1""",
+                (aggregate_type, aggregate_id),
+            ).fetchone()
+        return self._configuration_rollout(row) if row else None
 
     def get_configuration_rollout(self, rollout_id: str) -> ConfigurationRolloutRecord | None:
         with self._pool.connection() as conn:

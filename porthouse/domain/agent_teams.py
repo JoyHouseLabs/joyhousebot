@@ -6,6 +6,11 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from porthouse.domain.collaboration_blueprints import (
+    normalize_collaboration_blueprint,
+    resolve_effective_blueprint,
+)
+
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _REVISION_STATUSES = {"draft", "published", "retired"}
 _VISIBILITIES = {"team", "coordinator"}
@@ -99,6 +104,7 @@ class AgentTeamRevision:
     context_policy: dict[str, Any] = field(default_factory=dict)
     budget_policy: dict[str, Any] = field(default_factory=dict)
     approval_policy: dict[str, Any] = field(default_factory=dict)
+    collaboration_blueprint: dict[str, Any] | None = None
     status: str = "draft"
     created_by: str = "system"
     created_at: str | None = None
@@ -143,6 +149,26 @@ class AgentTeamRevision:
         object.__setattr__(
             self, "approval_policy", normalize_team_approval_policy(self.approval_policy)
         )
+        object.__setattr__(
+            self,
+            "collaboration_blueprint",
+            normalize_collaboration_blueprint(
+                self.collaboration_blueprint,
+                member_ids=known,
+                coordinator_member_id=self.coordinator_member_id,
+                budget_policy=self.budget_policy,
+            ),
+        )
+
+    @property
+    def effective_blueprint(self) -> dict[str, Any]:
+        """Explicit blueprint, else the implicit parallel_synthesize default."""
+        return resolve_effective_blueprint(
+            collaboration_blueprint=self.collaboration_blueprint,
+            member_ids=[item.member_id for item in self.members],
+            coordinator_member_id=self.coordinator_member_id,
+            budget_policy=self.budget_policy,
+        )
 
     @property
     def coordinator(self) -> AgentTeamMember:
@@ -177,6 +203,11 @@ class AgentTeamRevision:
             context_policy=dict(value.get("context_policy") or {}),
             budget_policy=dict(value.get("budget_policy") or {}),
             approval_policy=dict(value.get("approval_policy") or {}),
+            collaboration_blueprint=(
+                dict(value["collaboration_blueprint"])
+                if value.get("collaboration_blueprint") is not None
+                else None
+            ),
             status=str(value.get("status") or "draft"),
             created_by=str(value.get("created_by") or "system"),
             created_at=str(value["created_at"]) if value.get("created_at") else None,

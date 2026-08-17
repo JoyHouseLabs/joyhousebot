@@ -7,6 +7,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from porthouse.domain.collaboration_blueprints import frozen_enforced_blueprint
+from porthouse.orchestration.blueprint_compiler import (
+    BlueprintRepairError,
+    PlanBoundaryViolationError,
+)
 from porthouse.orchestration.coordinator_agent import (
     COORDINATOR_OUTPUT_SCHEMA,
     build_coordinator_prompt,
@@ -31,6 +36,9 @@ _PLANNING_ERRORS = (
     VerificationFailedError,
     ValueError,
 )
+# Fatal blueprint fences are not replan-able; they fail the Run closed after
+# the escalate decision is recorded.
+_FATAL_PLANNING_ERRORS = (PlanBoundaryViolationError,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +63,11 @@ async def run_coordinator_planning(
 
     max_replans = await _effective_max_replans(runtime.store, record.run_id, options)
     scope = _planning_scope(
-        user_prompt, scenarios, capabilities, routing_decision
+        user_prompt,
+        scenarios,
+        capabilities,
+        routing_decision,
+        generation=int(options.metadata.get("plan_generation") or 0),
     )
     decisions = await asyncio.to_thread(
         runtime.store.list_loop_decisions,
@@ -107,6 +119,9 @@ async def run_coordinator_planning(
                 "members": list(options.metadata.get("team_members") or []),
                 "budget_policy": dict(options.metadata.get("team_budget_policy") or {}),
                 "approval_policy": dict(options.metadata.get("team_approval_policy") or {}),
+                "collaboration_blueprint": frozen_enforced_blueprint(
+                    options.metadata.get("team_collaboration_blueprint")
+                ),
             }
             if options.metadata.get("team_ref")
             else None,
@@ -140,6 +155,34 @@ async def run_coordinator_planning(
                 turn_scope=f"{scope}:{attempt}",
             )
             plan = normalize(_structured_plan(content))
+        except _FATAL_PLANNING_ERRORS as exc:
+            decision = await _record_decision(
+                runtime,
+                record=record,
+                decisions=decisions,
+                scope=scope,
+                attempt=attempt,
+                decision="escalate",
+                reason_code="plan_boundary_violation",
+                summary="协调器计划越过 Blueprint 协作边界，运行失败关闭",
+                input_hash=payload_hash(full_prompt),
+                output_hash=await _attempt_output_hash(
+                    runtime.store, record.run_id, scope, attempt
+                ),
+                max_replans=max_replans,
+                details={
+                    "violations": [
+                        {"code": item.code, "message": item.message}
+                        for item in exc.violations
+                    ],
+                    "usage": (
+                        await _planning_usage(runtime.store, record.run_id)
+                    ).to_dict(),
+                },
+            )
+            decisions.append(decision)
+            await _publish_decision(runtime, decision)
+            raise
         except _PLANNING_ERRORS as exc:
             usage = await _planning_usage(runtime.store, record.run_id)
             budget_reason = _budget_reason(options, usage)
@@ -294,6 +337,8 @@ def _planning_scope(
     scenarios: list[dict[str, Any]],
     capabilities: list[dict[str, Any]],
     routing_decision: dict[str, Any],
+    *,
+    generation: int = 0,
 ) -> str:
     planning_key = payload_hash(
         {
@@ -301,6 +346,9 @@ def _planning_scope(
             "scenarios": scenarios,
             "capabilities": capabilities,
             "routing_decision": routing_decision,
+            # A regenerated plan must not replay the previous generation's
+            # accepted decision, even when the feedback text repeats.
+            "plan_generation": generation,
         }
     )
     return f"{_SCOPE_PREFIX}:{planning_key[:24]}"
@@ -313,6 +361,12 @@ def _planning_failure(exc: BaseException) -> tuple[str, str]:
         return "plan_schema_invalid", "协调器输出不是有效的结构化计划"
     if isinstance(exc, AgentLoopExhaustedError):
         return "plan_turn_exhausted", "协调器单次规划未形成有效结果"
+    if isinstance(exc, BlueprintRepairError):
+        codes = ", ".join(sorted({item.code for item in exc.violations}))
+        return (
+            "plan_blueprint_violation",
+            f"协调器计划不符合协作 Blueprint（{codes}）",
+        )
     return "plan_semantic_invalid", "协调器计划未通过运行时语义校验"
 
 

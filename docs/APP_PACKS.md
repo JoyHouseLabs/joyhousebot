@@ -90,6 +90,9 @@ Entry Point 是 App 对外稳定的业务动作，不是第五种执行模式。
 Runtime 在每次启动前重新校验安装依赖锁，并把安装、清单摘要和 Entry Point 身份冻结进 Run metadata。
 Scenario Entry Point 除 `scenario_id + version` 外还必须声明 `agent_id + agent_revision_id`；固定 Scenario
 生成的 Graph 顶层快照和每个 Agent Task 都使用该 Revision，不能在启动时重新选择当前 Agent。
+Workflow Entry Point 可以声明纯 capability 节点组成的零模型 DAG：每次启动只调用已发布 Capability，
+不产生模型调用，适合数据搬运、指标计算等确定性任务；审计链与普通 Run 完全一致（详见
+[ARCHITECTURE.md](ARCHITECTURE.md) 的 Workflow Studio 章节）。
 
 `work_consumers` 是可选的成果输入声明，不是对用户所有成果的读取许可。安装处于 `active` 时，Runtime
 才会按 Work 的 `media_type` 与数据分级匹配消费者；用户从 Work 页面确认交接后，App 才能以绑定安装的
@@ -155,7 +158,12 @@ Workflow 引用只会在安装用户拥有同一已发布 Revision 时通过。�
 脱离私有数据的资产源，安装时导入 Draft，经目标环境验证后再激活。
 
 通用 AgentTeam Revision、共享 Workspace、任务委派和预算已进入 Core，协议见
-[AgentTeam 协作协议](AGENT_TEAMS.md)。垂直客服、运维、研发和风控仍不写入 Core；具体角色、Prompt、
+[AgentTeam 协议](AGENT_TEAMS.md)。**Team Pack**：`assets.teams` 引用精确已发布 Team Revision，入口
+`execution.mode="team"` 启动协作 Run；安装校验会重新规范化该 Team 的显式 Collaboration Blueprint
+（lock check `team_blueprint`，损坏定义失败关闭），Blueprint 预设与护栏经由锁定的 revision 传递性固定。
+若该 Blueprint 要求计划确认，App UI 通过同一公共 API（`GET/POST /v1/runs/{id}/plan…`）渲染
+"查看计划 → 确认/反馈/取消"步骤。示例见 `tests/fixtures/app_pack_teaching_plan.json`（教学方案专家组）。
+垂直客服、运维、研发和风控仍不写入 Core；具体角色、Prompt、
 Skill、Workflow 和页面由 App Pack 交付。
 
 远程目录、作者身份与签名、在线购买、Entitlement、更新订阅、评价、最小化用量和创作者结算不属于

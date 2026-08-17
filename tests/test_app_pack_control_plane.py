@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from porthouse.api.app import create_app
+from porthouse.application.agent_teams import AgentTeamService
 from porthouse.application.app_callbacks import AppCallbackDispatcher
 from porthouse.application.app_packs import AppPackService
+from porthouse.application.schedules import MAX_APP_SCHEDULES_PER_INSTALLATION
 from porthouse.bootstrap.container import build_api_container
 from porthouse.config.schema import Config
 from porthouse.contracts.events import AgentEvent, EventType
+from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
 from porthouse.domain.agents import AgentRevision
 from porthouse.domain.app_callbacks import callback_signature
 from porthouse.domain.app_packs import app_manifest_sha256, normalize_app_manifest
@@ -604,3 +608,343 @@ async def test_app_completion_callback_is_transactional_signed_and_auditable(
         "replay_of_event_id": original_event_id,
         "replay_sequence": 1,
     }
+
+
+async def _active_installation_with_client(store, *, scopes: list[str]):
+    """Publish + activate the Market Radar app and create a delegated client."""
+
+    service = AppPackService(store)
+    manifest = {
+        **_manifest(),
+        "permissions": ["runs.submit", "schedules.submit"],
+    }
+    await service.save_draft(manifest, actor_id="admin")
+    await service.publish(
+        "app.market-radar", "1.0.0", actor_id="admin", user_id="opc-user"
+    )
+    installed = await service.install(
+        "app.market-radar",
+        "1.0.0",
+        user_id="opc-user",
+        actor_id="admin",
+        configuration={},
+        granted_permissions=["runs.submit", "schedules.submit"],
+    )
+    installation = await service.transition(
+        installed["installation_id"],
+        user_id="opc-user",
+        actor_id="admin",
+        action="activate",
+    )
+    app_client, app_secret = store.create_app_client(
+        app_id="app.market-radar",
+        name="Market Radar SaaS",
+        allowed_scopes=scopes,
+        actor_id="admin",
+    )
+    grant = store.create_app_delegation_grant(
+        client_id=app_client["client_id"],
+        installation_id=installation["installation_id"],
+        user_id="opc-user",
+        scopes=scopes,
+        expires_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+        actor_id="token:owner",
+    )
+    store.create_api_access_token(
+        user_id="opc-user", actor_id="test", token="opc-owner-token"
+    )
+    return service, installation, (app_client, app_secret, grant)
+
+
+def _app_schedule_body(name: str = "radar refresh") -> dict:
+    return {
+        "name": name,
+        "schedule": {"kind": "every", "every_ms": 300_000},
+        "payload": {"kind": "app_entrypoint", "entrypoint_id": "research"},
+        "enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_app_schedule_endpoint_creates_lists_and_deduplicates(tmp_path) -> None:
+    store = PostgresTestStore(tmp_path / "app-schedules.db")
+    _service, installation, _client = await _active_installation_with_client(
+        store, scopes=["apps.read", "apps.schedules"]
+    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    owner = {"Authorization": "Bearer opc-owner-token"}
+    with client:
+        missing_key = client.post(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers=owner,
+            json=_app_schedule_body(),
+        )
+        assert missing_key.status_code == 400
+        assert "Idempotency-Key" in missing_key.text
+        created = client.post(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers={**owner, "Idempotency-Key": "schedule-1"},
+            json=_app_schedule_body(),
+        )
+        assert created.status_code == 201, created.text
+        row = created.json()
+        assert row["payload"]["kind"] == "app_entrypoint"
+        assert row["installation_id"] == installation["installation_id"]
+        assert row["policy"]["misfire_policy"] == "skip"
+        assert row["policy"]["overlap_policy"] == "skip"
+        replayed = client.post(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers={**owner, "Idempotency-Key": "schedule-1"},
+            json=_app_schedule_body("other name"),
+        )
+        assert replayed.status_code == 201
+        assert replayed.json()["id"] == row["id"]
+        listed = client.get(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers=owner,
+        )
+        assert listed.status_code == 200
+        assert [item["id"] for item in listed.json()["items"]] == [row["id"]]
+        wrong_payload = client.post(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers={**owner, "Idempotency-Key": "schedule-2"},
+            json={
+                "name": "not an app schedule",
+                "schedule": {"kind": "every", "every_ms": 300_000},
+                "payload": {"kind": "agent_turn", "message": "hi"},
+            },
+        )
+        assert wrong_payload.status_code == 422
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_app_schedule_requires_active_installation_and_enforces_quota(
+    tmp_path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "app-schedule-quota.db")
+    service, installation, _client = await _active_installation_with_client(
+        store, scopes=["apps.read"]
+    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    owner = {"Authorization": "Bearer opc-owner-token"}
+    installation_id = installation["installation_id"]
+    with client:
+        for index in range(MAX_APP_SCHEDULES_PER_INSTALLATION):
+            created = client.post(
+                f"/v1/apps/{installation_id}/schedules",
+                headers={**owner, "Idempotency-Key": f"quota-{index}"},
+                json=_app_schedule_body(f"refresh {index}"),
+            )
+            assert created.status_code == 201, created.text
+        exceeded = client.post(
+            f"/v1/apps/{installation_id}/schedules",
+            headers={**owner, "Idempotency-Key": "quota-over"},
+            json=_app_schedule_body(),
+        )
+        assert exceeded.status_code == 409
+        assert "schedule limit" in exceeded.text
+        await service.transition(
+            installation_id,
+            user_id="opc-user",
+            actor_id="admin",
+            action="disable",
+        )
+        drifted = client.post(
+            f"/v1/apps/{installation_id}/schedules",
+            headers={**owner, "Idempotency-Key": "after-disable"},
+            json=_app_schedule_body(),
+        )
+        assert drifted.status_code == 409
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_delegated_app_schedule_scope_and_installation_isolation(tmp_path) -> None:
+    store = PostgresTestStore(tmp_path / "app-schedule-delegation.db")
+    _service, installation, (app_client, app_secret, grant) = (
+        await _active_installation_with_client(
+            store, scopes=["apps.read", "apps.schedules"]
+        )
+    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    with client:
+        exchanged = client.post(
+            "/v1/app-auth/token",
+            json={
+                "client_id": app_client["client_id"],
+                "client_secret": app_secret,
+                "grant_id": grant["grant_id"],
+                "scopes": ["apps.read", "apps.schedules"],
+            },
+        )
+        assert exchanged.status_code == 200, exchanged.text
+        token = exchanged.json()["access_token"]
+        delegated = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers={**delegated, "Idempotency-Key": "delegated-1"},
+            json=_app_schedule_body(),
+        )
+        assert created.status_code == 201, created.text
+        isolated = client.post(
+            "/v1/apps/appinst-someone-else/schedules",
+            headers={**delegated, "Idempotency-Key": "delegated-2"},
+            json=_app_schedule_body(),
+        )
+        assert isolated.status_code == 404
+        listed = client.get(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers=delegated,
+        )
+        assert listed.status_code == 200
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_delegated_token_without_schedule_scope_is_forbidden(tmp_path) -> None:
+    store = PostgresTestStore(tmp_path / "app-schedule-scope-denied.db")
+    _service, installation, (app_client, app_secret, grant) = (
+        await _active_installation_with_client(
+            store, scopes=["apps.read", "apps.launch"]
+        )
+    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    with client:
+        exchanged = client.post(
+            "/v1/app-auth/token",
+            json={
+                "client_id": app_client["client_id"],
+                "client_secret": app_secret,
+                "grant_id": grant["grant_id"],
+                "scopes": ["apps.read"],
+            },
+        )
+        assert exchanged.status_code == 200
+        token = exchanged.json()["access_token"]
+        denied = client.post(
+            f"/v1/apps/{installation['installation_id']}/schedules",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Idempotency-Key": "denied-1",
+            },
+            json=_app_schedule_body(),
+        )
+        assert denied.status_code == 403
+        assert "apps.schedules" in denied.text
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_installation_transitions_toggle_app_schedules(tmp_path) -> None:
+    store = PostgresTestStore(tmp_path / "app-schedule-toggle.db")
+    service, installation, _client = await _active_installation_with_client(
+        store, scopes=["apps.read"]
+    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    owner = {"Authorization": "Bearer opc-owner-token"}
+    installation_id = installation["installation_id"]
+    with client:
+        created = client.post(
+            f"/v1/apps/{installation_id}/schedules",
+            headers={**owner, "Idempotency-Key": "toggle-1"},
+            json=_app_schedule_body(),
+        )
+        assert created.status_code == 201
+        schedule_id = created.json()["id"]
+        await service.transition(
+            installation_id, user_id="opc-user", actor_id="admin", action="disable"
+        )
+        after_disable = client.get(
+            f"/v1/apps/{installation_id}/schedules", headers=owner
+        ).json()["items"]
+        target = next(item for item in after_disable if item["id"] == schedule_id)
+        assert target["enabled"] is False
+        await service.transition(
+            installation_id, user_id="opc-user", actor_id="admin", action="activate"
+        )
+        after_enable = client.get(
+            f"/v1/apps/{installation_id}/schedules", headers=owner
+        ).json()["items"]
+        target = next(item for item in after_enable if item["id"] == schedule_id)
+        assert target["enabled"] is True
+    store.close()
+
+
+def _teaching_team() -> AgentTeamRevision:
+    def member(member_id: str, *, delegate: bool = False) -> AgentTeamMember:
+        return AgentTeamMember(
+            member_id=member_id,
+            agent_id="default",
+            agent_revision_id="default:v1",
+            role=member_id,
+            responsibility="教学方案专家组成员职责。",
+            can_delegate=delegate,
+            allowed_handoffs=("psychologist", "curriculum_designer", "game_designer", "reviewer") if delegate else (),
+        )
+
+    return AgentTeamRevision(
+        team_id="team.teaching-plan",
+        revision_id="team.teaching-plan:v1",
+        version=1,
+        name="教学方案专家组",
+        description="四位专家协作产出可确认的教学方案。",
+        coordinator_member_id="coordinator",
+        members=(
+            member("coordinator", delegate=True),
+            member("psychologist"),
+            member("curriculum_designer"),
+            member("game_designer"),
+            member("reviewer"),
+        ),
+        budget_policy={"max_tasks": 16, "max_parallel_tasks": 4, "max_handoffs": 16},
+        collaboration_blueprint={
+            "preset": "parallel_review_revise_synthesize",
+            "role_bindings": {
+                "producers": ["psychologist", "curriculum_designer", "game_designer"],
+                "reviewers": ["reviewer"],
+            },
+            "guardrails": {"require_plan_confirmation": True},
+        },
+        status="draft",
+        created_by="admin",
+    )
+
+
+def _teaching_manifest() -> dict:
+    return json.loads(
+        (Path(__file__).parent / "fixtures" / "app_pack_teaching_plan.json").read_text()
+    )
+
+
+@pytest.mark.asyncio
+async def test_team_pack_install_validates_collaboration_blueprint(tmp_path) -> None:
+    store = PostgresTestStore(tmp_path / "teaching-pack.db")
+    service = AppPackService(store)
+    await AgentTeamService(store).save_draft(_teaching_team())
+    await AgentTeamService(store).publish(
+        "team.teaching-plan", "team.teaching-plan:v1", actor_id="admin"
+    )
+    await service.save_draft(_teaching_manifest(), actor_id="admin")
+
+    report = await service.validate("app.teaching-plan", "1.0.0", user_id="app-user")
+    assert report["valid"], report["errors"]
+    team_lock = report["dependency_lock"]["teams"]
+    assert [item["team_id"] for item in team_lock] == ["team.teaching-plan"]
+    assert any(item["kind"] == "team_blueprint" for item in report["checks"])
+
+    # A tampered published blueprint (bypassing the domain validator) must
+    # fail closed at install time instead of shipping a broken Team Pack.
+    with store._pool.connection() as conn:
+        conn.execute(
+            """UPDATE agent_team_revisions SET definition=jsonb_set(
+                   definition, '{collaboration_blueprint,preset}', '"unknown_preset"')
+               WHERE revision_id='team.teaching-plan:v1'""",
+        )
+    tampered = await service.validate("app.teaching-plan", "1.0.0", user_id="app-user")
+    assert not tampered["valid"]
+    # The corrupt definition surfaces as a failed team/blueprint check, never
+    # as an unhandled server error.
+    assert any(
+        "team" in item or "blueprint" in item for item in tampered["errors"]
+    ), tampered["errors"]

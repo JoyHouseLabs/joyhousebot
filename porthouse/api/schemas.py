@@ -50,6 +50,11 @@ class ResolveRunInputRequest(BaseModel):
     answers: dict[str, Any] = Field(min_length=1)
 
 
+class PlanConfirmationRequest(BaseModel):
+    action: Literal["confirm", "regenerate", "cancel"]
+    feedback: str | None = Field(default=None, max_length=4000)
+
+
 class ResolveApprovalRequest(BaseModel):
     resolution: Literal["approve", "reject", "request_changes", "revoke"]
     note: str | None = Field(default=None, max_length=2000)

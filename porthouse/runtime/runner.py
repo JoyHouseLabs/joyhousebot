@@ -16,6 +16,7 @@ from porthouse.runtime.request_coordination import RequestCoordinationMixin
 from porthouse.runtime.submission import SubmissionMixin
 from porthouse.runtime.supervisor import TaskSupervisor
 from porthouse.runtime.work_signal import RuntimeWorkSignal
+from porthouse.runtime.worker_telemetry import ProcessTelemetry
 
 
 class NativeAgentRuntime(
@@ -82,6 +83,37 @@ class NativeAgentRuntime(
         self._closing = False
         self._worker_tasks: list[asyncio.Task[None]] = []
         self._start_lock = asyncio.Lock()
+        self._process_telemetry = ProcessTelemetry()
+        self._last_telemetry_heartbeat_at = 0.0
+
+    def _worker_metadata(self) -> dict[str, Any]:
+        return {
+            "task_worker_count": self.task_worker_count,
+            "extensions": self.plugin_releases,
+            "capacity": {
+                "agent": self.supervisor.capacity_snapshot(
+                    fallback_slots=self.task_worker_count
+                ),
+                "graph": {
+                    "slots": self.task_worker_count,
+                    "active": self._graph_active_count,
+                    "buffered": self._graph_task_queue.qsize(),
+                },
+            },
+            "process": self._process_telemetry.snapshot(),
+        }
+
+    async def _heartbeat_worker(self) -> None:
+        """Renew presence and periodically attach bounded capacity telemetry."""
+        heartbeat = getattr(self.store, "heartbeat_runtime_worker", None)
+        if heartbeat is None:
+            return
+        now = asyncio.get_running_loop().time()
+        metadata = None
+        if now - self._last_telemetry_heartbeat_at >= 5.0:
+            self._last_telemetry_heartbeat_at = now
+            metadata = self._worker_metadata()
+        await asyncio.to_thread(heartbeat, self.worker_id, metadata=metadata)
 
     async def start(self) -> None:
         """Join the worker pool and recover durable work after process restart."""
@@ -104,10 +136,7 @@ class NativeAgentRuntime(
                     register,
                     worker_id=self.worker_id,
                     capabilities=self.capabilities,
-                    metadata={
-                        "task_worker_count": self.task_worker_count,
-                        "extensions": self.plugin_releases,
-                    },
+                    metadata=self._worker_metadata(),
                 )
             self._worker_tasks = []
             if self.worker_enabled or self.scheduler_enabled:
@@ -156,9 +185,7 @@ class NativeAgentRuntime(
         """Renew a non-executing role's PostgreSQL-backed presence lease."""
         while not self._closing:
             await asyncio.sleep(30)
-            heartbeat = getattr(self.store, "heartbeat_runtime_worker", None)
-            if heartbeat is not None:
-                await asyncio.to_thread(heartbeat, self.worker_id)
+            await self._heartbeat_worker()
 
     async def _log(
         self,

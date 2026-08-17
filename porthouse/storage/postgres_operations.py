@@ -331,12 +331,22 @@ class PostgresOperationsStoreMixin(PostgresMaintenanceStoreMixin):
                 (worker_id, Jsonb(capabilities or {}), Jsonb(metadata or {})),
             )
 
-    def heartbeat_runtime_worker(self, worker_id: str) -> bool:
+    def heartbeat_runtime_worker(
+        self, worker_id: str, *, metadata: dict[str, Any] | None = None
+    ) -> bool:
         with self._pool.connection() as conn:
-            cur = conn.execute(
-                "UPDATE runtime_workers SET status='online',last_heartbeat=clock_timestamp() WHERE worker_id=%s",
-                (worker_id,),
-            )
+            if metadata is None:
+                cur = conn.execute(
+                    "UPDATE runtime_workers SET status='online',last_heartbeat=clock_timestamp() WHERE worker_id=%s",
+                    (worker_id,),
+                )
+            else:
+                cur = conn.execute(
+                    """UPDATE runtime_workers SET status='online',
+                       metadata=metadata || %s,last_heartbeat=clock_timestamp()
+                       WHERE worker_id=%s""",
+                    (Jsonb(metadata), worker_id),
+                )
             return cur.rowcount == 1
 
     def unregister_runtime_worker(self, worker_id: str) -> None:

@@ -128,16 +128,25 @@ Agent，Team 则使用 Team Revision 中冻结的协调器。
 - `GET /v1/system/health`：需认证的详细存储健康信息。
 - `GET /v1/me`：验证 Bearer Token 绑定的 `user_id`。
 - `GET /v1/admin/overview`：验证数据库管理员权限和平台全局监控面。
-- `GET /metrics`：Prometheus 文本格式指标；包含 Run/Task/Worker、Provider 平均/P95 延迟、TTFT、费用、队列年龄、租约过期、重试和 Channel outbox 聚合。采集结果按进程缓存 5 秒，避免高频抓取放大 PostgreSQL 查询压力。
+- `GET /metrics`：Prometheus 文本格式指标；包含 Run/Task/Worker、Provider 平均/P95 延迟、TTFT、费用、队列年龄、租约过期、重试和 Channel outbox 聚合，以及 Worker 实际 Agent/Graph 槽位占用、进程 CPU/RSS、API 进程 PostgreSQL 连接池和近 24 小时 Provider 失败率。采集结果按进程缓存 5 秒，避免高频抓取放大 PostgreSQL 查询压力。
   数据库暂时不可用时仍返回 `porthouse_up 0` 和 HTTP 503，便于区分进程存活与数据面就绪。
   该端点 fail-closed：未设置 `PORTHOUSE_METRICS_TOKEN` 时一律返回 404；设置后必须携带
   `Authorization: Bearer <token>`，否则返回 401。`ops/prometheus/prometheus.yml` 已按
   `credentials_file` 方式配置 bearer 抓取。
-- `GET /v1/system/metrics`：管理员控制台使用的同源 JSON 指标。
+- `GET /v1/system/metrics`：管理员控制台使用的同源 JSON 指标。Console 的“运行监控概览 → 执行容量”每 10 秒刷新一次；当队列领取 P95 超过 10 秒、最久排队超过 1 分钟、连接池出现等待或模型失败率超过 5% 时以警示色标记。Worker 资源为心跳采样，不替代宿主机级 Prometheus/Node Exporter 监控。
 
 Grafana 可直接导入 `ops/grafana/porthouse-overview.json`；Prometheus 抓取示例位于
 `ops/prometheus/prometheus.yml`，告警规则位于 `ops/prometheus/porthouse-alerts.yml`。规则覆盖 API、
 队列年龄、租约、重试、Worker、Provider 和 Channel outbox。
+
+Team 协作族（详见 [COLLABORATION_BLUEPRINTS.md](COLLABORATION_BLUEPRINTS.md)）：
+`porthouse_team_runs_total{status}`（24h 带 team_ref 的 Run）、
+`porthouse_team_plan_actions_total{action}`（确认/重生成/取消/过期）、
+`porthouse_team_planning_duration_seconds{quantile=p95|avg}` 与
+`porthouse_team_plan_confirmation_wait_seconds`（规划耗时与确认等待）、
+`porthouse_team_tasks_total{kind,status}`（协作阶段任务）、
+`porthouse_coordinator_replans_total{reason_code}`（含 `plan_blueprint_violation` /
+`plan_boundary_violation`，用于观察计划被 Blueprint 修正或失败关闭的频率）。
 
 ## 配置发布治理
 
@@ -436,6 +445,11 @@ restricted 能力。已有发布版本不会被数据库迁移脚本改写，但
 ## 扩容与故障恢复
 
 API 与 Worker 可独立扩容。Worker claim 使用 lease 和 fencing；实例退出后，过期工作可由其他 Worker 接管。SSE 客户端使用事件 sequence 断点续传，刷新页面不会取消 Run。
+
+扩容与瓶颈判断优先使用监控概览的“执行容量”面板或 `/metrics` 容量指标：Agent 槽位长期贴近
+`porthouse_agent_slots_total` 时增加 Worker；`porthouse_task_claim_delay_ms_p95` 持续上升而槽位未满，
+多为领取吞吐或数据库瓶颈；`porthouse_database_pool_waiting` 大于 0 说明 API 进程连接池不足。Worker
+CPU/RSS 来自心跳采样的进程级均值，仅作参考，不替代宿主机监控。
 
 Run/Task、提交配额和 API 限流均由 PostgreSQL 原子协调，不要求 Redis。只有在实时广播或
 热点缓存经压测成为瓶颈时才部署可选 Redis；Redis 故障不得影响已提交任务的恢复。

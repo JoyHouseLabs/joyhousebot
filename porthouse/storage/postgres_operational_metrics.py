@@ -44,6 +44,51 @@ class PostgresOperationalMetricsStoreMixin:
                               AS claim_delay_p95_ms
                    FROM runtime_tasks"""
             ).fetchone()
+            capacity = conn.execute(
+                """SELECT
+                    count(*) AS reporting_workers,
+                    COALESCE(sum(CASE WHEN capabilities @> '{"agent": true}'::jsonb
+                        AND COALESCE(metadata #>> '{capacity,agent,slots}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{capacity,agent,slots}')::integer END),0)
+                        AS agent_slots,
+                    COALESCE(sum(CASE WHEN capabilities @> '{"agent": true}'::jsonb
+                        AND COALESCE(metadata #>> '{capacity,agent,active}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{capacity,agent,active}')::integer END),0)
+                        AS agent_active,
+                    COALESCE(sum(CASE WHEN capabilities @> '{"agent": true}'::jsonb
+                        AND COALESCE(metadata #>> '{capacity,agent,waiting}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{capacity,agent,waiting}')::integer END),0)
+                        AS agent_waiting,
+                    COALESCE(sum(CASE WHEN capabilities @> '{"agent": true}'::jsonb
+                        AND COALESCE(metadata #>> '{capacity,graph,slots}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{capacity,graph,slots}')::integer END),0)
+                        AS graph_slots,
+                    COALESCE(sum(CASE WHEN capabilities @> '{"agent": true}'::jsonb
+                        AND COALESCE(metadata #>> '{capacity,graph,active}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{capacity,graph,active}')::integer END),0)
+                        AS graph_active,
+                    COALESCE(sum(CASE WHEN capabilities @> '{"agent": true}'::jsonb
+                        AND COALESCE(metadata #>> '{capacity,graph,buffered}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{capacity,graph,buffered}')::integer END),0)
+                        AS graph_buffered,
+                    COALESCE(avg(CASE WHEN COALESCE(metadata #>> '{process,cpu_percent}','')
+                        ~ '^[0-9]+(\\.[0-9]+)?$' THEN (metadata #>> '{process,cpu_percent}')::double precision END),0)
+                        AS worker_cpu_percent_avg,
+                    COALESCE(sum(CASE WHEN COALESCE(metadata #>> '{process,rss_bytes}','')
+                        ~ '^[0-9]+$' THEN (metadata #>> '{process,rss_bytes}')::bigint END),0)
+                        AS worker_rss_bytes
+                   FROM runtime_workers
+                   WHERE status='online'
+                     AND last_heartbeat>clock_timestamp()-interval '30 seconds'"""
+            ).fetchone()
+            provider_errors = conn.execute(
+                """SELECT provider,model,count(*) AS total,
+                          count(*) FILTER (WHERE status='failed') AS failed
+                   FROM model_invocations
+                   WHERE started_at>clock_timestamp()-interval '24 hours'
+                   GROUP BY provider,model ORDER BY failed DESC,total DESC,provider,model
+                   LIMIT 100"""
+            ).fetchall()
             providers = conn.execute(
                 """SELECT provider,model,status,count(*) AS count,
                           COALESCE(avg(duration_ms),0) AS avg_duration_ms,
@@ -212,6 +257,54 @@ class PostgresOperationalMetricsStoreMixin:
                           (clock_timestamp()-min(created_at))),0) AS seconds
                    FROM app_callback_outbox WHERE status IN ('pending','sending')"""
             ).fetchone()
+            team_runs = conn.execute(
+                """SELECT status,count(*) AS count FROM runtime_runs
+                   WHERE options->'metadata' ? 'team_ref'
+                     AND created_at>clock_timestamp()-interval '24 hours'
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
+            team_plan_actions = conn.execute(
+                """SELECT status,count(*) AS count FROM run_plan_confirmations
+                   WHERE requested_at>clock_timestamp()-interval '24 hours'
+                   GROUP BY status ORDER BY status"""
+            ).fetchall()
+            team_plan_wait = conn.execute(
+                """SELECT COALESCE(percentile_disc(0.95) WITHIN GROUP (
+                          ORDER BY EXTRACT(EPOCH FROM (action_at-requested_at))),0)
+                       AS wait_p95,
+                      COALESCE(avg(EXTRACT(EPOCH FROM (action_at-requested_at))),0)
+                       AS wait_avg
+                   FROM run_plan_confirmations
+                   WHERE action_at IS NOT NULL
+                     AND requested_at>clock_timestamp()-interval '24 hours'"""
+            ).fetchone()
+            team_planning = conn.execute(
+                """SELECT COALESCE(percentile_disc(0.95) WITHIN GROUP (
+                          ORDER BY EXTRACT(EPOCH FROM (artifact.created_at-run.created_at))),0)
+                       AS planning_p95,
+                      COALESCE(avg(EXTRACT(EPOCH FROM (artifact.created_at-run.created_at))),0)
+                       AS planning_avg
+                   FROM runtime_runs AS run
+                   JOIN runtime_artifacts AS artifact
+                     ON artifact.run_id=run.run_id AND artifact.name='coordinator-plan'
+                   WHERE run.options->'metadata' ? 'team_ref'
+                     AND run.created_at>clock_timestamp()-interval '24 hours'"""
+            ).fetchone()
+            team_tasks = conn.execute(
+                """SELECT payload->'metadata'->'team_step_contract'->>'kind' AS kind,
+                          status,count(*) AS count
+                   FROM runtime_tasks
+                   WHERE payload->'metadata' ? 'team_step_contract'
+                     AND created_at>clock_timestamp()-interval '24 hours'
+                   GROUP BY 1,2 ORDER BY 1,2"""
+            ).fetchall()
+            coordinator_replans = conn.execute(
+                """SELECT reason_code,count(*) AS count FROM loop_decisions
+                   WHERE decision IN ('replan','escalate')
+                     AND created_at>clock_timestamp()-interval '24 hours'
+                   GROUP BY reason_code ORDER BY count DESC, reason_code LIMIT 25"""
+            ).fetchall()
+        pool_stats = self._pool.get_stats()
         metrics.update(
             {
                 "queue": {
@@ -221,6 +314,36 @@ class PostgresOperationalMetricsStoreMixin:
                     "retried_tasks": int(queue["retried"] or 0),
                     "claim_delay_p95_ms": float(queue["claim_delay_p95_ms"] or 0),
                 },
+                "capacity": {
+                    "reporting_workers": int(capacity["reporting_workers"] or 0),
+                    "agent_slots": int(capacity["agent_slots"] or 0),
+                    "agent_active": int(capacity["agent_active"] or 0),
+                    "agent_waiting": int(capacity["agent_waiting"] or 0),
+                    "graph_slots": int(capacity["graph_slots"] or 0),
+                    "graph_active": int(capacity["graph_active"] or 0),
+                    "graph_buffered": int(capacity["graph_buffered"] or 0),
+                    "worker_cpu_percent_avg": float(capacity["worker_cpu_percent_avg"] or 0),
+                    "worker_rss_bytes": int(capacity["worker_rss_bytes"] or 0),
+                },
+                "database_pool": {
+                    "min_size": int(pool_stats.get("pool_min", 0)),
+                    "max_size": int(pool_stats.get("pool_max", 0)),
+                    "size": int(pool_stats.get("pool_size", 0)),
+                    "available": int(pool_stats.get("pool_available", 0)),
+                    "waiting": int(pool_stats.get("requests_waiting", 0)),
+                },
+                "provider_errors_24h": [
+                    {
+                        "provider": str(row["provider"]),
+                        "model": str(row["model"]),
+                        "total": int(row["total"]),
+                        "failed": int(row["failed"]),
+                        "failure_rate": round(
+                            int(row["failed"]) / max(1, int(row["total"])) * 100, 1
+                        ),
+                    }
+                    for row in provider_errors
+                ],
                 "runs_24h": [
                     {
                         "status": str(row["status"]),
@@ -228,6 +351,37 @@ class PostgresOperationalMetricsStoreMixin:
                         "p95_duration_ms": float(row["p95_duration_ms"] or 0),
                     }
                     for row in recent_runs
+                ],
+                "team_runs": [
+                    {"status": str(row["status"]), "count": int(row["count"])}
+                    for row in team_runs
+                ],
+                "team_plan_actions": [
+                    {"action": str(row["status"]), "count": int(row["count"])}
+                    for row in team_plan_actions
+                ],
+                "team_planning": {
+                    "planning_duration_seconds_p95": float(
+                        team_planning["planning_p95"] or 0
+                    ),
+                    "planning_duration_seconds_avg": float(
+                        team_planning["planning_avg"] or 0
+                    ),
+                    "confirmation_wait_seconds_p95": float(
+                        team_plan_wait["wait_p95"] or 0
+                    ),
+                },
+                "team_tasks": [
+                    {
+                        "kind": str(row["kind"] or "unknown"),
+                        "status": str(row["status"]),
+                        "count": int(row["count"]),
+                    }
+                    for row in team_tasks
+                ],
+                "coordinator_replans": [
+                    {"reason_code": str(row["reason_code"]), "count": int(row["count"])}
+                    for row in coordinator_replans
                 ],
                 "actions": _counts(actions),
                 "approvals": _counts(approvals),

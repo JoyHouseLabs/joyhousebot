@@ -66,6 +66,35 @@ class RuntimeMaintenanceMixin:
                     )
             except Exception:
                 logger.exception("Approval expiry failed")
+        expire_plans = getattr(self.store, "expire_plan_confirmations", None)
+        if expire_plans is not None:
+            try:
+                expired_plans = await asyncio.to_thread(expire_plans, limit=200)
+                for confirmation in expired_plans:
+                    await self.events.publish(
+                        AgentEvent(
+                            event_id=f"plan:{confirmation['run_id']}:confirmation:expired",
+                            run_id=confirmation["run_id"],
+                            type=EventType.PLAN_CONFIRMATION_RESOLVED.value,
+                            status="expired",
+                            data={
+                                "action": "expired",
+                                "plan_version": confirmation["plan_version"],
+                                "resolution": "expired",
+                            },
+                        )
+                    )
+                    await self.events.publish(
+                        AgentEvent(
+                            event_id=f"plan:{confirmation['run_id']}:run.failed",
+                            run_id=confirmation["run_id"],
+                            type=EventType.RUN_FAILED.value,
+                            status="failed",
+                            data={"reason": "plan_confirmation_expired"},
+                        )
+                    )
+            except Exception:
+                logger.exception("Plan confirmation expiry failed")
         purge = getattr(self.store, "purge_old_runtime_data", None)
         if purge is None:
             return

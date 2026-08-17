@@ -161,6 +161,21 @@ def build_coordinator_prompt(
     }
     team_instruction = ""
     if team:
+        blueprint = team.get("collaboration_blueprint") or {}
+        blueprint_instruction = ""
+        if blueprint.get("phases"):
+            blueprint_instruction = (
+                "A Collaboration Blueprint is frozen for this Run and is binding: every "
+                "planned step must fit exactly one blueprint phase (same kind, and its "
+                "member_id must be one of that phase's participants); every declared phase "
+                "must be covered by at least one step; steps of a phase must depend on "
+                "steps of the phases it depends_on; reviewers must differ from the authors "
+                "they review; and the plan's widest concurrent level must stay within "
+                "guardrails.max_parallel_tasks. Produce the whole plan within this "
+                "structure.\n\n"
+                f"Frozen Collaboration Blueprint:\n"
+                f"{json.dumps(blueprint, ensure_ascii=False)[:8000]}\n\n"
+            )
         team_instruction = (
             "A published AgentTeam is frozen for this Run. Assign every planned step to "
             "one listed member_id. The coordinator may assign only itself or members in its "
@@ -170,6 +185,7 @@ def build_coordinator_prompt(
             "revise steps for corrections, synthesize for the final decision, and checkpoint "
             "only when the coordinator must assess a completed wave. review_of and revision_of "
             "must reference dependency steps. Keep review_round within the Team budget.\n\n"
+            f"{blueprint_instruction}"
             f"Frozen AgentTeam:\n{json.dumps(team, ensure_ascii=False)[:12000]}\n\n"
         )
     return (

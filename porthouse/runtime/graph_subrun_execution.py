@@ -77,6 +77,7 @@ async def _submit_team_child(
                 "team_context_policy": dict(team.context_policy),
                 "team_budget_policy": dict(team.budget_policy),
                 "team_approval_policy": dict(team.approval_policy),
+                "team_collaboration_blueprint": dict(team.effective_blueprint),
                 "workflow_parent": {
                     "run_id": run.run_id,
                     "task_id": task.task_id,
@@ -232,13 +233,29 @@ async def execute_graph_subrun(
     content = result.get("content")
     if content is not None and not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False, default=str)
+    # Team children surface their durable artifacts so downstream Workflow
+    # nodes can reference the confirmed final outputs by artifact id.
+    child_artifact_ids: list[str] = []
+    if mode == "team":
+        child_artifacts = await asyncio.to_thread(
+            runtime.store.list_runtime_artifacts, child.run_id
+        )
+        child_artifact_ids = [
+            str(item["artifact_id"])
+            for item in child_artifacts
+            if item.get("name") not in ("coordinator-plan", "coordinator-graph-spec")
+        ][-8:]
     await runtime.events.publish(
         AgentEvent(
             run_id=run.run_id,
             task_id=task.task_id,
             type=EventType.SUBRUN_COMPLETED.value,
             status="completed",
-            data={"child_run_id": child.run_id, "mode": mode},
+            data={
+                "child_run_id": child.run_id,
+                "mode": mode,
+                "child_artifact_ids": child_artifact_ids,
+            },
         )
     )
     return (
@@ -251,5 +268,6 @@ async def execute_graph_subrun(
             "subrun_mode": mode,
             "child_run_id": child.run_id,
             "child_status": child.status,
+            "child_artifact_ids": child_artifact_ids,
         },
     )

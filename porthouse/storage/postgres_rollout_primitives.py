@@ -119,6 +119,12 @@ class PostgresRolloutPrimitiveStoreMixin:
                    WHERE provider_id=%s""",
                 (aggregate_id,),
             ).fetchone()
+        elif aggregate_type == "agent_team":
+            row = conn.execute(
+                """SELECT current_revision_id AS revision FROM agent_team_definitions
+                   WHERE team_id=%s""",
+                (aggregate_id,),
+            ).fetchone()
         else:
             raise ValueError("unsupported configuration rollout type")
         return str(row["revision"]) if row and row["revision"] is not None else None
@@ -261,6 +267,19 @@ class PostgresRolloutPrimitiveStoreMixin:
                                updated_at=clock_timestamp() WHERE provider_id=%s""",
                         (revision_id, aggregate_id),
                     )
+        elif aggregate_type == "agent_team":
+            # Team publish activates immediately; rollout completion only
+            # re-affirms the pointer and must never roll it back to a stale
+            # revision after a newer publish.
+            changed = conn.execute(
+                """UPDATE agent_team_definitions d SET current_revision_id=%s,
+                       updated_at=clock_timestamp()
+                   WHERE d.team_id=%s
+                     AND EXISTS (SELECT 1 FROM agent_team_revisions r
+                                 WHERE r.revision_id=%s AND r.status='published')
+                     AND (d.current_revision_id IS NULL OR d.current_revision_id=%s)""",
+                (revision_id, aggregate_id, revision_id, revision_id),
+            ).rowcount
         else:
             raise ValueError("unsupported configuration rollout type")
         if changed != 1:

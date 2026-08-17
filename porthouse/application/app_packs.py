@@ -385,7 +385,12 @@ class AppPackService:
                 lock["agents"].append(dict(reference))
 
         for reference in assets.get("teams") or []:
-            team = self.store.get_agent_team_revision(reference["revision_id"])
+            try:
+                team = self.store.get_agent_team_revision(reference["revision_id"])
+            except ValueError as exc:
+                # A corrupted definition fails the check instead of 500ing.
+                self._check(checks, errors, "team", reference, False, reason=str(exc))
+                continue
             valid = bool(
                 team
                 and team.team_id == reference["team_id"]
@@ -394,6 +399,33 @@ class AppPackService:
             self._check(checks, errors, "team", reference, valid)
             if valid:
                 lock["teams"].append(dict(reference))
+            # An explicit blueprint is a publish-time contract: reinstalling
+            # the pack must reject a team whose blueprint no longer validates.
+            if team is not None and valid and team.collaboration_blueprint is not None:
+                from porthouse.domain.collaboration_blueprints import (
+                    normalize_collaboration_blueprint,
+                )
+
+                try:
+                    normalize_collaboration_blueprint(
+                        team.collaboration_blueprint,
+                        member_ids={item.member_id for item in team.members},
+                        coordinator_member_id=team.coordinator_member_id,
+                        budget_policy=team.budget_policy,
+                    )
+                    blueprint_valid = True
+                    reason = ""
+                except ValueError as exc:
+                    blueprint_valid = False
+                    reason = str(exc)
+                self._check(
+                    checks,
+                    errors,
+                    "team_blueprint",
+                    {"team_id": reference["team_id"], "revision_id": reference["revision_id"]},
+                    blueprint_valid,
+                    reason=reason,
+                )
 
         for reference in assets.get("skills") or []:
             skill = self.store.get_published_skill(reference["skill_id"], reference["version"])
@@ -511,10 +543,13 @@ class AppPackService:
         kind: str,
         reference: Any,
         valid: bool,
+        *,
+        reason: str = "",
     ) -> None:
         checks.append({"kind": kind, "reference": reference, "passed": valid})
         if not valid:
-            errors.append(f"unavailable {kind}: {reference}")
+            detail = f" ({reason})" if reason else ""
+            errors.append(f"unavailable {kind}: {reference}{detail}")
 
     @staticmethod
     def _public_installation(value: dict[str, Any]) -> dict[str, Any]:

@@ -375,8 +375,13 @@ async def rollouts(
     principal: RolloutsReaderDep,
     container: ContainerDep,
     limit: int = Query(default=100, ge=1, le=1000),
+    aggregate_type: str | None = Query(default=None),
 ):
-    return {"items": await container.platform.list_rollouts(limit=limit)}
+    return {
+        "items": await container.platform.list_rollouts(
+            limit=limit, aggregate_type=aggregate_type
+        )
+    }
 
 
 async def _rollout_action(action, rollout_id: str, principal, container):

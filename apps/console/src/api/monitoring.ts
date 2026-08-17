@@ -69,7 +69,10 @@ export interface OperationalMetrics {
   workers: Record<string, number>
   providers: Array<{ provider: string; model: string; status: string; count: number; avg_duration_ms: number; avg_ttft_ms: number; p95_duration_ms: number; p95_ttft_ms: number; input_tokens: number; output_tokens: number; billed_input_tokens: number; billed_output_tokens: number; missing_usage_invocations: number; missing_billing_invocations: number; cost_usd: number }>
   channels: Array<{ channel: string; status: string; count: number }>
-  queue: { queued: number; oldest_age_seconds: number; expired_leases: number; retried_tasks: number }
+  queue: { queued: number; oldest_age_seconds: number; expired_leases: number; retried_tasks: number; claim_delay_p95_ms: number }
+  capacity: { reporting_workers: number; agent_slots: number; agent_active: number; agent_waiting: number; graph_slots: number; graph_active: number; graph_buffered: number; worker_cpu_percent_avg: number; worker_rss_bytes: number }
+  database_pool: { min_size: number; max_size: number; size: number; available: number; waiting: number }
+  provider_errors_24h: Array<{ provider: string; model: string; total: number; failed: number; failure_rate: number }>
   workers_stale: number
 }
 

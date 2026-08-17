@@ -173,9 +173,7 @@ class RuntimeCoordinatorMixin(
                 else:
                     await self._scan_incomplete_runs(wake_source=wake.source)
                     last_deep_scan_at = now
-                heartbeat = getattr(self.store, "heartbeat_runtime_worker", None)
-                if heartbeat is not None:
-                    await asyncio.to_thread(heartbeat, self.worker_id)
+                await self._heartbeat_worker()
                 now = time.monotonic()
                 if now - last_worker_reconcile_at >= _WORKER_RECONCILE_INTERVAL_SECONDS:
                     last_worker_reconcile_at = now

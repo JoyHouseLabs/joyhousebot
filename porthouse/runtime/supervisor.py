@@ -24,9 +24,10 @@ class TaskSupervisor:
     """Own every background runtime task and make cancellation observable."""
 
     def __init__(self, max_concurrent: int | None = None, *, max_completed: int = 1024) -> None:
+        self._max_concurrent = max_concurrent if isinstance(max_concurrent, int) and max_concurrent > 0 else None
         self._semaphore = (
-            asyncio.Semaphore(max_concurrent)
-            if isinstance(max_concurrent, int) and max_concurrent > 0
+            asyncio.Semaphore(self._max_concurrent)
+            if self._max_concurrent is not None
             else None
         )
         self._handles: dict[str, RunHandle] = {}
@@ -34,6 +35,17 @@ class TaskSupervisor:
         self._max_completed = max(1, max_completed)
         self._lock = asyncio.Lock()
         self._closing = False
+        self._active_count = 0
+
+    def capacity_snapshot(self, *, fallback_slots: int) -> dict[str, int]:
+        """Return event-loop-local execution capacity for a Worker heartbeat."""
+        slots = self._max_concurrent or fallback_slots
+        submitted = len(self._handles)
+        return {
+            "slots": max(1, int(slots)),
+            "active": self._active_count,
+            "waiting": max(0, submitted - self._active_count),
+        }
 
     async def submit(self, run_id: str, factory: RunFactory) -> RunHandle:
         async with self._lock:
@@ -57,11 +69,19 @@ class TaskSupervisor:
             async def _execute() -> Any:
                 try:
                     if self._semaphore is None:
-                        result = await factory(cancellation)
+                        self._active_count += 1
+                        try:
+                            result = await factory(cancellation)
+                        finally:
+                            self._active_count -= 1
                     else:
                         async with self._semaphore:
-                            cancellation.raise_if_cancelled()
-                            result = await factory(cancellation)
+                            self._active_count += 1
+                            try:
+                                cancellation.raise_if_cancelled()
+                                result = await factory(cancellation)
+                            finally:
+                                self._active_count -= 1
                     if not completion.done():
                         completion.set_result(result)
                     return result

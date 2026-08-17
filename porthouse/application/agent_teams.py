@@ -7,6 +7,10 @@ from typing import Any
 
 from porthouse.application.errors import ConflictError, NotFoundError, ValidationError
 from porthouse.domain.agent_teams import AgentTeamRevision
+from porthouse.domain.collaboration_blueprints import (
+    normalize_collaboration_blueprint,
+    preset_summaries,
+)
 
 
 class AgentTeamService:
@@ -17,6 +21,46 @@ class AgentTeamService:
         try:
             stored = await asyncio.to_thread(
                 self.store.save_agent_team_revision, revision
+            )
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+        return stored.to_dict()
+
+    async def presets(self) -> list[dict[str, Any]]:
+        return preset_summaries()
+
+    async def validate_blueprint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        member_ids = [
+            str(item.get("member_id") or "")
+            for item in payload.get("members") or []
+            if isinstance(item, dict) and item.get("member_id")
+        ]
+        coordinator = str(payload.get("coordinator_member_id") or "")
+        if not member_ids or not coordinator or coordinator not in member_ids:
+            raise ValidationError("members and coordinator_member_id are required")
+        try:
+            normalized = normalize_collaboration_blueprint(
+                payload.get("blueprint"),
+                member_ids=set(member_ids),
+                coordinator_member_id=coordinator,
+                budget_policy=dict(payload.get("budget_policy") or {}),
+            )
+        except ValueError as exc:
+            message = str(exc)
+            code, _, detail = message.partition(": ")
+            return {
+                "ok": False,
+                "errors": [{"code": code, "message": detail or message}],
+                "normalized": None,
+            }
+        return {"ok": True, "errors": [], "normalized": normalized}
+
+    async def migrate_blueprint(
+        self, team_id: str, *, actor_id: str
+    ) -> dict[str, Any]:
+        try:
+            stored = await asyncio.to_thread(
+                self.store.migrate_team_blueprint, team_id, actor_id=actor_id
             )
         except ValueError as exc:
             raise ConflictError(str(exc)) from exc

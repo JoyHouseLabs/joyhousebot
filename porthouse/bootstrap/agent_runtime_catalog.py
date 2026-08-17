@@ -488,6 +488,22 @@ class AgentRuntimeCatalog:
             ):
                 raise RuntimeError("Skill content digest changed after staging")
             return
+        if aggregate_type == "agent_team":
+            team = self.store.get_agent_team_revision(item["revision_id"])
+            if team is None or team.status not in {"published", "retired"}:
+                raise RuntimeError("published AgentTeam revision is unavailable")
+            for member in team.members:
+                agent_revision = self.store.get_agent_revision(member.agent_revision_id)
+                if agent_revision is None or str(agent_revision.status) != "published":
+                    raise RuntimeError(
+                        "AgentTeam member {} pins an unavailable Agent revision: {}".format(
+                            member.member_id, member.agent_revision_id
+                        )
+                    )
+            team_loop = self.resolve(team.coordinator.agent_revision_id)
+            if team_loop is None:
+                raise RuntimeError("team coordinator Agent revision is unavailable")
+            return
         loop = self.resolve(self._runtime.default_agent_id)
         if loop is None:
             raise RuntimeError("default Agent runtime is unavailable for preflight")

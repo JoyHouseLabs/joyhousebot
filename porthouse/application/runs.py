@@ -11,6 +11,7 @@ from porthouse.application.context import RequestContext
 from porthouse.application.errors import ConflictError, NotFoundError, ValidationError
 from porthouse.application.graph_validation import validate_graph_catalog
 from porthouse.application.run_commands import CreateRunCommand, GraphTaskCommand
+from porthouse.application.run_plans import RunPlanMixin
 from porthouse.application.run_target_resolution import resolve_run_target
 from porthouse.orchestration import ClarificationEngine, ScenarioPlanner, ScenarioRouter
 from porthouse.orchestration.failure_policy import validate_saga_declarations
@@ -24,7 +25,7 @@ from porthouse.runtime.models import (
 )
 
 
-class RunService:
+class RunService(RunPlanMixin):
     def __init__(self, runtime: Any, store: Any) -> None:
         self.runtime = runtime
         self.store = store
@@ -112,6 +113,7 @@ class RunService:
                     "team_context_policy": dict(team.context_policy),
                     "team_budget_policy": dict(team.budget_policy),
                     "team_approval_policy": dict(team.approval_policy),
+                    "team_collaboration_blueprint": dict(team.effective_blueprint),
                 }
             )
         scenario_tools = (

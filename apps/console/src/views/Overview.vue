@@ -63,6 +63,22 @@
       <p class="worker-summary-note">健康 {{ platform.healthy_workers }} · 历史 / 陈旧记录 {{ Math.max(0, platform.workers - platform.healthy_workers) }} · 角色和扩展信息来自 Worker 心跳。</p>
     </section>
 
+    <section class="panel capacity-panel">
+      <div class="panel-heading">
+        <div><span class="eyebrow">CAPACITY</span><h2>执行容量</h2><p>实时心跳与 PostgreSQL 聚合；用于调整 Worker 数和单 Worker 槽位。</p></div>
+        <span class="capacity-updated">{{ metrics.capacity.reporting_workers }} 个 Worker 上报中</span>
+      </div>
+      <div class="capacity-grid">
+        <article><span>Agent 槽位</span><strong>{{ metrics.capacity.agent_active }} / {{ metrics.capacity.agent_slots }}</strong><small>{{ metrics.capacity.agent_waiting }} 个已领取等待执行</small><i><b :style="{ width: capacityPercent(metrics.capacity.agent_active, metrics.capacity.agent_slots) + '%' }" /></i></article>
+        <article><span>Graph 槽位</span><strong>{{ metrics.capacity.graph_active }} / {{ metrics.capacity.graph_slots }}</strong><small>本地缓冲 {{ metrics.capacity.graph_buffered }} 个 Task</small><i><b :style="{ width: capacityPercent(metrics.capacity.graph_active, metrics.capacity.graph_slots) + '%' }" /></i></article>
+        <article :class="{ warning: metrics.queue.claim_delay_p95_ms >= 10_000 || metrics.queue.oldest_age_seconds >= 60 }"><span>队列延迟 P95</span><strong>{{ formatDuration(metrics.queue.claim_delay_p95_ms) }}</strong><small>排队 {{ metrics.queue.queued }} · 最久 {{ formatAge(metrics.queue.oldest_age_seconds) }}</small></article>
+        <article :class="{ warning: metrics.database_pool.waiting > 0 }"><span>PostgreSQL 连接池</span><strong>{{ metrics.database_pool.size - metrics.database_pool.available }} / {{ metrics.database_pool.max_size }}</strong><small>可用 {{ metrics.database_pool.available }} · 等待 {{ metrics.database_pool.waiting }}</small></article>
+        <article><span>Worker 进程</span><strong>{{ metrics.capacity.worker_cpu_percent_avg.toFixed(1) }}% CPU</strong><small>RSS {{ formatBytes(metrics.capacity.worker_rss_bytes) }}（全部 Worker）</small></article>
+        <article :class="{ warning: providerFailureRate >= 5 }"><span>模型失败率（24h）</span><strong>{{ providerFailureRate.toFixed(1) }}%</strong><small>{{ providerFailureCount }} / {{ providerInvocationCount }} 次调用失败</small></article>
+      </div>
+      <div v-if="metrics.provider_errors_24h.length" class="capacity-provider-list"><span v-for="item in metrics.provider_errors_24h.slice(0, 4)" :key="`${item.provider}/${item.model}`" :class="{ warning: item.failure_rate >= 5 }">{{ item.provider }}/{{ item.model }} · {{ item.failure_rate.toFixed(1) }}% 失败</span></div>
+    </section>
+
     <section class="monitor-grid ops-metrics-grid">
       <section class="panel">
         <div class="panel-heading"><div><span class="eyebrow">PROVIDERS</span><h2>模型与 Provider</h2></div></div>
@@ -145,11 +161,14 @@ const identity = reactive<RuntimeIdentity>({
   is_admin: false,
 })
 const health = reactive<ServiceHealth>({ api: false, database: false, databaseDetail: null })
-const metrics = reactive<OperationalMetrics>({ runs: {}, tasks: {}, workers: {}, providers: [], channels: [], queue: { queued: 0, oldest_age_seconds: 0, expired_leases: 0, retried_tasks: 0 }, workers_stale: 0 })
+const metrics = reactive<OperationalMetrics>({ runs: {}, tasks: {}, workers: {}, providers: [], channels: [], queue: { queued: 0, oldest_age_seconds: 0, expired_leases: 0, retried_tasks: 0, claim_delay_p95_ms: 0 }, capacity: { reporting_workers: 0, agent_slots: 0, agent_active: 0, agent_waiting: 0, graph_slots: 0, graph_active: 0, graph_buffered: 0, worker_cpu_percent_avg: 0, worker_rss_bytes: 0 }, database_pool: { min_size: 0, max_size: 0, size: 0, available: 0, waiting: 0 }, provider_errors_24h: [], workers_stale: 0 })
 let timer: number | null = null
 
 const databaseLabel = computed(() => String(health.databaseDetail?.backend ?? health.databaseDetail?.database ?? 'PostgreSQL / Store ready'))
 const healthyWorkers = computed(() => workerList.value.filter((worker) => worker.healthy))
+const providerInvocationCount = computed(() => metrics.provider_errors_24h.reduce((total, item) => total + item.total, 0))
+const providerFailureCount = computed(() => metrics.provider_errors_24h.reduce((total, item) => total + item.failed, 0))
+const providerFailureRate = computed(() => providerFailureCount.value / Math.max(1, providerInvocationCount.value) * 100)
 
 async function refresh() {
   if (loading.value) return
@@ -174,6 +193,9 @@ function statusLabel(status: string) { return ({ queued: '排队', running: '运
 function taskProgress(run: RuntimeRun) { return Math.round(((run.completed_task_count ?? 0) / Math.max(1, run.total_task_count ?? 0)) * 100) }
 function compactNumber(value = 0) { return new Intl.NumberFormat('zh-CN', { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value) }
 function formatAge(seconds = 0) { if (seconds < 60) return `${Math.round(seconds)} 秒`; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`; return `${(seconds / 3600).toFixed(1)} 小时` }
+function formatDuration(milliseconds = 0) { if (milliseconds < 1_000) return `${Math.round(milliseconds)}ms`; if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)} 秒`; return `${(milliseconds / 60_000).toFixed(1)} 分钟` }
+function formatBytes(bytes = 0) { if (!bytes) return '—'; if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`; return `${(bytes / 1024 / 1024).toFixed(0)} MB` }
+function capacityPercent(active: number, slots: number) { return Math.min(100, Math.round(active / Math.max(1, slots) * 100)) }
 function formatClock(value: Date) { return value.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
 function relativeTime(value?: string) { if (!value) return '—'; const delta = Date.now() - new Date(value).getTime(); if (delta < 60_000) return '刚刚'; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`; return new Date(value).toLocaleDateString('zh-CN') }
 function workerRole(worker: RuntimeWorker) { if (worker.capabilities?.scheduler) return 'Scheduler 调度节点'; if (worker.capabilities?.agent) return 'Agent 执行节点'; return 'Runtime Worker' }
@@ -185,3 +207,23 @@ function nextRunText(item: ScheduleItem) { const value = item.state?.next_run_at
 onMounted(() => { void refresh(); timer = window.setInterval(refresh, 10_000) })
 onUnmounted(() => { if (timer) window.clearInterval(timer) })
 </script>
+
+<style scoped>
+.capacity-panel { margin-bottom: 18px; }
+.capacity-panel .panel-heading p { margin: 5px 0 0; color: var(--text-muted); font-size: 12px; }
+.capacity-updated { color: var(--text-muted); font-size: 12px; }
+.capacity-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--border); }
+.capacity-grid article { display: grid; gap: 5px; min-height: 126px; padding: 17px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.capacity-grid article:nth-child(3n) { border-right: 0; }
+.capacity-grid article:nth-last-child(-n+3) { border-bottom: 0; }
+.capacity-grid span { color: var(--text-muted); font-size: 12px; }
+.capacity-grid strong { color: var(--text-strong); font-size: 23px; line-height: 1.15; }
+.capacity-grid small { color: var(--text-muted); font-size: 12px; }
+.capacity-grid article.warning strong,.capacity-provider-list .warning { color: #d86b21; }
+.capacity-grid i { display: block; height: 5px; margin-top: auto; overflow: hidden; border-radius: 999px; background: var(--border); }
+.capacity-grid i b { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s; }
+.capacity-provider-list { display: flex; gap: 8px; flex-wrap: wrap; padding: 13px 17px; color: var(--text-muted); font-size: 12px; }
+.capacity-provider-list span { padding: 5px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); }
+@media (max-width: 980px) { .capacity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.capacity-grid article:nth-child(3n) { border-right: 1px solid var(--border); }.capacity-grid article:nth-child(2n) { border-right: 0; }.capacity-grid article:nth-last-child(-n+3) { border-bottom: 1px solid var(--border); }.capacity-grid article:nth-last-child(-n+2) { border-bottom: 0; } }
+@media (max-width: 620px) { .capacity-grid { grid-template-columns: 1fr; }.capacity-grid article,.capacity-grid article:nth-child(3n),.capacity-grid article:nth-child(2n) { border-right: 0; border-bottom: 1px solid var(--border); }.capacity-grid article:last-child { border-bottom: 0; } }
+</style>

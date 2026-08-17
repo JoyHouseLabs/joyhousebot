@@ -6,7 +6,10 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Query
 
-from porthouse.api.agent_team_schemas import SaveAgentTeamRevisionRequest
+from porthouse.api.agent_team_schemas import (
+    SaveAgentTeamRevisionRequest,
+    ValidateBlueprintRequest,
+)
 from porthouse.api.dependencies import (
     ContainerDep,
     TeamsPublisherDep,
@@ -21,6 +24,49 @@ router = APIRouter(prefix="/admin/teams", tags=["agent-teams"])
 @router.get("")
 async def list_teams(principal: TeamsReaderDep, container: ContainerDep):
     return {"items": await container.agent_teams.list_catalog()}
+
+
+@router.get("/blueprint-presets")
+async def list_blueprint_presets(principal: TeamsReaderDep, container: ContainerDep):
+    return {"items": await container.agent_teams.presets()}
+
+
+@router.post("/blueprint-validate")
+async def validate_blueprint(
+    body: ValidateBlueprintRequest, principal: TeamsReaderDep, container: ContainerDep
+):
+    return await container.agent_teams.validate_blueprint(
+        {
+            "blueprint": body.blueprint,
+            "members": [item.model_dump() for item in body.members],
+            "coordinator_member_id": body.coordinator_member_id,
+            "budget_policy": body.budget_policy,
+        }
+    )
+
+
+@router.get("/{team_id}/rollout/latest")
+async def latest_team_rollout(
+    team_id: str, principal: TeamsReaderDep, container: ContainerDep
+):
+    rollout = await asyncio.to_thread(
+        container.store.get_latest_configuration_rollout, "agent_team", team_id
+    )
+    if rollout is None:
+        raise HTTPException(status_code=404, detail="team has no rollout history")
+    targets = await asyncio.to_thread(
+        container.store.list_configuration_rollout_targets, rollout.rollout_id
+    )
+    return {**rollout.to_dict(), "targets": targets}
+
+
+@router.post("/{team_id}/blueprint-migrate")
+async def migrate_team_blueprint(
+    team_id: str, principal: TeamsWriterDep, container: ContainerDep
+):
+    return await container.agent_teams.migrate_blueprint(
+        team_id, actor_id=principal.subject
+    )
 
 
 @router.get("/{team_id}/revisions")
@@ -40,6 +86,9 @@ async def save_team_revision(
 ):
     if body.revision_id != revision_id:
         raise HTTPException(status_code=400, detail="body revision_id must match path")
+    blueprint = dict(body.collaboration_blueprint or {})
+    if body.role_bindings:
+        blueprint.setdefault("role_bindings", body.role_bindings)
     revision = AgentTeamRevision(
         team_id=team_id,
         revision_id=revision_id,
@@ -53,6 +102,7 @@ async def save_team_revision(
         context_policy=body.context_policy,
         budget_policy=body.budget_policy,
         approval_policy=body.approval_policy,
+        collaboration_blueprint=blueprint or None,
         status="draft",
         created_by=principal.subject,
     )

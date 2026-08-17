@@ -29,3 +29,15 @@ class SaveAgentTeamRevisionRequest(BaseModel):
     context_policy: dict[str, Any] = Field(default_factory=dict)
     budget_policy: dict[str, Any] = Field(default_factory=dict)
     approval_policy: dict[str, Any] = Field(default_factory=dict)
+    # Either the full canonical blueprint, or a preset + role_bindings the
+    # server derives canonical phases from. Omitted/null keeps the team on the
+    # implicit default (non-binding for the Coordinator).
+    collaboration_blueprint: dict[str, Any] | None = None
+    role_bindings: dict[str, list[str]] | None = None
+
+
+class ValidateBlueprintRequest(BaseModel):
+    blueprint: dict[str, Any] | None = None
+    members: list[AgentTeamMemberRequest] = Field(min_length=2, max_length=32)
+    coordinator_member_id: str = Field(pattern=_ID_PATTERN)
+    budget_policy: dict[str, Any] = Field(default_factory=dict)

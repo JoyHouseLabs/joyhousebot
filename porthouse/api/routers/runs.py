@@ -14,6 +14,7 @@ from porthouse.api.schemas import (
     CreateGraphPatchRequest,
     CreateGraphRequest,
     CreateRunFeedbackRequest,
+    PlanConfirmationRequest,
     ResolveApprovalRequest,
     ResolveGraphPatchProposalRequest,
     ResolveOperationRequest,
@@ -387,6 +388,26 @@ async def resolve_input(
 async def list_approvals(run_id: str, context: ContextDep, container: ContainerDep):
     rows = await container.approvals.list(context, run_id)
     return {"items": [record_dict(row) for row in rows]}
+
+
+@router.get("/{run_id}/plan")
+async def get_run_plan(run_id: str, context: ContextDep, container: ContainerDep):
+    return await container.runs.plan(context, run_id)
+
+
+@router.post("/{run_id}/plan/confirmation")
+async def confirm_run_plan(
+    run_id: str,
+    body: PlanConfirmationRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    return await container.runs.act_on_plan(
+        context,
+        run_id,
+        action=body.action,
+        feedback=body.feedback,
+    )
 
 
 @router.post("/{run_id}/approvals/{approval_id}/resolve")

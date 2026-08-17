@@ -80,7 +80,9 @@ owner 无法提交，并检查幂等 Run 只创建一次。生产环境只在低
 | target | 1,000 | 32 | 计划峰值与水平扩展 |
 | soak | 每分钟 30–100，持续 2 小时 | 目标并发 | 连接、内存、队列和费用漂移 |
 
-每阶段开始前记录 Worker 数和数据库连接数，结束后等待队列清空。示例：
+每阶段开始前记录 Worker 数和数据库连接数，结束后等待队列清空。期间用 `/metrics` 的
+`porthouse_agent_slots_*`、`porthouse_task_claim_delay_ms_p95` 和 `porthouse_database_pool_*`
+核对槽位饱和、领取延迟与连接池等待是否与阶段目标一致。示例：
 
 ```bash
 export PORTHOUSE_LOAD_TOKEN='short-lived-scoped-token'

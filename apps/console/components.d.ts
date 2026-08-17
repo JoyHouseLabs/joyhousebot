@@ -9,14 +9,20 @@ declare module 'vue' {
   export interface GlobalComponents {
     EmbeddingProfiles: typeof import('./src/components/EmbeddingProfiles.vue')['default']
     ExecutionTimeline: typeof import('./src/components/ExecutionTimeline.vue')['default']
+    GuardrailsForm: typeof import('./src/components/teamComposer/GuardrailsForm.vue')['default']
     ImpersonationControl: typeof import('./src/components/ImpersonationControl.vue')['default']
     MarkdownContent: typeof import('./src/components/MarkdownContent.vue')['default']
+    MemberCards: typeof import('./src/components/teamComposer/MemberCards.vue')['default']
     NConfigProvider: typeof import('naive-ui')['NConfigProvider']
     NDialogProvider: typeof import('naive-ui')['NDialogProvider']
     NMessageProvider: typeof import('naive-ui')['NMessageProvider']
+    PlanPreview: typeof import('./src/components/teamComposer/PlanPreview.vue')['default']
+    PresetCards: typeof import('./src/components/teamComposer/PresetCards.vue')['default']
+    PublishChecks: typeof import('./src/components/teamComposer/PublishChecks.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SchemaConfigurationForm: typeof import('./src/components/SchemaConfigurationForm.vue')['default']
     ShellLayout: typeof import('./src/components/ShellLayout.vue')['default']
+    StageGraph: typeof import('./src/components/teamComposer/StageGraph.vue')['default']
   }
 }

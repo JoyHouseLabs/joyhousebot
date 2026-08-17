@@ -73,6 +73,9 @@ from porthouse.storage.postgres_operational_metrics import (
     PostgresOperationalMetricsStoreMixin,
 )
 from porthouse.storage.postgres_operations import PostgresOperationsStoreMixin
+from porthouse.storage.postgres_plan_confirmations import (
+    PostgresPlanConfirmationStoreMixin,
+)
 from porthouse.storage.postgres_plugins import PostgresPluginStoreMixin
 from porthouse.storage.postgres_prompts import PostgresPromptStoreMixin
 from porthouse.storage.postgres_rate_limits import PostgresRateLimitStoreMixin
@@ -126,6 +129,7 @@ class PostgresRuntimeStore(
     PostgresAppUpdateStoreMixin,
     PostgresAppUsageStoreMixin,
     PostgresAgentTeamStoreMixin,
+    PostgresPlanConfirmationStoreMixin,
     PostgresWorkflowStoreMixin,
     PostgresGraphRevisionStoreMixin,
     PostgresGraphSagaStoreMixin,

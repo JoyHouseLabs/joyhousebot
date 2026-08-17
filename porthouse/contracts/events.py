@@ -36,6 +36,8 @@ class EventType(str, Enum):
     PHASE_COMPLETED = "phase.completed"
     PLAN_CREATED = "plan.created"
     PLAN_UPDATED = "plan.updated"
+    PLAN_CONFIRMATION_REQUESTED = "plan.confirmation_requested"
+    PLAN_CONFIRMATION_RESOLVED = "plan.confirmation_resolved"
     GRAPH_PATCHED = "graph.patched"
     GRAPH_PATCH_PROPOSED = "graph.patch_proposed"
     GRAPH_PATCH_RESOLVED = "graph.patch_resolved"

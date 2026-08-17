@@ -202,6 +202,7 @@ class PostgresMigrationMixin:
             self.migrate_admins()
             self.migrate_agents()
             self.migrate_agent_teams()
+            self.migrate_plan_confirmations()
             self.migrate_capabilities()
             self.migrate_skills()
             self.migrate_plugins()

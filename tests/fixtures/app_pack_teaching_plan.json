@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "app_id": "app.teaching-plan",
+  "version": "1.0.0",
+  "name": "教学方案专家组",
+  "description": "心理分析、课程设计、游戏设计与评测复核四位专家协作产出儿童教学方案；执行前展示计划并等待确认。",
+  "publisher": "Porthouse 示例",
+  "core": {"min_version": "0.1.2"},
+  "extensions": [],
+  "capabilities": [],
+  "assets": {
+    "agents": [
+      {"agent_id": "default", "revision_id": "default:v1"}
+    ],
+    "teams": [
+      {"team_id": "team.teaching-plan", "revision_id": "team.teaching-plan:v1"}
+    ],
+    "skills": [],
+    "workflows": [],
+    "scenarios": []
+  },
+  "entrypoints": [
+    {
+      "entrypoint_id": "compose-plan",
+      "name": "生成教学方案",
+      "default": true,
+      "execution": {
+        "mode": "team",
+        "team_id": "team.teaching-plan",
+        "revision_id": "team.teaching-plan:v1"
+      },
+      "interaction_mode": "background"
+    }
+  ],
+  "integrations": [],
+  "permissions": ["runs.submit"],
+  "secrets": []
+}

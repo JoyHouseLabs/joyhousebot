@@ -9,9 +9,17 @@ from fastapi.testclient import TestClient
 
 from porthouse.api.app import create_app
 from porthouse.application.agent_teams import AgentTeamService
+from porthouse.application.errors import ConflictError
 from porthouse.bootstrap.container import build_api_container
 from porthouse.config.schema import Config
 from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from porthouse.domain.collaboration_blueprints import frozen_enforced_blueprint
+from porthouse.orchestration.blueprint_compiler import (
+    BlueprintRepairError,
+    PlanBoundaryViolationError,
+    apply_blueprint_boundary,
+    enforce_final_plan_boundary,
+)
 from porthouse.orchestration.coordinator_agent import normalize_coordinator_plan
 from porthouse.orchestration.planner import build_coordinator_graph
 from porthouse.runtime.models import AgentOptions
@@ -326,6 +334,10 @@ async def test_team_run_freezes_member_revision_and_materializes_workspace(
     assert len(tasks) == 1
     assert tasks[0].payload["metadata"]["team_member_id"] == "researcher"
     assert tasks[0].payload["metadata"]["agent_revision_id"] == "default:v1"
+    # Collaboration lineage (plan §4): every Task stays inside the root Run
+    # and names its frozen team revision and responsible member.
+    assert tasks[0].run_id == submitted.run_id
+    assert tasks[0].payload["metadata"]["team_ref"]["revision_id"] == "team.research:v1"
     entries = store.list_team_workspace_entries(
         user_id="opc-user",
         root_run_id=submitted.run_id,
@@ -373,3 +385,88 @@ def test_public_run_api_resolves_team_coordinator_and_freezes_revision(
         reader_member_id="coordinator",
         coordinator=False,
     ) == []
+
+
+def _blueprint_team() -> AgentTeamRevision:
+    return AgentTeamRevision.from_dict(
+        {
+            **_team(status="published").to_dict(),
+            "collaboration_blueprint": {
+                "preset": "parallel_synthesize",
+                "role_bindings": {"producers": ["researcher"]},
+            },
+        }
+    )
+
+
+def _synthesis_plan() -> dict:
+    plan = _plan()
+    plan["planned_steps"].append(
+        {
+            "id": "synthesis",
+            "name": "synthesis",
+            "objective": "Synthesize the evidence into one conclusion",
+            "phase": "synthesize",
+            "kind": "synthesize",
+            "member_id": "coordinator",
+            "depends_on": ["research"],
+            "acceptance_criteria": ["Conclusion cites the evidence"],
+        }
+    )
+    return plan
+
+
+def test_explicit_blueprint_constrains_the_coordinator_plan() -> None:
+    team = _blueprint_team()
+    assert team.collaboration_blueprint is not None
+    assert team.effective_blueprint["origin"] == "explicit"
+
+    compliant = normalize_coordinator_plan(_synthesis_plan(), [], [], team=team)
+    apply_blueprint_boundary(compliant, team.effective_blueprint, team=team)
+    enforce_final_plan_boundary(compliant, team.effective_blueprint, team=team)
+
+    rogue = normalize_coordinator_plan(
+        _plan(),
+        [],
+        [],
+        team=team,
+    )
+    rogue["planned_steps"][0]["kind"] = "review"
+    rogue["planned_steps"][0]["review_of"] = ["research"]
+    rogue["planned_steps"][0]["depends_on"] = []
+    with pytest.raises(BlueprintRepairError):
+        apply_blueprint_boundary(rogue, team.effective_blueprint, team=team)
+    with pytest.raises(PlanBoundaryViolationError):
+        enforce_final_plan_boundary(rogue, team.effective_blueprint, team=team)
+
+    # Implicit defaults stay advisory: the runtime gate filters them out, so
+    # the same plan shape on a legacy team never reaches the compiler.
+    legacy = _team(status="published")
+    assert frozen_enforced_blueprint(legacy.effective_blueprint) == {}
+    assert frozen_enforced_blueprint(_blueprint_team().effective_blueprint)
+
+
+@pytest.mark.asyncio
+async def test_publish_creates_agent_team_rollout_and_migration_is_audited(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "agent-team-rollout.db")
+    service = AgentTeamService(store)
+    await service.save_draft(_team())
+    await service.publish("team.research", "team.research:v1", actor_id="admin")
+
+    rollout = store.get_latest_configuration_rollout("agent_team", "team.research")
+    assert rollout is not None and rollout.revision_id == "team.research:v1"
+    assert rollout.target_worker_count == 0 and rollout.status == "completed"
+
+    migrated = await service.migrate_blueprint("team.research", actor_id="admin")
+    assert migrated["status"] == "draft" and migrated["version"] == 2
+    assert migrated["collaboration_blueprint"]["preset"] == "parallel_synthesize"
+    published = store.get_agent_team_revision("team.research:v1")
+    assert published is not None and published.collaboration_blueprint is None
+
+    events = store.list_agent_team_events("team.research", limit=50)
+    assert any(item["event_type"] == "blueprint_migrated" for item in events)
+
+    with pytest.raises(ConflictError):
+        await service.migrate_blueprint("team.research", actor_id="admin")

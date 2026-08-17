@@ -50,6 +50,7 @@ const latestSummary = computed(() =>
 function icon(event: RuntimeEvent): string {
   if (event.status === 'failed' || event.type.endsWith('.failed')) return '×'
   if (event.status === 'completed' || /\.(completed|passed)$/.test(event.type)) return '✓'
+  if (event.type.startsWith('plan.confirmation')) return '◷'
   if (event.type.includes('permission') || event.type.includes('input')) return '◷'
   if (event.type.startsWith('subagent.') || event.type.startsWith('task.')) return '◇'
   return '●'

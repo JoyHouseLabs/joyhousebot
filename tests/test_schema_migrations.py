@@ -26,6 +26,7 @@ _CORE_DOMAINS = {
     "loop_decisions",
     "verifications",
     "approvals",
+    "plan_confirmations",
     "operation_reconciliations",
     "admins",
     "agents",

@@ -414,9 +414,13 @@ class PlatformService:
             self.store.rollback_configuration_rollout, rollout_id, actor_id=actor_id
         )
 
-    async def list_rollouts(self, *, limit: int) -> list[dict[str, Any]]:
+    async def list_rollouts(
+        self, *, limit: int, aggregate_type: str | None = None
+    ) -> list[dict[str, Any]]:
         rows = await asyncio.to_thread(
-            self.store.list_configuration_rollouts, limit=limit
+            self.store.list_configuration_rollouts,
+            limit=limit,
+            aggregate_type=aggregate_type,
         )
         output = []
         for row in rows:
