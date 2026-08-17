@@ -17,6 +17,7 @@ from porthouse.domain.schedules import (
     CronPayload,
     CronPolicy,
     CronSchedule,
+    ScheduleAppUnavailableError,
     schedule_run_session_id,
 )
 from porthouse.scheduling.monitor_repository import MonitorRepository
@@ -313,6 +314,21 @@ class CronService:
             status = "error"
             error = "worker shutdown"
             cancelled = True
+        except ScheduleAppUnavailableError as exc:
+            # A structurally unavailable App (uninstalled, suspended, or with
+            # drifted dependencies) must not enter the generic retry path:
+            # every tick would fail the same resolve and back off forever.
+            # Settle terminally and disable the schedule; re-enable or
+            # reinstall is the explicit recovery.
+            renewal.cancel()
+            await asyncio.gather(renewal, return_exceptions=True)
+            await self._settle_without_run(
+                job,
+                status="skipped_app_unavailable",
+                error=f"app entrypoint unavailable: {exc.reason}",
+                enabled_after_run=False,
+            )
+            return
         except Exception as exc:
             status = "error"
             error = str(exc)
@@ -448,6 +464,9 @@ class CronService:
         context_mode: str = "full",
         active_hours: dict[str, str] | None = None,
         job_id: str | None = None,
+        installation_id: str | None = None,
+        entrypoint_id: str | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> CronJob:
         _validate_schedule_limits(schedule)
         existing = self.repository.list(user_id=user_id, include_disabled=True)
@@ -460,11 +479,14 @@ class CronService:
         now = self.repository.db_now_ms()
         kind = (
             payload_kind
-            if payload_kind in {"agent_turn", "system_event", "agent_monitor"}
+            if payload_kind
+            in {"agent_turn", "system_event", "agent_monitor", "app_entrypoint"}
             else "agent_turn"
         )
+        if kind == "app_entrypoint" and not installation_id:
+            raise ValueError("app_entrypoint schedules require installation_id")
         resolved_policy = policy or CronPolicy()
-        if kind == "agent_monitor" and policy is None:
+        if kind in {"agent_monitor", "app_entrypoint"} and policy is None:
             resolved_policy.misfire_policy = "skip"
             resolved_policy.overlap_policy = "skip"
         job = CronJob(
@@ -472,6 +494,7 @@ class CronService:
             name=name,
             user_id=user_id,
             agent_id=agent_id,
+            installation_id=installation_id if kind == "app_entrypoint" else None,
             schedule=schedule,
             payload=CronPayload(
                 kind=kind,
@@ -479,6 +502,9 @@ class CronService:
                 deliver=deliver,
                 channel=channel,
                 to=to,
+                installation_id=installation_id if kind == "app_entrypoint" else None,
+                entrypoint_id=entrypoint_id if kind == "app_entrypoint" else None,
+                inputs=inputs if kind == "app_entrypoint" else None,
                 session_mode=("main" if session_mode == "main" else "isolated"),
                 session_id=session_id,
                 quiet_token=quiet_token.strip() or "NO_ACTION",

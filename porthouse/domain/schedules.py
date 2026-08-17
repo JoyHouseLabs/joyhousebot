@@ -24,7 +24,9 @@ class CronSchedule:
 class CronPayload:
     """What to do when the job runs."""
 
-    kind: Literal["system_event", "agent_turn", "agent_monitor"] = "agent_turn"
+    kind: Literal[
+        "system_event", "agent_turn", "agent_monitor", "app_entrypoint"
+    ] = "agent_turn"
     message: str = ""
     # Deliver response to channel
     deliver: bool = False
@@ -54,6 +56,26 @@ class CronPayload:
     # fields; they make managed jobs distinguishable without a second table.
     managed_by: Literal["user", "agent_revision"] = "user"
     managed_revision_id: str | None = None
+    # App Entry Point scheduling: the occurrence launches the installation's
+    # pinned entrypoint instead of a free-form Agent turn. Inputs are frozen
+    # into the payload so occurrence snapshots stay self-contained.
+    installation_id: str | None = None
+    entrypoint_id: str | None = None
+    inputs: dict[str, Any] | None = None
+
+
+class ScheduleAppUnavailableError(Exception):
+    """An App Entry Point schedule cannot run (missing/uninstalled/drifted).
+
+    Raised by the submission path when ``resolve_launch`` rejects the current
+    installation state. The scheduler settles the occurrence terminally
+    (``skipped_app_unavailable``) and disables the schedule instead of
+    entering a retry storm against a structurally broken dependency.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass
@@ -100,6 +122,9 @@ class CronJob:
     enabled: bool = True
     # Which shared platform Agent runs this job; None selects the default.
     agent_id: str | None = None
+    # Owning App installation for ``app_entrypoint`` schedules; personal
+    # schedules keep this unset.
+    installation_id: str | None = None
     schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
     payload: CronPayload = field(default_factory=CronPayload)
     policy: CronPolicy = field(default_factory=CronPolicy)
@@ -114,6 +139,9 @@ class CronJob:
 
 def schedule_run_session_id(job: CronJob) -> str:
     """Resolve the durable session used by one scheduled Run."""
+    if job.payload.kind == "app_entrypoint":
+        entrypoint = job.payload.entrypoint_id or "default"
+        return f"app:{job.payload.installation_id}:{entrypoint}"[:128]
     if job.payload.kind != "agent_monitor":
         return f"schedule:{job.id}"
     if job.payload.session_mode == "main":

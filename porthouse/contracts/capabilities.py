@@ -27,6 +27,10 @@ class CapabilityContext:
     memory_scope: str | None = None
     memory_policy: dict[str, Any] = field(default_factory=dict)
     root_run_id: str | None = None
+    # Owning App installation for App-launched Runs; None on personal Runs.
+    # Knowledge indexing hashes this into document identity so an App library
+    # never collides with (or leaks into) the user's personal namespace.
+    app_installation_id: str | None = None
     services: Any = field(default=None, repr=False, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -59,6 +59,29 @@ class PostgresEventTriggerStoreMixin:
                 ddl=ddl,
                 description="user-owned webhook rules and idempotent delivery audit",
             )
+            # v2 adds workflow-mode triggers. v1 DDL stays immutable; the new
+            # columns default to the legacy agent-run behavior.
+            workflow_ddl = """
+            ALTER TABLE event_triggers
+                ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT 'run';
+            ALTER TABLE event_triggers ADD COLUMN IF NOT EXISTS workflow_id TEXT;
+            ALTER TABLE event_triggers ADD COLUMN IF NOT EXISTS workflow_revision_id TEXT;
+            """
+            if not self._migration_is_recorded(
+                conn,
+                name="event_triggers",
+                version=2,
+                ddl=workflow_ddl,
+                description="workflow-action webhook triggers",
+            ):
+                conn.execute(workflow_ddl)
+            self._record_migration(
+                conn,
+                name="event_triggers",
+                version=2,
+                ddl=workflow_ddl,
+                description="workflow-action webhook triggers",
+            )
 
     @staticmethod
     def _event_trigger(row: Any) -> dict[str, Any]:
@@ -74,6 +97,9 @@ class PostgresEventTriggerStoreMixin:
             "enabled": bool(row["enabled"]),
             "secret_hash": str(row["secret_hash"]),
             "secret_version": int(row["secret_version"]),
+            "action": str(row.get("action") or "run"),
+            "workflow_id": row.get("workflow_id"),
+            "workflow_revision_id": row.get("workflow_revision_id"),
             "created_at": _iso(row["created_at"]),
             "updated_at": _iso(row["updated_at"]),
         }
@@ -100,8 +126,9 @@ class PostgresEventTriggerStoreMixin:
             row = conn.execute(
                 """INSERT INTO event_triggers
                        (trigger_id,user_id,name,agent_id,event_type_filter,instruction,
-                        session_mode,session_id,enabled,secret_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                        session_mode,session_id,enabled,secret_hash,action,workflow_id,
+                        workflow_revision_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                 (
                     values["trigger_id"],
                     values["user_id"],
@@ -113,6 +140,9 @@ class PostgresEventTriggerStoreMixin:
                     values.get("session_id"),
                     bool(values.get("enabled", True)),
                     values["secret_hash"],
+                    str(values.get("action") or "run"),
+                    values.get("workflow_id"),
+                    values.get("workflow_revision_id"),
                 ),
             ).fetchone()
         return self._event_trigger(row)
@@ -142,6 +172,7 @@ class PostgresEventTriggerStoreMixin:
             row = conn.execute(
                 """UPDATE event_triggers SET name=%s,agent_id=%s,event_type_filter=%s,
                        instruction=%s,session_mode=%s,session_id=%s,enabled=%s,
+                       action=%s,workflow_id=%s,workflow_revision_id=%s,
                        updated_at=clock_timestamp()
                    WHERE trigger_id=%s AND user_id=%s RETURNING *""",
                 (
@@ -152,6 +183,9 @@ class PostgresEventTriggerStoreMixin:
                     values["session_mode"],
                     values.get("session_id"),
                     bool(values["enabled"]),
+                    str(values.get("action") or "run"),
+                    values.get("workflow_id"),
+                    values.get("workflow_revision_id"),
                     values["trigger_id"],
                     values["user_id"],
                 ),

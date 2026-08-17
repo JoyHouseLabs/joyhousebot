@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from porthouse.application.app_packs import AppPackService
+from porthouse.application.schedule_submission import build_schedule_submission
+from porthouse.application.workflows import WorkflowService
 from porthouse.channels.repository import ChannelRepository
 from porthouse.cron.service import CronService
 from porthouse.domain.schedules import (
@@ -15,6 +18,8 @@ from porthouse.domain.schedules import (
     schedule_run_session_id,
 )
 from porthouse.runtime.models import AgentEvent
+from porthouse.runtime.runner import NativeAgentRuntime
+from porthouse.scheduling.repository import ScheduleRepository
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -664,3 +669,335 @@ async def test_misfire_and_overlap_policies_prevent_accidental_runs(tmp_path: Pa
     }
     assert statuses == {"submitted", "skipped_overlap"}
     assert submitted == ["run-1"]
+
+
+async def _installed_app(
+    store: PostgresTestStore, *, manifest: dict | None = None
+) -> tuple[AppPackService, str]:
+    from tests.test_app_pack_control_plane import _manifest as base_manifest
+
+    service = AppPackService(store)
+    await service.save_draft(manifest or base_manifest(), actor_id="admin")
+    await service.publish(
+        "app.market-radar", "1.0.0", actor_id="admin", user_id="opc-user"
+    )
+    installation = await service.install(
+        "app.market-radar",
+        "1.0.0",
+        user_id="opc-user",
+        actor_id="admin",
+        configuration={},
+        granted_permissions=["runs.submit"],
+    )
+    installation = await service.transition(
+        installation["installation_id"],
+        user_id="opc-user",
+        actor_id="admin",
+        action="activate",
+    )
+    return service, str(installation["installation_id"])
+
+
+def _app_runtime(store: PostgresTestStore) -> NativeAgentRuntime:
+    return NativeAgentRuntime(
+        agent=None,
+        store=store,
+        worker_enabled=False,
+        scheduler_enabled=False,
+        worker_name="api",
+        default_agent_id="default",
+    )
+
+
+@pytest.mark.asyncio
+async def test_app_entrypoint_occurrence_submits_pinned_entrypoint_run(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "app-entrypoint-schedule.db")
+    _service, installation_id = await _installed_app(store)
+    runtime = _app_runtime(store)
+    cron = CronService(store, worker_id="scheduler")
+    cron.on_job = build_schedule_submission(
+        runtime=runtime, store=store, cron=cron, default_agent_id="default"
+    )
+    job = cron.add_job(
+        name="radar refresh",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        message="refresh the radar digest",
+        user_id="opc-user",
+        payload_kind="app_entrypoint",
+        installation_id=installation_id,
+        entrypoint_id="research",
+    )
+    assert await cron.run_job(job.id, force=True) is True
+    occurrence = cron.list_runs(user_id="opc-user", job_id=job.id)[0]
+    assert occurrence["status"] == "submitted"
+    run_id = occurrence["runId"]
+    assert run_id, occurrence
+    run = store.get_runtime_run(run_id, expected_user_id="opc-user")
+    assert run is not None
+    assert run.options["metadata"]["schedule_payload_kind"] == "app_entrypoint"
+    assert run.options["metadata"]["app"]["installation_id"] == installation_id
+    assert run.options["metadata"]["app"]["entrypoint_id"] == "research"
+    assert run.options["metadata"]["_runtime_schedule_submission_ready"] is True
+    with store._pool.connection() as connection:
+        attribution = connection.execute(
+            "SELECT app_installation_id, app_entrypoint_id FROM runtime_runs"
+            " WHERE run_id=%s",
+            (run_id,),
+        ).fetchone()
+    assert dict(attribution) == {
+        "app_installation_id": installation_id,
+        "app_entrypoint_id": "research",
+    }
+    _finish_run(store, run_id, status="completed", content="digest ready")
+    occurrence = cron.list_runs(user_id="opc-user", job_id=job.id)[0]
+    assert occurrence["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_app_entrypoint_dependency_drift_settles_without_retry(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "app-entrypoint-drift.db")
+    service, installation_id = await _installed_app(store)
+    runtime = _app_runtime(store)
+    cron = CronService(store, worker_id="scheduler")
+    cron.on_job = build_schedule_submission(
+        runtime=runtime, store=store, cron=cron, default_agent_id="default"
+    )
+    job = cron.add_job(
+        name="radar refresh",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        user_id="opc-user",
+        payload_kind="app_entrypoint",
+        installation_id=installation_id,
+    )
+    await service.transition(
+        installation_id,
+        user_id="opc-user",
+        actor_id="admin",
+        action="disable",
+    )
+    assert await cron.run_job(job.id, force=True) is True
+    occurrence = cron.list_runs(user_id="opc-user", job_id=job.id)[0]
+    assert occurrence["status"] == "skipped_app_unavailable"
+    assert occurrence["runId"] is None
+    disabled = next(
+        item
+        for item in cron.list_jobs(include_disabled=True, user_id="opc-user")
+        if item.id == job.id
+    )
+    assert disabled.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_app_entrypoint_submission_is_idempotent_per_attempt(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "app-entrypoint-idempotent.db")
+    _service, installation_id = await _installed_app(store)
+    runtime = _app_runtime(store)
+    cron = CronService(store, worker_id="scheduler")
+    submit = build_schedule_submission(
+        runtime=runtime, store=store, cron=cron, default_agent_id="default"
+    )
+    job = cron.add_job(
+        name="radar refresh",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        user_id="opc-user",
+        payload_kind="app_entrypoint",
+        installation_id=installation_id,
+    )
+    first = await submit(job)
+    second = await submit(job)
+    assert first == second
+
+
+def test_app_entrypoint_schedule_requires_installation(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "app-entrypoint-invalid.db")
+    cron = CronService(store, worker_id="scheduler")
+    with pytest.raises(ValueError, match="installation_id"):
+        cron.add_job(
+            name="orphan",
+            schedule=CronSchedule(kind="every", every_ms=60_000),
+            user_id="opc-user",
+            payload_kind="app_entrypoint",
+        )
+
+
+def test_set_enabled_by_installation_toggles_only_app_schedules(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "app-schedule-bulk-toggle.db")
+    cron = CronService(store, worker_id="scheduler")
+    first = cron.add_job(
+        name="one",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        user_id="opc-user",
+        payload_kind="app_entrypoint",
+        installation_id="appinst-1",
+    )
+    second = cron.add_job(
+        name="two",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        user_id="opc-user",
+        payload_kind="app_entrypoint",
+        installation_id="appinst-1",
+    )
+    personal = cron.add_job(
+        name="personal",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        user_id="opc-user",
+        message="daily note",
+    )
+    disabled = ScheduleRepository(store).set_enabled_by_installation(
+        "appinst-1", False, now_ms=1
+    )
+    assert disabled == 2
+    jobs = {item.id: item for item in cron.list_jobs(include_disabled=True, user_id="opc-user")}
+    assert jobs[first.id].enabled is False
+    assert jobs[second.id].enabled is False
+    assert jobs[personal.id].enabled is True
+
+
+@pytest.mark.asyncio
+async def test_app_schedule_zero_model_workflow_acceptance(tmp_path: Path) -> None:
+    """A×B release gate: install → schedule → zero-model graph run → attribution."""
+
+    from tests.test_app_pack_control_plane import _manifest as base_manifest
+    from tests.test_workflows import _owner_context, _PanelRefreshTool, _ZeroModelAgent
+
+    store = PostgresTestStore(tmp_path / "app-zero-model-acceptance.db")
+    tool = _PanelRefreshTool()
+    # 0) 注册并发布 capability（_ZeroModelAgent 的构造即完成注册+发布）
+    agent = _ZeroModelAgent(store, tool)
+    # 1) 安装用户自己拥有并发布一个 capability-only Workflow
+    workflow_service = WorkflowService(None, store, default_agent_id="default")
+    saved = await workflow_service.save(
+        _owner_context(),
+        None,
+        {
+            "name": "Zero-model refresh",
+            "goal": "Refresh without a model",
+            "graph": {
+                "name": "Zero-model refresh",
+                "summary": "capability only",
+                "risk_level": "low",
+                "estimated_duration_minutes": 1,
+                "nodes": [
+                    {
+                        "id": "refresh",
+                        "name": "refresh",
+                        "kind": "capability",
+                        "agent_id": None,
+                        "dependencies": [],
+                        "capability": "workflow_panel_refresh",
+                        "capability_input": {"topic": "llm"},
+                    }
+                ],
+                "policies": {
+                    "max_concurrent": 1,
+                    "fail_fast": True,
+                    "aggregate": True,
+                },
+            },
+        },
+    )
+    workflow_id = str(saved["workflow_id"])
+    revision_id = str(saved["revisions"][-1]["revision_id"])
+    assert store.publish_user_workflow(
+        workflow_id, revision_id, user_id="owner-a"
+    ) is not None
+
+    # 2) App manifest：workflow 入口 + 定时权限
+    manifest = {
+        **base_manifest(),
+        "permissions": ["runs.submit", "schedules.submit"],
+        "assets": {
+            **base_manifest()["assets"],
+            "workflows": [
+                {"workflow_id": workflow_id, "revision_id": revision_id}
+            ],
+        },
+        "entrypoints": [
+            {
+                "entrypoint_id": "refresh",
+                "name": "Refresh",
+                "default": True,
+                "execution": {
+                    "mode": "workflow",
+                    "workflow_id": workflow_id,
+                    "revision_id": revision_id,
+                },
+                "interaction_mode": "background",
+            }
+        ],
+    }
+    app_packs = AppPackService(store)
+    await app_packs.save_draft(manifest, actor_id="admin")
+    await app_packs.publish(
+        "app.market-radar", "1.0.0", actor_id="admin", user_id="owner-a"
+    )
+    installed = await app_packs.install(
+        "app.market-radar",
+        "1.0.0",
+        user_id="owner-a",
+        actor_id="admin",
+        configuration={},
+        granted_permissions=["runs.submit", "schedules.submit"],
+    )
+    installation = await app_packs.transition(
+        installed["installation_id"],
+        user_id="owner-a",
+        actor_id="admin",
+        action="activate",
+    )
+    installation_id = str(installation["installation_id"])
+
+    # 3) 真实 runtime + 零模型 Agent（任何模型调用都会让测试失败）
+    runtime = NativeAgentRuntime(agent=agent, store=store, max_concurrent_runs=1)
+    cron = CronService(store, worker_id="scheduler")
+    cron.on_job = build_schedule_submission(
+        runtime=runtime, store=store, cron=cron, default_agent_id="default"
+    )
+    job = cron.add_job(
+        name="zero-model refresh",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        user_id="owner-a",
+        payload_kind="app_entrypoint",
+        installation_id=installation_id,
+        entrypoint_id="refresh",
+    )
+    try:
+        await runtime.start()
+        assert await cron.run_job(job.id, force=True) is True
+        occurrence = cron.list_runs(user_id="owner-a", job_id=job.id)[0]
+        run_id = occurrence["runId"]
+        completed = await runtime.wait(run_id, timeout=10)
+        assert completed.status == "completed", completed.error
+        assert tool.calls == ["llm"]
+        run = store.get_runtime_run(run_id, expected_user_id="owner-a")
+        assert run is not None
+        assert run.kind == "graph"
+        assert run.options["metadata"]["app"]["installation_id"] == installation_id
+        assert run.options["metadata"]["workflow_id"] == workflow_id
+        with store._pool.connection() as connection:
+            attribution = connection.execute(
+                "SELECT app_installation_id, app_entrypoint_id FROM runtime_runs"
+                " WHERE run_id=%s",
+                (run_id,),
+            ).fetchone()
+            model_calls = connection.execute(
+                "SELECT COUNT(*) AS n FROM model_invocations WHERE run_id=%s",
+                (run_id,),
+            ).fetchone()
+        assert dict(attribution) == {
+            "app_installation_id": installation_id,
+            "app_entrypoint_id": "refresh",
+        }
+        assert int(model_calls["n"]) == 0
+        occurrence = cron.list_runs(user_id="owner-a", job_id=job.id)[0]
+        assert occurrence["status"] == "completed"
+    finally:
+        await runtime.close()

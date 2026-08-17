@@ -518,6 +518,7 @@ class KnowledgeVectorRepositoryMixin:
         doc_id: str | None = None,
         knowledge_base_id: str | None = None,
         collection_ref: str | None = None,
+        app_installation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fuse lexical and vector ranks while preserving active evidence identity."""
         lexical = self.search(
@@ -528,6 +529,7 @@ class KnowledgeVectorRepositoryMixin:
             doc_id=doc_id,
             knowledge_base_id=knowledge_base_id,
             collection_ref=collection_ref,
+            app_installation_id=app_installation_id,
         )
         clauses: list[Any] = [
             "c.user_id=%s",
@@ -539,6 +541,8 @@ class KnowledgeVectorRepositoryMixin:
         ]
         vector_literal = "[" + ",".join(str(float(value)) for value in query_embedding) + "]"
         params: list[Any] = [vector_literal, user_id, len(query_embedding)]
+        clauses.append("d.app_installation_id IS NOT DISTINCT FROM %s")
+        params.append(app_installation_id)
         if source_type:
             clauses.append("d.source_type=%s")
             params.append(source_type)

@@ -18,6 +18,7 @@ from porthouse.api.app_pack_schemas import (
 from porthouse.api.dependencies import ContainerDep, ContextDep
 from porthouse.api.run_schemas import CreateRunRequest
 from porthouse.api.run_submission import submit_create_run
+from porthouse.api.schemas import CreateAppScheduleRequest
 from porthouse.application.presenters import record_dict
 
 router = APIRouter(prefix="/apps", tags=["apps"])
@@ -239,6 +240,49 @@ async def launch_app(
     )
     response.headers["Location"] = f"/v1/runs/{record.run_id}"
     return record_dict(record)
+
+
+@router.post("/{installation_id}/schedules", status_code=201)
+async def create_app_schedule(
+    installation_id: str,
+    body: CreateAppScheduleRequest,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    if (
+        context.principal.app_installation_id
+        and context.principal.app_installation_id != installation_id
+    ):
+        raise HTTPException(status_code=404, detail="App installation not found")
+    if not context.idempotency_key:
+        raise HTTPException(
+            status_code=400,
+            detail="App schedule creation requires an Idempotency-Key header",
+        )
+    row = await container.schedules.create_app_schedule(
+        context,
+        body,
+        installation_id=installation_id,
+        app_packs=container.app_packs,
+    )
+    return row
+
+
+@router.get("/{installation_id}/schedules")
+async def list_app_schedules(
+    installation_id: str,
+    context: ContextDep,
+    container: ContainerDep,
+):
+    if (
+        context.principal.app_installation_id
+        and context.principal.app_installation_id != installation_id
+    ):
+        raise HTTPException(status_code=404, detail="App installation not found")
+    rows = await container.schedules.list_app_schedules(
+        context, installation_id=installation_id
+    )
+    return {"items": rows}
 
 
 @router.get("/{installation_id}/callbacks")

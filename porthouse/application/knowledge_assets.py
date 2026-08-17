@@ -24,11 +24,29 @@ class KnowledgeAssetService:
         self.store = store
         self.runtime = runtime
 
-    async def submit_index_request(self, context: RequestContext, snapshot: dict[str, Any]) -> Any:
+    async def submit_index_request(
+        self,
+        context: RequestContext,
+        snapshot: dict[str, Any],
+        *,
+        app_installation_id: str | None = None,
+    ) -> Any:
         if self.runtime is None:
             raise ConflictError("Knowledge indexing Runtime is unavailable")
         if not context.idempotency_key:
             raise ValidationError("Knowledge indexing requires an Idempotency-Key header")
+        if app_installation_id is not None:
+            # Path-scoped App indexing: the installation must belong to the
+            # requesting user and stay active, mirroring resolve_launch.
+            installation = await asyncio.to_thread(
+                self.store.get_app_installation,
+                app_installation_id,
+                expected_user_id=context.user_id,
+            )
+            if installation is None or installation.get("status") != "active":
+                raise ConflictError(
+                    "App installation must be active before it can index knowledge"
+                )
         definitions = await asyncio.to_thread(self.store.list_capability_definitions)
         definition = next(
             (
@@ -113,6 +131,11 @@ class KnowledgeAssetService:
                 "source_version": source_version,
                 "index_profile_id": profile_id,
                 "embedding_profile_id": snapshot.get("embedding_profile_id"),
+                **(
+                    {"app": {"installation_id": app_installation_id}}
+                    if app_installation_id
+                    else {}
+                ),
             },
             tasks=[
                 GraphTaskSpec(
@@ -145,6 +168,7 @@ class KnowledgeAssetService:
         source_type: str | None = None,
         search: str | None = None,
         limit: int = 200,
+        app_installation_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if knowledge_base_id:
             knowledge_base = await asyncio.to_thread(
@@ -162,6 +186,7 @@ class KnowledgeAssetService:
                 source_type=source_type,
                 search=search,
                 limit=limit,
+                app_installation_id=app_installation_id,
             ),
             asyncio.to_thread(
                 self.repository.summarize_documents,
@@ -169,11 +194,18 @@ class KnowledgeAssetService:
             ),
         )
 
-    async def get(self, context: RequestContext, doc_id: str) -> dict[str, Any]:
+    async def get(
+        self,
+        context: RequestContext,
+        doc_id: str,
+        *,
+        app_installation_id: str | None = None,
+    ) -> dict[str, Any]:
         document = await asyncio.to_thread(
             self.repository.get_document,
             user_id=context.user_id,
             doc_id=doc_id,
+            app_installation_id=app_installation_id,
         )
         if document is None:
             raise NotFoundError("Knowledge document not found")
@@ -188,13 +220,19 @@ class KnowledgeAssetService:
         )
 
     async def get_source_state(
-        self, context: RequestContext, *, source_system: str, source_id: str
+        self,
+        context: RequestContext,
+        *,
+        source_system: str,
+        source_id: str,
+        app_installation_id: str | None = None,
     ) -> dict[str, Any]:
         document = await asyncio.to_thread(
             self.repository.get_document_by_source,
             user_id=context.user_id,
             source_system=source_system,
             source_id=source_id,
+            app_installation_id=app_installation_id,
         )
         if document is None:
             raise NotFoundError("Knowledge source not found")
@@ -215,6 +253,7 @@ class KnowledgeAssetService:
         source_type: str | None = None,
         doc_id: str | None = None,
         collection_ref: str | None = None,
+        app_installation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_query = query.strip()
         if not normalized_query:
@@ -238,6 +277,7 @@ class KnowledgeAssetService:
             source_type=source_type,
             doc_id=doc_id,
             collection_ref=collection_ref,
+            app_installation_id=app_installation_id,
         )
 
     async def list_revisions(self, context: RequestContext, doc_id: str) -> list[dict[str, Any]]:

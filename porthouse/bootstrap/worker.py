@@ -15,6 +15,7 @@ from porthouse.application.eval_execution import EvalExecutionService
 from porthouse.application.evals import EvalService
 from porthouse.application.knowledge_maintenance import KnowledgeMaintenanceService
 from porthouse.application.scenarios import ScenarioStudioService
+from porthouse.application.schedule_submission import build_schedule_submission
 from porthouse.bootstrap.agent_catalog import default_agent_id
 from porthouse.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
 from porthouse.bootstrap.extension_rollouts import ExtensionRolloutWatcher
@@ -25,8 +26,6 @@ from porthouse.channels.runtime_bridge import ChannelRuntimeBridge
 from porthouse.config.access import get_config
 from porthouse.cron.managed_monitor import reconcile_agent_monitor
 from porthouse.cron.service import CronService
-from porthouse.domain.schedules import CronJob, schedule_run_prompt, schedule_run_session_id
-from porthouse.runtime.models import AgentOptions
 from porthouse.runtime.runner import NativeAgentRuntime
 from porthouse.storage.factory import create_runtime_store
 
@@ -504,52 +503,12 @@ def build_scheduler_worker(config: Any | None = None) -> SchedulerWorker:
         default_agent_id=resolved_default_id,
     )
 
-    async def submit_schedule(job: CronJob) -> str:
-        monitor_context = await asyncio.to_thread(cron.monitor_run_context, job)
-        record = await runtime.submit_run(
-            AgentOptions(
-                prompt=schedule_run_prompt(
-                    job,
-                    scratch=str(monitor_context.get("scratch") or ""),
-                    scratch_revision=int(monitor_context.get("scratch_revision") or 0),
-                    observation=dict(monitor_context.get("observation") or {}),
-                ),
-                user_id=job.user_id,
-                session_id=schedule_run_session_id(job),
-                agent_id=job.agent_id or resolved_default_id,
-                channel="schedule",
-                chat_id=job.id,
-                metadata={
-                    "schedule_id": job.id,
-                    "schedule_occurrence_id": job.state.occurrence_id,
-                    "schedule_attempt": job.state.attempt,
-                    "schedule_payload_kind": job.payload.kind,
-                    "monitor_quiet_token": (
-                        job.payload.quiet_token
-                        if job.payload.kind == "agent_monitor"
-                        else None
-                    ),
-                    "monitor_scratch_revision": monitor_context.get("scratch_revision"),
-                    "monitor_observation_hash": monitor_context.get("observation_hash"),
-                    "monitor_context_mode": (
-                        job.payload.context_mode
-                        if job.payload.kind == "agent_monitor"
-                        else None
-                    ),
-                    # Agent Workers must not claim this Run until Scheduler
-                    # atomically links it to the occurrence and advances the
-                    # schedule cursor.
-                    "_runtime_schedule_submission_ready": False,
-                },
-                idempotency_key=(
-                    f"schedule:{job.id}:{job.state.scheduled_for_ms or 'manual'}:"
-                    f"{job.state.attempt}"
-                ),
-            )
-        )
-        return record.run_id
-
-    cron.on_job = submit_schedule
+    cron.on_job = build_schedule_submission(
+        runtime=runtime,
+        store=store,
+        cron=cron,
+        default_agent_id=resolved_default_id,
+    )
     evals = EvalService(store)
     return SchedulerWorker(
         runtime=runtime,

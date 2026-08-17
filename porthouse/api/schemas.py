@@ -99,6 +99,9 @@ class CreateEventTriggerRequest(BaseModel):
     session_mode: Literal["shared", "per_event"] = "shared"
     session_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     enabled: bool = True
+    action: Literal["run", "workflow"] = "run"
+    workflow_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    workflow_revision_id: str | None = Field(default=None, pattern=_ID_PATTERN)
 
 
 class UpdateEventTriggerRequest(BaseModel):
@@ -111,6 +114,9 @@ class UpdateEventTriggerRequest(BaseModel):
     session_mode: Literal["shared", "per_event"] | None = None
     session_id: str | None = Field(default=None, pattern=_ID_PATTERN)
     enabled: bool | None = None
+    action: Literal["run", "workflow"] | None = None
+    workflow_id: str | None = Field(default=None, pattern=_ID_PATTERN)
+    workflow_revision_id: str | None = Field(default=None, pattern=_ID_PATTERN)
 
 
 class CreateRunFeedbackRequest(BaseModel):
@@ -622,77 +628,12 @@ class ResolveGraphPatchProposalRequest(BaseModel):
     resolution: Literal["approve", "reject"]
     note: str | None = Field(default=None, max_length=4000)
 
-
-class ScheduleSpec(BaseModel):
-    kind: Literal["at", "every", "cron"]
-    at_ms: int | None = None
-    every_ms: int | None = Field(default=None, ge=60000)
-    cron_expr: str | None = None
-    timezone: str | None = None
-
-
-class SchedulePayload(BaseModel):
-    kind: Literal["agent_turn", "agent_monitor"] = "agent_turn"
-    message: str = Field(min_length=1)
-    deliver: bool = False
-    channel: str | None = Field(default=None, max_length=32)
-    to: str | None = Field(default=None, max_length=128)
-    session_mode: Literal["isolated", "main"] = "isolated"
-    session_id: str | None = Field(default=None, min_length=1, pattern=_ID_PATTERN)
-    quiet_token: str = Field(default="NO_ACTION", min_length=1, max_length=64)
-    defer_when_busy: bool = True
-    busy_backoff_ms: int = Field(default=60_000, ge=1_000, le=3_600_000)
-    preflight_mode: Literal["always", "runtime_attention"] = "always"
-    context_mode: Literal["full", "light"] = "full"
-    active_hours: dict[str, str] | None = None
-
-    @model_validator(mode="after")
-    def normalize_monitor_session(self) -> "SchedulePayload":
-        if self.kind == "agent_monitor" and self.session_mode == "main":
-            self.session_id = self.session_id or "main"
-        if self.kind != "agent_monitor" and self.preflight_mode != "always":
-            raise ValueError("preflight_mode is only available for agent_monitor")
-        if self.kind != "agent_monitor" and self.context_mode != "full":
-            raise ValueError("context_mode is only available for agent_monitor")
-        if self.kind != "agent_monitor" and self.active_hours is not None:
-            raise ValueError("active_hours is only available for agent_monitor")
-        if self.active_hours is not None:
-            from porthouse.cron.active_hours import normalize_active_hours
-
-            self.active_hours = normalize_active_hours(self.active_hours)
-        if not self.quiet_token.strip():
-            raise ValueError("quiet_token must contain a non-whitespace character")
-        self.quiet_token = self.quiet_token.strip()
-        return self
-
-
-class SchedulePolicy(BaseModel):
-    max_submit_attempts: int = Field(default=3, ge=1, le=10)
-    max_run_retries: int = Field(default=0, ge=0, le=10)
-    retry_backoff_ms: int = Field(default=60_000, ge=1_000, le=3_600_000)
-    misfire_policy: Literal["fire_once", "skip"] = "fire_once"
-    misfire_grace_ms: int = Field(default=300_000, ge=0, le=86_400_000)
-    overlap_policy: Literal["serialize", "skip"] = "serialize"
-
-
-class CreateScheduleRequest(BaseModel):
-    name: str = Field(min_length=1)
-    agent_id: str = Field(default="default", pattern=_ID_PATTERN)
-    schedule: ScheduleSpec
-    payload: SchedulePayload
-    policy: SchedulePolicy = Field(default_factory=SchedulePolicy)
-    enabled: bool = True
-
-
-class UpdateScheduleRequest(BaseModel):
-    name: str | None = None
-    agent_id: str | None = Field(default=None, pattern=_ID_PATTERN)
-    schedule: ScheduleSpec | None = None
-    payload: SchedulePayload | None = None
-    policy: SchedulePolicy | None = None
-    enabled: bool | None = None
-
-
-class UpdateMonitorScratchRequest(BaseModel):
-    content: str = Field(max_length=16384)
-    expected_revision: int = Field(ge=0)
+from porthouse.api.schedule_schemas import (  # noqa: E402,F401  re-export
+    CreateAppScheduleRequest,
+    CreateScheduleRequest,
+    SchedulePayload,
+    SchedulePolicy,
+    ScheduleSpec,
+    UpdateMonitorScratchRequest,
+    UpdateScheduleRequest,
+)

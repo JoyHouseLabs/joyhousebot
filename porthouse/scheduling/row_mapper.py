@@ -25,6 +25,7 @@ def schedule_job_from_row(row: Any) -> CronJob:
         user_id=str(row["user_id"]),
         enabled=bool(row["enabled"]),
         agent_id=row["agent_id"],
+        installation_id=row.get("installation_id"),
         schedule=CronSchedule(**_decoded(schedule)),
         payload=CronPayload(**_decoded(payload)),
         policy=CronPolicy(**_decoded(row.get("policy"))),

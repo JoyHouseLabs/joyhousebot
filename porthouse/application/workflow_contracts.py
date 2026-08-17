@@ -40,6 +40,7 @@ WORKFLOW_DESIGN_SCHEMA: dict[str, Any] = {
                             "verify",
                             "branch",
                             "bounded_loop",
+                            "capability",
                         ],
                     },
                     "agent_id": {"type": ["string", "null"]},
@@ -47,6 +48,8 @@ WORKFLOW_DESIGN_SCHEMA: dict[str, Any] = {
                     "scenario_id": {"type": ["string", "null"]},
                     "scenario_version": {"type": ["integer", "null"], "minimum": 1},
                     "scenario_inputs": {"type": "object"},
+                    "capability": {"type": ["string", "object"]},
+                    "capability_input": {"type": "object"},
                     "configuration": {"type": "object"},
                     "output_schema": {"type": ["object", "null"]},
                     "verification_policy": {"type": "object"},
@@ -71,6 +74,7 @@ WORKFLOW_DESIGN_SCHEMA: dict[str, Any] = {
                 "max_concurrent": {"type": "integer", "minimum": 1, "maximum": 16},
                 "fail_fast": {"type": "boolean"},
                 "aggregate": {"type": "boolean"},
+                "aggregation": {"type": "object"},
             },
         },
     },
@@ -81,5 +85,6 @@ WORKFLOW_CONTROL_GUIDE = """Control-node contracts:
 - branch: configuration has source, structured_output path, safe cases with when/targets, and default_targets. Every target must depend on the branch node.
 - bounded_loop: configuration has one source+path or initial_state, state_path, max_iterations<=32, exit, and an agent/capability template with output_schema.
 - approval: configuration may set owner/operator role, expiry, risk, and data classification.
+- capability: capability=<published capability id from the catalog>; capability_input is the frozen input object; declare output_schema so downstream control nodes can read structured_output. Executes without any model call.
 All control nodes use max_attempts=1. Never emit executable expressions; conditions use eq/ne/in/not_in/exists/truthy/contains only.
 """

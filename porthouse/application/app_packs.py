@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -15,6 +16,7 @@ from porthouse.domain.app_packs import (
     validate_install_configuration,
 )
 from porthouse.domain.capabilities.models import CapabilityRef
+from porthouse.scheduling.repository import ScheduleRepository
 from porthouse.utils.permissions import permission_granted
 
 
@@ -153,7 +155,7 @@ class AppPackService:
                     "App Pack dependencies are not ready: " + "; ".join(report["errors"])
                 )
         try:
-            return await asyncio.to_thread(
+            installation_row = await asyncio.to_thread(
                 self.store.transition_app_installation,
                 installation_id,
                 user_id=user_id,
@@ -162,6 +164,23 @@ class AppPackService:
             )
         except ValueError as exc:
             raise ConflictError(str(exc)) from exc
+        if action in {"disable", "uninstall", "rollback"}:
+            # Leaving the active state stops the App's Entry Point schedules
+            # immediately; re-activation re-enables them the same way.
+            await asyncio.to_thread(
+                ScheduleRepository(self.store).set_enabled_by_installation,
+                installation_id,
+                False,
+                now_ms=int(time.time() * 1000),
+            )
+        elif action == "activate":
+            await asyncio.to_thread(
+                ScheduleRepository(self.store).set_enabled_by_installation,
+                installation_id,
+                True,
+                now_ms=int(time.time() * 1000),
+            )
+        return installation_row
 
     async def list_installed(self, *, user_id: str, active_only: bool = True) -> list[dict[str, Any]]:
         rows = await asyncio.to_thread(self.store.list_app_installations, user_id=user_id)

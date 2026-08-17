@@ -171,6 +171,7 @@ class KnowledgeRepository(
         title: str,
         chunks: list[dict[str, Any]],
         metadata: dict[str, Any] | None = None,
+        app_installation_id: str | None = None,
     ) -> None:
         revision_id = self.stage_index_revision(
             doc_id=doc_id,
@@ -181,6 +182,7 @@ class KnowledgeRepository(
             title=title,
             chunks=chunks,
             metadata=metadata,
+            app_installation_id=app_installation_id,
         )
         actor_id = f"runtime:{agent_id or 'shared'}"
         self.mark_index_revision_ready(
@@ -227,10 +229,11 @@ class KnowledgeRepository(
         source_type: str | None = None,
         search: str | None = None,
         limit: int = 200,
+        app_installation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """List one owner's indexed sources without exposing chunk bodies."""
-        clauses = ["d.user_id=%s"]
-        params: list[Any] = [user_id]
+        clauses = ["d.user_id=%s", "d.app_installation_id IS NOT DISTINCT FROM %s"]
+        params: list[Any] = [user_id, app_installation_id]
         if knowledge_base_id:
             clauses.append(
                 """EXISTS (SELECT 1 FROM knowledge_base_documents m
@@ -305,7 +308,13 @@ class KnowledgeRepository(
             },
         }
 
-    def get_document(self, *, user_id: str, doc_id: str) -> dict[str, Any] | None:
+    def get_document(
+        self,
+        *,
+        user_id: str,
+        doc_id: str,
+        app_installation_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """Read one source and its indexed chunks after matching the owner."""
         with self._connection() as connection:
             row = connection.execute(
@@ -323,12 +332,13 @@ class KnowledgeRepository(
                      FROM knowledge_documents d
                 LEFT JOIN knowledge_chunks c ON c.doc_id=d.doc_id
                     WHERE d.user_id=%s AND d.doc_id=%s
+                      AND d.app_installation_id IS NOT DISTINCT FROM %s
                  GROUP BY d.doc_id,d.agent_id,d.source_type,d.source_url,d.title,
                           d.source_system,d.source_id,d.source_version,
                           d.source_generation,d.source_status,d.content_sha256,
                           d.active_revision_id,d.index_status,
                           d.metadata,d.created_at_ms,d.updated_at_ms""",
-                (user_id, doc_id),
+                (user_id, doc_id, app_installation_id),
             ).fetchone()
             if row is None:
                 return None
@@ -359,31 +369,49 @@ class KnowledgeRepository(
         }
 
     def get_document_by_source(
-        self, *, user_id: str, source_system: str, source_id: str
+        self,
+        *,
+        user_id: str,
+        source_system: str,
+        source_id: str,
+        app_installation_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Resolve an indexed document through the source system's stable identity."""
         with self._connection() as connection:
             row = connection.execute(
                 """SELECT doc_id FROM knowledge_documents
-                    WHERE user_id=%s AND source_system=%s AND source_id=%s""",
-                (user_id, source_system, source_id),
+                    WHERE user_id=%s AND source_system=%s AND source_id=%s
+                      AND app_installation_id IS NOT DISTINCT FROM %s""",
+                (user_id, source_system, source_id, app_installation_id),
             ).fetchone()
         if row is None:
             return None
-        document = self.get_document(user_id=user_id, doc_id=str(row["doc_id"]))
+        document = self.get_document(
+            user_id=user_id,
+            doc_id=str(row["doc_id"]),
+            app_installation_id=app_installation_id,
+        )
         if document is not None:
             document.pop("chunks", None)
         return document
 
-    def delete_document(self, *, user_id: str, doc_id: str, actor_id: str) -> dict[str, Any] | None:
+    def delete_document(
+        self,
+        *,
+        user_id: str,
+        doc_id: str,
+        actor_id: str,
+        app_installation_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """Remove one owner-scoped source and retain an immutable audit event."""
         now_ms = int(time.time() * 1000)
         with self._connection() as connection:
             row = connection.execute(
                 """SELECT doc_id,title,source_type,source_url
                      FROM knowledge_documents
-                    WHERE user_id=%s AND doc_id=%s FOR UPDATE""",
-                (user_id, doc_id),
+                    WHERE user_id=%s AND doc_id=%s
+                      AND app_installation_id IS NOT DISTINCT FROM %s FOR UPDATE""",
+                (user_id, doc_id, app_installation_id),
             ).fetchone()
             if row is None:
                 return None
@@ -448,9 +476,15 @@ class KnowledgeRepository(
         doc_id: str | None = None,
         knowledge_base_id: str | None = None,
         collection_ref: str | None = None,
+        app_installation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         clauses = ["c.user_id=%s", "d.source_status<>'archived'"]
         params: list[Any] = [user_id]
+        # Namespace filter rides the documents join: NULL means the user's
+        # personal library, a non-NULL installation id means that App's
+        # library. Personal searches never see App documents and vice versa.
+        clauses.append("d.app_installation_id IS NOT DISTINCT FROM %s")
+        params.append(app_installation_id)
         if source_type:
             clauses.append("d.source_type=%s")
             params.append(source_type)

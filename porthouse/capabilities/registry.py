@@ -160,6 +160,10 @@ class _PluginTool(Tool):
             "request_id": tool_context.request_id,
             "tracker_id": tool_context.tracker_id,
         }
+        app_installation_id = None
+        app_identity = dict(metadata.get("app") or {})
+        if isinstance(app_identity, dict) and app_identity.get("installation_id"):
+            app_installation_id = str(app_identity["installation_id"])
         return CapabilityContext(
             user_id=tool_context.user_id,
             session_id=tool_context.session_id,
@@ -172,6 +176,7 @@ class _PluginTool(Tool):
             memory_scope=getattr(tool_context, "memory_scope", None),
             memory_policy=dict(getattr(tool_context, "memory_policy", {}) or {}),
             root_run_id=getattr(tool_context, "root_run_id", None),
+            app_installation_id=app_installation_id,
             services=self._runtime_services,
             metadata=metadata,
         )

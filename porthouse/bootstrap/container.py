@@ -39,6 +39,7 @@ from porthouse.application.remote_connections import RemoteConnectionService
 from porthouse.application.replays import ReplayService
 from porthouse.application.runs import RunService
 from porthouse.application.scenarios import ScenarioStudioService
+from porthouse.application.schedule_submission import build_schedule_submission
 from porthouse.application.schedules import ScheduleService
 from porthouse.application.sessions import SessionService
 from porthouse.application.skills import SkillService
@@ -52,8 +53,6 @@ from porthouse.cron.managed_monitor import (
     reconcile_existing_agent_monitors,
 )
 from porthouse.cron.service import CronService
-from porthouse.domain.schedules import CronJob, schedule_run_prompt, schedule_run_session_id
-from porthouse.runtime.models import AgentOptions
 from porthouse.runtime.runner import NativeAgentRuntime
 from porthouse.security.admin_auth import (
     DEFAULT_DEVELOPMENT_ADMIN_PASSWORD,
@@ -186,50 +185,12 @@ def build_api_container(
         monitor_reconciler=partial(reconcile_agent_monitor, schedules.repository),
     )
 
-    async def submit_schedule(job: CronJob) -> str:
-        """API-side submission only; Agent workers still execute the resulting Run."""
-        monitor_context = await asyncio.to_thread(schedules.monitor_run_context, job)
-        record = await runtime.submit_run(
-            AgentOptions(
-                prompt=schedule_run_prompt(
-                    job,
-                    scratch=str(monitor_context.get("scratch") or ""),
-                    scratch_revision=int(monitor_context.get("scratch_revision") or 0),
-                    observation=dict(monitor_context.get("observation") or {}),
-                ),
-                user_id=job.user_id,
-                session_id=schedule_run_session_id(job),
-                agent_id=job.agent_id or default_agent_id(store),
-                channel="schedule",
-                chat_id=job.id,
-                metadata={
-                    "schedule_id": job.id,
-                    "schedule_occurrence_id": job.state.occurrence_id,
-                    "schedule_attempt": job.state.attempt,
-                    "schedule_payload_kind": job.payload.kind,
-                    "monitor_quiet_token": (
-                        job.payload.quiet_token
-                        if job.payload.kind == "agent_monitor"
-                        else None
-                    ),
-                    "monitor_scratch_revision": monitor_context.get("scratch_revision"),
-                    "monitor_observation_hash": monitor_context.get("observation_hash"),
-                    "monitor_context_mode": (
-                        job.payload.context_mode
-                        if job.payload.kind == "agent_monitor"
-                        else None
-                    ),
-                    "_runtime_schedule_submission_ready": False,
-                },
-                idempotency_key=(
-                    f"schedule:{job.id}:{job.state.scheduled_for_ms or 'manual'}:"
-                    f"{job.state.attempt}"
-                ),
-            )
-        )
-        return record.run_id
-
-    schedules.on_job = submit_schedule
+    schedules.on_job = build_schedule_submission(
+        runtime=runtime,
+        store=store,
+        cron=schedules,
+        default_agent_id=default_agent_id(store),
+    )
     runs = RunService(runtime, store)
     evals = EvalService(store)
     scenarios = ScenarioStudioService(store)

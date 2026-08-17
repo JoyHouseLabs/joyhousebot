@@ -66,6 +66,11 @@ Porthouse 不复制这些表和逻辑，也不将 App 的业务数据库变为 R
 - Artifact / Work、证据、版本、发布、分享和撤销；
 - 长期运行的成本、质量、性能与 Eval 闭环。
 
+定时触发也不例外：声明 `schedules.submit` 权限的 App 可以用委托 Token 为自己的安装创建
+Entry Point 定时任务（`POST /v1/apps/{installation_id}/schedules`），由 Runtime 的调度
+闭环执行；安装停用/卸载时定时任务自动停用。完整契约见
+[App Entry Point 定时任务](APP_SCHEDULES.md)。
+
 App 只能保存 `run_id` 等外部引用和适合自身展示的投影，不能复制 Run/Task 状态机再自行判定最终状态。
 
 当 App 需要把一个用户确认过的成果作为业务输入时，不应扫描 Artifact 或读取 Runtime 表。App Pack 先声明

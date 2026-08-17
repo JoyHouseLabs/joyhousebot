@@ -50,6 +50,13 @@ def required_api_scope(request: Request) -> str:
         return f"admin.{operation}"
     if path.startswith("/v1/apps/") and path.endswith("/runs") and operation == "write":
         return "apps.launch"
+    if (
+        path.startswith("/v1/apps/")
+        and path.endswith("/schedules")
+    ):
+        return "apps.schedules" if operation == "write" else "apps.read"
+    if path.startswith("/v1/apps/") and "/knowledge" in path:
+        return f"knowledge.{operation}"
     if path == "/v1/apps" or path.startswith("/v1/apps/"):
         return f"apps.{operation}"
     if path == "/v1/action-items" or path.startswith("/v1/action-items/"):

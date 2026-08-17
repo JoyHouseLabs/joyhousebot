@@ -463,7 +463,12 @@ class ContextPort:
             repository = KnowledgeRepository(store)
             store._knowledge_repository = repository
         resolved_source_id = source_id or source_url or title
-        doc_id = self._knowledge_doc_id(context.user_id, source_system, resolved_source_id)
+        doc_id = self._knowledge_doc_id(
+            context.user_id,
+            source_system,
+            resolved_source_id,
+            app_installation_id=context.app_installation_id,
+        )
         embedding_profile, draft_evaluation = await self._resolve_embedding_profile(
             context,
             embedding_profile_id,
@@ -502,6 +507,7 @@ class ContextPort:
             task_id=context.task_id,
             eval_run_id=eval_run_id,
             eval_case_id=eval_case_id,
+            app_installation_id=context.app_installation_id,
         )
         return doc_id
 
@@ -534,7 +540,12 @@ class ContextPort:
             repository = KnowledgeRepository(store)
             store._knowledge_repository = repository
         resolved_source_id = source_id or source_url or title
-        doc_id = self._knowledge_doc_id(context.user_id, source_system, resolved_source_id)
+        doc_id = self._knowledge_doc_id(
+            context.user_id,
+            source_system,
+            resolved_source_id,
+            app_installation_id=context.app_installation_id,
+        )
         await asyncio.to_thread(
             self._fail_knowledge_revision,
             repository,
@@ -565,8 +576,20 @@ class ContextPort:
         return doc_id
 
     @staticmethod
-    def _knowledge_doc_id(user_id: str, source_system: str, source_id: str) -> str:
-        return hashlib.sha256(f"{user_id}:{source_system}:{source_id}".encode()).hexdigest()[:24]
+    def _knowledge_doc_id(
+        user_id: str,
+        source_system: str,
+        source_id: str,
+        *,
+        app_installation_id: str | None = None,
+    ) -> str:
+        # App documents hash under their installation identity: the same
+        # source_id can exist in the personal library and in an App library
+        # without colliding doc_ids.
+        namespace_owner = app_installation_id or user_id
+        return hashlib.sha256(
+            f"{namespace_owner}:{source_system}:{source_id}".encode()
+        ).hexdigest()[:24]
 
     @staticmethod
     async def _index_knowledge_revision(

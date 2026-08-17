@@ -802,3 +802,208 @@ async def test_knowledge_index_request_freezes_runtime_input_assets() -> None:
         },
     )
     assert runtime.spec.input_asset_ids == [asset_id]
+
+
+def test_app_namespace_shares_source_id_with_personal_library(tmp_path: Path) -> None:
+    """Same user, same source_id, two namespaces: both live, ids differ, isolated."""
+
+    store = PostgresTestStore(tmp_path / "knowledge-app-namespace.db")
+    repository = KnowledgeRepository(store)
+    for namespace, title, body in (
+        (None, "Personal digest", "personal evidence chunk"),
+        ("appinst-radar", "App digest", "app evidence chunk"),
+        ("appinst-panel", "Other app digest", "other app evidence chunk"),
+    ):
+        repository.index_document(
+            doc_id=f"doc-{namespace or 'personal'}",
+            user_id="owner-a",
+            agent_id="default",
+            source_type="article",
+            source_url="https://example.com/same-source",
+            title=title,
+            chunks=[{"text": body}],
+            app_installation_id=namespace,
+        )
+
+    # 个人检索只看见 NULL namespace；App 检索只看见自己的 installation。
+    personal = repository.search(
+        user_id="owner-a", query="evidence", top_k=10
+    )
+    assert {row["title"] for row in personal} == {"Personal digest"}
+    app_radar = repository.search(
+        user_id="owner-a", query="evidence", top_k=10, app_installation_id="appinst-radar"
+    )
+    assert {row["title"] for row in app_radar} == {"App digest"}
+    app_panel = repository.search(
+        user_id="owner-a", query="evidence", top_k=10, app_installation_id="appinst-panel"
+    )
+    assert {row["title"] for row in app_panel} == {"Other app digest"}
+
+    # 文档列表同样按 namespace 隔离
+    assert [row["doc_id"] for row in repository.list_documents(user_id="owner-a")] == [
+        "doc-personal"
+    ]
+    assert [
+        row["doc_id"]
+        for row in repository.list_documents(
+            user_id="owner-a", app_installation_id="appinst-radar"
+        )
+    ] == ["doc-appinst-radar"]
+
+    # source-state 按 namespace 解析；doc_id 不同（身份哈希含 installation）
+    personal_state = repository.get_document_by_source(
+        user_id="owner-a", source_system="runtime", source_id="doc-personal"
+    )
+    app_state = repository.get_document_by_source(
+        user_id="owner-a",
+        source_system="runtime",
+        source_id="doc-appinst-radar",
+        app_installation_id="appinst-radar",
+    )
+    assert personal_state is not None and app_state is not None
+    assert personal_state["doc_id"] != app_state["doc_id"]
+
+    # 删除只作用于本 namespace
+    repository.delete_document(
+        user_id="owner-a",
+        doc_id="doc-appinst-radar",
+        actor_id="test",
+        app_installation_id="appinst-radar",
+    )
+    assert (
+        repository.get_document_by_source(
+            user_id="owner-a",
+            source_system="runtime",
+            source_id="doc-appinst-radar",
+            app_installation_id="appinst-radar",
+        )
+        is None
+    )
+    assert repository.get_document(user_id="owner-a", doc_id="doc-personal") is not None
+
+
+@pytest.mark.asyncio
+async def test_app_knowledge_router_scopes_and_isolation(tmp_path: Path) -> None:
+    from tests.test_app_pack_control_plane import _manifest as base_manifest
+
+    store = PostgresTestStore(tmp_path / "knowledge-app-router.db")
+    repository = KnowledgeRepository(store)
+    repository.index_document(
+        doc_id="doc-personal-lib",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="article",
+        source_url="https://example.com/personal-lib",
+        title="Personal note",
+        chunks=[{"text": "personal library evidence"}],
+    )
+
+    # 安装一个声明 knowledge 权限的 App
+    from porthouse.application.app_packs import AppPackService
+
+    service = AppPackService(store)
+    manifest = {
+        **base_manifest(),
+        "permissions": ["runs.submit", "knowledge.read", "knowledge.write"],
+    }
+    async def _prepare() -> str:
+        await service.save_draft(manifest, actor_id="admin")
+        await service.publish(
+            "app.market-radar", "1.0.0", actor_id="admin", user_id="owner-a"
+        )
+        installed = await service.install(
+            "app.market-radar",
+            "1.0.0",
+            user_id="owner-a",
+            actor_id="admin",
+            configuration={},
+            granted_permissions=["runs.submit", "knowledge.read", "knowledge.write"],
+        )
+        installation = await service.transition(
+            installed["installation_id"],
+            user_id="owner-a",
+            actor_id="admin",
+            action="activate",
+        )
+        return str(installation["installation_id"])
+
+    installation_id = await _prepare()
+    repository.index_document(
+        doc_id="doc-app-lib",
+        user_id="owner-a",
+        agent_id="default",
+        source_type="article",
+        source_url="https://example.com/app-lib",
+        title="App library note",
+        chunks=[{"text": "app library evidence"}],
+        app_installation_id=installation_id,
+    )
+    app_client, app_secret = store.create_app_client(
+        app_id="app.market-radar",
+        name="Market Radar SaaS",
+        allowed_scopes=["knowledge.read", "knowledge.write"],
+        actor_id="admin",
+    )
+    from datetime import datetime, timedelta, timezone
+
+    grant = store.create_app_delegation_grant(
+        client_id=app_client["client_id"],
+        installation_id=installation_id,
+        user_id="owner-a",
+        scopes=["knowledge.read", "knowledge.write"],
+        expires_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+        actor_id="token:owner",
+    )
+    store.create_api_access_token(
+        user_id="owner-a", actor_id="test", token="owner-a-token"
+    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
+    owner = {"Authorization": "Bearer owner-a-token"}
+    with client:
+        exchanged = client.post(
+            "/v1/app-auth/token",
+            json={
+                "client_id": app_client["client_id"],
+                "client_secret": app_secret,
+                "grant_id": grant["grant_id"],
+                "scopes": ["knowledge.read", "knowledge.write"],
+            },
+        )
+        assert exchanged.status_code == 200, exchanged.text
+        delegated = {"Authorization": f"Bearer {exchanged.json()['access_token']}"}
+
+        # 委托 token 只看到 App namespace
+        listed = client.get(
+            f"/v1/apps/{installation_id}/knowledge/documents", headers=delegated
+        )
+        assert listed.status_code == 200, listed.text
+        assert [item["doc_id"] for item in listed.json()["items"]] == ["doc-app-lib"]
+
+        # 个人库对委托 token 不可达（scope 只有 knowledge.*，公共 /v1/knowledge 需要 api.read）
+        personal_surface = client.get("/v1/knowledge/documents", headers=delegated)
+        assert personal_surface.status_code == 403
+
+        # 隔离：App 检索搜不到个人文档
+        search = client.get(
+            f"/v1/apps/{installation_id}/knowledge/search",
+            headers=delegated,
+            params={"q": "evidence"},
+        )
+        assert search.status_code == 200, search.text
+        titles = {row["title"] for row in search.json()["items"]}
+        assert titles == {"App library note"}
+
+        # 别的 installation 路径 → 404
+        other = client.get(
+            "/v1/apps/appinst-someone-else/knowledge/documents", headers=delegated
+        )
+        assert other.status_code == 404
+
+        # owner token（scope=*）可以跨 namespace 读取 App 库
+        owner_listed = client.get(
+            f"/v1/apps/{installation_id}/knowledge/documents", headers=owner
+        )
+        assert owner_listed.status_code == 200
+        assert [item["doc_id"] for item in owner_listed.json()["items"]] == [
+            "doc-app-lib"
+        ]

@@ -19,7 +19,7 @@ async def list_schedules(
     context: ContextDep,
     container: ContainerDep,
     include_disabled: bool = True,
-    kind: Literal["agent_turn", "agent_monitor"] | None = None,
+    kind: Literal["agent_turn", "agent_monitor", "app_entrypoint"] | None = None,
 ):
     return {
         "items": await container.schedules.list(

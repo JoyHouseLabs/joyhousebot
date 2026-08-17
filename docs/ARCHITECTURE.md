@@ -82,10 +82,26 @@ API 只提交一个 `workflow_design` Run；Agent Worker 在禁用 Tool 的设�
 
 执行时，服务把选定 revision 确定性编译为已有 `TaskGraphSpec`，随后仍走统一的 Run、Task、Lease、
 Approval、Event、Artifact、审计和回放链路。Studio 支持三类工作节点：单 Agent、冻结 AgentTeam 子
-Run、冻结 fixed Scenario 子 Run；以及四类控制节点：verify、branch、bounded_loop、approval。Team 和
+Run、冻结 fixed Scenario 子 Run；一类确定性工作节点：capability（直接调用一个已发布 Capability，
+`capability_input` 冻结输入，不产生任何模型调用）；以及四类控制节点：verify、branch、bounded_loop、
+approval。Team 和
 Scenario 子节点先持久化精确子 Run，父 Task 以 `waiting_external` 暂停，子 Run 终态后由任一 Worker
 恢复。节点不以拖拉拽作为主要创作方式，避免界面配置与自然语言目标形成两个事实源。草稿可显式试运行，
 正式复用默认只接受已发布 revision。
+
+AgentTeam 可携带版本化的 Collaboration Blueprint（协作阶段、参与者与护栏）：显式 Blueprint 经
+Compiler 强制约束 Coordinator 计划（可修复违规触发重规划，越界失败关闭）；未设置的存量 Team 解析为
+不具约束力的隐式默认。护栏 `require_plan_confirmation` 打开时，Team Run 在计划冻结后进入
+`waiting_input`，所有者经公共计划 API 确认/带反馈重生成/取消后，同一 Run 物化 Task DAG；这与 Workflow
+的人工编排互补，而非两套状态机。契约见
+[协作 Blueprint 与 Team Composer](COLLABORATION_BLUEPRINTS.md)；Console 侧由 Team Composer 向导与
+"高级 AgentTeam 配置"页面分别服务方案设计者与平台管理员。
+
+Workflow 的最终聚合策略按图内容推断：图中存在 agent/team/scenario 节点时默认 `llm_synthesis`；
+全部节点为 capability 与控制节点时自动降级为确定性 `raw`，零模型调用完成整图。`policies.aggregation`
+可显式声明任一已支持模式（含确定性 `structured_merge/evidence_merge/rank_and_select/raw`），显式
+声明优先于推断。capability 节点应声明 `output_schema`：这会自动附加 schema verifier，并让下游
+branch/verify 等控制节点能够读取 `structured_output`。
 
 ```text
 自然语言目标 → design Run（无 Tool）→ 结构化 DAG → 可视化审查/对话修改
@@ -107,6 +123,9 @@ Client ──HTTP/SSE──▶ API replicas ────────────
 ```
 
 - Agent Worker 使用数据库 lease、fencing version 和 `FOR UPDATE SKIP LOCKED` claim 工作。
+- Worker 在 `runtime_workers` 注册在线状态并心跳续租：执行型 Worker 的心跳随协调循环触发，至多每
+  5 秒合并一次容量遥测（Agent/Graph 槽位占用与进程 CPU/RSS，写回 worker metadata）；非执行角色每
+  30 秒续租一次。遥测只服务监控与扩容判断，不参与 lease、claim 或发布判定。
 - Scheduler Worker 除 Schedule/Eval/App Market 获取外，也投递 App Callback Outbox；回调请求受公网
   HTTPS、SSRF/DNS pinning、禁止重定向、HMAC 和最大重试次数约束。
 - API、Control、Scheduler 和 Migrator 不发现或 import Provider/Capability/Connector 扩展，也不接收
@@ -227,6 +246,11 @@ Occurrence 快照的手动触发并提交 Run，模型和 Tool 仍由 Worker 执
 不同 Payload 返回 409。投递记录只保存 hash、事件类型、状态、尝试次数和 Run ID，不保存原始业务
 Payload；实际 Run 仍由 PostgreSQL Runtime 创建，并进入统一 Worker、权限、回放与成果链路。
 
+触发规则默认提交 Agent Run（`action=run`）；也可以声明 `action=workflow` 并指定
+`workflow_id`（可选 `workflow_revision_id`，缺省用已发布版本），投递时经统一分派核心提交
+Workflow Graph Run——与 HTTP、App Entry Point 启动和定时任务共用同一条提交路径，不建立第二
+执行通道。指向纯 capability Workflow 的触发器同样零模型调用。
+
 ## 身份与认证
 
 普通用户和自动化请求的 `user_id` 只能来自数据库签发的 Bearer Token。`api_access_tokens` 只保存 SHA-256 指纹，明文仅在签发响应中返回一次；吊销在所有 API 副本即时生效。普通用户不能通过 Header 或请求体指定资源归属。环境变量 `PORTHOUSE_CONTROL_TOKEN` 是紧急 operator 凭据，代用户操作必须显式发送 `X-Impersonate-User-ID`（每次代操作都会写 warning 级审计日志）。认证 fail-closed：没有有效 token 时默认拒绝（401）；仅当显式设置 `gateway.allowInsecureAuth=true` 的开发模式下，`X-User-ID`/`PORTHOUSE_DEV_USER_ID` 才生效，默认用户为 `porthouse`，启动时会打印 INSECURE DEV MODE 警告。
@@ -279,7 +303,11 @@ JSON 配置不接受明文 token、API key、password 或 database URL；敏感�
 - `GET/POST/PATCH/DELETE /v1/schedules`；`GET /v1/schedules/runs` 返回 Occurrence 的 Run
   终态、execution/submit attempt、Run ID 历史、Monitor 预检摘要和 Channel 投递状态；
   `GET/PUT /v1/schedules/{id}/monitor-scratch` 以及其 `/revisions` 查询提供 owner 隔离、乐观并发的
-  Monitor 私有状态契约。
+  Monitor 私有状态契约。App 侧另有 `POST/GET /v1/apps/{installation_id}/schedules`
+  （委托 scope `apps.schedules`，创建强制 Idempotency-Key，见
+  [APP_SCHEDULES.md](APP_SCHEDULES.md)）。App 知识库走
+  `/v1/apps/{installation_id}/knowledge/*` 子路由（委托 scope `knowledge.read/write`，路径即归属，
+  个人 `/v1/knowledge` 契约零变化）。
 - `GET /v1/memory/documents`、`GET /v1/memory/documents/{document_path}` 按认证用户和 Agent
   返回持久记忆台账与文档详情；详情还必须匹配 scope，控制台可查看个人属性、长期、情景和 Agent
   经验层，但平台管理员不能因此越权读取其他用户数据。`GET /v1/memory/candidates` 和
@@ -449,11 +477,16 @@ Verification、Action/Invocation 与 evidence manifest。URI Artifact 没有内�
   `model_response_cache`。
 - 记忆与知识：`memory_documents`、`memory_candidates`、`knowledge_documents`、`knowledge_chunks`、
   `knowledge_index_revisions`、`knowledge_revision_chunks`、`knowledge_asset_events`、`knowledge_bases`、
-  `knowledge_base_documents`、`knowledge_base_events`。
+  `knowledge_base_documents`、`knowledge_base_events`。`knowledge_documents.app_installation_id`（可空）是
+  App 库的 namespace：个人文档保持 NULL，两个部分唯一索引分别约束个人与 App 的
+  `(namespace, source_system, source_id)` 身份（详见
+  [KNOWLEDGE_RUNTIME.md](KNOWLEDGE_RUNTIME.md)）。
 - 执行输入：`runtime_input_assets`、`runtime_run_input_assets`、`runtime_input_asset_events`。输入资产与
   Runtime Artifact 分离：前者是被冻结的执行输入，后者是 Run 产生的输出。
 - 调度：`schedules`、`schedule_occurrences`、`schedule_occurrence_runs`、`schedule_monitor_state`、
-  `schedule_monitor_scratch_revisions`。
+  `schedule_monitor_scratch_revisions`。`schedules.installation_id`（可空）是 App Entry Point
+  定时任务的安装归属；个人 schedule 保持 NULL，安装级列表/停用/配额经部分索引
+  `ix_schedules_installation` 完成。
 - Channel：`channel_leases`、`channel_outbox`、`channel_deliveries`。
 - Provider：`provider_profile_health`。
 - 网关准入：`api_rate_limits`。
@@ -668,7 +701,8 @@ pending wait，旧 token 不能恢复已取消或已过期执行。
 
 Vue 前端是平台运行、管理、监控、配置控制台，同时保留一个用户态 Agent 试用面：
 
-- 监控概览读取平台全局 Run/User/Session/Token/Worker 指标。
+- 监控概览读取平台全局 Run/User/Session/Token/Worker 指标；执行容量面板按心跳聚合 Worker 的
+  Agent/Graph 槽位占用，并展示队列领取延迟 P95、PostgreSQL 连接池与近 24 小时 Provider 失败率。
 - 运行中心使用管理 API 查询所有用户 Run；详情统一展示 Task、Event、Log、Artifact、
   Capability Invocation、Request Trace、模型调用、原始推理、性能瀑布、回放对比和动态子 Agent。
 - 配置导航分为运行治理和通用能力配置两组。平台负责访问控制、集群发布、审计和运行摘要；插件中心、Agent、Skills、Tools、MCP Server 在配置子菜单中分别维护。核心控制台只读取通用插件 Manifest、组件、Quickstart、健康与调用，不包含业务专属导航、路由或字段。

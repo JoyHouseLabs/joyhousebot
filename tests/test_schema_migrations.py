@@ -238,7 +238,18 @@ def test_schedule_run_history_is_normalized_without_legacy_json_column(
     assert repository is not None
     assert legacy is None
     assert relation == "schedule_occurrence_runs"
-    assert [row["version"] for row in history] == [1, 2, 3, 4]
+    assert [row["version"] for row in history] == [1, 2, 3, 4, 5]
+    with store._pool.connection() as conn:
+        installation = conn.execute(
+            """SELECT 1 AS present FROM information_schema.columns
+               WHERE table_schema='public' AND table_name='schedules'
+                 AND column_name='installation_id'"""
+        ).fetchone()
+        index = conn.execute(
+            "SELECT to_regclass('public.ix_schedules_installation') AS name"
+        ).fetchone()["name"]
+    assert installation is not None
+    assert index == "ix_schedules_installation"
 
 
 def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(

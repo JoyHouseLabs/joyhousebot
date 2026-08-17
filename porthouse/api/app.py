@@ -38,6 +38,7 @@ from porthouse.api.routers import (
     admin_skills,
     admin_teams,
     app_auth,
+    app_knowledge,
     apps,
     artifact_uploads,
     auth,
@@ -336,6 +337,7 @@ def create_app(
         app.include_router(app_auth.router, prefix=prefix)
         app.include_router(graph_events.router, prefix=prefix)
         app.include_router(apps.router, prefix=prefix)
+        app.include_router(app_knowledge.router, prefix=prefix)
         app.include_router(event_triggers.router, prefix=prefix)
         app.include_router(action_items.router, prefix=prefix)
         app.include_router(runs.router, prefix=prefix)

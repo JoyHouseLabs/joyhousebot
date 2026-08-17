@@ -8,15 +8,10 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from porthouse.domain.schedules import CronJob
+from porthouse.scheduling.migrations import ensure_schedule_schema
 from porthouse.scheduling.row_mapper import (
     occurrence_job_from_row,
     schedule_job_from_row,
-)
-from porthouse.scheduling.schema import (
-    SCHEDULE_CURRENT_SCHEMA_V4_DDL,
-    SCHEDULE_DDL,
-    SCHEDULE_DROP_RUN_IDS_V3_DDL,
-    SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
 )
 from porthouse.storage.json_codec import Jsonb
 from porthouse.storage.postgres_schedule_callbacks import (
@@ -46,116 +41,22 @@ class ScheduleRepository:
                 yield connection
 
     def migrate(self) -> None:
-        with self.store._pool.connection() as connection:
-            with connection.transaction():
-                connection.execute("SELECT pg_advisory_xact_lock(%s)", (872341911,))
-                schedule_description = (
-                    "durable schedules, occurrences, monitor state, and delivery"
-                )
-                self.store._migration_is_recorded(
-                    connection,
-                    name="scheduling",
-                    version=1,
-                    ddl=SCHEDULE_DDL,
-                    description=schedule_description,
-                )
-                schedule_table = connection.execute(
-                    "SELECT to_regclass('public.schedule_occurrences') AS name"
-                ).fetchone()
-                # Do not replay the immutable v1 script merely because a
-                # migration-history row was removed. v1 contains the legacy
-                # ``run_ids`` column, which v3 deliberately drops. Repeating
-                # that add/drop cycle leaks PostgreSQL attribute slots.
-                schedules_table = connection.execute(
-                    "SELECT to_regclass('public.schedules') AS name"
-                ).fetchone()
-                if not (
-                    schedule_table
-                    and schedule_table["name"]
-                    and schedules_table
-                    and schedules_table["name"]
-                ):
-                    connection.execute(SCHEDULE_DDL)
-                self.store._record_migration(
-                    connection,
-                    name="scheduling",
-                    version=1,
-                    ddl=SCHEDULE_DDL,
-                    description=schedule_description,
-                )
-                relation_description = "normalized occurrence-to-Run submission history"
-                self.store._migration_is_recorded(
-                    connection,
-                    name="scheduling",
-                    version=2,
-                    ddl=SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
-                    description=relation_description,
-                )
-                relation_table = connection.execute(
-                    "SELECT to_regclass('public.schedule_occurrence_runs') AS name"
-                ).fetchone()
-                if not (relation_table and relation_table["name"]):
-                    connection.execute(SCHEDULE_OCCURRENCE_RUNS_V2_DDL)
-                self.store._record_migration(
-                    connection,
-                    name="scheduling",
-                    version=2,
-                    ddl=SCHEDULE_OCCURRENCE_RUNS_V2_DDL,
-                    description=relation_description,
-                )
-                drop_description = "remove legacy JSON occurrence-to-Run history"
-                self.store._migration_is_recorded(
-                    connection,
-                    name="scheduling",
-                    version=3,
-                    ddl=SCHEDULE_DROP_RUN_IDS_V3_DDL,
-                    description=drop_description,
-                )
-                legacy_column = connection.execute(
-                    """SELECT 1 AS present FROM information_schema.columns
-                       WHERE table_schema='public'
-                         AND table_name='schedule_occurrences'
-                         AND column_name='run_ids'"""
-                ).fetchone()
-                if legacy_column:
-                    connection.execute(SCHEDULE_DROP_RUN_IDS_V3_DDL)
-                self.store._record_migration(
-                    connection,
-                    name="scheduling",
-                    version=3,
-                    ddl=SCHEDULE_DROP_RUN_IDS_V3_DDL,
-                    description=drop_description,
-                )
-                current_description = "repair current schedule schema without legacy run_ids"
-                current_recorded = self.store._migration_is_recorded(
-                    connection,
-                    name="scheduling",
-                    version=4,
-                    ddl=SCHEDULE_CURRENT_SCHEMA_V4_DDL,
-                    description=current_description,
-                )
-                if not current_recorded:
-                    connection.execute(SCHEDULE_CURRENT_SCHEMA_V4_DDL)
-                self.store._record_migration(
-                    connection,
-                    name="scheduling",
-                    version=4,
-                    ddl=SCHEDULE_CURRENT_SCHEMA_V4_DDL,
-                    description=current_description,
-                )
+        ensure_schedule_schema(self.store)
 
     def create(self, job: CronJob) -> CronJob:
         schedule = vars(job.schedule)
         payload = vars(job.payload)
         policy = vars(job.policy)
-        columns = """schedule_id,user_id,name,agent_id,enabled,schedule,payload,
-            policy,next_run_at_ms,last_run_at_ms,last_status,last_error,delete_after_run,
-            lease_owner,lease_until_ms,lease_version,created_at_ms,updated_at_ms"""
+        columns = """schedule_id,user_id,name,agent_id,installation_id,enabled,schedule,
+            payload,policy,next_run_at_ms,last_run_at_ms,last_status,last_error,
+            delete_after_run,lease_owner,lease_until_ms,lease_version,created_at_ms,
+            updated_at_ms"""
         values = (
                 job.id,
                 job.user_id,
                 job.name,
                 job.agent_id,
+                job.installation_id,
                 job.enabled,
                 Jsonb(schedule),
                 Jsonb(payload),
@@ -173,7 +74,7 @@ class ScheduleRepository:
             )
         with self._connection() as connection:
             row = connection.execute(
-                f"INSERT INTO schedules ({columns}) VALUES ({','.join(['%s'] * 18)}) "
+                f"INSERT INTO schedules ({columns}) VALUES ({','.join(['%s'] * 19)}) "
                 "ON CONFLICT(schedule_id) DO NOTHING RETURNING *",
                 values,
             ).fetchone()
@@ -227,6 +128,25 @@ class ScheduleRepository:
         with self._connection() as connection:
             row = connection.execute(query + " RETURNING *", params).fetchone()
         return schedule_job_from_row(row) if row else None
+
+    def set_enabled_by_installation(
+        self, installation_id: str, enabled: bool, *, now_ms: int
+    ) -> int:
+        """Bulk-toggle every schedule owned by one App installation.
+
+        Used when an installation is suspended or uninstalled: App Entry Point
+        schedules must stop firing without per-schedule API calls, and are
+        re-enabled the same way after reinstall or resume.
+        """
+
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """UPDATE schedules SET enabled=%s,updated_at_ms=%s,
+                       lease_owner=NULL,lease_until_ms=NULL
+                   WHERE installation_id=%s AND enabled<>%s""",
+                (enabled, now_ms, installation_id, enabled),
+            )
+            return int(cursor.rowcount or 0)
 
     def update(self, job: CronJob) -> CronJob | None:
         schedule = vars(job.schedule)

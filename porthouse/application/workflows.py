@@ -10,6 +10,12 @@ from uuid import uuid4
 
 from porthouse.application.context import RequestContext
 from porthouse.application.errors import ConflictError, NotFoundError, ValidationError
+from porthouse.application.workflow_capabilities import (
+    capability_task_spec,
+    normalize_explicit_aggregation,
+    resolve_aggregation_policy,
+    resolve_capability_reference,
+)
 from porthouse.application.workflow_contracts import (
     WORKFLOW_CONTROL_GUIDE,
     WORKFLOW_DESIGN_SCHEMA,
@@ -140,10 +146,16 @@ class WorkflowService:
                 "verify",
                 "branch",
                 "bounded_loop",
+                "capability",
             }:
                 raise ValidationError(f"unsupported Workflow node kind: {kind}")
-            objective = _required_text(
-                raw.get("objective") or raw.get("prompt"), field=f"node {node_id} objective", maximum=2000
+            raw_objective = str(raw.get("objective") or raw.get("prompt") or "").strip()
+            objective = (
+                raw_objective[:2000]
+                if kind == "capability"
+                else _required_text(
+                    raw_objective, field=f"node {node_id} objective", maximum=2000
+                )
             )
             requested_agent = str(raw.get("agent_id") or "").strip()
             agent_id = requested_agent if requested_agent in agents else self.default_agent_id
@@ -286,6 +298,20 @@ class WorkflowService:
                     template["agent_id"] = template_agent_id
                     template["metadata"] = template_metadata
                     configuration["template"] = template
+            capability_reference: dict[str, Any] | None = None
+            capability_input: dict[str, Any] = {}
+            if kind == "capability":
+                raw_capability = (
+                    raw.get("capability")
+                    if raw.get("capability") is not None
+                    else configuration.get("capability")
+                )
+                capability_reference = resolve_capability_reference(
+                    self.store, raw_capability, node_id=node_id
+                )
+                capability_input = dict(
+                    raw.get("capability_input") or configuration.get("input") or {}
+                )
             normalized.append(
                 {
                     "id": node_id,
@@ -304,11 +330,24 @@ class WorkflowService:
                         if kind == "agent"
                         else []
                     ),
-                    "max_attempts": 1 if kind != "agent" else max(
-                        1, min(int(raw.get("max_attempts") or 1), 5)
+                    "max_attempts": (
+                        max(
+                            1,
+                            min(
+                                int(
+                                    raw.get("max_attempts")
+                                    or (3 if kind == "capability" else 1)
+                                ),
+                                5,
+                            ),
+                        )
+                        if kind in {"agent", "capability"}
+                        else 1
                     ),
                     "configuration": configuration,
                     "subrun": subrun,
+                    "capability": capability_reference,
+                    "capability_input": capability_input,
                     "output_schema": (
                         dict(raw["output_schema"])
                         if isinstance(raw.get("output_schema"), dict)
@@ -318,6 +357,7 @@ class WorkflowService:
                 }
             )
         policies = dict(value.get("policies") or {})
+        aggregation = normalize_explicit_aggregation(policies.get("aggregation"))
         graph = {
             "schema_version": 1,
             "coordinator_agent_id": coordinator_agent_id,
@@ -342,6 +382,7 @@ class WorkflowService:
                 "max_concurrent": max(1, min(int(policies.get("max_concurrent") or 4), 16)),
                 "fail_fast": bool(policies.get("fail_fast", True)),
                 "aggregate": bool(policies.get("aggregate", True)),
+                **({"aggregation": aggregation} if aggregation else {}),
             },
         }
         try:
@@ -401,6 +442,9 @@ class WorkflowService:
                         metadata={"workflow_node": node["id"]},
                     )
                 )
+                continue
+            if node["kind"] == "capability":
+                tasks.append(capability_task_spec(node))
                 continue
             tasks.append(
                 GraphTaskSpec(
@@ -495,8 +539,10 @@ class WorkflowService:
             "The user describes intent; you choose a small, clear DAG. Use dependencies to express order "
             "and parallelism. Use kind=team for open multi-expert collaboration, kind=scenario for a "
             "published fixed business execution, verify/branch/bounded_loop for deterministic quality "
-            "control, and approval only for a genuine owner gate. Select only published IDs from the catalogs; "
-            "never invent an ID. This is design-only: do not execute the work or call tools.\n\n"
+            "control, kind=capability for deterministic no-model steps that invoke one published "
+            "capability directly, and approval only for a genuine owner gate. Select only published IDs "
+            "from the catalogs; never invent an ID. This is design-only: do not execute the work or "
+            "call tools.\n\n"
             f"{WORKFLOW_CONTROL_GUIDE}\n"
             f"Goal:\n{goal}\n\nRequested change:\n{instruction or 'Create the first version.'}\n\n"
             f"Existing Workflow JSON:\n{json.dumps(normalized_base, ensure_ascii=False) if normalized_base else 'null'}\n\n"
@@ -619,6 +665,9 @@ class WorkflowService:
         session_id = str(value.get("session_id") or "").strip() or (
             f"workflow:{workflow_id[:48]}:{uuid4().hex[:12]}"
         )
+        aggregation_policy = resolve_aggregation_policy(
+            graph["nodes"], policies.get("aggregation")
+        )
         return await self.runtime.submit_graph(
             TaskGraphSpec(
                 goal=goal,
@@ -630,7 +679,7 @@ class WorkflowService:
                 max_concurrent=policies["max_concurrent"],
                 fail_fast=policies["fail_fast"],
                 aggregate=policies["aggregate"],
-                aggregation_policy={"mode": "llm_synthesis", "version": "v1"},
+                aggregation_policy=aggregation_policy,
                 input_asset_ids=list(value.get("input_asset_ids") or []),
                 idempotency_key=context.idempotency_key,
                 request_id=context.request_id,

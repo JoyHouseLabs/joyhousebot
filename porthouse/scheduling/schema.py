@@ -205,9 +205,20 @@ SCHEDULE_CURRENT_SCHEMA_V4_DDL = """
         ON schedule_occurrences(run_id) WHERE run_id IS NOT NULL;
 """
 
+# v5 gives schedules an optional App installation owner. Personal schedules
+# keep installation_id NULL; App-owned schedules are listed, disabled, and
+# quota-checked through the partial index below.
+SCHEDULE_INSTALLATION_V5_DDL = """
+    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS installation_id TEXT;
+    CREATE INDEX IF NOT EXISTS ix_schedules_installation
+        ON schedules(installation_id, updated_at_ms DESC)
+        WHERE installation_id IS NOT NULL;
+"""
+
 __all__ = [
     "SCHEDULE_DDL",
     "SCHEDULE_CURRENT_SCHEMA_V4_DDL",
     "SCHEDULE_DROP_RUN_IDS_V3_DDL",
+    "SCHEDULE_INSTALLATION_V5_DDL",
     "SCHEDULE_OCCURRENCE_RUNS_V2_DDL",
 ]

@@ -8,11 +8,19 @@ from fastapi.testclient import TestClient
 
 from porthouse.api.app import create_app
 from porthouse.application.agent_teams import AgentTeamService
+from porthouse.application.context import Principal, RequestContext
 from porthouse.application.workflows import WorkflowService
 from porthouse.bootstrap.container import build_api_container
+from porthouse.capabilities import CapabilityRegistry
 from porthouse.config.schema import Config
+from porthouse.contracts.tools import Tool
 from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
 from porthouse.domain.agents import AgentRevision
+from porthouse.domain.capabilities import (
+    CapabilityDefinition,
+    CapabilityKind,
+    CapabilityRef,
+)
 from porthouse.domain.scenarios import ScenarioField, ScenarioVersion
 from porthouse.runtime.models import TaskGraphSpec
 from porthouse.runtime.runner import NativeAgentRuntime
@@ -635,3 +643,59 @@ async def test_workflow_scenario_node_runs_the_frozen_fixed_revision(
     child_task = store.list_runtime_tasks(run_id=child.run_id)[0]
     assert child_task.payload["metadata"]["scenario_version"] == 1
     assert "fractions" in child_task.payload["prompt"]
+
+
+class _PanelRefreshTool(Tool):
+    name = "workflow_panel_refresh"
+    description = "Refresh panel data deterministically"
+    parameters = {
+        "type": "object",
+        "properties": {"topic": {"type": "string"}},
+        "required": ["topic"],
+    }
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def execute(self, topic: str, **_kwargs: Any) -> str:
+        self.calls.append(topic)
+        return json.dumps({"topic": topic, "rows": 3})
+
+
+def _panel_definition() -> CapabilityDefinition:
+    return CapabilityDefinition(
+        ref=CapabilityRef(
+            _PanelRefreshTool.name,
+            "1.0.0",
+            CapabilityKind.TOOL,
+            "test.workflow-capability",
+            "1.0.0",
+            "sha256:panel",
+        ),
+        name="Panel refresh",
+        description=_PanelRefreshTool.description,
+        input_schema=_PanelRefreshTool.parameters,
+        output_schema={"type": "object"},
+        adapter="test.workflow_panel_refresh",
+        side_effect="none",
+    )
+
+
+class _ZeroModelAgent:
+    """Registry carrier for capability nodes; any model call fails the test."""
+
+    def __init__(self, store: PostgresTestStore, tool: _PanelRefreshTool) -> None:
+        definition = _panel_definition()
+        self.capabilities = CapabilityRegistry(store=store)
+        self.capabilities.register_tool(tool, definition=definition)
+        store.publish_capability(definition, actor_id="test:workflow-fixture")
+
+    async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("capability-only Workflow must not call a model")
+
+
+def _owner_context() -> RequestContext:
+    return RequestContext(
+        principal=Principal(subject="owner-a", user_id="owner-a"),
+        request_id="req-workflow-capability",
+    )

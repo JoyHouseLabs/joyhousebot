@@ -82,6 +82,26 @@ document identity from `(user_id, source_system, source_id)`.
 request and must increase for changes such as collection membership that do not increment the business object's version.
 When executions complete out of order, activation rejects any generation lower than the current active generation.
 
+## App installation namespace
+
+Documents may carry an `app_installation_id`. Identity becomes
+`(user_id, source_system, source_id)` for personal documents (NULL) and
+`(app_installation_id, source_system, source_id)` for App libraries: the same `source_id` can exist in the user's
+personal library and in several App libraries without colliding `doc_id`s (the identity hash prefixes the namespace
+owner). Uniqueness is enforced by two partial unique indexes, and the NULL branch is byte-for-byte equivalent to the
+previous single index — existing installations migrate with no data change.
+
+Namespace semantics are strict: personal searches, listings and detail reads only ever see NULL documents, and an App
+only ever sees its own installation's documents. App libraries never leak into the user's personal retrieval context,
+while usage, audit and GDPR ownership remain bound to the installing `user_id`.
+
+Apps reach their library through the path-scoped sub-router (`/v1/apps/{installation_id}/knowledge/...`:
+`index-requests`, `search`, `documents`, `documents/{doc_id}`, `source-state`). Delegation scopes are
+`knowledge.read` / `knowledge.write`; they only unlock the App sub-router, never the personal `/v1/knowledge` surface.
+Indexing under an installation requires the installation to belong to the requesting user and stay active; the
+installation identity is frozen into the indexing Run metadata and reaches the capability context as
+`app_installation_id`.
+
 ## Storage lifecycle
 
 ```text

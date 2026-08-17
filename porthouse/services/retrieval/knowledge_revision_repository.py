@@ -28,8 +28,21 @@ ALTER TABLE knowledge_documents
     ADD COLUMN IF NOT EXISTS index_status TEXT NOT NULL DEFAULT 'ready';
 UPDATE knowledge_documents SET source_id=doc_id WHERE source_id IS NULL;
 ALTER TABLE knowledge_documents ALTER COLUMN source_id SET NOT NULL;
+ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS app_installation_id TEXT;
+-- Identity is namespaced: personal documents keep app_installation_id NULL
+-- and remain byte-for-byte equivalent to the previous unique index; App
+-- installations own their own source-id space. An installation belongs to
+-- exactly one user, so the app index needs no user column.
+DROP INDEX IF EXISTS ux_knowledge_documents_source_ref;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_knowledge_documents_source_ref
-    ON knowledge_documents(user_id,source_system,source_id);
+    ON knowledge_documents(user_id,source_system,source_id)
+    WHERE app_installation_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_knowledge_documents_app_source_ref
+    ON knowledge_documents(app_installation_id,source_system,source_id)
+    WHERE app_installation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_knowledge_documents_app
+    ON knowledge_documents(app_installation_id,updated_at_ms DESC)
+    WHERE app_installation_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS knowledge_index_revisions (
     revision_id TEXT PRIMARY KEY,
@@ -181,6 +194,7 @@ class KnowledgeRevisionRepositoryMixin:
         chunker_version: str = "1",
         embedding_profile_id: str | None = None,
         run_id: str | None = None,
+        app_installation_id: str | None = None,
     ) -> str:
         now_ms = int(time.time() * 1000)
         revision_id = f"krev_{uuid.uuid4().hex}"
@@ -195,8 +209,15 @@ class KnowledgeRevisionRepositoryMixin:
             conflict = connection.execute(
                 """SELECT doc_id FROM knowledge_documents
                     WHERE user_id=%s AND source_system=%s AND source_id=%s
+                      AND app_installation_id IS NOT DISTINCT FROM %s
                       AND doc_id<>%s""",
-                (user_id, source_system, resolved_source_id, doc_id),
+                (
+                    user_id,
+                    source_system,
+                    resolved_source_id,
+                    app_installation_id,
+                    doc_id,
+                ),
             ).fetchone()
             if conflict:
                 raise ValueError("knowledge source reference already belongs to another document")
@@ -204,10 +225,10 @@ class KnowledgeRevisionRepositoryMixin:
                 """INSERT INTO knowledge_documents
                        (doc_id,user_id,agent_id,source_type,source_url,title,metadata,
                         source_system,source_id,source_version,source_generation,
-                        source_status,content_sha256,index_status,
+                        source_status,content_sha256,index_status,app_installation_id,
                         created_at_ms,updated_at_ms)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'0',0,'active','',
-                           'indexing',%s,%s)
+                           'indexing',%s,%s,%s)
                    ON CONFLICT(doc_id) DO NOTHING""",
                 (
                     doc_id,
@@ -219,6 +240,7 @@ class KnowledgeRevisionRepositoryMixin:
                     Jsonb(metadata or {}),
                     source_system,
                     resolved_source_id,
+                    app_installation_id,
                     now_ms,
                     now_ms,
                 ),

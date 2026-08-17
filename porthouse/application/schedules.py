@@ -18,6 +18,10 @@ from porthouse.scheduling.monitor_repository import ScratchRevisionConflictError
 # Delivery targets: phone numbers, channel user/chat ids, emails, @handles.
 _DELIVERY_TARGET_PATTERN = re.compile(r"^[A-Za-z0-9_@.\-:+]{1,128}$")
 
+# App Entry Point schedules are quota'd per installation so one App cannot
+# fill a user's MAX_JOBS_PER_USER budget on its own.
+MAX_APP_SCHEDULES_PER_INSTALLATION = 20
+
 
 def _enabled_channels(config: Any) -> set[str]:
     return enabled_channel_ids(config)
@@ -98,6 +102,100 @@ class ScheduleService:
         if not rows:
             raise ConflictError("manual schedule occurrence was not recorded")
         return rows[0]
+
+    async def create_app_schedule(
+        self,
+        context: RequestContext,
+        body: Any,
+        *,
+        installation_id: str,
+        app_packs: Any,
+    ) -> dict[str, Any]:
+        """Create one App Entry Point schedule after resolving it once up front.
+
+        The creation-time ``resolve_launch`` pre-check keeps dependency drift
+        out of the stored schedule: an inactive installation or a missing
+        Entry Point fails here with 409/404 instead of disabling itself on the
+        first tick.
+        """
+
+        spec = body.schedule
+        payload = body.payload
+        self._validate_delivery(payload.deliver, payload.channel, payload.to)
+        await app_packs.resolve_launch(
+            installation_id,
+            user_id=context.user_id,
+            entrypoint_id=payload.entrypoint_id,
+            scenario_inputs=payload.inputs,
+        )
+        existing = await asyncio.to_thread(
+            self.scheduler.list_jobs,
+            include_disabled=True,
+            user_id=context.user_id,
+        )
+        owned = [row for row in existing if row.installation_id == installation_id]
+        if len(owned) >= MAX_APP_SCHEDULES_PER_INSTALLATION:
+            raise ConflictError(
+                "App installation has reached its schedule limit "
+                f"({MAX_APP_SCHEDULES_PER_INSTALLATION})"
+            )
+        policy_values = body.policy.model_dump()
+        if "misfire_policy" not in body.policy.model_fields_set:
+            policy_values["misfire_policy"] = "skip"
+        if "overlap_policy" not in body.policy.model_fields_set:
+            policy_values["overlap_policy"] = "skip"
+        policy = CronPolicy(**policy_values)
+        # Same durable idempotency contract as personal schedules, but scoped
+        # to the installation so retries cannot collide across Apps.
+        job_id = None
+        if context.idempotency_key:
+            identity = (
+                f"app-schedule:{installation_id}:{context.idempotency_key}".encode("utf-8")
+            )
+            job_id = f"idem-{hashlib.sha256(identity).hexdigest()}"
+        row = await asyncio.to_thread(
+            self.scheduler.add_job,
+            name=body.name,
+            user_id=context.user_id,
+            schedule=CronSchedule(
+                kind=spec.kind,
+                at_ms=spec.at_ms,
+                every_ms=spec.every_ms,
+                expr=spec.cron_expr,
+                tz=spec.timezone,
+            ),
+            message=payload.message,
+            deliver=payload.deliver,
+            channel=payload.channel,
+            to=payload.to,
+            payload_kind="app_entrypoint",
+            installation_id=installation_id,
+            entrypoint_id=payload.entrypoint_id,
+            inputs=payload.inputs,
+            policy=policy,
+            job_id=job_id,
+        )
+        if not body.enabled:
+            row = (
+                await asyncio.to_thread(
+                    self.scheduler.enable_job,
+                    row.id,
+                    False,
+                    user_id=context.user_id,
+                )
+                or row
+            )
+        return asdict(row)
+
+    async def list_app_schedules(
+        self, context: RequestContext, *, installation_id: str
+    ) -> list[dict[str, Any]]:
+        rows = await asyncio.to_thread(
+            self.scheduler.list_jobs,
+            include_disabled=True,
+            user_id=context.user_id,
+        )
+        return [asdict(row) for row in rows if row.installation_id == installation_id]
 
     async def create(self, context: RequestContext, body: Any) -> dict[str, Any]:
         spec = body.schedule
