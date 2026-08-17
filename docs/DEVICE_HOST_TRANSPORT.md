@@ -35,7 +35,7 @@ HappyHouse Device Host --> loopback HMAC --> Node Supervisor --> OpenCLI/Extensi
 设备 API 同时要求：
 
 - `Authorization: Bearer <device-token>`；
-- `X-HappyHouse-Device-ID: <registered-device-id>`；
+- `X-Porthouse-Device-ID: <registered-device-id>`；
 - 数据库中设备仍为 `active`；
 - 心跳中的 Host revision 与 manifest digest 和注册值完全相同。
 
@@ -80,6 +80,16 @@ Core 只新增三个规范化事实投影：
 | `POST` | `/v1/device-host/operations/{id}:complete` | 提交有摘要的终态并回写原 reconciliation |
 
 SSE 唤醒是可选优化，目前正确性只依赖 PostgreSQL + HTTPS claim。断线后轮询恢复，不需要常驻 WebSocket。
+
+### 自动设备投递
+
+Scheduler Worker 的 `DeviceHostService.auto_enqueue_pending` 周期扫描（默认每 5 秒，
+`PORTHOUSE_DEVICE_DELIVERY_INTERVAL` 可调）：对状态仍为 `pending`/`manual_required`、
+尚无 delivery、且其精确 `capability_id+version` 被某台 `active` 设备声明过的 reconciliation，
+自动为目标设备（默认设备优先）创建幂等 delivery（deadline 1 小时、尝试 3 次后回到人工路径）。
+候选 action 在冻结前都已通过能力审批，该 pass 只选择执行者，不产生新的治理决定。
+无匹配设备时维持既有手动 reconciliation 路径，失败关闭。手动 API 创建 delivery 的语义不变，
+两者由 `UNIQUE(reconciliation_id)` 保证幂等互斥。
 
 ## 5. Fencing、幂等与恢复
 

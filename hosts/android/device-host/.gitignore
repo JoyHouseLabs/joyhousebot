@@ -1,0 +1,11 @@
+# Gradle / Android Studio build artifacts
+.gradle/
+build/
+app/build/
+local.properties
+.kotlin/
+.cxx/
+*.keystore
+*.jks
+captures/
+.DS_Store

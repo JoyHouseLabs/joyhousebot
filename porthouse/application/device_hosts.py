@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from porthouse.application.context import RequestContext
+from porthouse.application.context import Principal, RequestContext
 from porthouse.application.errors import ConflictError, NotFoundError, ValidationError
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -19,6 +19,11 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_ENVELOPE_BYTES = 1024 * 1024
 _MAX_RESULT_BYTES = 4 * 1024 * 1024
 _MAX_CONTROL_RESULT_BYTES = 128 * 1024
+# Auto-delivery window: a phone must claim within the hour or the operation
+# falls back to manual reconciliation; only fresh freezes are scanned.
+_AUTO_DELIVERY_DEADLINE_SECONDS = 3600
+_AUTO_DELIVERY_MAX_ATTEMPTS = 3
+_AUTO_DELIVERY_CREATED_WITHIN_SECONDS = 21_600
 _CONTROL_ACTIONS = {
     "preflight",
     "diagnose_opencli",
@@ -350,6 +355,53 @@ class DeviceHostService:
             request=request,
             request_digest=_digest(request),
         )
+
+    async def auto_enqueue_pending(
+        self,
+        *,
+        limit: int = 20,
+        created_within_seconds: int = _AUTO_DELIVERY_CREATED_WITHIN_SECONDS,
+    ) -> int:
+        """Route frozen operations to the paired device that declared the capability.
+
+        Candidates already passed capability approval before their Action froze:
+        this pass only chooses the executor and never bypasses governance.
+        Operations without a matching active device stay on the existing manual
+        reconciliation path (fail-closed).
+        """
+        candidates = await asyncio.to_thread(
+            self.store.find_device_delivery_candidates,
+            limit=limit,
+            created_within_seconds=created_within_seconds,
+        )
+        enqueued = 0
+        for candidate in candidates:
+            context = RequestContext(
+                principal=Principal(
+                    subject=f"device-delivery:{candidate['device_id']}",
+                    user_id=str(candidate["user_id"]),
+                ),
+                request_id=f"auto-delivery_{uuid4().hex}",
+            )
+            try:
+                await self.enqueue(
+                    context,
+                    run_id=str(candidate["run_id"]),
+                    reconciliation_id=str(candidate["reconciliation_id"]),
+                    device_id=str(candidate["device_id"]),
+                    operation_id=str(candidate.get("provider_operation_id") or ""),
+                    portable=False,
+                    deadline_seconds=_AUTO_DELIVERY_DEADLINE_SECONDS,
+                    max_attempts=_AUTO_DELIVERY_MAX_ATTEMPTS,
+                    model_access=None,
+                    tool_access=[],
+                )
+            except (ConflictError, NotFoundError, ValidationError):
+                # The reconciliation moved on or the device was revoked between
+                # the scan and the enqueue; the next pass re-evaluates.
+                continue
+            enqueued += 1
+        return enqueued
 
     async def claim(self, device: Any, **values: Any) -> list[Any]:
         return await asyncio.to_thread(

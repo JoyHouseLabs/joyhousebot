@@ -101,6 +101,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = [
+    "extensions/capability-android-device/src",
     "extensions/channel-dingtalk/src",
     "extensions/capability-context-assets/src",
     "extensions/capability-document-processing/src",

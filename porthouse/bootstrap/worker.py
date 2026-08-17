@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -11,6 +12,7 @@ from loguru import logger
 
 from porthouse.application.app_callbacks import AppCallbackDispatcher
 from porthouse.application.app_market import AppMarketService
+from porthouse.application.device_hosts import DeviceHostService
 from porthouse.application.eval_execution import EvalExecutionService
 from porthouse.application.evals import EvalService
 from porthouse.application.knowledge_maintenance import KnowledgeMaintenanceService
@@ -265,6 +267,7 @@ class SchedulerWorker:
     eval_execution: EvalExecutionService
     app_market: AppMarketService
     app_callbacks: AppCallbackDispatcher
+    device_hosts: DeviceHostService
 
     async def run(self) -> None:
         await self.runtime.start()
@@ -276,22 +279,39 @@ class SchedulerWorker:
         callback_task = asyncio.create_task(
             self._app_callback_loop(), name="app-callback-worker"
         )
+        device_delivery_task = asyncio.create_task(
+            self._device_delivery_loop(), name="device-delivery-worker"
+        )
         try:
             await asyncio.Event().wait()
         finally:
             eval_task.cancel()
             market_task.cancel()
             callback_task.cancel()
+            device_delivery_task.cancel()
             await asyncio.gather(
                 eval_task,
                 market_task,
                 callback_task,
+                device_delivery_task,
                 return_exceptions=True,
             )
             self.cron.stop()
             await self.cron.wait_stopped()
             await self.runtime.close()
             await asyncio.to_thread(self.store.close)
+
+    async def _device_delivery_loop(self) -> None:
+        interval = float(os.environ.get("PORTHOUSE_DEVICE_DELIVERY_INTERVAL", "5") or 5)
+        interval = max(1.0, interval)
+        while True:
+            try:
+                await self.device_hosts.auto_enqueue_pending()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Device delivery worker loop failed; retrying")
+            await asyncio.sleep(interval)
 
     async def _eval_loop(self) -> None:
         lease_seconds = 90
@@ -522,6 +542,7 @@ def build_scheduler_worker(config: Any | None = None) -> SchedulerWorker:
         ),
         app_market=AppMarketService(store),
         app_callbacks=AppCallbackDispatcher(store),
+        device_hosts=DeviceHostService(store, runtime),
     )
 
 
