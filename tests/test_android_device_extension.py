@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,11 @@ from porthouse.capabilities.registry import _PluginTool
 from porthouse.extension_sdk import CapabilityContext, InvocationStatus
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_PROBE_PATH = _REPO_ROOT / "hosts" / "android" / "probe" / "android_probe.py"
+# The Phase-0 probe lives in the companion ai-market checkout; the drift
+# check runs when it is present and skips cleanly in isolated CI.
+_PROBE_PATH = Path(
+    os.environ.get("PORTHOUSE_ANDROID_PROBE", str(_REPO_ROOT.parent / "ai-market" / "android" / "probe" / "android_probe.py"))
+)
 
 
 def _load_probe():
@@ -199,6 +204,8 @@ async def test_plugin_tool_maps_accepted_result_and_enforces_receipt() -> None:
 
 
 def test_parameter_contract_matches_the_phase0_probe() -> None:
+    if not _PROBE_PATH.is_file():
+        pytest.skip("companion ai-market probe checkout is not present")
     probe = _load_probe()
     assert android_device.PRESS_KEYS == probe.PRESS_KEYS
     valid = [

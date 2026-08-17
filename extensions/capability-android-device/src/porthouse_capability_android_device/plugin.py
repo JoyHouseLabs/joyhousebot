@@ -2,8 +2,9 @@
 
 These capabilities never touch a phone themselves.  They freeze the request as
 an accepted Runtime operation; the paired Android Device Host claims the frozen
-delivery over the Device Host Transport and executes it locally (see
-docs/ANDROID_DEVICE_HOST.md).  Consequences of the routing model:
+delivery over the Device Host Transport and executes it locally (see the
+companion ai-market repo: docs/ANDROID_DEVICE_HOST.md).  Consequences of the
+routing model:
 
 - the stub has no ``reconcile_operation`` on purpose, so a frozen operation
   parks at ``manual_required`` instead of being polled by a Worker;
@@ -13,9 +14,10 @@ docs/ANDROID_DEVICE_HOST.md).  Consequences of the routing model:
   approval (``android.actuate`` is ``side_effect=external`` and therefore
   human-approved before this handler runs at all).
 
-Parameter rules mirror the Phase-0 probe contract in
-``hosts/android/probe/android_probe.py``; tests cross-check the two so the
-Kotlin executor and this stub cannot drift apart.
+Parameter rules mirror the shared op contract maintained in the companion
+ai-market repo (``android/probe``); tests cross-check against it when the
+companion checkout is present so the Kotlin executor and this stub cannot
+drift apart.
 """
 
 from __future__ import annotations
