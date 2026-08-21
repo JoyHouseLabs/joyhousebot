@@ -1,4 +1,4 @@
-# Porthouse 测试说明
+# joyhousebot 测试说明
 
 本目录验证 Runtime 契约、状态机、安全边界和 PostgreSQL 集成。
 

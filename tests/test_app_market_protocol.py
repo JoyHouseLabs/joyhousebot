@@ -7,23 +7,23 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from porthouse.domain.app_packs import app_manifest_sha256, normalize_app_manifest
-from porthouse.market_protocol.bundle import (
+from joyhousebot.domain.app_packages import app_manifest_sha256, normalize_app_manifest
+from joyhousebot.market_protocol.bundle import (
     build_app_bundle,
     load_app_bundle,
     verify_app_bundle,
 )
-from porthouse.market_protocol.canonical import canonical_json, parse_strict_json
-from porthouse.market_protocol.contracts import (
+from joyhousebot.market_protocol.canonical import canonical_json, parse_strict_json
+from joyhousebot.market_protocol.contracts import (
     normalize_entitlement,
     normalize_usage_receipt,
 )
-from porthouse.market_protocol.dsse import (
+from joyhousebot.market_protocol.dsse import (
     generate_ed25519_key_pair,
     sign_dsse,
     verify_dsse,
 )
-from porthouse.market_protocol.release import normalize_market_id
+from joyhousebot.market_protocol.release import normalize_app_id, normalize_market_id
 
 
 def test_market_id_allows_only_https_or_loopback_http() -> None:
@@ -35,20 +35,28 @@ def test_market_id_allows_only_https_or_loopback_http() -> None:
         normalize_market_id("http://market.example")
 
 
+def test_app_id_is_a_canonical_dns_style_identity() -> None:
+    assert normalize_app_id(" JoyHouse.ME ") == "joyhouse.me"
+    assert normalize_app_id("app.market-radar") == "app.market-radar"
+    for value in ("joyhouse", "app_name.example", "-app.example", "app.example-"):
+        with pytest.raises(ValueError, match="DNS-style"):
+            normalize_app_id(value)
+
+
 def _manifest() -> dict:
     return {
         "schema_version": 2,
-        "app_id": "app.market-radar",
+        "app_id": "joyhouse.me",
         "version": "1.0.0",
         "name": "Market Radar",
         "description": "A portable market research application.",
-        "publisher": "Porthouse",
-        "publisher_id": "pub_porthouse01",
-        "core": {"min_version": "0.1.2", "max_version": ""},
+        "publisher": "joyhousebot",
+        "publisher_id": "pub_joyhousebot01",
+        "core": {"min_version": "2.0.0", "max_version": ""},
         "extensions": [],
         "capabilities": [],
         "assets": {"agents": [], "teams": [], "skills": [], "workflows": [], "scenarios": []},
-        "integrations": [],
+        "connections": [],
         "permissions": [],
         "secrets": [],
         "triggers": [],
@@ -84,19 +92,19 @@ def test_dsse_binds_payload_type_and_signing_key() -> None:
     other = generate_ed25519_key_pair()
     envelope = sign_dsse(
         b"payload",
-        payload_type="application/vnd.porthouse.test+json",
+        payload_type="application/vnd.joyhousebot.test+json",
         private_key=signer.private_key,
     )
     assert verify_dsse(
         envelope,
         public_keys={signer.key_id: signer.public_key},
-        expected_payload_type="application/vnd.porthouse.test+json",
+        expected_payload_type="application/vnd.joyhousebot.test+json",
     ) == (b"payload", signer.key_id)
     with pytest.raises(ValueError, match="unexpected DSSE payload type"):
         verify_dsse(
             envelope,
             public_keys={signer.key_id: signer.public_key},
-            expected_payload_type="application/vnd.porthouse.other+json",
+            expected_payload_type="application/vnd.joyhousebot.other+json",
         )
     with pytest.raises(ValueError, match="no valid signature"):
         verify_dsse(envelope, public_keys={other.key_id: other.public_key})
@@ -107,7 +115,7 @@ def test_dsse_rejects_malformed_base64_as_protocol_error() -> None:
     with pytest.raises(ValueError, match="invalid DSSE base64 value"):
         verify_dsse(
             {
-                "payloadType": "application/vnd.porthouse.test+json",
+                "payloadType": "application/vnd.joyhousebot.test+json",
                 "payload": "%%%",
                 "signatures": [{"keyid": signer.key_id, "sig": "%%%"}],
             },
@@ -117,13 +125,13 @@ def test_dsse_rejects_malformed_base64_as_protocol_error() -> None:
 
 def test_signed_app_bundle_round_trip_and_tamper_detection(tmp_path) -> None:
     signer = generate_ed25519_key_pair()
-    bundle_path = tmp_path / "market-radar.porthouse-app"
+    bundle_path = tmp_path / "market-radar.joyhousebot-app"
     created = build_app_bundle(
         bundle_path,
         manifest=_manifest(),
         private_key=signer.private_key,
         market_id="https://market.example",
-        publisher_id="pub_porthouse01",
+        publisher_id="pub_joyhousebot01",
         components={
             ("skill", "skill.market-analysis", "1.0.0"): {
                 "schema_version": 1,
@@ -137,19 +145,19 @@ def test_signed_app_bundle_round_trip_and_tamper_detection(tmp_path) -> None:
         bundle_path,
         public_keys={signer.key_id: signer.public_key},
         expected_market_id="https://market.example",
-        expected_publisher_id="pub_porthouse01",
+        expected_publisher_id="pub_joyhousebot01",
     )
     assert verified.descriptor == created.descriptor
     assert verified.manifest["schema_version"] == 2
     assert len(verified.components) == 1
 
     files, envelope = load_app_bundle(bundle_path)
-    tampered = tmp_path / "tampered.porthouse-app"
-    manifest = json.loads(files["porthouse.app.json"])
+    tampered = tmp_path / "tampered.joyhousebot-app"
+    manifest = json.loads(files["joyhousebot.app.json"])
     manifest["name"] = "Tampered"
     with zipfile.ZipFile(tampered, "w") as archive:
         archive.writestr("release.dsse.json", canonical_json(envelope))
-        archive.writestr("porthouse.app.json", canonical_json(manifest))
+        archive.writestr("joyhousebot.app.json", canonical_json(manifest))
         for path, payload in verified.components.items():
             archive.writestr(path, payload)
     with pytest.raises(ValueError, match="does not match"):
@@ -157,7 +165,7 @@ def test_signed_app_bundle_round_trip_and_tamper_detection(tmp_path) -> None:
 
 
 def test_bundle_rejects_path_traversal(tmp_path) -> None:
-    path = tmp_path / "unsafe.porthouse-app"
+    path = tmp_path / "unsafe.joyhousebot-app"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("../release.dsse.json", "{}")
     with pytest.raises(ValueError, match="unsafe path"):
@@ -177,11 +185,11 @@ def test_public_json_schema_matches_protocol_normalizers(tmp_path) -> None:
 
     signer = generate_ed25519_key_pair()
     bundle = build_app_bundle(
-        tmp_path / "schema.porthouse-app",
+        tmp_path / "schema.joyhousebot-app",
         manifest=_manifest(),
         private_key=signer.private_key,
         market_id="https://market.example",
-        publisher_id="pub_porthouse01",
+        publisher_id="pub_joyhousebot01",
         released_at="2026-08-10T00:00:00Z",
     )
     validate("release", bundle.descriptor)
@@ -192,8 +200,8 @@ def test_public_json_schema_matches_protocol_normalizers(tmp_path) -> None:
             "issuer": "https://market.example",
             "subject": {"installation_key_thumbprint": "sha256:" + "1" * 64},
             "app": {
-                "publisher_id": "pub_porthouse01",
-                "app_id": "app.market-radar",
+                "publisher_id": "pub_joyhousebot01",
+                "app_id": "joyhouse.me",
                 "version_constraint": "*",
             },
             "offer_id": "offer_market_001",

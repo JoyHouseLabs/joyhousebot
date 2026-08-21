@@ -2,8 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.storage.contracts import RuntimeStores
+from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.storage.contracts import RuntimeStores
 
 
 @pytest.mark.asyncio
@@ -16,7 +17,7 @@ async def test_lazy_resolved_agent_connects_tools_before_graph_execution() -> No
     class Agent:
         connected = 0
 
-        async def _connect_tool_connectors(self) -> None:
+        async def connect_capability_connectors(self) -> None:
             self.connected += 1
 
     agent = Agent()
@@ -30,4 +31,21 @@ async def test_lazy_resolved_agent_connects_tools_before_graph_execution() -> No
         runtime, "run-1", "specialist"
     )
     assert resolved is agent
+    assert agent.connected == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_catalog_starts_agents_through_public_connector_lifecycle() -> None:
+    class Agent:
+        connected = 0
+
+        async def connect_capability_connectors(self) -> None:
+            self.connected += 1
+
+    agent = Agent()
+    catalog = AgentRuntimeCatalog(config=SimpleNamespace(), store=SimpleNamespace())
+    catalog._agents["default"] = agent
+
+    await catalog.start()
+
     assert agent.connected == 1

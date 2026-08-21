@@ -1,21 +1,21 @@
-from porthouse_capability_rerank import RerankCapabilityPlugin
+from joyhousebot_capability_rerank import RerankCapabilityExtension
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.contracts import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.contracts import CapabilityContext
 
 
 def test_rerank_extension_is_a_scoped_read_capability() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(RerankCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(RerankCapabilityExtension())
     definition, _ = registry.get("retrieval.rerank", "0.1.0")
     assert definition.permissions == ("context.read",)
     assert definition.side_effect == "read"
-    assert definition.ref.plugin_id == "capability-rerank"
+    assert definition.ref.extension_id == "capability-rerank"
 
 
 async def test_rerank_returns_only_ranked_candidate_ids() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(RerankCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(RerankCapabilityExtension())
     result = await registry.invoke(
         "retrieval.rerank",
         {

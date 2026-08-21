@@ -1,9 +1,9 @@
 from email.message import EmailMessage
 
 import pytest
-from porthouse_channel_email import EmailChannelPlugin
+from joyhousebot_channel_email import EmailChannelExtension
 
-from porthouse.bus.events import OutboundMessage
+from joyhousebot.bus.events import OutboundMessage
 
 
 def _make_config() -> dict:
@@ -22,14 +22,14 @@ def _make_config() -> dict:
     }
 
 
-def _make_plugin(config: dict | None = None) -> EmailChannelPlugin:
-    plugin = EmailChannelPlugin()
+def _make_extension(config: dict | None = None) -> EmailChannelExtension:
+    extension = EmailChannelExtension()
     class Adapter:
         async def handle(self, message):
             return None
 
-    plugin.configure(config or _make_config(), Adapter())
-    return plugin
+    extension.configure(config or _make_config(), Adapter())
+    return extension
 
 
 def _make_raw_email(
@@ -78,12 +78,12 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
 
     fake = FakeIMAP()
     monkeypatch.setattr(
-        "porthouse_channel_email.plugin.imaplib.IMAP4_SSL",
+        "joyhousebot_channel_email.extension.imaplib.IMAP4_SSL",
         lambda _h, _p: fake,
     )
 
-    plugin = _make_plugin()
-    items = plugin._fetch_new_messages()
+    extension = _make_extension()
+    items = extension._fetch_new_messages()
 
     assert len(items) == 1
     assert items[0]["sender"] == "alice@example.com"
@@ -92,11 +92,11 @@ def test_fetch_new_messages_parses_unseen_and_marks_seen(monkeypatch) -> None:
     assert items[0]["metadata"]["message_id"] == "<m1@example.com>"
     assert fake.store_calls == []
 
-    plugin._remember_uid("123")
-    items_again = plugin._fetch_new_messages()
+    extension._remember_uid("123")
+    items_again = extension._fetch_new_messages()
     assert items_again == []
 
-    plugin._mark_uid_seen("123")
+    extension._mark_uid_seen("123")
     assert fake.store_calls == [(b"123", "STORE:+FLAGS", "\\Seen")]
 
 
@@ -120,11 +120,11 @@ def test_missing_message_id_uses_imap_uid_as_runtime_idempotency_key(monkeypatch
             return "BYE", []
 
     monkeypatch.setattr(
-        "porthouse_channel_email.plugin.imaplib.IMAP4_SSL",
+        "joyhousebot_channel_email.extension.imaplib.IMAP4_SSL",
         lambda *_args: FakeIMAP(),
     )
 
-    item = _make_plugin()._fetch_new_messages()[0]
+    item = _make_extension()._fetch_new_messages()[0]
     assert item["metadata"]["message_id"] == "imap:INBOX:456"
     assert item["metadata"]["email_message_id"] == ""
 
@@ -136,7 +136,7 @@ def test_extract_text_body_falls_back_to_html() -> None:
     msg["Subject"] = "HTML only"
     msg.add_alternative("<p>Hello<br>world</p>", subtype="html")
 
-    text = EmailChannelPlugin._extract_text_body(msg)
+    text = EmailChannelExtension._extract_text_body(msg)
     assert "Hello" in text
     assert "world" in text
 
@@ -145,7 +145,7 @@ def test_extract_text_body_falls_back_to_html() -> None:
 async def test_start_returns_immediately_without_consent(monkeypatch) -> None:
     config = _make_config()
     config["consent_granted"] = False
-    plugin = _make_plugin(config)
+    extension = _make_extension(config)
 
     called = {"fetch": False}
 
@@ -153,9 +153,9 @@ async def test_start_returns_immediately_without_consent(monkeypatch) -> None:
         called["fetch"] = True
         return []
 
-    monkeypatch.setattr(plugin, "_fetch_new_messages", _fake_fetch)
-    await plugin.start()
-    assert plugin.is_running is False
+    monkeypatch.setattr(extension, "_fetch_new_messages", _fake_fetch)
+    await extension.start()
+    assert extension.is_running is False
     assert called["fetch"] is False
 
 
@@ -165,13 +165,13 @@ async def test_start_supports_smtp_outbound_only_without_imap() -> None:
     config.pop("imap_host")
     config.pop("imap_username")
     config.pop("imap_password")
-    plugin = _make_plugin(config)
+    extension = _make_extension(config)
 
-    await plugin.start()
+    await extension.start()
 
-    assert plugin.is_running is True
-    assert plugin._poll_task is None
-    await plugin.stop()
+    assert extension.is_running is True
+    assert extension._poll_task is None
+    await extension.stop()
 
 
 @pytest.mark.asyncio
@@ -184,11 +184,11 @@ async def test_resend_requires_verified_from_address() -> None:
             "smtp_password": "secret",
         }
     )
-    plugin = _make_plugin(config)
+    extension = _make_extension(config)
 
-    await plugin.start()
+    await extension.start()
 
-    assert plugin.is_running is False
+    assert extension.is_running is False
 
 
 @pytest.mark.asyncio
@@ -223,15 +223,15 @@ async def test_send_uses_smtp_and_reply_subject(monkeypatch) -> None:
         return instance
 
     monkeypatch.setattr(
-        "porthouse_channel_email.plugin.smtplib.SMTP",
+        "joyhousebot_channel_email.extension.smtplib.SMTP",
         _smtp_factory,
     )
 
-    plugin = _make_plugin()
-    plugin._last_subject_by_chat["alice@example.com"] = "Invoice #42"
-    plugin._last_message_id_by_chat["alice@example.com"] = "<m1@example.com>"
+    extension = _make_extension()
+    extension._last_subject_by_chat["alice@example.com"] = "Invoice #42"
+    extension._last_message_id_by_chat["alice@example.com"] = "<m1@example.com>"
 
-    await plugin.send(
+    await extension.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -279,14 +279,14 @@ async def test_send_skips_when_auto_reply_disabled(monkeypatch) -> None:
         return instance
 
     monkeypatch.setattr(
-        "porthouse_channel_email.plugin.smtplib.SMTP",
+        "joyhousebot_channel_email.extension.smtplib.SMTP",
         _smtp_factory,
     )
 
     config = _make_config()
     config["auto_reply_enabled"] = False
-    plugin = _make_plugin(config)
-    await plugin.send(
+    extension = _make_extension(config)
+    await extension.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -295,7 +295,7 @@ async def test_send_skips_when_auto_reply_disabled(monkeypatch) -> None:
     )
     assert fake_instances == []
 
-    await plugin.send(
+    await extension.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",
@@ -335,14 +335,14 @@ async def test_send_skips_when_consent_not_granted(monkeypatch) -> None:
         return FakeSMTP(host, port, timeout=timeout)
 
     monkeypatch.setattr(
-        "porthouse_channel_email.plugin.smtplib.SMTP",
+        "joyhousebot_channel_email.extension.smtplib.SMTP",
         _smtp_factory,
     )
 
     config = _make_config()
     config["consent_granted"] = False
-    plugin = _make_plugin(config)
-    await plugin.send(
+    extension = _make_extension(config)
+    await extension.send(
         OutboundMessage(
             channel="email",
             chat_id="alice@example.com",

@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.services.context import ContextPort
-from porthouse.config.schema import Config
-from porthouse.contracts.capabilities import CapabilityContext
-from porthouse.domain.embedding_profiles import normalize_embedding_profile
-from porthouse.providers.base import EmbeddingResponse
-from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.services.context import ContextPort
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.capabilities import CapabilityContext
+from joyhousebot.domain.embedding_profiles import normalize_embedding_profile
+from joyhousebot.providers.base import EmbeddingResponse
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -195,7 +195,7 @@ def test_vector_revision_cannot_be_ready_until_all_embeddings_exist(tmp_path: Pa
 
 def test_embedding_profile_admin_api_exposes_governance_readiness(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "embedding-profile-api.db")
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="operator", actor_id="test", token="embedding-profile-token"
     )
     store.upsert_platform_admin(user_id="operator", permissions=["*"], actor_id="test")
@@ -215,26 +215,26 @@ def test_embedding_profile_admin_api_exposes_governance_readiness(tmp_path: Path
     }
     with TestClient(create_app(build_api_container(config=Config(), store=store))) as client:
         created = client.post(
-            "/v1/admin/embedding-profiles", headers=headers, json=body
+            "/control/v1/admin/embedding-profiles", headers=headers, json=body
         )
         assert created.status_code == 201
         assert created.json()["revision_id"] == "knowledge-default:v1"
 
         profile = client.get(
-            "/v1/admin/embedding-profiles/knowledge-default", headers=headers
+            "/control/v1/admin/embedding-profiles/knowledge-default", headers=headers
         )
         assert profile.status_code == 200
         assert profile.json()["revisions"][0]["status"] == "draft"
 
         readiness = client.get(
-            "/v1/admin/embedding-profiles/readiness", headers=headers
+            "/control/v1/admin/embedding-profiles/readiness", headers=headers
         )
         assert readiness.status_code == 200
         assert readiness.json()["ready"] is False
         assert "no published default embedding profile" in readiness.json()["blockers"]
 
         publish = client.post(
-            "/v1/admin/embedding-profiles/knowledge-default/revisions/"
+            "/control/v1/admin/embedding-profiles/knowledge-default/revisions/"
             "knowledge-default:v1/publish",
             headers=headers,
         )

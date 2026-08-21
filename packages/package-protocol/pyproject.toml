@@ -1,0 +1,24 @@
+[project]
+name = "joyhousebot-package-protocol"
+version = "0.2.0"
+description = "Pure joyhousebot App manifest compiler and package protocol"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = ["httpx>=0.25,<1", "typer>=0.9,<1"]
+
+[project.scripts]
+joyhousebot-app = "joyhousebot_package_protocol.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/joyhousebot_package_protocol"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]

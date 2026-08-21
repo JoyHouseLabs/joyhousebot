@@ -45,7 +45,7 @@ export interface MemoryCandidate {
 async function memoryFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   for (const [key, value] of Object.entries(getIdentityHeaders())) headers.set(key, value)
-  const response = await apiFetch(`/v1/memory${path}`, { ...init, headers })
+  const response = await apiFetch(`/control/v1/memory${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.detail ?? payload?.error?.message ?? '记忆数据读取失败')
   return payload as T

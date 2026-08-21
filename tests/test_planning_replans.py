@@ -9,15 +9,15 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.orchestration.coordinator_agent import normalize_coordinator_plan
-from porthouse.runtime.context import CancellationToken, VerificationFailedError
-from porthouse.runtime.models import AgentOptions, AgentUsage
-from porthouse.runtime.planning_loop import run_coordinator_planning
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.storage.contracts import RuntimeStores
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.orchestration.coordinator_agent import normalize_coordinator_plan
+from joyhousebot.runtime.context import CancellationToken, VerificationFailedError
+from joyhousebot.runtime.models import AgentOptions, AgentUsage
+from joyhousebot.runtime.planning_loop import run_coordinator_planning
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.storage.contracts import RuntimeStores
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -206,6 +206,7 @@ async def test_worker_restart_resumes_after_persisted_replan_decision(
         fail=True,
         events=_CrashAfterReplanEvents(),
     )
+
     def normalize(value: dict[str, Any]) -> dict[str, Any]:
         return normalize_coordinator_plan(value, [], [])
 
@@ -221,9 +222,7 @@ async def test_worker_restart_resumes_after_persisted_replan_decision(
             routing_decision={},
             normalize=normalize,
         )
-    assert [item.decision for item in store.list_loop_decisions(first_record.run_id)] == [
-        "replan"
-    ]
+    assert [item.decision for item in store.list_loop_decisions(first_record.run_id)] == ["replan"]
 
     with store._pool.connection() as conn, conn.transaction():
         conn.execute(
@@ -319,21 +318,17 @@ def test_loop_decisions_are_owner_scoped_and_fence_stale_workers(
     assert stale is None
     assert saved is not None
     assert store.list_loop_decisions(second.run_id, expected_user_id="other-user") == []
-    owned = store.list_loop_decisions(
-        second.run_id, expected_user_id="decision-owner"
-    )
+    owned = store.list_loop_decisions(second.run_id, expected_user_id="decision-owner")
     assert [item.decision_id for item in owned] == ["decision-current"]
 
 
 def test_loop_decision_api_is_owner_scoped_and_omits_internal_details(
     store: PostgresTestStore,
 ) -> None:
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="decision-owner", actor_id="test", token="decision-token"
     )
-    store.create_api_access_token(
-        user_id="other-user", actor_id="test", token="other-token"
-    )
+    store.create_operator_access_token(user_id="other-user", actor_id="test", token="other-token")
     options = AgentOptions(
         prompt="Private planning prompt",
         user_id="decision-owner",
@@ -368,17 +363,15 @@ def test_loop_decision_api_is_owner_scoped_and_omits_internal_details(
         run_lease_version=run.lease_version,
     )
     assert saved is not None
-    client = TestClient(
-        create_app(build_api_container(config=Config(), store=store))
-    )
+    client = TestClient(create_app(build_api_container(config=Config(), store=store)))
 
     with client:
         own = client.get(
-            f"/v1/runs/{run.run_id}/decisions",
+            f"/control/v1/runs/{run.run_id}/decisions",
             headers={"Authorization": "Bearer decision-token"},
         )
         other = client.get(
-            f"/v1/runs/{run.run_id}/decisions",
+            f"/control/v1/runs/{run.run_id}/decisions",
             headers={"Authorization": "Bearer other-token"},
         )
 

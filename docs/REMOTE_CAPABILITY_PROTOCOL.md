@@ -10,13 +10,13 @@ Host command、Artifact upload grant、Device Relay 和 Model Gateway 仍不能�
 
 ## 1. 边界
 
-企业程序是产品平面，拥有用户界面、组织身份、业务权限、业务数据和最终事务；Porthouse 是执行平面，
-负责任务规划、调度、审批、恢复、对账、审计和成果。企业业务代码不得作为 Python 插件加载进 Core 或
+企业程序是产品平面，拥有用户界面、组织身份、业务权限、业务数据和最终事务；joyhousebot 是执行平面，
+负责任务规划、调度、审批、恢复、对账、审计和成果。企业业务代码不得作为 Python Extension 加载进 Core 或
 Worker，只通过 `connector-http-capability` 的固定 HTTP 协议接入。
 
 ```text
-企业程序 ── submit/query/SSE ──▶ Porthouse
-企业程序 ◀── signed Capability ── Porthouse Worker
+企业程序 ── submit/query/SSE ──▶ joyhousebot
+企业程序 ◀── signed Capability ── joyhousebot Worker
 ```
 
 ## 2. 安装与控制面配置
@@ -39,7 +39,7 @@ uv pip install -e extensions/connector-http-capability
 ```
 
 安装只表示 Worker 可以加载协议实现。管理员随后在 Console 的“集成中心 → 远程能力”创建连接
-Revision，或者调用 `POST /v1/admin/remote-connections`。服务地址、Key ID、密钥引用和 Capability
+Revision，或者调用 `POST /control/v1/admin/remote-connections`。服务地址、Key ID、密钥引用和 Capability
 目录进入 PostgreSQL 不可变版本；API 不修改部署配置，也不保存密钥明文。
 
 连接请求示例：
@@ -50,9 +50,9 @@ Revision，或者调用 `POST /v1/admin/remote-connections`。服务地址、Key
   "name": "CRM 业务服务",
   "description": "销售线索读写边界",
   "service_profile": "business",
-  "base_url": "https://crm.internal.example/porthouse/v1",
-  "key_id": "porthouse-prod-2026-01",
-  "signing_secret_ref": "env://CRM_PORTHOUSE_SIGNING_SECRET",
+  "base_url": "https://crm.internal.example/joyhousebot/v1",
+  "key_id": "joyhousebot-prod-2026-01",
+  "signing_secret_ref": "env://CRM_JOYHOUSEBOT_SIGNING_SECRET",
   "require_response_signature": true,
   "timeout_seconds": 60,
   "max_response_bytes": 10485760,
@@ -90,7 +90,7 @@ HTTPS；`allow_insecure_http=true` 也只允许 `localhost`、`127.0.0.1` 或 `:
 完整控制面链路是：
 
 ```text
-Connector 插件 active
+Connector Extension active
   → 连接 Draft
   → 连接 rollout / Worker 配置与精确定义预热
   → 连接 active
@@ -100,7 +100,7 @@ Connector 插件 active
   → Agent Revision 显式授权
 ```
 
-连接回滚复用 `/v1/admin/rollouts/{rollout_id}/rollback`。回滚同样先要求 Worker 预热旧 Revision，不会
+连接回滚复用 `/control/v1/admin/rollouts/{rollout_id}/rollback`。回滚同样先要求 Worker 预热旧 Revision，不会
 在预热失败时覆盖当前有效连接。
 
 ## 3. 调用接口
@@ -108,13 +108,13 @@ Connector 插件 active
 ```http
 POST {base_url}/capabilities/{capability_id}:invoke
 Content-Type: application/json
-X-HappyHouse-Capability-Protocol: 1
-X-HappyHouse-Key-Id: <key-id>
-X-HappyHouse-Timestamp: <unix-seconds>
-X-HappyHouse-Nonce: <random>
-X-HappyHouse-Signature: v1=<hex-hmac-sha256>
-X-HappyHouse-Run-ID: <run-id>
-X-HappyHouse-Action-ID: <action-id>       # 写操作
+X-JoyHouse-Capability-Protocol: 1
+X-JoyHouse-Key-Id: <key-id>
+X-JoyHouse-Timestamp: <unix-seconds>
+X-JoyHouse-Nonce: <random>
+X-JoyHouse-Signature: v1=<hex-hmac-sha256>
+X-JoyHouse-Run-ID: <run-id>
+X-JoyHouse-Action-ID: <action-id>       # 写操作
 Idempotency-Key: action:<action-id>
 ```
 
@@ -150,7 +150,7 @@ Idempotency-Key: action:<action-id>
 }
 ```
 
-企业程序必须再次校验主体、权限、能力版本、实现摘要和业务规则。Porthouse 的授权不能替代业务系统的
+企业程序必须再次校验主体、权限、能力版本、实现摘要和业务规则。joyhousebot 的授权不能替代业务系统的
 最终授权。
 
 ## 4. 签名
@@ -180,7 +180,7 @@ JHBCAP-RESPONSE-HMAC-SHA256\n
 <sha256(response-body)>
 ```
 
-响应头为 `X-HappyHouse-Response-Signature: v1=<hex>`。连接器默认拒绝未签名或签名错误的响应。
+响应头为 `X-JoyHouse-Response-Signature: v1=<hex>`。连接器默认拒绝未签名或签名错误的响应。
 
 `request_digest` 用来跨 Worker claim 和多次 reconcile 冻结业务请求，它不包含短暂 lease/attempt，只包含：
 
@@ -247,7 +247,7 @@ JHBCAP-RESPONSE-HMAC-SHA256\n
 }
 ```
 
-Porthouse 不会重新提交操作，而是调用：
+joyhousebot 不会重新提交操作，而是调用：
 
 ```http
 POST {base_url}/operations:reconcile
@@ -259,7 +259,7 @@ POST {base_url}/operations:reconcile
 - `pending`：可带 `retry_after_seconds`；
 - `succeeded`：带最终 `output` 和 `artifacts`；
 - `failed`：带结构化 `error`；
-- `unknown`：无法确定结果，Porthouse 转人工处理，不重新写入。
+- `unknown`：无法确定结果，joyhousebot 转人工处理，不重新写入。
 
 响应还可以返回 `provider_cursor`、`checkpoint_ref`、`progress_summary`、0–100 的
 `progress_percent` 和最多 100 个 `events`。事件以稳定 `event_id` 和单 operation 内唯一 `sequence`
@@ -311,8 +311,8 @@ Extension Host 继续复用本协议的固定 `base_url`、HMAC、防重放、�
 内部的 reconciliation/Run/Task lease 不成为远端可决定的公共身份。
 
 长程 Profile 的正确性必须始终可通过 `operations:reconcile` 和 PostgreSQL 恢复。可选 SSE 只用于降低
-进度延迟，不能取代对账，也不能要求 Agent Worker 为等待外部事件永久占用 lease。详细开发顺序见
-[Polyglot Extension Host 开发计划](POLYGLOT_EXTENSION_HOST_PLAN.md)。
+进度延迟，不能取代对账，也不能要求 Agent Worker 为等待外部事件永久占用 lease。Host 的实现边界由
+[Extension Host Profile v1](EXTENSION_HOST_PROTOCOL.md) 定义。
 
 OpenCLI 等依赖用户本机登录态的 Extension 在纯本地部署时继续使用固定回环 `base_url`。Cloud Runtime
 调用 NAT 后的本地 Host 时，由 Device Relay 对 Runtime 呈现同一固定 Remote Capability 接口；设备只通过

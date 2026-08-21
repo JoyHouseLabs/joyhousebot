@@ -1,12 +1,12 @@
-"""Shared permission-grant matching semantics (porthouse.utils.permissions).
+"""Shared permission-grant matching semantics (joyhousebot.utils.permissions).
 
 Every enforcement point (Principal.can, capability dispatcher, tool/plugin
 registries, MCP gateway) uses these helpers; the semantics pinned here are
 the contract for all of them. Everything is fail-closed.
 """
 
-from porthouse.application.context import Principal
-from porthouse.utils.permissions import (
+from joyhousebot.application.context import Principal
+from joyhousebot.utils.permissions import (
     missing_permissions,
     permission_granted,
     permissions_satisfied,

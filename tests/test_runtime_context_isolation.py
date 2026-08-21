@@ -3,19 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.bus.events import OutboundMessage
-from porthouse.config.schema import Config
-from porthouse.contracts.tools import Tool
-from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from porthouse.runtime.context import (
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.bus.events import OutboundMessage
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from joyhousebot.runtime.context import (
     CancellationToken,
     RunContext,
     bind_run_context,
     get_current_run_context,
 )
-from porthouse.session.models import Session
-from tests.support.capabilities import register_tool_fixture
+from joyhousebot.session.models import Session
+from tests.support.capabilities import register_capability_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -181,7 +181,7 @@ async def test_concurrent_sessions_keep_tool_routing_isolated(tmp_path: Path) ->
         outbound_sink=sink,
     )
     tool = _RoutingProbeTool(sink)
-    register_tool_fixture(loop.capabilities, tool)
+    register_capability_fixture(loop.capabilities, tool)
 
     await asyncio.gather(
         loop.process_direct("alpha", session_key="web:a", channel="web", chat_id="a"),

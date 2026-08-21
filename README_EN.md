@@ -1,14 +1,14 @@
-# Porthouse
+# joyhousebot
 
 ## Open-source, enterprise-grade execution and governance for Agent applications
 
-Porthouse is an open-source, PostgreSQL-first Agent execution and governance Runtime for local or cloud deployment. It gives independent developers, small teams, and vertical Apps enterprise-grade long-running execution, recovery, permissions, approvals, audit, and release governance. Goals become durable Runs and Tasks with governed capabilities, human confirmation, evidence, audit, and replay.
+joyhousebot is an open-source, PostgreSQL-first Agent execution and governance Runtime for local or cloud deployment. It gives independent developers, small teams, and vertical Apps enterprise-grade long-running execution, recovery, permissions, approvals, audit, and release governance. Goals become durable Runs and Tasks with governed capabilities, human confirmation, evidence, audit, and replay.
 
 It is not a chat client, model SDK, or enterprise SaaS suite. Developers do not need to rebuild scheduling, state machines, idempotency, approvals, permissions, audit, or failure recovery to turn an Agent demo into a deliverable application. It provides one execution control plane without making a product, model, or business domain a Core dependency.
 
 ## The execution foundation for developers
 
-Calling a model is easy; delivering an Agent application that runs for days, acts safely in external systems, survives failures, and can explain what it did requires execution infrastructure. Porthouse provides that infrastructure as an open-source Runtime:
+Calling a model is easy; delivering an Agent application that runs for days, acts safely in external systems, survives failures, and can explain what it did requires execution infrastructure. joyhousebot provides that infrastructure as an open-source Runtime:
 
 - **Do not rebuild reliable execution:** one Run/Task state machine, PostgreSQL truth, Worker leases, fencing, retries, wakeups, and takeover.
 - **Do not bypass governance for integrations:** Tools, Connectors, MCP, and Remote Capabilities share versioning, allowlists, permissions, approvals, `action_id`, idempotency, and receipts.
@@ -17,9 +17,9 @@ Calling a model is easy; delivering an Agent application that runs for days, act
 
 This is not enterprise software repackaged for individuals. It makes the Agent execution and governance capabilities normally built by enterprise engineering teams deployable, composable, and extensible by every developer.
 
-## Why Porthouse
+## Why joyhousebot
 
-Most Agent tools answer a prompt or call a tool once. Porthouse makes a goal progress safely over hours, days, or longer. Its differentiation is not access to more models; it makes enterprise-grade execution governance durable, reusable, and directly available to developers.
+Most Agent tools answer a prompt or call a tool once. joyhousebot makes a goal progress safely over hours, days, or longer. Its differentiation is not access to more models; it makes enterprise-grade execution governance durable, reusable, and directly available to developers.
 
 | Capability | Runtime mechanism | Result |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Most Agent tools answer a prompt or call a tool once. Porthouse makes a goal pro
 
 ```mermaid
 flowchart TB
-    CLIENTS[HappyHouse / independent Apps / Console / API clients]
+    CLIENTS[JoyHouse / independent Apps / Console / API clients]
     ENTRY[HTTP + SSE / schedules / webhooks / channels / MCP]
     API[API and control plane\nauthentication, submission, queries, releases]
     PG[(PostgreSQL\nthe sole runtime source of truth)]
@@ -58,7 +58,7 @@ flowchart TB
 
 Every entry point reaches the same `Run → Task → Event → Trace → Artifact` chain. APIs never execute models or tools in a request thread; Workers never treat process memory as the source of truth; external capabilities always run within version, permission, approval, and audit boundaries.
 
-Business Apps remain independently deployable products; Skills are versioned methods; Extensions are technical Runtime artifacts. HappyHouse Market is a separate private repository and deployment; its replaceable Registry uses author DSSE signatures, Market attestations, TUF metadata, local permission approval, and signed Entitlements. Core does not require the official Market, and Market never receives private Run, Prompt, Memory, or Artifact contents. The private HappyHouse Desktop, Web, Mobile, website, and browser extension live in the adjacent `../happyhouse` product repository. See the [App integration contract](docs/APP_INTEGRATION.md) and [App Market governance protocol](docs/APP_MARKET_GOVERNANCE.md).
+Business Apps remain independently deployable products; Skills are versioned methods; Extensions are technical Runtime artifacts. JoyHouse Market is a separate private repository and deployment; its replaceable Registry uses author DSSE signatures, Market attestations, TUF metadata, local permission approval, and signed Entitlements. Core does not require the official Market, and Market never receives private Run, Prompt, Memory, or Artifact contents. The private JoyHouse Desktop, Web, Mobile, website, and browser extension live in the adjacent `../joyhouse` product repository. See the [App integration contract](docs/APP_INTEGRATION.md) and [App Market governance protocol](docs/APP_MARKET_GOVERNANCE.md).
 
 ## Governance model
 
@@ -150,7 +150,7 @@ api / bootstrap / channel adapters
        module-owned PostgreSQL repositories
 ```
 
-Business applications keep their own UI, identity, billing, domain rules, and database. They integrate through versioned HTTP/SSE, the App SDK, and Remote Capability rather than adding business code to the `porthouse` core package. The Runtime freezes Durable Action identities for external writes and records receipts and governed Artifacts on the shared execution chain.
+Business applications keep their own UI, identity, billing, domain rules, and database. They integrate through versioned HTTP/SSE, the App SDK, and Remote Capability rather than adding business code to the `joyhousebot` core package. The Runtime freezes Durable Action identities for external writes and records receipts and governed Artifacts on the shared execution chain.
 
 ## Start locally
 
@@ -160,7 +160,7 @@ PostgreSQL is required:
 cp config.dev.json config.json
 export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
-export PORTHOUSE_DATABASE_URL="postgresql://porthouse:porthouse-dev@127.0.0.1:15432/porthouse"
+export JOYHOUSEBOT_DATABASE_URL="postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot"
 ./scripts/start-local.sh
 ```
 
@@ -175,13 +175,13 @@ export LLM_PROVIDER="openrouter"
 export LLM_API_KEY="your-key"
 export LLM_MODEL="openrouter/openai/gpt-4.1-mini"
 export POSTGRES_PASSWORD="choose-a-strong-password"
-export PORTHOUSE_METRICS_TOKEN="choose-a-scrape-token"
-export PORTHOUSE_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+export JOYHOUSEBOT_METRICS_TOKEN="choose-a-scrape-token"
+export JOYHOUSEBOT_AUTH_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 uv sync
 docker compose -f docker-compose.runtime.yml up --build
 ```
 
-Store `PORTHOUSE_AUTH_ENCRYPTION_KEY` in secret management and retain it: it encrypts control-plane TOTP secrets, and losing it prevents recovery of enrolled authenticators.
+Store `JOYHOUSEBOT_AUTH_ENCRYPTION_KEY` in secret management and retain it: it encrypts control-plane TOTP secrets, and losing it prevents recovery of enrolled authenticators.
 
 Compose starts two API roles: `api` (public data plane, 18790) and `control` (admin plane and console UI, bound to `127.0.0.1:18791` by default — do not expose it publicly).
 
@@ -192,7 +192,7 @@ See [Architecture](docs/ARCHITECTURE.md) and [Operations](docs/OPERATIONS.md) fo
 ```bash
 curl -X POST http://127.0.0.1:18790/v1/runs \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: porthouse' \
+  -H 'X-User-ID: joyhousebot' \
   -d '{"execution":{"mode":"agent","agent_id":"main-coordinator"},"session_id":"demo","input":{"content":"Analyze this task"}}'
 ```
 
@@ -202,10 +202,10 @@ Use a database-issued Bearer Token in production.
 
 ```bash
 .venv/bin/python -m pytest
-.venv/bin/ruff check porthouse tests
+.venv/bin/ruff check joyhousebot tests
 cd apps/console && npm run build
 ```
 
 ## License
 
-Porthouse is released under the Apache License 2.0. Commercial use is permitted; redistributions must retain the license, copyright notices, and comply with the Apache 2.0 patent and NOTICE terms.
+joyhousebot is released under the Apache License 2.0. Commercial use is permitted; redistributions must retain the license, copyright notices, and comply with the Apache 2.0 patent and NOTICE terms.

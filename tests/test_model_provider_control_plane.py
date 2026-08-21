@@ -5,21 +5,21 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from porthouse_provider_openai_compatible import (
+from joyhousebot_provider_openai_compatible import (
     OPENAI_COMPATIBLE_PROVIDER_EXTENSION,
 )
 
-from porthouse.api.app import create_app
-from porthouse.application.model_providers import ModelProviderService
-from porthouse.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config, ExtensionsConfig
-from porthouse.domain.model_providers import (
+from joyhousebot.api.app import create_app
+from joyhousebot.application.model_providers import ModelProviderService
+from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config, ExtensionsConfig
+from joyhousebot.domain.model_providers import (
     materialize_model_provider,
     normalize_model_provider,
     validate_agent_model_policy,
 )
-from porthouse.providers.factory import create_model_provider
+from joyhousebot.providers.factory import create_model_provider
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -74,19 +74,19 @@ def _store(tmp_path: Path) -> PostgresTestStore:
 
 def _activate_extension(store: PostgresTestStore, worker_id: str = "agent-model-a") -> dict:
     release = OPENAI_COMPATIBLE_PROVIDER_EXTENSION.manifest.to_release_dict()
-    store.upsert_plugin_release(release)
+    store.upsert_extension_release(release)
     store.register_runtime_worker(
         worker_id=worker_id,
         capabilities={"agent": True},
         metadata={"extensions": [release]},
     )
-    store.stage_plugin_release(
-        release["plugin_id"], release["version"], actor_id="test"
+    store.stage_extension_release(
+        release["extension_id"], release["version"], actor_id="test"
     )
     assert store.acknowledge_configuration_revision(
         worker_id=worker_id,
-        aggregate_type="plugin",
-        aggregate_id=release["plugin_id"],
+        aggregate_type="extension",
+        aggregate_id=release["extension_id"],
         revision_id=release["version"],
     )
     return release
@@ -262,12 +262,12 @@ async def test_worker_preheats_provider_and_applies_runtime_configuration(
     )
     config = Config(
         extensions=ExtensionsConfig(
-            enabled=["provider-openai-compatible"], discover_entry_points=True
+            allowed_ids=["provider-openai-compatible"], discover_entry_points=True
         )
     )
     catalog = AgentRuntimeCatalog(config=config, store=store)
     catalog._runtime = SimpleNamespace(  # noqa: SLF001
-        worker_id="agent-model-a", plugin_releases=[release]
+        worker_id="agent-model-a", extension_releases=[release]
     )
     monkeypatch.setenv("MODEL_PROVIDER_TEST_KEY", "provider-secret")
     monkeypatch.setenv("MODEL_PROVIDER_TEST_ACCOUNT", "account-1")
@@ -306,7 +306,7 @@ async def test_worker_preheats_provider_and_applies_runtime_configuration(
 
 def test_model_provider_api_never_returns_secret_values(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="operator", actor_id="test", token="model-provider-token"
     )
     store.upsert_platform_admin(user_id="operator", permissions=["*"], actor_id="test")
@@ -319,15 +319,15 @@ def test_model_provider_api_never_returns_secret_values(tmp_path: Path) -> None:
     container = build_api_container(config=Config(), store=store)
     headers = {"Authorization": "Bearer model-provider-token"}
     with TestClient(create_app(container)) as client:
-        created = client.post("/v1/admin/model-providers", headers=headers, json=body)
+        created = client.post("/control/v1/admin/model-providers", headers=headers, json=body)
         assert created.status_code == 201
-        listed = client.get("/v1/admin/model-providers", headers=headers)
+        listed = client.get("/control/v1/admin/model-providers", headers=headers)
         assert listed.status_code == 200
         serialized = str(listed.json())
         assert "env://MODEL_PROVIDER_TEST_KEY" in serialized
         assert "provider-secret" not in serialized
         rejected = client.post(
-            "/v1/admin/model-providers",
+            "/control/v1/admin/model-providers",
             headers=headers,
             json={**body, "provider_id": "bad", "api_key_ref": "plaintext"},
         )

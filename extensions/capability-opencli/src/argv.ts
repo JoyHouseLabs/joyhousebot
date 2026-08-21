@@ -34,6 +34,7 @@ export function buildOpenCliArgv(
       if (argument.required) throw new Error(`OpenCLI argument is required: ${argument.name}`);
       continue;
     }
+    validateArgumentConstraint(argument.name, value, command.argument_constraints[argument.name]);
     const serialized = serializeArgument(argument, value);
     if (["bool", "boolean"].includes(argument.type)) {
       if (serialized === "true") options.push(`--${argument.name}`);
@@ -59,6 +60,33 @@ export function buildOpenCliArgv(
   return {argv: [command.site, command.name, ...positional, ...options, "--format=json"], profile};
 }
 
+function validateArgumentConstraint(
+  name: string,
+  value: unknown,
+  constraint: CompiledCommand["argument_constraints"][string] | undefined,
+): void {
+  if (!constraint) return;
+  if (typeof value === "number") {
+    if (constraint.minimum !== undefined && value < constraint.minimum) {
+      throw new Error(`OpenCLI argument ${name} is below the governed minimum`);
+    }
+    if (constraint.maximum !== undefined && value > constraint.maximum) {
+      throw new Error(`OpenCLI argument ${name} exceeds the governed maximum`);
+    }
+  }
+  if (typeof value === "string") {
+    if (constraint.minLength !== undefined && value.length < constraint.minLength) {
+      throw new Error(`OpenCLI argument ${name} is shorter than the governed minimum`);
+    }
+    if (constraint.maxLength !== undefined && value.length > constraint.maxLength) {
+      throw new Error(`OpenCLI argument ${name} exceeds the governed maximum length`);
+    }
+    if (constraint.pattern !== undefined && !new RegExp(constraint.pattern).test(value)) {
+      throw new Error(`OpenCLI argument ${name} is outside the governed allowlist`);
+    }
+  }
+}
+
 function serializeArgument(argument: OpenCliArgument, value: unknown): string {
   if (["bool", "boolean"].includes(argument.type)) {
     if (typeof value !== "boolean") throw new Error(`OpenCLI argument ${argument.name} must be boolean`);
@@ -82,10 +110,14 @@ function serializeArgument(argument: OpenCliArgument, value: unknown): string {
   return value;
 }
 
-function parseProfile(value: unknown): string {
+function parseProfile(value: unknown): string | null {
   if (typeof value !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) {
     throw new Error("browser_profile_ref must explicitly identify one local profile");
   }
+  // OpenCLI itself only auto-selects when exactly one Browser Bridge profile is
+  // connected. Omitting OPENCLI_PROFILE therefore preserves fail-closed
+  // selection while avoiding a product-specific hard-coded profile alias.
+  if (value === "auto") return null;
   return value;
 }
 

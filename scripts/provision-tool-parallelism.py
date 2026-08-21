@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import argparse
 
-from porthouse.config.access import get_config
-from porthouse.domain.agents import AgentRevision
-from porthouse.storage.factory import create_runtime_store
+from joyhousebot.config.access import get_config
+from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.storage.factory import create_runtime_store
 
 
 def main() -> None:
@@ -60,7 +60,7 @@ def main() -> None:
             capability_policy=dict(current.capability_policy),
             memory_policy=dict(current.memory_policy),
             output_policy=dict(current.output_policy),
-            plugin_requirements=tuple(current.plugin_requirements),
+            extension_requirements=tuple(current.extension_requirements),
             status="draft",
             created_by=args.actor_id,
         )

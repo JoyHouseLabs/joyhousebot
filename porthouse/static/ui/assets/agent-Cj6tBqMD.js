@@ -1,1 +1,0 @@
-import{C as e,h as t}from"./index-C4e0_USq.js";async function n(){let n=await t(`/v1/agents`,{headers:e()});if(!n.ok)throw Error(await n.text());return{ok:!0,agents:(await n.json()).items??[]}}export{n as t};

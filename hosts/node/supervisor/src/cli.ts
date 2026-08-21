@@ -1,15 +1,15 @@
 import {resolve} from "node:path";
 
-import {canonicalJson, sha256Hex} from "@porthouse/extension-sdk";
+import {canonicalJson, sha256Hex} from "@joyhousebot/extension-sdk";
 
 import {loadSupervisorConfig, hostManifest} from "./manifest.js";
 import {createHostServer} from "./server.js";
 import {NodeExtensionSupervisor} from "./supervisor.js";
 
-const configPath = resolve(process.env.PORTHOUSE_NODE_HOST_CONFIG ?? "host.config.json");
-const keyId = process.env.PORTHOUSE_NODE_HOST_KEY_ID ?? "";
-const signingSecret = process.env.PORTHOUSE_NODE_HOST_SIGNING_SECRET ?? "";
-if (!keyId) throw new Error("PORTHOUSE_NODE_HOST_KEY_ID is required");
+const configPath = resolve(process.env.JOYHOUSEBOT_NODE_HOST_CONFIG ?? "host.config.json");
+const keyId = process.env.JOYHOUSEBOT_NODE_HOST_KEY_ID ?? "";
+const signingSecret = process.env.JOYHOUSEBOT_NODE_HOST_SIGNING_SECRET ?? "";
+if (!keyId) throw new Error("JOYHOUSEBOT_NODE_HOST_KEY_ID is required");
 
 const config = await loadSupervisorConfig(configPath);
 const supervisor = new NodeExtensionSupervisor(config);

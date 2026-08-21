@@ -1,6 +1,6 @@
 # Production observability
 
-Porthouse keeps the replayable execution trace in PostgreSQL and exports a
+joyhousebot keeps the replayable execution trace in PostgreSQL and exports a
 second, operational view through Prometheus and OpenTelemetry.
 
 ## Runtime configuration
@@ -9,9 +9,9 @@ Install the optional telemetry dependencies and configure each API/Worker
 process:
 
 ```bash
-pip install 'porthouse[observability]'
-export PORTHOUSE_OTEL_ENABLED=true
-export PORTHOUSE_ENVIRONMENT=production
+pip install 'joyhousebot[observability]'
+export JOYHOUSEBOT_OTEL_ENABLED=true
+export JOYHOUSEBOT_ENVIRONMENT=production
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 export OTEL_PROPAGATORS=tracecontext,baggage
@@ -23,9 +23,9 @@ Scheduler and Channel Worker use distinct `service.name` values. W3C
 `traceparent`/`tracestate` are frozen into Run options so execution in another
 process continues the submitting request trace.
 
-`/metrics` remains fail-closed and requires `PORTHOUSE_METRICS_TOKEN`. Use
-`ops/prometheus/prometheus.yml`, `ops/prometheus/porthouse-alerts.yml` and
-`ops/grafana/porthouse-overview.json` as deployment inputs.
+`/metrics` remains fail-closed and requires `JOYHOUSEBOT_METRICS_TOKEN`. Use
+`ops/prometheus/prometheus.yml`, `ops/prometheus/joyhousebot-alerts.yml` and
+`ops/grafana/joyhousebot-overview.json` as deployment inputs.
 
 ## Data policy
 

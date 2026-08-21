@@ -1,9 +1,9 @@
 import inspect
 
-from porthouse.storage.contracts import RuntimeStores
-from porthouse.storage.contracts import runtime as runtime_ports
-from porthouse.storage.postgres_repositories import PostgresRepositorySet
-from porthouse.storage.postgres_store import PostgresRuntimeStore
+from joyhousebot.storage.contracts import RuntimeStores
+from joyhousebot.storage.contracts import runtime as runtime_ports
+from joyhousebot.storage.postgres_repositories import PostgresRepositorySet
+from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
 
 def test_runtime_store_views_preserve_one_transactional_backend() -> None:

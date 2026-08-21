@@ -3,9 +3,9 @@ from uuid import uuid4
 
 import pytest
 
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from porthouse.domain.scenarios import ScenarioVersion
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from joyhousebot.domain.scenarios import ScenarioVersion
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
@@ -271,7 +271,7 @@ def test_capability_and_scenario_use_the_same_worker_rollout_contract(
         ref=CapabilityRef(
             "demo.echo",
             "2.0.0",
-            CapabilityKind.TOOL,
+            CapabilityKind.CAPABILITY,
             "demo.plugin",
             "2.0.0",
             "sha256:demo-v2",
@@ -372,7 +372,7 @@ def test_stale_worker_lease_is_reconciled_without_hiding_live_workers(tmp_path: 
 @pytest.mark.postgres
 def test_postgres_staged_rollout_round_trip() -> None:
     database_url = require_postgres()
-    from porthouse.storage.postgres_store import PostgresRuntimeStore
+    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     suffix = uuid4().hex
     agent_id = f"rollout-{suffix}"

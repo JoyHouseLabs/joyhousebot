@@ -9,21 +9,21 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.errors import ConflictError
-from porthouse.application.eval_execution import EvalExecutionService
-from porthouse.application.evals import EvalService
-from porthouse.application.scenarios import ScenarioStudioService
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.domain.capabilities import (
+from joyhousebot.api.app import create_app
+from joyhousebot.application.errors import ConflictError
+from joyhousebot.application.eval_execution import EvalExecutionService
+from joyhousebot.application.evals import EvalService
+from joyhousebot.application.scenarios import ScenarioStudioService
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from porthouse.domain.scenarios import ScenarioVersion
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.domain.scenarios import ScenarioVersion
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -73,7 +73,7 @@ def _admin_client(store: PostgresTestStore) -> tuple[TestClient, dict[str, str]]
         permissions=["*"],
         actor_id="bootstrap",
     )
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="quality-admin", actor_id="bootstrap", token="quality-admin-token"
     )
     container = build_api_container(config=Config(), store=store)
@@ -307,13 +307,13 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
     client, headers = _admin_client(store)
     with client:
         suite = client.put(
-            "/v1/admin/eval-suites/quality.basic/versions/1",
+            "/control/v1/admin/eval-suites/quality.basic/versions/1",
             headers=headers,
             json=_suite_body(),
         )
         assert suite.status_code == 200, suite.text
         run = client.post(
-            "/v1/admin/eval-runs",
+            "/control/v1/admin/eval-runs",
             headers=headers,
             json={
                 "suite_id": "quality.basic",
@@ -327,7 +327,7 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
         assert run.status_code == 201, run.text
         eval_run_id = run.json()["eval_run_id"]
         observation = client.post(
-            f"/v1/admin/eval-runs/{eval_run_id}/observations",
+            f"/control/v1/admin/eval-runs/{eval_run_id}/observations",
             headers=headers,
             json={
                 "case_id": "answer",
@@ -340,7 +340,7 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
         assert observation.status_code == 200, observation.text
         assert observation.json()["status"] == "passed"
         finalized = client.post(
-            f"/v1/admin/eval-runs/{eval_run_id}/finalize", headers=headers
+            f"/control/v1/admin/eval-runs/{eval_run_id}/finalize", headers=headers
         )
         assert finalized.status_code == 200, finalized.text
         assert finalized.json()["status"] == "passed"
@@ -377,7 +377,7 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
         assert manual_gate["passed"] is False
         assert manual_gate["requirements"][0]["automated"] is False
         gate = client.put(
-            "/v1/admin/release-gates/agent/quality-agent/quality-agent:v1",
+            "/control/v1/admin/release-gates/agent/quality-agent/quality-agent:v1",
             headers=headers,
             json={
                 "required": True,
@@ -395,7 +395,7 @@ def test_eval_api_scores_observations_and_persists_release_evidence(
             },
         )
         assert gate.status_code == 200, gate.text
-        listed = client.get("/v1/admin/eval-runs", headers=headers)
+        listed = client.get("/control/v1/admin/eval-runs", headers=headers)
         assert listed.status_code == 200
         assert listed.json()["items"][0]["results"][0]["score"] == 1.0
 
@@ -544,7 +544,7 @@ async def test_capability_and_scenario_publish_paths_use_the_same_gate(
         ref=CapabilityRef(
             "quality.tool",
             "1.0.0",
-            CapabilityKind.TOOL,
+            CapabilityKind.CAPABILITY,
             "test.quality",
             "1.0.0",
             "sha256:quality-tool",

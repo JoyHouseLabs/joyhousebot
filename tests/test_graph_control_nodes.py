@@ -10,22 +10,22 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.config.schema import Config
-from porthouse.contracts.tools import Tool
-from porthouse.domain.capabilities import (
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from porthouse.orchestration.control_nodes import (
+from joyhousebot.orchestration.control_nodes import (
     validate_compensation_declarations,
 )
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _VALUE_SCHEMA = {
@@ -90,8 +90,8 @@ async def test_explicit_approval_is_owner_scoped_and_completes_gate(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "graph-explicit-approval.db")
-    store.create_api_access_token(user_id="owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other", actor_id="test", token="other-token")
+    store.create_operator_access_token(user_id="owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="other", actor_id="test", token="other-token")
     agent = _ControlAgent()
     first = NativeAgentRuntime(agent=agent, store=store, max_concurrent_runs=1)
     second = NativeAgentRuntime(agent=agent, store=store, max_concurrent_runs=1)
@@ -135,12 +135,12 @@ async def test_explicit_approval_is_owner_scoped_and_completes_gate(
         client = TestClient(create_app(build_api_container(config=Config(), store=store)))
         with client:
             foreign = client.get(
-                f"/v1/runs/{submitted.run_id}/approvals",
+                f"/control/v1/runs/{submitted.run_id}/approvals",
                 headers={"Authorization": "Bearer other-token"},
             )
             assert foreign.status_code == 404
             resolved = client.post(
-                f"/v1/runs/{submitted.run_id}/approvals/{request.approval_id}/resolve",
+                f"/control/v1/runs/{submitted.run_id}/approvals/{request.approval_id}/resolve",
                 headers={"Authorization": "Bearer owner-token"},
                 json={"resolution": "approve", "note": "ship it"},
             )
@@ -311,16 +311,12 @@ class _CapabilityAgent:
         undo_definition: CapabilityDefinition,
     ) -> None:
         self.capabilities = CapabilityRegistry(store=store)
-        self.capabilities.register_tool(undo, definition=undo_definition)
-        self.capabilities.register_tool(apply, definition=apply_definition)
+        self.capabilities.register_connector_capability(undo, definition=undo_definition)
+        self.capabilities.register_connector_capability(apply, definition=apply_definition)
         # Non-core registration is discovery-only. Tests that exercise an
         # executable release must make the trusted activation explicit.
-        store.publish_capability(
-            undo_definition, actor_id="test:trusted-graph-fixture"
-        )
-        store.publish_capability(
-            apply_definition, actor_id="test:trusted-graph-fixture"
-        )
+        store.publish_capability(undo_definition, actor_id="test:trusted-graph-fixture")
+        store.publish_capability(apply_definition, actor_id="test:trusted-graph-fixture")
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("explicit Capability Graph must not call a model")
@@ -330,7 +326,7 @@ def _capability_refs() -> tuple[CapabilityRef, CapabilityRef]:
     undo = CapabilityRef(
         _UndoTool.name,
         "1.0.0",
-        CapabilityKind.TOOL,
+        CapabilityKind.CAPABILITY,
         "test.graph-control",
         "1.0.0",
         "sha256:undo",
@@ -338,7 +334,7 @@ def _capability_refs() -> tuple[CapabilityRef, CapabilityRef]:
     apply = CapabilityRef(
         _ApplyTool.name,
         "1.0.0",
-        CapabilityKind.TOOL,
+        CapabilityKind.CAPABILITY,
         "test.graph-control",
         "1.0.0",
         "sha256:apply",

@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _ITEMS_SCHEMA = {
@@ -92,11 +92,11 @@ def test_foreach_and_wait_event_configuration_is_bounded() -> None:
 
 def test_graph_api_freezes_foreach_and_wait_event_definitions(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "graph-v2-api.db")
-    store.create_api_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     with client:
         created = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers={"Authorization": "Bearer owner-token"},
             json={
                 "goal": "freeze dynamic definitions",
@@ -135,7 +135,7 @@ def test_graph_api_freezes_foreach_and_wait_event_definitions(tmp_path: Path) ->
         assert created.status_code == 202, created.json()
         run_id = created.json()["run_id"]
         revisions = client.get(
-            f"/v1/runs/{run_id}/graph-revisions",
+            f"/control/v1/runs/{run_id}/graph-revisions",
             headers={"Authorization": "Bearer owner-token"},
         )
     assert revisions.status_code == 200
@@ -286,8 +286,8 @@ async def _wait_for_status(
 @pytest.mark.asyncio
 async def test_wait_event_token_schema_owner_and_duplicate_delivery(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "graph-wait-event.db")
-    store.create_api_access_token(user_id="event-owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other-owner", actor_id="test", token="other-token")
+    store.create_operator_access_token(user_id="event-owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="other-owner", actor_id="test", token="other-token")
     agent = _ForeachAgent()
     runtime = NativeAgentRuntime(agent=agent, store=store)
     await runtime.start()
@@ -306,18 +306,18 @@ async def test_wait_event_token_schema_owner_and_duplicate_delivery(tmp_path: Pa
     try:
         with client:
             own = client.get(
-                f"/v1/runs/{submitted.run_id}/event-waits",
+                f"/control/v1/runs/{submitted.run_id}/event-waits",
                 headers={"Authorization": "Bearer owner-token"},
             )
             foreign = client.get(
-                f"/v1/runs/{submitted.run_id}/event-waits",
+                f"/control/v1/runs/{submitted.run_id}/event-waits",
                 headers={"Authorization": "Bearer other-token"},
             )
             assert own.status_code == 200
             assert foreign.status_code == 404
             wait_id = own.json()["items"][0]["wait_id"]
             issued = client.post(
-                f"/v1/runs/{submitted.run_id}/event-waits/{wait_id}/token",
+                f"/control/v1/runs/{submitted.run_id}/event-waits/{wait_id}/token",
                 headers={"Authorization": "Bearer owner-token"},
             )
             assert issued.status_code == 201
@@ -325,7 +325,7 @@ async def test_wait_event_token_schema_owner_and_duplicate_delivery(tmp_path: Pa
             assert "token" not in own.json()["items"][0]
 
             rotated = client.post(
-                f"/v1/runs/{submitted.run_id}/event-waits/{wait_id}/token",
+                f"/control/v1/runs/{submitted.run_id}/event-waits/{wait_id}/token",
                 headers={"Authorization": "Bearer owner-token"},
             )
             assert rotated.status_code == 201
@@ -333,34 +333,34 @@ async def test_wait_event_token_schema_owner_and_duplicate_delivery(tmp_path: Pa
             assert token != old_token
 
             invalid_token = client.post(
-                f"/v1/run-events/{wait_id}",
-                headers={"X-Porthouse-Event-Token": old_token},
+                f"/events/v1/run-events/{wait_id}",
+                headers={"X-JoyHouseBot-Event-Token": old_token},
                 json={"event_type": "order.ready", "payload": {"value": "ok"}},
             )
             assert invalid_token.status_code == 404
             invalid_payload = client.post(
-                f"/v1/run-events/{wait_id}",
-                headers={"X-Porthouse-Event-Token": token},
+                f"/events/v1/run-events/{wait_id}",
+                headers={"X-JoyHouseBot-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"wrong": True}},
             )
             assert invalid_payload.status_code == 422
             delivered = client.post(
-                f"/v1/run-events/{wait_id}",
-                headers={"X-Porthouse-Event-Token": token},
+                f"/events/v1/run-events/{wait_id}",
+                headers={"X-JoyHouseBot-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"value": "ok"}},
             )
             assert delivered.status_code == 200
             assert delivered.json()["duplicate"] is False
             duplicate = client.post(
-                f"/v1/run-events/{wait_id}",
-                headers={"X-Porthouse-Event-Token": token},
+                f"/events/v1/run-events/{wait_id}",
+                headers={"X-JoyHouseBot-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"value": "ok"}},
             )
             assert duplicate.status_code == 200
             assert duplicate.json()["duplicate"] is True
             conflicting_duplicate = client.post(
-                f"/v1/run-events/{wait_id}",
-                headers={"X-Porthouse-Event-Token": token},
+                f"/events/v1/run-events/{wait_id}",
+                headers={"X-JoyHouseBot-Event-Token": token},
                 json={"event_type": "order.ready", "payload": {"value": "changed"}},
             )
             assert conflicting_duplicate.status_code == 409

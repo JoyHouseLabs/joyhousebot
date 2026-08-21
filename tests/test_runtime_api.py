@@ -4,12 +4,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config, ExtensionsConfig
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from porthouse.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config, ExtensionsConfig
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
 from tests.support.capabilities import TEST_PLUGIN_DIGEST
 from tests.support.postgres_store import PostgresTestStore
 
@@ -17,11 +17,19 @@ from tests.support.postgres_store import PostgresTestStore
 def _client(tmp_path: Path) -> tuple[TestClient, PostgresTestStore]:
     config = Config()
     store = PostgresTestStore(tmp_path / "cloud.db")
-    store.create_api_access_token(
-        user_id="user-a", actor_id="test", token="token-a"
+    store.create_operator_access_token(
+        user_id="user-a",
+        actor_id="test",
+        token="token-a",
+        role="viewer",
+        permissions=[],
     )
-    store.create_api_access_token(
-        user_id="user-b", actor_id="test", token="token-b"
+    store.create_operator_access_token(
+        user_id="user-b",
+        actor_id="test",
+        token="token-b",
+        role="viewer",
+        permissions=[],
     )
     container = build_api_container(config=config, store=store)
     return TestClient(create_app(container)), store
@@ -55,18 +63,32 @@ def _route_paths(*, surface: str = "combined", container=None) -> set[str]:
 def test_public_and_control_http_surfaces_are_deployable_separately() -> None:
     public_paths = _route_paths(surface="public")
     control_paths = _route_paths(surface="control")
-    assert "/v1/runs" in public_paths
-    assert "/v1/action-items" in public_paths
-    assert "/v1/admin/overview" not in public_paths
-    assert "/v1/admin/overview" in control_paths
-    assert "/v1/runs" not in control_paths
-    assert "/v1/action-items" not in control_paths
+    assert "/v2/entrypoints" in public_paths
+    assert "/v2/app-auth/token" in public_paths
+    assert "/v2/runs/{run_id}/events" in public_paths
+    assert "/v2/runs/{run_id}/artifacts" in public_paths
+    assert "/v2/approvals/{approval_id}/decisions" in public_paths
+    assert "/control/v1/admin/overview" not in public_paths
+    assert "/control/v1/runs" not in public_paths
+    assert "/control/v1/action-items" not in public_paths
+    assert "/control/v1/admin/overview" in control_paths
+    assert "/control/v1/runs" in control_paths
+    assert "/control/v1/action-items" in control_paths
+    assert "/control/v1/apps/{installation_id}/schedules" in control_paths
+    assert "/control/v1/apps/{installation_id}/knowledge/documents" not in control_paths
+    assert "/v2/entrypoints" not in control_paths
+    assert "/v2/app-auth/token" not in control_paths
+    assert "/v2/runs/{run_id}/events" not in control_paths
+    assert "/host/v1/device-host/heartbeat" in public_paths
+    assert "/events/v1/run-events/{wait_id}" in public_paths
+    assert "/shares/v1/works/{slug}" in public_paths
+    assert not {path for path in public_paths if path.startswith("/v1/")}
 
 
 def test_every_openapi_operation_declares_component_lifecycle() -> None:
     document = create_app(surface="combined").openapi()
     states = {
-        operation["x-porthouse-lifecycle"]
+        operation["x-joyhousebot-lifecycle"]
         for methods in document["paths"].values()
         for operation in methods.values()
     }
@@ -77,10 +99,10 @@ def test_every_openapi_operation_declares_component_lifecycle() -> None:
 def test_production_rejects_combined_or_insecure_api_surfaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PORTHOUSE_ENVIRONMENT", "production")
-    monkeypatch.delenv("PORTHOUSE_ALLOW_COMBINED_SURFACE", raising=False)
-    monkeypatch.delenv("PORTHOUSE_CONTROL_TOKEN", raising=False)
-    monkeypatch.delenv("PORTHOUSE_METRICS_TOKEN", raising=False)
+    monkeypatch.setenv("JOYHOUSEBOT_ENVIRONMENT", "production")
+    monkeypatch.delenv("JOYHOUSEBOT_ALLOW_COMBINED_SURFACE", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_CONTROL_TOKEN", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_METRICS_TOKEN", raising=False)
     with pytest.raises(ValueError, match="separate public and control"):
         create_app(surface="combined")
 
@@ -96,7 +118,7 @@ def test_production_rejects_combined_or_insecure_api_surfaces(
 def test_scoped_service_token_attenuates_user_api_access(tmp_path: Path) -> None:
     client, store = _client(tmp_path)
     expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    record, token = store.create_api_access_token(
+    record, token = store.create_operator_access_token(
         user_id="service-a",
         actor_id="test",
         label="read-only-run-exporter",
@@ -106,19 +128,20 @@ def test_scoped_service_token_attenuates_user_api_access(tmp_path: Path) -> None
     )
     headers = {"Authorization": f"Bearer {token}"}
     with client:
-        assert client.get("/v1/runs", headers=headers).status_code == 200
-        assert client.get("/v1/action-items", headers=headers).status_code == 200
+        assert client.get("/control/v1/runs", headers=headers).status_code == 200
+        assert client.get("/control/v1/action-items", headers=headers).status_code == 200
         denied = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers=headers,
             json={"input": {"content": "must not execute"}},
         )
         assert denied.status_code == 403
         assert denied.json()["detail"] == "API token scope required: runs.write"
-        identity = client.get("/v1/me", headers=headers)
+        identity = client.get("/control/v1/me", headers=headers)
         assert identity.status_code == 403
 
     assert record["token_type"] == "service"
+    assert record["principal_kind"] == "operator"
     assert record["scopes"] == ["runs.read"]
     events = store.list_api_access_token_events(limit=10)
     issued = next(item for item in events if item["token_id"] == record["token_id"])
@@ -128,35 +151,35 @@ def test_scoped_service_token_attenuates_user_api_access(tmp_path: Path) -> None
 def test_prometheus_metrics_endpoint_exposes_runtime_families(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PORTHOUSE_METRICS_TOKEN", "scrape-token")
+    monkeypatch.setenv("JOYHOUSEBOT_METRICS_TOKEN", "scrape-token")
     client, store = _client(tmp_path)
     with client:
         response = client.get("/metrics", headers={"Authorization": "Bearer scrape-token"})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
-    assert "porthouse_up 1" in response.text
-    assert "porthouse_runs_total" in response.text
-    assert "porthouse_tasks_total" in response.text
-    assert "porthouse_task_claim_delay_ms_p95" in response.text
-    assert "porthouse_approval_oldest_pending_seconds" in response.text
-    assert "porthouse_reconciliation_oldest_active_seconds" in response.text
+    assert "joyhousebot_up 1" in response.text
+    assert "joyhousebot_runs_total" in response.text
+    assert "joyhousebot_tasks_total" in response.text
+    assert "joyhousebot_task_claim_delay_ms_p95" in response.text
+    assert "joyhousebot_approval_oldest_pending_seconds" in response.text
+    assert "joyhousebot_reconciliation_oldest_active_seconds" in response.text
 
 
 def test_prometheus_metrics_fails_closed_without_configured_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("PORTHOUSE_METRICS_TOKEN", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_METRICS_TOKEN", raising=False)
     client, _ = _client(tmp_path)
     with client:
         response = client.get("/metrics")
     assert response.status_code == 404
-    assert "porthouse_up" not in response.text
+    assert "joyhousebot_up" not in response.text
 
 
 def test_prometheus_metrics_requires_bearer_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PORTHOUSE_METRICS_TOKEN", "scrape-token")
+    monkeypatch.setenv("JOYHOUSEBOT_METRICS_TOKEN", "scrape-token")
     client, _ = _client(tmp_path)
     with client:
         assert client.get("/metrics").status_code == 401
@@ -182,11 +205,14 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
         actor_id="test",
     )
     store.create_api_access_token(
-        user_id="business-editor", actor_id="test", token="editor-token"
+        user_id="business-editor",
+        actor_id="test",
+        token="editor-token",
+        principal_kind="operator",
     )
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -213,7 +239,7 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
                 "field_names": ["voice"],
             }
         ],
-        "allowed_capabilities": [{"capability_id": "speech.synthesize", "version": "1.0.0", "kind": "tool", "plugin_id": "test.plugin", "plugin_version": "1.0.0", "plugin_build_digest": TEST_PLUGIN_DIGEST}],
+        "allowed_capabilities": [{"capability_id": "speech.synthesize", "version": "1.0.0", "kind": "capability", "extension_id": "test.plugin", "extension_version": "1.0.0", "extension_build_digest": TEST_PLUGIN_DIGEST}],
         "planning_mode": "fixed",
         "routing_rules": [{"contains_any": ["语音", "朗读"]}],
     }
@@ -221,16 +247,16 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
     with client:
         assert (
             client.get(
-                "/v1/admin/scenarios", headers={"Authorization": "Bearer token-a"}
+                "/control/v1/admin/scenarios", headers={"Authorization": "Bearer token-a"}
             ).status_code
             == 403
         )
-        saved = client.put("/v1/admin/scenarios/tts/versions/1", headers=editor, json=payload)
+        saved = client.put("/control/v1/admin/scenarios/tts/versions/1", headers=editor, json=payload)
         assert saved.status_code == 200
         assert saved.json()["status"] == "draft"
 
         simulation = client.post(
-            "/v1/admin/scenarios/tts/simulate",
+            "/control/v1/admin/scenarios/tts/simulate",
             headers=editor,
             json={"prompt": "帮我生成语音", "inputs": {}},
         )
@@ -238,7 +264,7 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
         assert simulation.json()["next_question"]["fields"] == ["voice"]
 
         published = client.post(
-            "/v1/admin/scenarios/tts/versions/1/publish",
+            "/control/v1/admin/scenarios/tts/versions/1/publish",
             headers=editor,
             json={"require_healthy_workers": False},
         )
@@ -246,9 +272,9 @@ def test_scenario_studio_is_role_scoped_and_versions_are_immutable(tmp_path: Pat
         assert published.json()["status"] == "published"
 
         changed = {**payload, "name": "被篡改"}
-        immutable = client.put("/v1/admin/scenarios/tts/versions/1", headers=editor, json=changed)
+        immutable = client.put("/control/v1/admin/scenarios/tts/versions/1", headers=editor, json=changed)
         assert immutable.status_code == 409
-        listed = client.get("/v1/admin/scenarios", headers=editor).json()["items"]
+        listed = client.get("/control/v1/admin/scenarios", headers=editor).json()["items"]
         assert listed[0]["status"] == "published"
 
 
@@ -256,7 +282,7 @@ def test_api_is_submit_only_and_user_scoped(tmp_path: Path) -> None:
     client, store = _client(tmp_path)
     with client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={
                 "Authorization": "Bearer token-a",
                 "Idempotency-Key": "one",
@@ -287,8 +313,8 @@ def test_api_is_submit_only_and_user_scoped(tmp_path: Path) -> None:
         assert response.headers["x-request-id"] == "req-api-test"
         assert response.headers["x-tracker-id"] == "trace-api-test"
 
-        own = client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer token-a"})
-        other = client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer token-b"})
+        own = client.get(f"/control/v1/runs/{run_id}", headers={"Authorization": "Bearer token-a"})
+        other = client.get(f"/control/v1/runs/{run_id}", headers={"Authorization": "Bearer token-b"})
         assert own.status_code == 200
         assert other.status_code == 404
 
@@ -297,7 +323,7 @@ def test_public_agent_catalog_reports_execution_readiness(tmp_path: Path) -> Non
     client, store = _client(tmp_path)
     with client:
         unavailable = client.get(
-            "/v1/agents", headers={"Authorization": "Bearer token-a"}
+            "/control/v1/agents", headers={"Authorization": "Bearer token-a"}
         )
     assert unavailable.status_code == 200
     agent = unavailable.json()["items"][0]
@@ -314,7 +340,7 @@ def test_run_tool_allowlist_is_strictly_validated(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     with client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -346,7 +372,7 @@ def test_explicit_executor_agent_run_bypasses_coordinator_planning(tmp_path: Pat
 
     with client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "executor"},
@@ -364,7 +390,7 @@ def test_run_submission_rejects_ambiguous_legacy_execution_fields(tmp_path: Path
     client, _ = _client(tmp_path)
     with client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "agent_id": "default",
@@ -389,19 +415,19 @@ def test_api_replaces_invalid_request_tracking_headers(tmp_path: Path) -> None:
 
 def test_api_does_not_load_or_execute_extension_projections(tmp_path: Path) -> None:
     config = Config(
-        extensions=ExtensionsConfig(enabled=["capability-not-installed"])
+        extensions=ExtensionsConfig(allowed_ids=["capability-not-installed"])
     )
     store = PostgresTestStore(tmp_path / "projection.db")
     container = build_api_container(config=config, store=store)
     assert not hasattr(container, "plugins")
-    assert "/v1/runs/{run_id}/projection" not in _route_paths(container=container)
+    assert "/control/v1/runs/{run_id}/projection" not in _route_paths(container=container)
 
 
 def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Path) -> None:
     client, store = _client(tmp_path)
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -418,14 +444,14 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
             fields=(ScenarioField("voice", "string", required=True, enum=("pro", "default")),),
             nodes=(ClarificationNode("voice", "question", "选择声音", ("voice",)),),
             edges=(),
-            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),),
+            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST),),
             planning_mode="fixed",
             execution_policy={
                 "aggregate": False,
                 "tasks": [
                     {
                         "id": "synthesize",
-                        "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST).to_dict(),
+                        "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", TEST_PLUGIN_DIGEST).to_dict(),
                         "input": {"voice": "${voice}"},
                     }
                 ],
@@ -436,7 +462,7 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
     headers = {"Authorization": "Bearer token-a", "Idempotency-Key": "tts-one"}
     with client:
         created = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers=headers,
             json={
                 "execution": {
@@ -453,11 +479,11 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
         assert body["session_id"].startswith("sess_")
         assert body["status"] == "waiting_input"
         run_id = body["run_id"]
-        pending = client.get(f"/v1/runs/{run_id}/inputs/pending", headers=headers).json()["items"]
+        pending = client.get(f"/control/v1/runs/{run_id}/inputs/pending", headers=headers).json()["items"]
         assert pending[0]["question"] == "选择声音"
 
         resolved = client.post(
-            f"/v1/runs/{run_id}/inputs",
+            f"/control/v1/runs/{run_id}/inputs",
             headers={**headers, "Idempotency-Key": "tts-answer"},
             json={"input_request_id": pending[0]["input_request_id"], "answers": {"voice": "pro"}},
         )
@@ -469,32 +495,49 @@ def test_run_generates_session_and_resumes_configured_clarification(tmp_path: Pa
         assert resolved.json()["pending_inputs"] == []
 
         foreign = client.get(
-            f"/v1/runs/{run_id}/inputs/pending",
+            f"/control/v1/runs/{run_id}/inputs/pending",
             headers={"Authorization": "Bearer token-b"},
         )
         assert foreign.status_code == 404
 
 
 def test_authentication_and_operator_impersonation(tmp_path: Path, monkeypatch) -> None:
-    client, _ = _client(tmp_path)
+    client, store = _client(tmp_path)
     with client:
-        assert client.get("/v1/me").status_code == 401
+        assert client.get("/control/v1/me").status_code == 401
         assert (
-            client.get("/v1/me", headers={"Authorization": "Bearer token-a"}).json()["user_id"]
+            client.get("/control/v1/me", headers={"Authorization": "Bearer token-a"}).json()["user_id"]
             == "user-a"
         )
 
-        monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "operator-token")
-        missing = client.get("/v1/runs", headers={"Authorization": "Bearer operator-token"})
-        delegated = client.get(
-            "/v1/runs",
+        monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "operator-token")
+        missing = client.get("/control/v1/runs", headers={"Authorization": "Bearer operator-token"})
+        missing_reason = client.get(
+            "/control/v1/runs",
             headers={
                 "Authorization": "Bearer operator-token",
                 "X-Impersonate-User-ID": "user-a",
             },
         )
+        delegated = client.get(
+            "/control/v1/runs",
+            headers={
+                "Authorization": "Bearer operator-token",
+                "X-Impersonate-User-ID": "user-a",
+                "X-Impersonation-Reason": "Runtime API diagnostic test",
+            },
+        )
         assert missing.status_code == 400
+        assert missing_reason.status_code == 403
+        assert missing_reason.json()["detail"] == "X-Impersonation-Reason is required"
         assert delegated.status_code == 200
+        audit = next(
+            item
+            for item in store.list_platform_admin_events(limit=20)
+            if item["event_type"] == "operator.impersonated"
+        )
+        assert audit["user_id"] == "user-a"
+        assert audit["data"]["reason"] == "Runtime API diagnostic test"
 
 
 def test_health_and_readiness_do_not_require_user_auth(tmp_path: Path) -> None:
@@ -505,8 +548,8 @@ def test_health_and_readiness_do_not_require_user_auth(tmp_path: Path) -> None:
         ready = client.get("/readyz")
         assert ready.status_code == 200
         assert ready.json() == {"ok": True}
-        assert client.get("/v1/system/health").status_code == 401
-        detailed = client.get("/v1/system/health", headers={"Authorization": "Bearer token-a"})
+        assert client.get("/control/v1/system/health").status_code == 401
+        detailed = client.get("/control/v1/system/health", headers={"Authorization": "Bearer token-a"})
         assert detailed.status_code == 200
         assert detailed.json().get("ok") is True
 
@@ -517,8 +560,8 @@ def test_auth_fails_closed_when_no_tokens_configured(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "cloud.db")
     client = TestClient(create_app(build_api_container(config=config, store=store)))
     with client:
-        assert client.get("/v1/me").status_code == 401
-        assert client.get("/v1/me", headers={"X-User-Id": "mallory"}).status_code == 401
+        assert client.get("/control/v1/me").status_code == 401
+        assert client.get("/control/v1/me", headers={"X-User-Id": "mallory"}).status_code == 401
 
 
 def test_insecure_dev_mode_requires_explicit_opt_in(tmp_path: Path) -> None:
@@ -527,10 +570,9 @@ def test_insecure_dev_mode_requires_explicit_opt_in(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "cloud.db")
     client = TestClient(create_app(build_api_container(config=config, store=store)))
     with client:
-        response = client.get("/v1/me", headers={"X-User-Id": "local-user"})
-        assert response.status_code == 200
-        assert response.json()["user_id"] == "local-user"
-        assert response.json()["subject"] == "dev:local-user"
+        response = client.get("/control/v1/me", headers={"X-User-Id": "local-user"})
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Operator authority required"
 
 
 def test_insecure_default_user_is_explicit_test_admin(tmp_path: Path) -> None:
@@ -539,22 +581,22 @@ def test_insecure_default_user_is_explicit_test_admin(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "cloud.db")
     client = TestClient(create_app(build_api_container(config=config, store=store)))
     with client:
-        identity = client.get("/v1/me", headers={"X-User-Id": "porthouse"})
+        identity = client.get("/control/v1/me", headers={"X-User-Id": "joyhousebot"})
         assert identity.status_code == 200
         assert identity.json()["role"] == "admin"
         assert identity.json()["is_admin"] is True
-        admins = client.get("/v1/admin/users", headers={"X-User-Id": "porthouse"})
+        admins = client.get("/control/v1/admin/users", headers={"X-User-Id": "joyhousebot"})
         assert admins.status_code == 200
         assert admins.json()["items"][0]["is_test_user"] is True
 
         login = client.post(
-            "/v1/auth/login",
-            json={"user_id": "porthouse", "password": "porthouse"},
+            "/control/v1/auth/login",
+            json={"user_id": "joyhousebot", "password": "joyhousebot"},
         )
         assert login.status_code == 200
         assert login.json()["must_change_password"] is True
 
-        ordinary = client.get("/v1/admin/overview", headers={"X-User-Id": "someone-else"})
+        ordinary = client.get("/control/v1/admin/overview", headers={"X-User-Id": "someone-else"})
         assert ordinary.status_code == 403
 
 
@@ -570,7 +612,7 @@ def test_database_admin_membership_grants_platform_api_without_changing_user_sco
     )
     with client:
         created_a = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -578,7 +620,7 @@ def test_database_admin_membership_grants_platform_api_without_changing_user_sco
             },
         )
         created_b = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-b"},
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -587,7 +629,7 @@ def test_database_admin_membership_grants_platform_api_without_changing_user_sco
         )
         assert created_a.status_code == created_b.status_code == 202
 
-        platform = client.get("/v1/admin/runs", headers={"Authorization": "Bearer token-a"})
+        platform = client.get("/control/v1/admin/runs", headers={"Authorization": "Bearer token-a"})
         assert {item["user_id"] for item in platform.json()["items"]} == {
             "user-a",
             "user-b",
@@ -600,18 +642,18 @@ def test_database_admin_membership_grants_platform_api_without_changing_user_sco
         }
         assert "options" not in platform.json()["items"][0]
         assert "result" not in platform.json()["items"][0]
-        ordinary = client.get("/v1/runs", headers={"Authorization": "Bearer token-a"})
+        ordinary = client.get("/control/v1/runs", headers={"Authorization": "Bearer token-a"})
         assert {item["user_id"] for item in ordinary.json()["items"]} == {"user-a"}
 
         granted = client.put(
-            "/v1/admin/users/user-b",
+            "/control/v1/admin/users/user-b",
             headers={"Authorization": "Bearer token-a"},
             json={"role": "viewer", "permissions": ["platform.read"]},
         )
         assert granted.status_code == 200
         assert granted.json()["role"] == "viewer"
         self_delete = client.delete(
-            "/v1/admin/users/user-a", headers={"Authorization": "Bearer token-a"}
+            "/control/v1/admin/users/user-a", headers={"Authorization": "Bearer token-a"}
         )
         assert self_delete.status_code == 409
 
@@ -633,7 +675,7 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
     viewer_headers = {"Authorization": "Bearer token-b"}
     with client:
         created = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers=admin_headers,
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -641,22 +683,22 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
             },
         )
         run_id = created.json()["run_id"]
-        assert client.get(f"/v1/admin/runs/{run_id}", headers=viewer_headers).status_code == 200
+        assert client.get(f"/control/v1/admin/runs/{run_id}", headers=viewer_headers).status_code == 200
         assert (
-            client.post(f"/v1/admin/runs/{run_id}/cancel", headers=viewer_headers).status_code
+            client.post(f"/control/v1/admin/runs/{run_id}/cancel", headers=viewer_headers).status_code
             == 403
         )
 
-        catalog = client.get("/v1/admin/permissions", headers=admin_headers)
+        catalog = client.get("/control/v1/admin/permissions", headers=admin_headers)
         assert catalog.status_code == 200
         assert "runs.cancel" in {
             item["permission"] for item in catalog.json()["items"]
         }
-        config_summary = client.get("/v1/admin/config", headers=admin_headers)
+        config_summary = client.get("/control/v1/admin/config", headers=admin_headers)
         assert config_summary.status_code == 200
         assert config_summary.json()["providers"] == {}
         draft = client.put(
-            "/v1/admin/agents/research/revisions/research:v1",
+            "/control/v1/admin/agents/research/revisions/research:v1",
             headers=admin_headers,
             json={
                 "revision_id": "research:v1",
@@ -669,7 +711,7 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         )
         assert draft.status_code == 200
         skill_draft = client.put(
-            "/v1/admin/skills/skill.research/versions/1.0.0",
+            "/control/v1/admin/skills/skill.research/versions/1.0.0",
             headers=admin_headers,
             json={
                 "skill_id": "skill.research",
@@ -683,13 +725,13 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         )
         assert skill_draft.status_code == 200
         skill = client.post(
-            "/v1/admin/skills/skill.research/versions/1.0.0/publish",
+            "/control/v1/admin/skills/skill.research/versions/1.0.0/publish",
             headers=admin_headers,
             json={"require_healthy_workers": False},
         )
         assert skill.status_code == 200
         bound = client.put(
-            "/v1/admin/agents/research/revisions/research:v1/skills",
+            "/control/v1/admin/agents/research/revisions/research:v1/skills",
             headers=admin_headers,
             json={
                 "skill_id": "skill.research",
@@ -700,7 +742,7 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         )
         assert bound.status_code == 200
         bindings = client.get(
-            "/v1/admin/agents/research/revisions/research:v1/skills",
+            "/control/v1/admin/agents/research/revisions/research:v1/skills",
             headers=admin_headers,
         )
         assert bindings.status_code == 200
@@ -716,18 +758,18 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
             }
         ]
         published = client.post(
-            "/v1/admin/agents/research/revisions/research:v1/publish",
+            "/control/v1/admin/agents/research/revisions/research:v1/publish",
             headers=admin_headers,
             json={"require_healthy_workers": False},
         )
         assert published.status_code == 200
-        agents = client.get("/v1/admin/agents", headers=admin_headers).json()["items"]
+        agents = client.get("/control/v1/admin/agents", headers=admin_headers).json()["items"]
         assert any(item["agent_id"] == "research" for item in agents)
-        rollouts = client.get("/v1/admin/rollouts", headers=admin_headers).json()["items"]
+        rollouts = client.get("/control/v1/admin/rollouts", headers=admin_headers).json()["items"]
         assert rollouts[0]["status"] == "completed"
 
         next_draft = client.put(
-            "/v1/admin/agents/research/revisions/research:v2",
+            "/control/v1/admin/agents/research/revisions/research:v2",
             headers=admin_headers,
             json={
                 "revision_id": "research:v2",
@@ -740,7 +782,7 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         )
         assert next_draft.status_code == 200
         manual_publish = client.post(
-            "/v1/admin/agents/research/revisions/research:v2/publish",
+            "/control/v1/admin/agents/research/revisions/research:v2/publish",
             headers=admin_headers,
             json={
                 "activation_mode": "manual",
@@ -751,18 +793,18 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         )
         assert manual_publish.status_code == 200
         manual_rollout = client.get(
-            "/v1/admin/rollouts", headers=admin_headers
+            "/control/v1/admin/rollouts", headers=admin_headers
         ).json()["items"][0]
         assert manual_rollout["status"] == "awaiting_approval"
         rollout_id = manual_rollout["rollout_id"]
         approved = client.post(
-            f"/v1/admin/rollouts/{rollout_id}/approve", headers=admin_headers
+            f"/control/v1/admin/rollouts/{rollout_id}/approve", headers=admin_headers
         )
         assert approved.status_code == 200
         assert approved.json()["status"] == "completed"
         store.register_runtime_worker(worker_id="rollback-agent", capabilities={"agent": True})
         rolled_back = client.post(
-            f"/v1/admin/rollouts/{rollout_id}/rollback", headers=admin_headers
+            f"/control/v1/admin/rollouts/{rollout_id}/rollback", headers=admin_headers
         )
         assert rolled_back.status_code == 200
         assert rolled_back.json()["status"] == "rollback_pending"
@@ -771,8 +813,14 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         )
         assert store.get_configuration_rollout(rollout_id).status == "rolled_back"
 
+        saved_token_operator = client.put(
+            "/control/v1/admin/users/user-c",
+            headers=admin_headers,
+            json={"role": "viewer", "permissions": []},
+        )
+        assert saved_token_operator.status_code == 200
         issued = client.post(
-            "/v1/admin/access-tokens",
+            "/control/v1/admin/access-tokens",
             headers=admin_headers,
             json={"user_id": "user-c", "label": "integration-test"},
         )
@@ -780,24 +828,24 @@ def test_control_plane_uses_operation_permissions_and_versioned_catalogs(
         plaintext = issued.json()["token"]
         token_id = issued.json()["token_id"]
         listed_tokens = client.get(
-            "/v1/admin/access-tokens", headers=admin_headers
+            "/control/v1/admin/access-tokens", headers=admin_headers
         ).json()["items"]
         assert all("token" not in item for item in listed_tokens)
         assert (
             client.get(
-                "/v1/me", headers={"Authorization": f"Bearer {plaintext}"}
+                "/control/v1/me", headers={"Authorization": f"Bearer {plaintext}"}
             ).json()["user_id"]
             == "user-c"
         )
         assert (
             client.delete(
-                f"/v1/admin/access-tokens/{token_id}", headers=admin_headers
+                f"/control/v1/admin/access-tokens/{token_id}", headers=admin_headers
             ).status_code
             == 200
         )
         assert (
             client.get(
-                "/v1/me", headers={"Authorization": f"Bearer {plaintext}"}
+                "/control/v1/me", headers={"Authorization": f"Bearer {plaintext}"}
             ).status_code
             == 401
         )
@@ -819,7 +867,7 @@ def test_admin_model_diagnostics_raw_payload_and_offline_replay(tmp_path: Path) 
     )
     with client:
         created = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -856,17 +904,17 @@ def test_admin_model_diagnostics_raw_payload_and_offline_replay(tmp_path: Path) 
         )
 
         headers = {"Authorization": "Bearer token-a"}
-        diagnostics = client.get(f"/v1/admin/runs/{run_id}/diagnostics", headers=headers)
+        diagnostics = client.get(f"/control/v1/admin/runs/{run_id}/diagnostics", headers=headers)
         assert diagnostics.status_code == 200
         assert diagnostics.json()["model_invocations"][0]["invocation_id"] == "model-api"
         assert diagnostics.json()["reasoning"][0]["fidelity"] == "exact"
 
-        raw = client.get(f"/v1/admin/runs/{run_id}/blobs/{blob.blob_id}", headers=headers)
+        raw = client.get(f"/control/v1/admin/runs/{run_id}/blobs/{blob.blob_id}", headers=headers)
         assert raw.status_code == 200
         assert raw.json()["content"]["messages"][0]["content"] == "trace me"
 
         replay = client.post(
-            f"/v1/admin/runs/{run_id}/replays",
+            f"/control/v1/admin/runs/{run_id}/replays",
             headers=headers,
             json={"mode": "offline"},
         )
@@ -875,23 +923,23 @@ def test_admin_model_diagnostics_raw_payload_and_offline_replay(tmp_path: Path) 
 
         viewer_headers = {"Authorization": "Bearer token-b"}
         viewer_diagnostics = client.get(
-            f"/v1/admin/runs/{run_id}/diagnostics", headers=viewer_headers
+            f"/control/v1/admin/runs/{run_id}/diagnostics", headers=viewer_headers
         )
         assert viewer_diagnostics.status_code == 200
         assert viewer_diagnostics.json()["reasoning"] == []
         assert (
-            client.get(f"/v1/admin/runs/{run_id}/reasoning", headers=viewer_headers).status_code
+            client.get(f"/control/v1/admin/runs/{run_id}/reasoning", headers=viewer_headers).status_code
             == 403
         )
         assert (
             client.get(
-                f"/v1/admin/runs/{run_id}/blobs/{blob.blob_id}", headers=viewer_headers
+                f"/control/v1/admin/runs/{run_id}/blobs/{blob.blob_id}", headers=viewer_headers
             ).status_code
             == 403
         )
         assert (
             client.post(
-                f"/v1/admin/runs/{run_id}/replays",
+                f"/control/v1/admin/runs/{run_id}/replays",
                 headers=viewer_headers,
                 json={"mode": "offline"},
             ).status_code
@@ -900,11 +948,11 @@ def test_admin_model_diagnostics_raw_payload_and_offline_replay(tmp_path: Path) 
 
 
 def test_rate_limit_returns_429(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("PORTHOUSE_API_RATE_PER_MINUTE", "5")
+    monkeypatch.setenv("JOYHOUSEBOT_API_RATE_PER_MINUTE", "5")
     client, _ = _client(tmp_path)
     with client:
         codes = [
-            client.get("/v1/me", headers={"Authorization": "Bearer token-a"}).status_code
+            client.get("/control/v1/me", headers={"Authorization": "Bearer token-a"}).status_code
             for _ in range(6)
         ]
         assert codes[:5] == [200] * 5
@@ -913,11 +961,11 @@ def test_rate_limit_returns_429(tmp_path: Path, monkeypatch) -> None:
 
 def test_rate_limit_counts_failed_auth_per_client_ip(tmp_path: Path, monkeypatch) -> None:
     """Rotating bearer tokens must not reset a brute-force budget (H2)."""
-    monkeypatch.setenv("PORTHOUSE_API_RATE_PER_MINUTE", "5")
+    monkeypatch.setenv("JOYHOUSEBOT_API_RATE_PER_MINUTE", "5")
     client, _ = _client(tmp_path)
     with client:
         codes = [
-            client.get("/v1/me", headers={"Authorization": f"Bearer wrong-{i}"}).status_code
+            client.get("/control/v1/me", headers={"Authorization": f"Bearer wrong-{i}"}).status_code
             for i in range(8)
         ]
         assert 401 in codes
@@ -952,7 +1000,7 @@ def test_cors_uses_configured_origins(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     with client:
         allowed = client.options(
-            "/v1/me",
+            "/control/v1/me",
             headers={
                 "Origin": "http://localhost:5173",
                 "Access-Control-Request-Method": "GET",
@@ -960,7 +1008,7 @@ def test_cors_uses_configured_origins(tmp_path: Path) -> None:
         )
         assert allowed.headers.get("access-control-allow-origin") == "http://localhost:5173"
         rejected = client.options(
-            "/v1/me",
+            "/control/v1/me",
             headers={
                 "Origin": "https://evil.example",
                 "Access-Control-Request-Method": "GET",
@@ -973,7 +1021,7 @@ def test_run_ids_are_format_validated(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     with client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "bad agent!"},
@@ -988,7 +1036,7 @@ def test_delete_session_with_active_run_returns_409(tmp_path: Path) -> None:
     client, _ = _client(tmp_path)
     with client:
         created = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -999,7 +1047,7 @@ def test_delete_session_with_active_run_returns_409(tmp_path: Path) -> None:
         assert created.status_code == 202
         agent_id = created.json()["agent_id"]
         response = client.delete(
-            f"/v1/sessions/{agent_id}/main", headers={"Authorization": "Bearer token-a"}
+            f"/control/v1/sessions/{agent_id}/main", headers={"Authorization": "Bearer token-a"}
         )
         assert response.status_code == 409
 
@@ -1015,19 +1063,19 @@ def test_schedule_delivery_requires_enabled_channel(tmp_path: Path) -> None:
     with client:
         # No channels enabled in config -> delivery must be rejected.
         rejected = client.post(
-            "/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=schedule
+            "/control/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=schedule
         )
         assert rejected.status_code == 422
 
         config = client.app.state.container.config
-        config.extensions.enabled.append("channel-telegram")
+        config.extensions.allowed_ids.append("channel-telegram")
 
         # Unknown (not enabled) channel stays rejected.
         unknown = dict(schedule)
         unknown["payload"] = {**schedule["payload"], "channel": "whatsapp"}
         assert (
             client.post(
-                "/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=unknown
+                "/control/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=unknown
             ).status_code
             == 422
         )
@@ -1037,14 +1085,14 @@ def test_schedule_delivery_requires_enabled_channel(tmp_path: Path) -> None:
         unsafe["payload"] = {**schedule["payload"], "to": "bad target!!"}
         assert (
             client.post(
-                "/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=unsafe
+                "/control/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=unsafe
             ).status_code
             == 422
         )
 
         # Enabled channel + safe target is accepted.
         accepted = client.post(
-            "/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=schedule
+            "/control/v1/schedules", headers={"Authorization": "Bearer token-a"}, json=schedule
         )
         assert accepted.status_code == 201
 
@@ -1067,19 +1115,22 @@ def test_schedules_are_user_scoped(tmp_path: Path) -> None:
     }
     with client:
         created = client.post(
-            "/v1/schedules",
+            "/control/v1/schedules",
             headers={"Authorization": "Bearer token-a"},
             json=schedule,
         )
         assert created.status_code == 201
         schedule_id = created.json()["id"]
-        assert created.json()["policy"] == schedule["policy"]
-        own = client.get("/v1/schedules", headers={"Authorization": "Bearer token-a"})
-        other = client.get("/v1/schedules", headers={"Authorization": "Bearer token-b"})
+        assert {
+            key: created.json()["policy"][key] for key in schedule["policy"]
+        } == schedule["policy"]
+        assert created.json()["policy"]["max_occurrences"] is None
+        own = client.get("/control/v1/schedules", headers={"Authorization": "Bearer token-a"})
+        other = client.get("/control/v1/schedules", headers={"Authorization": "Bearer token-b"})
         assert [item["id"] for item in own.json()["items"]] == [schedule_id]
         assert other.json()["items"] == []
         updated = client.patch(
-            f"/v1/schedules/{schedule_id}",
+            f"/control/v1/schedules/{schedule_id}",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "name": "weekly-review",
@@ -1091,13 +1142,42 @@ def test_schedules_are_user_scoped(tmp_path: Path) -> None:
         assert updated.json()["name"] == "weekly-review"
         assert updated.json()["enabled"] is False
         assert updated.json()["policy"]["max_run_retries"] == 0
+        summary = client.get(
+            f"/control/v1/schedules/{schedule_id}/execution-summary",
+            headers={"Authorization": "Bearer token-a"},
+        )
+        assert summary.status_code == 200
+        assert summary.json()["admittedOccurrences"] == 0
         assert (
-            client.delete(
-                f"/v1/schedules/{schedule_id}",
+            client.get(
+                f"/control/v1/schedules/{schedule_id}/execution-summary",
                 headers={"Authorization": "Bearer token-b"},
             ).status_code
             == 404
         )
+        assert (
+            client.delete(
+                f"/control/v1/schedules/{schedule_id}",
+                headers={"Authorization": "Bearer token-b"},
+            ).status_code
+            == 404
+        )
+
+
+def test_schedule_window_limits_require_a_window(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    with client:
+        response = client.post(
+            "/control/v1/schedules",
+            headers={"Authorization": "Bearer token-a"},
+            json={
+                "name": "invalid budget",
+                "schedule": {"kind": "every", "every_ms": 60_000},
+                "payload": {"message": "review"},
+                "policy": {"max_cost_usd_per_window": 1.0},
+            },
+        )
+    assert response.status_code == 422
 
 
 def test_schedule_creation_is_idempotent_per_user(tmp_path: Path) -> None:
@@ -1114,10 +1194,10 @@ def test_schedule_creation_is_idempotent_per_user(tmp_path: Path) -> None:
         "Idempotency-Key": "product-runtime-command-1",
     }
     with client:
-        first = client.post("/v1/schedules", headers=headers, json=schedule)
-        replay = client.post("/v1/schedules", headers=headers, json=schedule)
+        first = client.post("/control/v1/schedules", headers=headers, json=schedule)
+        replay = client.post("/control/v1/schedules", headers=headers, json=schedule)
         other_user = client.post(
-            "/v1/schedules",
+            "/control/v1/schedules",
             headers={
                 "Authorization": "Bearer token-b",
                 "Idempotency-Key": "product-runtime-command-1",
@@ -1130,7 +1210,7 @@ def test_schedule_creation_is_idempotent_per_user(tmp_path: Path) -> None:
         assert replay.json()["id"] == first.json()["id"]
         assert other_user.status_code == 201
         assert other_user.json()["id"] != first.json()["id"]
-        own = client.get("/v1/schedules", headers={"Authorization": "Bearer token-a"})
+        own = client.get("/control/v1/schedules", headers={"Authorization": "Bearer token-a"})
         assert [item["id"] for item in own.json()["items"]] == [first.json()["id"]]
 
 
@@ -1158,7 +1238,7 @@ def test_agent_monitor_schedule_contract_and_filter(tmp_path: Path) -> None:
     }
     with client:
         created = client.post(
-            "/v1/schedules",
+            "/control/v1/schedules",
             headers={"Authorization": "Bearer token-a"},
             json=monitor,
         )
@@ -1173,7 +1253,7 @@ def test_agent_monitor_schedule_contract_and_filter(tmp_path: Path) -> None:
         assert payload["policy"]["overlap_policy"] == "skip"
 
         filtered = client.get(
-            "/v1/schedules?kind=agent_monitor",
+            "/control/v1/schedules?kind=agent_monitor",
             headers={"Authorization": "Bearer token-a"},
         )
         assert filtered.status_code == 200
@@ -1182,7 +1262,7 @@ def test_agent_monitor_schedule_contract_and_filter(tmp_path: Path) -> None:
         invalid = {**monitor, "payload": {**monitor["payload"], "quiet_token": "   "}}
         assert (
             client.post(
-                "/v1/schedules",
+                "/control/v1/schedules",
                 headers={"Authorization": "Bearer token-a"},
                 json=invalid,
             ).status_code
@@ -1201,7 +1281,7 @@ def test_agent_monitor_schedule_contract_and_filter(tmp_path: Path) -> None:
         }
         assert (
             client.post(
-                "/v1/schedules",
+                "/control/v1/schedules",
                 headers={"Authorization": "Bearer token-a"},
                 json=invalid_zone,
             ).status_code
@@ -1219,13 +1299,13 @@ def test_agent_monitor_scratch_api_is_versioned_and_user_scoped(tmp_path: Path) 
     }
     with client:
         created = client.post(
-            "/v1/schedules",
+            "/control/v1/schedules",
             headers={"Authorization": "Bearer token-a"},
             json=monitor,
         )
         assert created.status_code == 201
         schedule_id = created.json()["id"]
-        path = f"/v1/schedules/{schedule_id}/monitor-scratch"
+        path = f"/control/v1/schedules/{schedule_id}/monitor-scratch"
 
         initial = client.get(path, headers={"Authorization": "Bearer token-a"})
         assert initial.status_code == 200

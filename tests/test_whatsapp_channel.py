@@ -2,14 +2,14 @@ import asyncio
 import json
 
 import pytest
-from porthouse_channel_whatsapp import (
+from joyhousebot_channel_whatsapp import (
     WHATSAPP_EXTENSION_MANIFEST,
-    WhatsAppChannelPlugin,
+    WhatsAppChannelExtension,
 )
 
-from porthouse.bus.events import OutboundMessage
-from porthouse.channels.manager import ChannelManager
-from porthouse.config.schema import Config, ExtensionsConfig
+from joyhousebot.bus.events import OutboundMessage
+from joyhousebot.channels.manager import ChannelManager
+from joyhousebot.config.schema import Config, ExtensionsConfig
 
 
 class RecordingAdapter:
@@ -21,9 +21,9 @@ class RecordingAdapter:
         return None
 
 
-def _configured_plugin(adapter=None) -> WhatsAppChannelPlugin:
-    plugin = WhatsAppChannelPlugin()
-    plugin.configure(
+def _configured_extension(adapter=None) -> WhatsAppChannelExtension:
+    extension = WhatsAppChannelExtension()
+    extension.configure(
         {
             "enabled": True,
             "bridge_url": "ws://127.0.0.1:3001",
@@ -31,20 +31,20 @@ def _configured_plugin(adapter=None) -> WhatsAppChannelPlugin:
         },
         adapter or RecordingAdapter(),
     )
-    return plugin
+    return extension
 
 
 def test_whatsapp_extension_has_versioned_channel_manifest() -> None:
     assert WHATSAPP_EXTENSION_MANIFEST.extension_id == "channel-whatsapp"
     assert WHATSAPP_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert WHATSAPP_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-whatsapp"
-    assert WhatsAppChannelPlugin().extension_manifest is WHATSAPP_EXTENSION_MANIFEST
+    assert WHATSAPP_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-whatsapp"
+    assert WhatsAppChannelExtension().extension_manifest is WHATSAPP_EXTENSION_MANIFEST
 
 
 def test_channel_manager_loads_explicit_whatsapp_extension_entry_point() -> None:
     config = Config(
         extensions=ExtensionsConfig(
-            enabled=["channel-whatsapp"],
+            allowed_ids=["channel-whatsapp"],
             discover_entry_points=True,
             settings={
                 "channel-whatsapp": {
@@ -55,27 +55,27 @@ def test_channel_manager_loads_explicit_whatsapp_extension_entry_point() -> None
         )
     )
     manager = ChannelManager(config)
-    assert list(manager.plugins) == ["whatsapp"]
+    assert list(manager.extensions) == ["whatsapp"]
     assert manager.registry.source_for("whatsapp") == "entry-point:channel-whatsapp"
 
 
 @pytest.mark.asyncio
 async def test_whatsapp_extension_fails_closed_without_websocket_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("porthouse_channel_whatsapp.plugin.WHATSAPP_BRIDGE_AVAILABLE", False)
-    plugin = _configured_plugin()
-    await plugin.start()
-    assert plugin.is_running is False
+    monkeypatch.setattr("joyhousebot_channel_whatsapp.extension.WHATSAPP_BRIDGE_AVAILABLE", False)
+    extension = _configured_extension()
+    await extension.start()
+    assert extension.is_running is False
 
 
 @pytest.mark.asyncio
 async def test_whatsapp_send_waits_for_correlated_bridge_receipt() -> None:
-    plugin = _configured_plugin()
+    extension = _configured_extension()
 
     class Socket:
         async def send(self, raw):
             payload = json.loads(raw)
             await asyncio.sleep(0)
-            await plugin._handle_bridge_message(
+            await extension._handle_bridge_message(
                 json.dumps(
                     {
                         "type": "sent",
@@ -85,9 +85,9 @@ async def test_whatsapp_send_waits_for_correlated_bridge_receipt() -> None:
                 )
             )
 
-    plugin._ws = Socket()
-    plugin._set_connected(True)
-    result = await plugin.send(
+    extension._ws = Socket()
+    extension._set_connected(True)
+    result = await extension.send(
         OutboundMessage(
             channel="whatsapp",
             chat_id="15551234567",
@@ -103,8 +103,8 @@ async def test_whatsapp_send_waits_for_correlated_bridge_receipt() -> None:
 @pytest.mark.asyncio
 async def test_whatsapp_inbound_preserves_provider_message_id() -> None:
     adapter = RecordingAdapter()
-    plugin = _configured_plugin(adapter)
-    await plugin._handle_bridge_message(
+    extension = _configured_extension(adapter)
+    await extension._handle_bridge_message(
         json.dumps(
             {
                 "type": "message",

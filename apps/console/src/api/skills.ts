@@ -3,7 +3,7 @@ import { apiFetch } from './http'
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body !== undefined) headers.set('Content-Type', 'application/json')
-  const response = await apiFetch(`/v1/admin/skills${path}`, { ...init, headers })
+  const response = await apiFetch(`/control/v1/admin/skills${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.detail || payload?.error?.message || 'Skill 管理请求失败')
   return payload as T
@@ -35,7 +35,7 @@ export interface SkillVersion {
   input_schema: Record<string, unknown>
   output_schema: Record<string, unknown>
   required_capabilities: Array<{ capability_id: string; version: string }>
-  required_integrations: string[]
+  required_connections: string[]
   examples: Array<Record<string, unknown>>
   eval_cases: Array<Record<string, unknown>>
   templates: Array<Record<string, unknown>>
@@ -75,7 +75,7 @@ export interface SaveSkillDraft {
   input_schema: Record<string, unknown>
   output_schema: Record<string, unknown>
   required_capabilities: Array<{ capability_id: string; version: string }>
-  required_integrations: string[]
+  required_connections: string[]
   examples: Array<Record<string, unknown>>
   eval_cases: Array<Record<string, unknown>>
   templates: Array<Record<string, unknown>>

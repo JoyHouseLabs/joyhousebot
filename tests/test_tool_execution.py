@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from porthouse.agent.tool_execution import (
+from joyhousebot.agent.tool_execution import (
     build_tool_execution_batches,
     resolve_tool_execution_policy,
 )

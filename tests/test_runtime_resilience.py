@@ -8,16 +8,16 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from porthouse.agent.model_invoker import ModelInvokerMixin
-from porthouse.agent.turn_engine import TurnEngineMixin
-from porthouse.api.schemas import GraphTaskRequest, ScheduleSpec
-from porthouse.cron.service import CronService
-from porthouse.domain.schedules import CronSchedule
-from porthouse.runtime import events as runtime_events
-from porthouse.runtime.coordinator import RuntimeCoordinatorMixin
-from porthouse.runtime.events import EventBroker
-from porthouse.runtime.models import AgentEvent, AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.agent.model_invoker import ModelInvokerMixin
+from joyhousebot.agent.turn_engine import TurnEngineMixin
+from joyhousebot.api.schemas import GraphTaskRequest, ScheduleSpec
+from joyhousebot.cron.service import CronService
+from joyhousebot.domain.schedules import CronSchedule
+from joyhousebot.runtime import events as runtime_events
+from joyhousebot.runtime.coordinator import RuntimeCoordinatorMixin
+from joyhousebot.runtime.events import EventBroker
+from joyhousebot.runtime.models import AgentEvent, AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -34,8 +34,8 @@ class _IdleAgent:
 async def test_submit_run_enforces_per_user_in_flight_quota(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PORTHOUSE_MAX_RUNS_PER_USER", "2")
-    monkeypatch.setenv("PORTHOUSE_RUN_SUBMIT_PER_MINUTE", "100")
+    monkeypatch.setenv("JOYHOUSEBOT_MAX_RUNS_PER_USER", "2")
+    monkeypatch.setenv("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", "100")
     runtime = NativeAgentRuntime(
         agent=_IdleAgent(), store=PostgresTestStore(tmp_path / "quota.db")
     )
@@ -55,8 +55,8 @@ async def test_submit_run_enforces_per_user_in_flight_quota(
 async def test_submit_run_enforces_submission_rate_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PORTHOUSE_MAX_RUNS_PER_USER", "100")
-    monkeypatch.setenv("PORTHOUSE_RUN_SUBMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("JOYHOUSEBOT_MAX_RUNS_PER_USER", "100")
+    monkeypatch.setenv("JOYHOUSEBOT_RUN_SUBMIT_PER_MINUTE", "2")
     runtime = NativeAgentRuntime(
         agent=_IdleAgent(), store=PostgresTestStore(tmp_path / "rate.db")
     )
@@ -98,7 +98,7 @@ def test_cron_service_rejects_too_frequent_schedules(tmp_path: Path) -> None:
 def test_cron_service_enforces_per_user_job_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import porthouse.cron.service as cron_service_module
+    import joyhousebot.cron.service as cron_service_module
 
     monkeypatch.setattr(cron_service_module, "MAX_JOBS_PER_USER", 2)
     service = CronService(PostgresTestStore(tmp_path / "cron.db"))
@@ -186,7 +186,7 @@ def test_graph_deadline_exceeded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert coordinator._graph_deadline_exceeded(stale)
     assert not coordinator._graph_deadline_exceeded(fresh)
     assert not coordinator._graph_deadline_exceeded(done)
-    monkeypatch.setenv("PORTHOUSE_GRAPH_TIMEOUT_SECONDS", "999999")
+    monkeypatch.setenv("JOYHOUSEBOT_GRAPH_TIMEOUT_SECONDS", "999999")
     assert not coordinator._graph_deadline_exceeded(stale)
 
 

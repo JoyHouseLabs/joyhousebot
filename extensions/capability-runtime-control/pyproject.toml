@@ -1,17 +1,17 @@
 [project]
-name = "porthouse-capability-runtime-control"
+name = "joyhousebot-capability-runtime-control"
 version = "0.1.0"
-description = "Optional model-facing Runtime control capabilities for Porthouse"
+description = "Optional model-facing Runtime control capabilities for joyhousebot"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
-dependencies = ["porthouse>=0.1.2,<0.2"]
+dependencies = ["joyhousebot>=2.0.0,<3"]
 
-[project.entry-points."porthouse.capabilities"]
-capability-runtime-control = "porthouse_capability_runtime_control:create_plugin"
+[project.entry-points."joyhousebot.capabilities"]
+capability-runtime-control = "joyhousebot_capability_runtime_control:create_extension"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/porthouse_capability_runtime_control"]
+packages = ["src/joyhousebot_capability_runtime_control"]

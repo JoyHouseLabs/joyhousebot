@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 

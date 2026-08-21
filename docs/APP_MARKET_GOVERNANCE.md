@@ -1,19 +1,19 @@
 # App Market 治理与跨实例分发协议
 
-状态：协议 v1 已冻结；参考实现为 Alpha（2026-08-10）
-适用范围：Porthouse Runtime、HappyHouse/Console、Market Registry、App 作者、购买者与自部署实例
+状态：协议 v1 已冻结；独立 Market 参考实现为 Alpha（2026-08-10）
+适用范围：joyhousebot Runtime、JoyHouse、独立 Market Registry、App 作者、购买者与自部署实例
 
 ## 1. 定位与非目标
 
-App Market 是 Porthouse 生态的**解决方案发现、交易与分发控制面**。它分发的是可验证、可安装、可更新、
+App Market 是 joyhousebot 生态的**解决方案发现、交易与分发控制面**。它分发的是可验证、可安装、可更新、
 可撤销的 App 解决方案，而不是把市场自身变成第二个 Agent Runtime。
 
 ```text
 作者工作区                     Remote Market                    用户实例
-App Pack / Release ──签名──▶ Catalog / Registry ──验证下载──▶ Acquisition
+App Package / Release ──签名──▶ Catalog / Registry ──验证下载──▶ Acquisition
                                   │                              │
                          Offer / Order / Entitlement             ▼
-                         Review / Usage / Settlement       local App Pack
+                         Review / Usage / Settlement       local App Package
                                                                 │
                                                                 ▼
                                                      Runtime Run / Task / Audit
@@ -23,7 +23,7 @@ App Pack / Release ──签名──▶ Catalog / Registry ──验证下载�
 
 - Market **不得**执行用户 Run、读取个人 Memory/Knowledge、接收 Prompt、Artifact 或业务数据库内容；
 - Market 负责目录、制品、作者身份、商业授权和市场治理，PostgreSQL Runtime 仍是本地执行事实源；
-- App Pack 是 Runtime 侧可安装组合；独立 App 的业务服务、用户系统、订单和数据库仍由 App 自己拥有；
+- App Package 是 Runtime 侧可安装组合；独立 App 的业务服务、用户系统、订单和数据库仍由 App 自己拥有；
 - Extension 是部署级技术制品。Market 可以分发它，但不能通过一次普通用户安装自动把 Python 代码加载进
   API/Worker；
 - 购买、下载、安装、授权、Capability 权限和启用是彼此独立的动作；
@@ -42,7 +42,7 @@ App Pack / Release ──签名──▶ Catalog / Registry ──验证下载�
 | `MarketRegistry` | Market | 协议发现、目录、制品索引、信任根和策略版本 |
 | `PublisherIdentity` | Market + 作者签名 | 稳定作者身份、验证级别、签名密钥和命名空间 |
 | `AppListing` | Market | 可变展示页、分类、说明、支持政策和当前上架状态 |
-| `AppRelease` | 作者 | 不可变版本、App Pack 清单、组件、依赖和摘要 |
+| `AppRelease` | 作者 | 不可变版本、App Package 清单、组件、依赖和摘要 |
 | `MarketAttestation` | Market | 上架审核、扫描、兼容性和治理决定，不替代作者签名 |
 | `Offer` | Market/作者 | 价格、计费模式、地区、试用、退款和商业条款 |
 | `Entitlement` | Market 或授权发行方 | 对某个安装主体签发的机器可验证使用授权 |
@@ -63,33 +63,33 @@ App Pack / Release ──签名──▶ Catalog / Registry ──验证下载�
 3. **本地批准**：由用户或实例管理员决定是否接受依赖、权限、成本、数据范围和可执行制品。
 
 任何一层都不能替代另外两层。作者签名不代表安全，Market 上架不代表获得本地权限，购买成功也不代表
-自动启用。Market 不得签发 Porthouse Capability 权限；本地安装程序不得因为作者被认证就跳过依赖校验。
+自动启用。Market 不得签发 joyhousebot Capability 权限；本地安装程序不得因为作者被认证就跳过依赖校验。
 
 ## 3. Registry 信任与作者身份
 
 ### 3.1 Registry 身份
 
-一个 Market 的稳定身份是规范化 HTTPS Origin，例如 `https://market.happyhouse.example`。用户实例通过
+一个 Market 的稳定身份是规范化 HTTPS Origin，例如 `https://market.joyhouse.example`。用户实例通过
 显式添加 Registry 或随发行版预置的信任根建立信任，不采用“网络搜索到即可信任”。
 
 Registry MUST 提供：
 
 ```http
-GET /.well-known/happyhouse-market
+GET /.well-known/joyhouse-market
 ```
 
 最小响应：
 
 ```json
 {
-  "market_id": "https://market.happyhouse.example",
+  "market_id": "https://market.joyhouse.example",
   "protocol_versions": ["1.0"],
-  "api_base": "https://market.happyhouse.example/api/market/v1",
-  "oci_registry": "registry.happyhouse.example",
-  "tuf_metadata_base": "https://market.happyhouse.example/tuf",
-  "auth_issuer": "https://accounts.happyhouse.example",
+  "api_base": "https://market.joyhouse.example/api/market/v1",
+  "oci_registry": "registry.joyhouse.example",
+  "tuf_metadata_base": "https://market.joyhouse.example/tuf",
+  "auth_issuer": "https://accounts.joyhouse.example",
   "features": ["catalog", "entitlements", "updates", "reviews", "metering"],
-  "privacy_policy": {"uri": "https://market.happyhouse.example/privacy", "sha256": "sha256:..."}
+  "privacy_policy": {"uri": "https://market.joyhouse.example/privacy", "sha256": "sha256:..."}
 }
 ```
 
@@ -104,11 +104,11 @@ GET /.well-known/happyhouse-market
 ```json
 {
   "publisher_id": "pub_01K...",
-  "namespace": "happyhouselabs",
-  "display_name": "HappyHouse Labs",
+  "namespace": "joyhouselabs",
+  "display_name": "JoyHouse Labs",
   "verification": {
     "level": "domain_verified",
-    "verified_domains": ["happyhouse.example"],
+    "verified_domains": ["joyhouse.example"],
     "checked_at": "2026-08-10T00:00:00Z"
   },
   "keys": [{
@@ -146,31 +146,31 @@ market_id + publisher_id + app_id
 
 Market 的顶层商品是 `AppListing`，其 Release 可以组合：
 
-- 一个 `runtime_app_pack`：声明式 Agent、Team、Skill、Workflow、Scenario、Capability 和 Integration；
+- 一个 `app_package`：声明式 Agent、Team、Skill、Workflow、Scenario、Capability 和 Connection；
 - 零个或多个精确 `extension_release` 引用：部署管理员另行安装并等待 Worker build ACK；
 - 一个 `external_app_binding`：独立 App 的入口、OAuth/Remote Capability 契约和可选部署说明；
 - 文档、图标、Eval、SBOM、来源证明和许可证文本。
 
-Market 安装 `external_app_binding` 只创建本地 Integration/App Pack 草稿，不部署远程 App 服务，也不取得
-该 App 的用户数据库权限。Market 不能把 Extension 伪装成低风险 Skill，不能把任意安装脚本放进 App Pack。
+Market 安装 `external_app_binding` 只创建本地 Connection/App Package 草稿，不部署远程 App 服务，也不取得
+该 App 的用户数据库权限。Market 不能把 Extension 伪装成低风险 Skill，不能把任意安装脚本放进 App Package。
 
 ### 4.2 不可变 Release Descriptor
 
 Release Descriptor 使用媒体类型
-`application/vnd.happyhouse.app.release.v1+json`，至少包含：
+`application/vnd.joyhouse.app.release.v1+json`，至少包含：
 
 ```json
 {
   "schema_version": "1.0",
   "source": {
-    "market_id": "https://market.happyhouse.example",
+    "market_id": "https://market.joyhouse.example",
     "publisher_id": "pub_01K...",
     "app_id": "app.market-radar"
   },
   "version": "1.4.0",
   "released_at": "2026-08-10T00:00:00Z",
   "app_manifest": {
-    "media_type": "application/vnd.happyhouse.app.manifest.v1+json",
+    "media_type": "application/vnd.joyhouse.app.manifest.v1+json",
     "digest": "sha256:...",
     "size": 4812
   },
@@ -178,7 +178,7 @@ Release Descriptor 使用媒体类型
     "kind": "skill",
     "logical_id": "skill.market-analysis",
     "version": "1.2.0",
-    "media_type": "application/vnd.happyhouse.skill.v1+json",
+    "media_type": "application/vnd.joyhouse.skill.v1+json",
     "digest": "sha256:...",
     "size": 9280
   }],
@@ -209,19 +209,19 @@ Release Descriptor 使用媒体类型
 ### 4.3 内容传输与供应链证据
 
 - Blob 和 Manifest SHOULD 通过 OCI Distribution 1.1 兼容 Registry 按 digest 分发；
-- 自定义 OCI Artifact Type 必须保留上述 HappyHouse 媒体类型，不伪装成容器镜像；
+- 自定义 OCI Artifact Type 必须保留上述 JoyHouse 媒体类型，不伪装成容器镜像；
 - TUF Targets 元数据绑定 Descriptor 路径、digest、size、版本和作者委托；
 - 作者使用 DSSE Envelope 对**收到的确切 Descriptor 字节**签名，`payloadType` 必须是 Release 媒体类型，
   防止跨类型替换；
 - Market 使用独立 `MarketAttestation` 证明扫描、审核和上架结果，不重签作者身份；
 - 可选 Sigstore Bundle 可以附加证书和透明日志证明，但不能替代 Registry 信任根或本地权限批准；
-- 含可执行代码的 Extension MUST 带 SBOM 和构建来源证明；纯声明式 App Pack SHOULD 带组件清单和 Eval
+- 含可执行代码的 Extension MUST 带 SBOM 和构建来源证明；纯声明式 App Package SHOULD 带组件清单和 Eval
   报告；
 - 解析器必须限制 Manifest/Blob 数量、单项大小、总解压大小和嵌套深度，并拒绝路径穿越、符号链接逃逸、
   重复字段和摘要不符。
 
 本地历史 App Manifest v1 的 `manifest_sha256` 使用 Python 确定性 JSON 序列化，只用于本实例兼容。
-跨实例分发强制使用 App Manifest v2、RFC 8785 JCS + SHA-256；v1 不得打入 `.happyhouse-app` Bundle。
+跨实例分发强制使用 App Manifest v2、RFC 8785 JCS + SHA-256；v1 不得打入 `.joyhouse-app` Bundle。
 
 ## 5. Remote Market API
 
@@ -316,7 +316,7 @@ requested -> resolving -> fetching -> verifying -> staged -> awaiting_acceptance
                                  \-> quarantined
 ```
 
-`imported` 只代表受验证制品已经进入本地 App Pack/资产草稿。之后仍走现有本地状态机：
+`imported` 只代表受验证制品已经进入本地 App Package/资产草稿。之后仍走现有本地状态机：
 
 ```text
 draft -> dependency validation -> published
@@ -347,15 +347,15 @@ published release -> installed -> active / disabled -> upgrade / rollback / unin
 13. 任一步失败都删除或隔离暂存 Blob，不覆盖当前 active 版本，不删除历史 Run、Artifact、Work 或配置。
 
 Runtime 的用户侧 Market 安装入口是
-`POST /v1/apps/market/acquisitions/{acquisition_id}/install`。它只接受当前认证 `user_id` 已验证并确认的
+`POST /control/v1/apps/market/acquisitions/{acquisition_id}/install`。它只接受当前认证 `user_id` 已验证并确认的
 Acquisition；委托 App Token 不得调用。管理员控制面保留同语义的审计/运维入口，但普通用户不需要获得
 `apps.install` 平台权限。安装用例
 在安装前校验 Registry 固定的 `installation` 合约公钥、Grant 过期时间、Market/Release/Bundle/
-Entitlement/权限摘要和目标状态；通过后才发布导入的 App Pack 并进入统一 Installation 状态机。Grant 消费按
+Entitlement/权限摘要和目标状态；通过后才发布导入的 App Package 并进入统一 Installation 状态机。Grant 消费按
 `registry_id + user_id + grant_id` 持久幂等，不允许把普通本地安装接口伪装成 Market 安装完成。
 
 设备安装私钥始终由 Runtime 持有。产品端通过
-`POST /v1/apps/market/registries/{registry_id}/installation-receipts/sign` 请求签名时，只能提交 Cloud 身份、
+`POST /control/v1/apps/market/registries/{registry_id}/installation-receipts/sign` 请求签名时，只能提交 Cloud 身份、
 revision 和目标状态；版本、Bundle digest、权限范围与 fingerprint 必须由 Runtime 从当前用户真实
 `Installation` 重新读取并冻结。相同 `receipt_id` 仅允许完全相同的请求重放，不能由 Desktop、Product 或
 独立 App 自报安装结果、导出私钥或覆盖历史签名。
@@ -383,7 +383,7 @@ revision 和目标状态；版本、Bundle digest、权限范围与 fingerprint 
 ### 7.2 托管购买流程
 
 1. 实例用 `offer_id + installation_key_thumbprint + Idempotency-Key` 创建 Checkout Session；
-2. 用户在 Market 托管页面登录并支付；Porthouse 不接触卡号或支付密码；
+2. 用户在 Market 托管页面登录并支付；joyhousebot 不接触卡号或支付密码；
 3. 实例轮询 Session 或兑换一次性短期授权码，不要求公网回调；
 4. Market 返回签名 Entitlement；实例验证发行方、签名、受众、App、版本范围、功能、期限和公钥绑定；
 5. 退款、拒付、续费和撤销通过签名事件 feed 对账，不依赖一次可能丢失的 Webhook。
@@ -396,7 +396,7 @@ revision 和目标状态；版本、Bundle digest、权限范围与 fingerprint 
 {
   "schema_version": "1.0",
   "entitlement_id": "ent_01K...",
-  "issuer": "https://market.happyhouse.example",
+  "issuer": "https://market.joyhouse.example",
   "subject": {"installation_key_thumbprint": "sha256:..."},
   "app": {
     "publisher_id": "pub_01K...",
@@ -481,7 +481,7 @@ Market 的 `verified_purchase`、`verified_install`、`unverified` 必须明确�
 | 产品分析 | 关闭 | Market/作者 | 单独 opt-in，可撤回，不影响已购功能 |
 
 Market 展示的安装数、活跃数、留存和成功率必须标注统计周期、样本口径和是否为估算。作者不得通过
-App Pack 自行埋点绕开许可；所有远程遥测域名和字段必须出现在清单及安装差异中。
+App Package 自行埋点绕开许可；所有远程遥测域名和字段必须出现在清单及安装差异中。
 
 ### 9.3 Usage Receipt
 
@@ -542,7 +542,7 @@ Market 是订单、退款、税、平台费和付款的商业事实源；Runtime
 - 买方身份以不透明引用表示，作者不能从结算报表取得用户个人数据；
 - 平台费率、退款准备金、最低付款额、付款周期和税务责任必须在购买前版本化并显示；
 - 费率变更只影响声明生效时间后的交易，不重写历史 Statement；
-- KYC、税票和实际打款由 Market/支付服务处理，不进入 Porthouse Core。
+- KYC、税票和实际打款由 Market/支付服务处理，不进入 joyhousebot Core。
 
 ## 11. 治理、审核与申诉
 
@@ -555,7 +555,7 @@ Market 是订单、退款、税、平台费和付款的商业事实源；Runtime
 | Market 安全响应 | 发布通告、紧急暂停和撤销建议 | 删除用户本地数据 |
 | Market 商业运营 | Offer、订单、退款、结算 | 把商业撤销伪装成安全撤销 |
 | 本地用户/管理员 | 信任 Registry、批准安装和权限、回滚 | 伪造作者或 Market 签名 |
-| Porthouse Core | 验证协议、执行本地策略和审计 | 决定某个具体 App 值得购买 |
+| joyhousebot Core | 验证协议、执行本地策略和审计 | 决定某个具体 App 值得购买 |
 
 安全撤销、作者身份恢复、命名空间转让和大额人工结算调整 SHOULD 使用双人复核；Market 运营账号不能
 直接使用离线 TUF root key 或作者私钥。
@@ -617,43 +617,43 @@ Market 默认只可获得：Market 账号、安装公钥指纹、购买/授权�
 9. Registry 离线时，已验证且仍在本地授权宽限内的版本可继续运行；
 10. 所有跨实例写请求、用量、购买领取和安装动作都可幂等、可审计、可对账。
 
-## 13. 与现有 Porthouse 的映射
+## 13. 与现有 joyhousebot 的映射
 
 | 协议能力 | 当前状态 | 实施位置 |
 | --- | --- | --- |
-| 本地 App Pack manifest、发布、安装、启停、升级、回滚 | 已有 MVP | Core PostgreSQL 控制面 |
-| 精确 Agent/Team/Skill/Scenario/Capability/Extension 引用 | 已有 MVP | App Pack + Registry 校验 |
+| 本地 App Package manifest、发布、安装、启停、升级、回滚 | 已有 MVP | Core PostgreSQL 控制面 |
+| 精确 Agent/Team/Skill/Scenario/Capability/Extension 引用 | 已有 MVP | App Package + Registry 校验 |
 | Extension desired state、Worker 精确 build ACK、失败保留旧版 | 已有 | Extension 控制面 |
-| Remote Market Registry / TUF / OCI 拉取 | 已有 Alpha | Core `porthouse/market` + 独立 `happyhouse-market` + Acquisition Worker |
+| Remote Market Registry / TUF / OCI 拉取 | 已有 Alpha | 独立 `joyhouse-market` 与它自己的 Acquisition Worker；Runtime 不拉取商品 |
 | 作者身份、DSSE 签名和双证明密钥轮换 | 已有 Alpha | Publisher CLI + Market Identity API |
-| 可携带声明式资产的跨实例 App Bundle | 格式和验签已实现 | App Manifest v2 + `.happyhouse-app`；资产导入继续走各自发布门禁 |
-| Entitlement、Checkout 和 Update Subscription | 已有 Alpha 状态机 | Scheduler 轮询签名 Feed，`notify/download/stage` 可用；`activate_safe` 在 Eval/ACK 门禁接入前 fail closed；真实支付需独立适配器 |
-| 设备 Installation Grant、精确版本意图与幂等 Receipt | 已有 Alpha | HappyHouse Market `cloud_*` 协议；本机实际安装仍由 Runtime 状态机负责 |
+| 可携带声明式资产的跨实例 App Bundle | 格式和验签已实现 | App Manifest v2 + `.joyhouse-app`；资产导入继续走各自发布门禁 |
+| Entitlement、Checkout 和 Update Subscription | 已有 Alpha 状态机 | 独立 Market 轮询签名 Feed；Runtime 只接收已经验签、明确批准的本地安装输入 |
+| 设备 Installation Grant、精确版本意图与幂等 Receipt | 已有 Alpha | JoyHouse Market `cloud_*` 协议；本机实际安装仍由 Runtime 状态机负责 |
 | Release Gate 与聚合 Eval 证明 | 已有 Alpha | Market Attestation 绑定五项门禁、`release_acceptance` Eval 和精确 Bundle；不上传私人 Run 内容 |
 | 评价、更新通告和统计口径 | 已有 Alpha | Market 服务；Runtime 不上传私有运行数据 |
 | Usage Receipt、退款/拒付与结算 Statement | 已有 Alpha | 签名 Meter 回执 + append-only ledger；真实 payout 不在 Core |
 
-Market 实现不得直接扩展现有 `/v1/admin/apps` 为支付/评价巨型路由。Core 只增加通用的 Registry 信任、
-Acquisition、签名验证、Entitlement 缓存和本地安装投影；搜索、支付、评价、作者后台和结算属于独立 Market
-服务及 HappyHouse 产品界面。
+Market 实现不得直接扩展现有 `/control/v1/admin/apps` 为支付/评价巨型路由。Core 只保留可移植包协议、
+签名与权限差异验证，以及本地安装、激活和回滚投影；Registry 信任、Acquisition、Entitlement、搜索、
+支付、评价、作者后台和结算全部属于独立 Market 服务及 JoyHouse 产品界面。
 
 ## 14. 实现范围、分阶段发布与门槛
 
-独立 `happyhouse-market` 参考实现已经覆盖 P0-P3 的协议对象、PostgreSQL 状态机和端到端测试，但 **Alpha 不等于可以直接
+独立 `joyhouse-market` 参考实现已经覆盖 P0-P3 的协议对象、PostgreSQL 状态机和端到端测试，但 **Alpha 不等于可以直接
 经营真实市场**。生产启用付费前仍必须接入受监管支付 Provider、税务/KYC/payout、对象存储/CDN、离线
 TUF root ceremony、双人高风险操作、申诉工单和隐私/法律评审。这些属于具体 Market 运营系统，不进入
-Porthouse Core，也不能用内置 `manual` Provider 冒充。
+joyhousebot Core，也不能用内置 `manual` Provider 冒充。
 
 ### P0：可移植签名包
 
 - 冻结 App Manifest v2、跨语言 canonical digest 和 JSON Schema；
-- Publisher CLI 生成 DSSE 签名、SBOM/Eval 引用和离线 `.happyhouse-app` bundle；
+- Publisher CLI 生成 DSSE 签名、SBOM/Eval 引用和离线 `.joyhouse-app` bundle；
 - Console 完成导入、差异、权限确认、来源展示和本地回滚；
 - 不做购买、评价和遥测。
 
 ### P1：远程 Registry
 
-- `/.well-known/happyhouse-market`、TUF repository、OCI artifact 和 Registry trust 管理；
+- `/.well-known/joyhouse-market`、TUF repository、OCI artifact 和 Registry trust 管理；
 - Catalog、ResolutionLock、Acquisition、更新通知、安全通告和多 Registry；
 - 安装路径完成断网、过期元数据、回滚、镜像篡改和密钥轮换测试。
 
@@ -686,5 +686,5 @@ Porthouse Core，也不能用内置 `manual` Provider 冒充。
 - [SPDX License Expression / SPDX SBOM](https://spdx.dev/use/specifications/)：许可证和软件物料清单；
 - [Sigstore Bundle](https://docs.sigstore.dev/cosign/signing/signing_with_blobs/)：可选的证书与透明日志来源证明。
 
-开放标准只解决传输、更新、签名或元数据问题；Porthouse 的本地权限、审批、Worker ACK、Run/Task、
+开放标准只解决传输、更新、签名或元数据问题；joyhousebot 的本地权限、审批、Worker ACK、Run/Task、
 Artifact/Work 和个人数据边界仍由 Core 协议强制。

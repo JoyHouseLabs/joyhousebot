@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from porthouse.orchestration.aggregation import (
+from joyhousebot.orchestration.aggregation import (
     aggregate_task_results,
     normalize_aggregation_policy,
     synthesis_prompt,

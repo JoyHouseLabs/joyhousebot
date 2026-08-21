@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from porthouse_capability_document_processing import plugin as documents
+from joyhousebot_capability_document_processing import extension as documents
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.capabilities.services.sandbox import SandboxPort
-from porthouse.capabilities.services.scratch import ScratchPort
-from porthouse.extension_sdk import CapabilityContext
-from porthouse.extension_sdk.sandbox import is_sandbox_available
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.capabilities.services.sandbox import SandboxPort
+from joyhousebot.capabilities.services.scratch import ScratchPort
+from joyhousebot.extension_sdk import CapabilityContext
+from joyhousebot.extension_sdk.sandbox import is_sandbox_available
 
 
 class _FakeContextPort:
@@ -122,15 +122,15 @@ def _pdf_with_text(text: str) -> bytes:
 
 
 def test_document_processing_registers_one_restricted_subprocess_capability() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(documents.DocumentProcessingPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(documents.DocumentProcessingExtension())
     definition, _handler = registry.get("document.extract", "1.1.0")
 
     assert definition.side_effect == "read"
     assert definition.idempotent is True
     assert definition.data_classification == "restricted"
     assert definition.permissions == ("context.read", "document.extract")
-    assert definition.ref.plugin_id == "capability-document-processing"
+    assert definition.ref.extension_id == "capability-document-processing"
     assert registry.manifests()[0].execution_isolation == "subprocess"
     assert registry.manifests()[0].to_extension_manifest().execution_isolation == "subprocess"
     assert documents.CONFIGURATION_SCHEMA["properties"]["isolation_backend"]["default"] == (

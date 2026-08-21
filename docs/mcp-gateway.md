@@ -1,6 +1,6 @@
 # MCP Capability Gateway
 
-Porthouse exposes published executable capabilities through a Streamable HTTP
+joyhousebot exposes published executable capabilities through a Streamable HTTP
 MCP endpoint at `/mcp`. The gateway is an adapter, not a second execution
 runtime: every `tools/call` creates a durable one-node Run/Task graph through
 the same PostgreSQL-backed runtime used by HTTP and Web UI requests.
@@ -41,8 +41,8 @@ links:
   "run_id": "run_...",
   "task_id": "mcp_...",
   "status": "accepted",
-  "poll": "/v1/runs/run_...",
-  "events": "/v1/runs/run_.../events"
+  "poll": "/control/v1/runs/run_...",
+  "events": "/control/v1/runs/run_.../events"
 }
 ```
 

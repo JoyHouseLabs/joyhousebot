@@ -7,19 +7,19 @@ from typing import Any
 
 import pytest
 
-from porthouse.agent.context import ContextBuilder
-from porthouse.agent.context_budget import allocate_context, context_candidate
-from porthouse.agent.context_manifest import source_entry, stable_hash
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.contracts.tools import Tool
-from porthouse.domain.agents import AgentRevision
-from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from porthouse.runtime.context import RunContext
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.services.memory.store import MemoryStore
-from porthouse.session.runtime_manager import RuntimeSessionManager
-from tests.support.capabilities import register_tool_fixture
+from joyhousebot.agent.context import ContextBuilder
+from joyhousebot.agent.context_budget import allocate_context, context_candidate
+from joyhousebot.agent.context_manifest import source_entry, stable_hash
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from joyhousebot.runtime.context import RunContext
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.services.memory.store import MemoryStore
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_capability_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -258,7 +258,7 @@ async def test_disallowed_tool_schema_is_not_admitted_to_model_context(tmp_path:
         session_manager=RuntimeSessionManager(store),
     )
     tool = _LargeResultTool()
-    register_tool_fixture(executor.capabilities, tool)
+    register_capability_fixture(executor.capabilities, tool)
     context = RunContext(
         run_id="context-tool-admission",
         user_id="budget-user",
@@ -282,7 +282,7 @@ async def test_disallowed_tool_schema_is_not_admitted_to_model_context(tmp_path:
     assert "large_result" not in names
     manifest = store.list_context_manifests(context.run_id)[0]
     assert all(item.source_id != "tool:large_result" for item in manifest.entries)
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 class _LargeResultTool(Tool):
@@ -336,7 +336,7 @@ async def test_second_turn_provider_receives_budgeted_tool_result(tmp_path: Path
         session_manager=RuntimeSessionManager(store),
     )
     tool = _LargeResultTool()
-    register_tool_fixture(executor.capabilities, tool)
+    register_capability_fixture(executor.capabilities, tool)
     context = RunContext(
         run_id="context-tool-compression",
         user_id="budget-user",
@@ -363,7 +363,7 @@ async def test_second_turn_provider_receives_budgeted_tool_result(tmp_path: Path
         item for item in manifests[1].entries if item.source_kind == "tool_result"
     )
     assert compressed_entry.metadata["compression"]["method"] == "head_tail_v1"
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 def test_unavailable_skill_is_recorded_as_not_admitted(tmp_path: Path) -> None:

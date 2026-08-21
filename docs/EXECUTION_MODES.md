@@ -2,7 +2,7 @@
 
 状态：Implemented（2026-08-10）
 
-`POST /v1/runs` 必须显式指定一个且仅一个顶层编排权威：
+`POST /control/v1/runs` 必须显式指定一个且仅一个顶层编排权威：
 
 ```text
 agent    单 Agent 自主执行或由该 Agent 自己规划
@@ -63,15 +63,15 @@ approval` 提供确定性质量与控制边界。父子关系使用
 
 当 Team 冻结了显式 Collaboration Blueprint 且护栏 `require_plan_confirmation=true` 时，`team` 模式
 （含 Workflow 的 team 子 Run）在 Coordinator 计划冻结后把 Run 置为 `waiting_input`：这可能是场景
-追问、动态澄清或**等待计划确认**，调用方用 `GET /v1/runs/{id}/plan` 判别——`awaiting_confirmation`
-为真时可 `POST /v1/runs/{id}/plan/confirmation` 执行 confirm / regenerate（需 feedback）/ cancel。
+追问、动态澄清或**等待计划确认**，调用方用 `GET /control/v1/runs/{id}/plan` 判别——`awaiting_confirmation`
+为真时可 `POST /control/v1/runs/{id}/plan/confirmation` 执行 confirm / regenerate（需 feedback）/ cancel。
 确认后同一 Run 物化 Task DAG；取消不产生任何执行 Task。Workflow 父节点在子 Run 等待确认期间保持
 `waiting_external`，由子 Run 所有者确认；确认窗口默认 7 天，过期由维护清扫失败关闭。契约细节见
 [协作 Blueprint 与 Team Composer](COLLABORATION_BLUEPRINTS.md)。
 
 ## 调用方工具上限
 
-`POST /v1/runs` 的可选 `allowed_tools` 是调用方对冻结 Agent/Scenario 能力的进一步缩权：
+`POST /control/v1/runs` 的可选 `allowed_tools` 是调用方对冻结 Agent/Scenario 能力的进一步缩权：
 
 - 不提交时，Runtime 使用已发布 Agent Revision 或 Scenario Revision 的能力策略；
 - 提交非空列表时，只向本 Run 暴露同时被 Agent 授权且位于列表中的 Tool；

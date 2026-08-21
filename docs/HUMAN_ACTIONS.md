@@ -4,7 +4,7 @@
 
 ## 目的与边界
 
-`GET /v1/action-items` 为当前用户投影所有**正在等待人工动作**的 Runtime 节点：
+`GET /control/v1/action-items` 为当前用户投影所有**正在等待人工动作**的 Runtime 节点：
 
 - `input`：`run_input_requests.status = pending` 且所属 Run 为 `waiting_input`；
 - `approval`：`approval_requests.status = pending` 且所属 Run 为 `waiting_approval`。
@@ -16,15 +16,15 @@
 ## API 与权限
 
 ```text
-GET /v1/action-items?limit=100
+GET /control/v1/action-items?limit=100
 ```
 
 响应中的每一项都带有最小化 Run 摘要与以下二者之一：
 
 - `input`：问题、字段、呈现提示与原 `input_request_id`；提交仍使用
-  `POST /v1/runs/{run_id}/inputs`；
+  `POST /control/v1/runs/{run_id}/inputs`；
 - `approval`：冻结 Capability 引用、风险、脱敏后的输入预览、所需角色与是否可处理；
-  操作仍使用 `POST /v1/runs/{run_id}/approvals/{approval_id}/resolve`。
+  操作仍使用 `POST /control/v1/runs/{run_id}/approvals/{approval_id}/resolve`。
 
 API Token 需要 `runs.read` 才可读取投影；真正提交输入或解析审批仍分别需要原端点的
 `runs.write` 权限与 Operator 策略。App Delegation Token 仅能看见其绑定安装创建的 Run，不能借由
@@ -40,8 +40,9 @@ Console 路径为“工作中心 → 统一待办与审批”（`/action-items`�
 
 页面不缓存或重写 Runtime 状态；操作成功后重新请求投影。
 
-## 与 App Pack 的关系
+## 与 App Package 的关系
 
-Task Pack 已由 App Pack 控制面实现：清单、依赖锁、发布、安装、启停、升级、回滚、Market 获取和
-安装级治理都位于“构建中心 → Apps”。它不是第二种调度引擎，Entry Point 仍提交标准 Run；由 App Pack
+持续任务产品由 App Package 控制面实现：清单、依赖锁、发布、安装、启停、升级、回滚和安装级治理
+都位于 `Build → Apps`。Market 获取属于独立服务，向 Runtime 交付经验证并获准安装的包。App Package
+不是第二种调度引擎，EntryPoint 仍提交标准 Run；由 App Package
 产生的等待输入和审批，也会自然出现在统一待办视图中。

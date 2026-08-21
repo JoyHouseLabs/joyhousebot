@@ -11,16 +11,16 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from porthouse_capability_context_assets import plugin as kb_module
-from porthouse_capability_research import WebFetchTool
-from porthouse_capability_research import plugin as web_module
-from porthouse_connector_mcp_client import MCPToolWrapper, connect_mcp_servers
+from joyhousebot_capability_context_assets import extension as kb_module
+from joyhousebot_capability_research import WebFetchTool
+from joyhousebot_capability_research import extension as web_module
+from joyhousebot_connector_mcp_client import MCPToolWrapper, connect_mcp_servers
 
-from porthouse.capabilities.tool_adapter import ToolInvocationError
-from porthouse.extension_sdk import CapabilityContext
-from porthouse.runtime.http_tracking import TrackedAsyncClient
-from porthouse.utils import ssrf
-from porthouse.utils.ssrf import (
+from joyhousebot.capabilities.tool_adapter import ToolInvocationError
+from joyhousebot.extension_sdk import CapabilityContext
+from joyhousebot.runtime.http_tracking import TrackedAsyncClient
+from joyhousebot.utils import ssrf
+from joyhousebot.utils.ssrf import (
     ResponseTooLargeError,
     SsrfBlockedError,
     SsrfProtectedTransport,
@@ -437,7 +437,7 @@ async def test_mcp_call_tool_timeout():
 
 
 async def test_connect_mcp_servers_blocks_private_url():
-    from porthouse.capabilities import CapabilityRegistry
+    from joyhousebot.capabilities import CapabilityRegistry
 
     registry = CapabilityRegistry()
     cfg = {

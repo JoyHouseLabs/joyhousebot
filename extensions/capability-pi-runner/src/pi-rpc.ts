@@ -22,15 +22,15 @@ export async function runPi(options: {
     join(agentDir, "models.json"),
     JSON.stringify({
       providers: {
-        porthouse: {
+        joyhousebot: {
           baseUrl: `${options.runtimeContext.model_gateway_base_url}/v1`,
           api: "openai-completions",
-          apiKey: "$PORTHOUSE_MODEL_GRANT",
+          apiKey: "$JOYHOUSEBOT_MODEL_GRANT",
           authHeader: true,
           compat: {supportsDeveloperRole: false, supportsReasoningEffort: false},
           models: [{
             id: options.modelId,
-            name: "Porthouse governed model",
+            name: "joyhousebot governed model",
             reasoning: false,
             input: ["text"],
             contextWindow: options.contextWindow,
@@ -45,7 +45,7 @@ export async function runPi(options: {
   const argv = [
     options.entrypoint,
     "--mode", "rpc",
-    "--provider", "porthouse",
+    "--provider", "joyhousebot",
     "--model", options.modelId,
     "--no-session",
     "--no-extensions",
@@ -63,7 +63,7 @@ export async function runPi(options: {
       env: {
         PATH: process.env.PATH ?? "",
         PI_CODING_AGENT_DIR: agentDir,
-        PORTHOUSE_MODEL_GRANT: options.runtimeContext.model_grant_token,
+        JOYHOUSEBOT_MODEL_GRANT: options.runtimeContext.model_grant_token,
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

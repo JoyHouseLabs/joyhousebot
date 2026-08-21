@@ -14,11 +14,11 @@ import psycopg
 import pytest
 from psycopg.errors import DeadlockDetected
 
-from porthouse.storage.postgres_store import PostgresRuntimeStore
+from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
 TEST_DATABASE_URL = (
-    os.environ.get("PORTHOUSE_TEST_POSTGRES_URL")
-    or "postgresql://porthouse:porthouse-dev@127.0.0.1:15432/porthouse_test"
+    os.environ.get("JOYHOUSEBOT_TEST_POSTGRES_URL")
+    or "postgresql://joyhousebot:joyhousebot-dev@127.0.0.1:15432/joyhousebot_test"
 )
 
 # One connectivity probe per database URL per test run, so a missing
@@ -36,7 +36,7 @@ def require_postgres(database_url: str | None = None) -> str:
     """
     target = (database_url or TEST_DATABASE_URL or "").strip()
     if not target:
-        pytest.skip("PORTHOUSE_TEST_POSTGRES_URL is not configured")
+        pytest.skip("JOYHOUSEBOT_TEST_POSTGRES_URL is not configured")
     if target not in _probe_failures:
         try:
             with psycopg.connect(target, connect_timeout=3, autocommit=True):
@@ -85,6 +85,7 @@ class PostgresTestStore(PostgresRuntimeStore):
                    WHERE capability_id=%s AND version=%s""",
                 (definition.ref.capability_id, definition.ref.version),
             )
+
             connection.execute(
                 """UPDATE capability_definitions
                    SET current_version=%s, updated_at=clock_timestamp()
@@ -97,6 +98,43 @@ class PostgresTestStore(PostgresRuntimeStore):
                    VALUES ('capability',%s,%s,'published',%s)""",
                 (definition.ref.capability_id, definition.ref.version, actor_id),
             )
+
+    def create_operator_access_token(
+        self,
+        *,
+        user_id: str,
+        actor_id: str,
+        token: str | None = None,
+        role: str = "operator",
+        permissions: list[str] | tuple[str, ...] = ("*",),
+        **kwargs,
+    ):  # noqa: ANN003, ANN201
+        """Create an explicit Operator credential for Control API tests."""
+        normalized_permissions = tuple(permissions)
+        if not self.list_platform_admins() and not {
+            "*",
+            "admins.write",
+        }.intersection(normalized_permissions):
+            self.upsert_platform_admin(
+                user_id="test-control-root",
+                role="admin",
+                permissions=("*",),
+                actor_id="test:operator-fixture",
+            )
+        if self.get_platform_admin(user_id) is None:
+            self.upsert_platform_admin(
+                user_id=user_id,
+                role=role,
+                permissions=normalized_permissions,
+                actor_id=actor_id,
+            )
+        return self.create_api_access_token(
+            user_id=user_id,
+            actor_id=actor_id,
+            token=token,
+            principal_kind="operator",
+            **kwargs,
+        )
 
     def finish_runtime_run(self, run_id: str, **kwargs):  # noqa: ANN003, ANN201
         """Return only the terminal event for test fixtures that do not need the bundle."""
@@ -117,7 +155,7 @@ class PostgresTestStore(PostgresRuntimeStore):
                            AS tables
                            FROM information_schema.tables
                            WHERE table_schema='public' AND table_type='BASE TABLE'
-                             AND table_name NOT LIKE '%schema_migrations'"""
+                             AND table_name <> 'schema_migration_history'"""
                     ).fetchone()
                     if row and row["tables"]:
                         connection.execute(f"TRUNCATE TABLE {row['tables']} CASCADE")

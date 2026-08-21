@@ -9,13 +9,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.agent_teams import AgentTeamService
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.api.app import create_app
+from joyhousebot.application.agent_teams import AgentTeamService
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _USER = "opc-user"
@@ -105,23 +105,24 @@ class _PlanningAgent:
         self.prompts: list[str] = []
         self.planning_tool_locks: list[Any] = []
 
-    async def process_direct(
-        self, content: str, *, run_context: Any, **_kwargs: Any
-    ) -> str:
+    async def process_direct(self, content: str, *, run_context: Any, **_kwargs: Any) -> str:
         if run_context.output_schema:
             self.prompts.append(content)
             # Planning turns run tool-locked under the coordinator permission.
             self.planning_tool_locks.append(
-                (getattr(run_context, "permission_mode", None), list(getattr(run_context, "allowed_tools", []) or []))
+                (
+                    getattr(run_context, "permission_mode", None),
+                    list(getattr(run_context, "allowed_tools", []) or []),
+                )
             )
-            version = 2 if any("Prior plan user feedback" in item for item in self.prompts[:-1]) else 1
+            version = (
+                2 if any("Prior plan user feedback" in item for item in self.prompts[:-1]) else 1
+            )
             return json.dumps(_plan(version))
         return f"evidence: {content[:24]}"
 
 
-async def _wait_status(
-    store: Any, run_id: str, statuses: set[str], timeout: float = 15.0
-) -> Any:
+async def _wait_status(store: Any, run_id: str, statuses: set[str], timeout: float = 15.0) -> Any:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         run = store.get_runtime_run(run_id)
@@ -165,16 +166,14 @@ async def _submit_confirmed_team_run(store: Any, agent: _PlanningAgent) -> Any:
 
 def _api(store: Any) -> TestClient:
     container = build_api_container(config=Config(), store=store)
-    store.create_api_access_token(user_id=_USER, actor_id="test", token="plan-token")
+    store.create_operator_access_token(user_id=_USER, actor_id="test", token="plan-token")
     return TestClient(create_app(container))
 
 
 async def _setup(tmp_path: Path) -> Any:
     store = PostgresTestStore(tmp_path / "plan-confirmation.db")
     await AgentTeamService(store).save_draft(_confirmation_team())
-    await AgentTeamService(store).publish(
-        "team.confirm", "team.confirm:v1", actor_id="admin"
-    )
+    await AgentTeamService(store).publish("team.confirm", "team.confirm:v1", actor_id="admin")
     return store
 
 
@@ -197,7 +196,7 @@ async def test_plan_awaits_confirmation_then_materializes_in_same_run(
 
     with _api(store) as client:
         preview = client.get(
-            f"/v1/runs/{run_id}/plan", headers={"Authorization": "Bearer plan-token"}
+            f"/control/v1/runs/{run_id}/plan", headers={"Authorization": "Bearer plan-token"}
         )
         assert preview.status_code == 200, preview.text
         body = preview.json()
@@ -210,7 +209,7 @@ async def test_plan_awaits_confirmation_then_materializes_in_same_run(
         assert body["estimate"]["task_count"] == 2
 
         confirmed = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "confirm"},
         )
@@ -246,14 +245,14 @@ async def test_plan_regenerates_with_feedback_before_confirmation(
     # container would start its own worker runtime and race for the Run.
     with _api(store) as client:
         rejected = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "regenerate"},
         )
         assert rejected.status_code == 422, rejected.text
 
         regenerated = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "regenerate", "feedback": "请聚焦教育场景"},
         )
@@ -264,11 +263,14 @@ async def test_plan_regenerates_with_feedback_before_confirmation(
         assert confirmation is not None and confirmation["plan_version"] == 2
         artifacts = {item["artifact_id"] for item in store.list_runtime_artifacts(run_id)}
         assert f"{run_id}:plan-spec:v2" in artifacts
-        assert any("Prior plan user feedback" in item and "请聚焦教育场景" in item for item in agent.prompts)
+        assert any(
+            "Prior plan user feedback" in item and "请聚焦教育场景" in item
+            for item in agent.prompts
+        )
         assert store.list_runtime_tasks(run_id=run_id) == []
 
         confirmed = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "confirm"},
         )
@@ -293,13 +295,13 @@ async def test_plan_cancel_creates_no_tasks_and_conflicts_afterward(
 
     with _api(store) as client:
         cancelled = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "cancel"},
         )
         assert cancelled.status_code == 200, cancelled.text
         conflict = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "confirm"},
         )
@@ -328,7 +330,7 @@ async def test_confirmed_plan_survives_worker_restart(tmp_path: Path) -> None:
 
     with _api(store) as client:
         confirmed = client.post(
-            f"/v1/runs/{run_id}/plan/confirmation",
+            f"/control/v1/runs/{run_id}/plan/confirmation",
             headers={"Authorization": "Bearer plan-token"},
             json={"action": "confirm"},
         )
@@ -380,17 +382,17 @@ async def test_plan_endpoints_isolate_foreign_owners(tmp_path: Path) -> None:
     try:
         await _wait_status(store, run_id, {"waiting_input"})
         container = build_api_container(config=Config(), store=store)
-        store.create_api_access_token(
+        store.create_operator_access_token(
             user_id="intruder", actor_id="test", token="intruder-token"
         )
         with TestClient(create_app(container)) as client:
             foreign_get = client.get(
-                f"/v1/runs/{run_id}/plan",
+                f"/control/v1/runs/{run_id}/plan",
                 headers={"Authorization": "Bearer intruder-token"},
             )
             assert foreign_get.status_code == 404, foreign_get.text
             foreign_post = client.post(
-                f"/v1/runs/{run_id}/plan/confirmation",
+                f"/control/v1/runs/{run_id}/plan/confirmation",
                 headers={"Authorization": "Bearer intruder-token"},
                 json={"action": "confirm"},
             )

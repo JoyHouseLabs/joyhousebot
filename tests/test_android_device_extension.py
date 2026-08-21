@@ -9,17 +9,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from porthouse_capability_android_device import plugin as android_device
+from joyhousebot_capability_android_device import extension as android_device
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.capabilities.registry import _PluginTool
-from porthouse.extension_sdk import CapabilityContext, InvocationStatus
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.capabilities.registry import _ExtensionCapabilityAdapter
+from joyhousebot.extension_sdk import CapabilityContext, InvocationStatus
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 # The Phase-0 probe lives in the companion ai-market checkout; the drift
 # check runs when it is present and skips cleanly in isolated CI.
 _PROBE_PATH = Path(
-    os.environ.get("PORTHOUSE_ANDROID_PROBE", str(_REPO_ROOT.parent / "ai-market" / "android" / "probe" / "android_probe.py"))
+    os.environ.get("JOYHOUSEBOT_ANDROID_PROBE", str(_REPO_ROOT.parent / "ai-market" / "android" / "probe" / "android_probe.py"))
 )
 
 
@@ -74,8 +74,8 @@ def _tool_context(**overrides) -> SimpleNamespace:
 
 
 def test_extension_registers_two_device_routed_capabilities() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(android_device.AndroidDeviceCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(android_device.AndroidDeviceCapabilityExtension())
     definitions = {
         item.ref.capability_id: item for item in registry.list_capabilities()
     }
@@ -84,7 +84,7 @@ def test_extension_registers_two_device_routed_capabilities() -> None:
     actuate = definitions["android.actuate"]
     assert observe.side_effect == "internal"
     assert actuate.side_effect == "external"
-    assert observe.ref.plugin_id == "capability-android-device"
+    assert observe.ref.extension_id == "capability-android-device"
     assert observe.permissions == ("android.observe",)
     assert actuate.permissions == ("android.actuate",)
     assert actuate.idempotent is False
@@ -96,11 +96,11 @@ def test_extension_registers_two_device_routed_capabilities() -> None:
 
 
 def test_extension_isolatable_from_the_plugin_registry() -> None:
-    with_plugin = CapabilityPluginRegistry()
-    with_plugin.register_plugin(android_device.AndroidDeviceCapabilityPlugin())
-    without_plugin = CapabilityPluginRegistry()
-    assert len(with_plugin.list_capabilities()) == 2
-    assert without_plugin.list_capabilities() == []
+    with_extension = CapabilityExtensionRegistry()
+    with_extension.register_extension(android_device.AndroidDeviceCapabilityExtension())
+    without_extension = CapabilityExtensionRegistry()
+    assert len(with_extension.list_capabilities()) == 2
+    assert without_extension.list_capabilities() == []
 
 
 @pytest.mark.asyncio
@@ -172,12 +172,12 @@ async def test_handler_requires_frozen_action_identity() -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_tool_maps_accepted_result_and_enforces_receipt() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(android_device.AndroidDeviceCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(android_device.AndroidDeviceCapabilityExtension())
     resolved = registry.get("android.actuate", "1.0.0")
     assert resolved is not None
     definition, handler = resolved
-    tool = _PluginTool(definition, handler)
+    tool = _ExtensionCapabilityAdapter(definition, handler)
     output = await tool.execute(
         op="launch_app",
         package="com.android.settings",
@@ -197,7 +197,7 @@ async def test_plugin_tool_maps_accepted_result_and_enforces_receipt() -> None:
                 operation={"kind": "android.device"},
             )
 
-    rogue = _PluginTool(definition, _NoReceiptHandler())
+    rogue = _ExtensionCapabilityAdapter(definition, _NoReceiptHandler())
     with pytest.raises(Exception) as raised:
         await rogue.execute(op="wake", tool_context=_tool_context())
     assert getattr(raised.value, "code", "") == "WRITE_RECEIPT_REQUIRED"

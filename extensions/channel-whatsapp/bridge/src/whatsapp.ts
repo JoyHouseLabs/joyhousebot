@@ -1,6 +1,6 @@
 /**
  * WhatsApp client wrapper using Baileys.
- * Uses Baileys directly behind Porthouse's local bridge protocol.
+ * Uses Baileys directly behind joyhousebot's local bridge protocol.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -58,7 +58,7 @@ export class WhatsAppClient {
       version,
       logger,
       printQRInTerminal: false,
-      browser: ['porthouse', 'cli', VERSION],
+      browser: ['joyhousebot', 'cli', VERSION],
       syncFullHistory: false,
       markOnlineOnConnect: false,
     });

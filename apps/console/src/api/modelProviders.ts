@@ -3,7 +3,7 @@ import { apiFetch } from './http'
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body !== undefined) headers.set('Content-Type', 'application/json')
-  const response = await apiFetch(`/v1/admin/model-providers${path}`, { ...init, headers })
+  const response = await apiFetch(`/control/v1/admin/model-providers${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.detail || payload?.error?.message || '模型配置请求失败')
   return payload as T

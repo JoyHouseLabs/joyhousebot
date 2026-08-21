@@ -4,18 +4,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from porthouse.application.context import Principal, RequestContext
-from porthouse.application.run_commands import AgentRunTarget, ScenarioRunTarget
-from porthouse.application.runs import CreateRunCommand, RunService
-from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from porthouse.domain.scenarios import (
+from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.run_commands import AgentRunTarget, ScenarioRunTarget
+from joyhousebot.application.runs import CreateRunCommand, RunService
+from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from joyhousebot.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
     ScenarioField,
     ScenarioVersion,
 )
-from porthouse.domain.skills import SkillRef
-from porthouse.orchestration.planner import ScenarioPlanner
+from joyhousebot.domain.skills import SkillRef
+from joyhousebot.orchestration.planner import ScenarioPlanner
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -39,8 +39,8 @@ def _scenario(question: str = "Which voice?") -> ScenarioVersion:
             ClarificationEdge("ask_voice", "ready", "present(voice)"),
         ),
         allowed_capabilities=(
-            CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
-            CapabilityRef("artifact.store", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
+            CapabilityRef("artifact.store", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
         ),
         planning_mode="fixed",
         execution_policy={"execution_class": "interactive", "wait_seconds": 20},
@@ -71,7 +71,7 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
     store = PostgresTestStore(tmp_path / "scenario-plan.db")
     store.publish_capability(
         CapabilityDefinition(
-            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            ref=CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
             name="Speech synthesis",
             description="Generate audio",
             input_schema={"type": "object"},
@@ -82,7 +82,7 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
     scenario = replace(
         _scenario(),
         allowed_capabilities=(
-            CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
         ),
         required_skills=(
             SkillRef("skill.voice-style", "1.0.0", f"sha256:{'a' * 64}"),
@@ -93,7 +93,7 @@ def test_fixed_scenario_compiles_validated_capability_graph(tmp_path: Path) -> N
             "tasks": [
                 {
                     "id": "synthesize",
-                    "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test").to_dict(),
+                    "capability": CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test").to_dict(),
                     "input": {"text": "${text}", "voice": "${voice}"},
                 }
             ],
@@ -127,7 +127,7 @@ def test_fixed_graph_omits_missing_optional_fields_from_capability_input(tmp_pat
     store.publish_capability(
         CapabilityDefinition(
             name="Echo",
-            ref=CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+            ref=CapabilityRef("echo", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
             description="Echo input",
             input_schema={"type": "object"},
             output_schema={"type": "object"},
@@ -137,8 +137,8 @@ def test_fixed_graph_omits_missing_optional_fields_from_capability_input(tmp_pat
     scenario = ScenarioVersion(
         scenario_id="optional-input", version=1, name="Optional", description="Optional input",
         fields=(ScenarioField("query", "string", default=""), ScenarioField("platform", "string")),
-        nodes=(), edges=(), allowed_capabilities=(CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),), planning_mode="fixed",
-        execution_policy={"tasks": [{"id": "echo", "capability": CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test").to_dict(), "input": {"query": "${query}", "platform": "${platform}"}}]},
+        nodes=(), edges=(), allowed_capabilities=(CapabilityRef("echo", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),), planning_mode="fixed",
+        execution_policy={"tasks": [{"id": "echo", "capability": CapabilityRef("echo", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test").to_dict(), "input": {"query": "${query}", "platform": "${platform}"}}]},
     )
     store.save_scenario_version(scenario, status="published")
     graph = ScenarioPlanner(store).build_graph(
@@ -154,7 +154,7 @@ async def test_explicit_fixed_scenario_bypasses_coordinator_and_submits_graph(tm
     backing = PostgresTestStore(tmp_path / "explicit-fixed-scenario.db")
     tool = CapabilityDefinition(
         name="Echo",
-        ref=CapabilityRef("echo", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+        ref=CapabilityRef("echo", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
         description="Echo input",
         input_schema={"type": "object"},
         output_schema={"type": "object"},

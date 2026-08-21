@@ -4,7 +4,7 @@
   "manifest": {
     "host_protocol_version": "1",
     "host": {
-      "host_id": "porthouse-node-echo-host",
+      "host_id": "joyhousebot-node-echo-host",
       "version": "0.1.0",
       "build_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     },
@@ -66,6 +66,6 @@
       }
     ]
   },
-  "manifest_digest": "sha256:b05208043b228106c00e335d258610c1d0ab2df8220fd1f84778f4e4127b7f22",
+  "manifest_digest": "sha256:7fd3e41e6a5477d7ba13d6e17f95712439682a1255cb9c28b2035188d51d1de1",
   "runtime": {"language": "node", "version": "v24.19.0"}
 }

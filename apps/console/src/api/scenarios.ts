@@ -42,7 +42,7 @@ export interface ScenarioVersion {
 }
 
 export interface CapabilityDefinition {
-  ref: { capability_id: string; version: string; kind: 'tool' | 'connector'; plugin_id: string; plugin_version: string; plugin_build_digest: string }
+  ref: { capability_id: string; version: string; kind: 'tool' | 'connector'; extension_id: string; extension_version: string; extension_build_digest: string }
   name: string
   description: string
   execution_mode: string
@@ -63,23 +63,23 @@ async function payload<T>(response: Response, fallback: string): Promise<T> {
 }
 
 export async function listScenarios(): Promise<ScenarioVersion[]> {
-  const response = await apiFetch('/v1/admin/scenarios')
+  const response = await apiFetch('/control/v1/admin/scenarios')
   return (await payload<{ items: ScenarioVersion[] }>(response, '读取场景失败')).items
 }
 
 export async function listScenarioCapabilities(): Promise<CapabilityDefinition[]> {
-  const response = await apiFetch('/v1/admin/scenarios/capability-catalog')
+  const response = await apiFetch('/control/v1/admin/scenarios/capability-catalog')
   return (await payload<{ items: CapabilityDefinition[] }>(response, '读取能力目录失败')).items
 }
 
 export async function listScenarioSkills(): Promise<ScenarioSkillRef[]> {
-  const response = await apiFetch('/v1/admin/scenarios/skill-catalog')
+  const response = await apiFetch('/control/v1/admin/scenarios/skill-catalog')
   return (await payload<{ items: ScenarioSkillRef[] }>(response, '读取 Skill 目录失败')).items
 }
 
 export async function saveScenario(scenario: ScenarioVersion): Promise<ScenarioVersion> {
   const response = await apiFetch(
-    `/v1/admin/scenarios/${encodeURIComponent(scenario.scenario_id)}/versions/${scenario.version}`,
+    `/control/v1/admin/scenarios/${encodeURIComponent(scenario.scenario_id)}/versions/${scenario.version}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -95,7 +95,7 @@ export async function publishScenario(
   policy?: { activation_mode: 'automatic' | 'manual'; timeout_seconds: number; auto_rollback: boolean; require_healthy_workers: boolean },
 ): Promise<ScenarioVersion> {
   const response = await apiFetch(
-    `/v1/admin/scenarios/${encodeURIComponent(id)}/versions/${version}/publish`,
+    `/control/v1/admin/scenarios/${encodeURIComponent(id)}/versions/${version}/publish`,
     {
       method: 'POST',
       headers: policy ? { 'Content-Type': 'application/json' } : undefined,
@@ -111,7 +111,7 @@ export async function simulateScenario(
   prompt: string,
   inputs: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
-  const response = await apiFetch(`/v1/admin/scenarios/${encodeURIComponent(id)}/simulate`, {
+  const response = await apiFetch(`/control/v1/admin/scenarios/${encodeURIComponent(id)}/simulate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version, prompt, inputs }),

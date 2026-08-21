@@ -1,17 +1,17 @@
 [project]
-name = "porthouse-capability-rerank"
+name = "joyhousebot-capability-rerank"
 version = "0.1.0"
-description = "Optional scoped candidate reranking capability for Porthouse"
+description = "Optional scoped candidate reranking capability for joyhousebot"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
-dependencies = ["porthouse>=0.1.2,<0.2"]
+dependencies = ["joyhousebot>=2.0.0,<3"]
 
-[project.entry-points."porthouse.capabilities"]
-capability-rerank = "porthouse_capability_rerank:create_plugin"
+[project.entry-points."joyhousebot.capabilities"]
+capability-rerank = "joyhousebot_capability_rerank:create_extension"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/porthouse_capability_rerank"]
+packages = ["src/joyhousebot_capability_rerank"]

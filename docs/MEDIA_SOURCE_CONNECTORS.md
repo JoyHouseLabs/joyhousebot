@@ -2,7 +2,7 @@
 
 状态：Implemented baseline（2026-08-16）
 
-Porthouse 将“外部内容如何取得”和“Agent 如何使用内容”分开：Connector/Capability 只产生可核验的
+joyhousebot 将“外部内容如何取得”和“Agent 如何使用内容”分开：Connector/Capability 只产生可核验的
 来源内容；Skill、Workflow 或 App 再决定筛选、分析、入库、提醒和产出。这避免把站点抓取逻辑、用户
 浏览器会话或产品工作流放进 Core。
 
@@ -31,7 +31,7 @@ Schedule / Agent Monitor
 ```
 
 `media.feed.read` 使用 ETag、Last-Modified 和最多 500 个 source entry id 构成不透明 cursor。它不创建
-扩展表、不另起 scheduler，也不替代 Porthouse 的 Run/Task/Trace。每一次读取仍在正常 Capability
+扩展表、不另起 scheduler，也不替代 joyhousebot 的 Run/Task/Trace。每一次读取仍在正常 Capability
 Invocation 与审计链中。
 
 ## 3. 部署与授权

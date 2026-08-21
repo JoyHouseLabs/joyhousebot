@@ -7,7 +7,7 @@ import {join} from "node:path";
 import {createInterface} from "node:readline";
 import test from "node:test";
 
-import {canonicalJson} from "@porthouse/extension-sdk";
+import {canonicalJson} from "@joyhousebot/extension-sdk";
 import {compileCatalog} from "../dist/index.js";
 
 const WORKER = new URL("../dist/worker.js", import.meta.url).pathname;
@@ -15,7 +15,7 @@ const FIXTURE = new URL("./fixtures/fake-opencli.mjs", import.meta.url).pathname
 const sha = (character) => `sha256:${character.repeat(64)}`;
 
 async function setup() {
-  const root = join(tmpdir(), `porthouse-opencli-worker-${process.pid}-${Date.now()}-${Math.random()}`);
+  const root = join(tmpdir(), `joyhousebot-opencli-worker-${process.pid}-${Date.now()}-${Math.random()}`);
   await mkdir(root, {recursive: true});
   const manifest = [{
     site: "fixture",

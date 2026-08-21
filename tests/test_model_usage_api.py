@@ -5,11 +5,11 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.providers.usage import cache_hit_usage, normalized_usage
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.providers.usage import cache_hit_usage, normalized_usage
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -99,7 +99,7 @@ def test_usage_api_reads_full_invocation_ledger_and_excludes_other_users(tmp_pat
             provider_cost_usd=10,
         ),
     )
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="usage-user",
         actor_id="test",
         token="usage-ledger-token",
@@ -108,7 +108,7 @@ def test_usage_api_reads_full_invocation_ledger_and_excludes_other_users(tmp_pat
 
     with client:
         response = client.get(
-            "/v1/usage",
+            "/control/v1/usage",
             headers={"Authorization": "Bearer usage-ledger-token"},
         )
 

@@ -2,9 +2,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -12,7 +12,7 @@ def test_graph_http_submission_is_idempotent_and_rejects_payload_reuse(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "graph-http-idempotency.db")
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="graph-owner",
         actor_id="test",
         token="graph-owner-token",
@@ -30,10 +30,10 @@ def test_graph_http_submission_is_idempotent_and_rejects_payload_reuse(
     }
 
     with client:
-        first = client.post("/v1/runs/graphs", headers=headers, json=value)
-        replay = client.post("/v1/runs/graphs", headers=headers, json=value)
+        first = client.post("/control/v1/runs/graphs", headers=headers, json=value)
+        replay = client.post("/control/v1/runs/graphs", headers=headers, json=value)
         conflict = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers=headers,
             json={**value, "goal": "a different publication"},
         )

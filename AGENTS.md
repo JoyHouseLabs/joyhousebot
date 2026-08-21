@@ -1,36 +1,43 @@
-# Porthouse 项目协作说明
+# joyhousebot 项目协作说明
 
-本文件适用于整个 `porthouse` 仓库。进入子目录后，如存在更近的 `AGENTS.md`，以更近文件的补充规则为准。
+本文件适用于整个 `joyhousebot` 仓库。进入子目录后，如存在更近的 `AGENTS.md`，以更近文件的补充规则为准。
 
 ## 1. 项目定位
 
-Porthouse 是面向个人数据与智能的开源云端/本地执行体：帮助每个人把自然语言目标转化为可追踪、可恢复、可验证的执行，并把数据、经验、技能和成果沉淀为属于用户的长期资产。多用户并发是 Runtime 能力，但当前产品首先解决个人问题，不预设企业租户模型，也不引入 `tenant_id`。核心不是单一聊天客户端或模型 SDK，而是 PostgreSQL-first 的 Agent Runtime 与控制面：能力准入、版本发布、多 Agent 协作、长任务、人工反馈、审计、回放和持续优化都进入统一 Run/Task 链路。
+joyhousebot 是面向个人数据与智能的开源云端/本地执行体：帮助每个人把自然语言目标转化为可追踪、可恢复、可验证的执行，并把数据、经验、技能和成果沉淀为属于用户的长期资产。多用户并发是 Runtime 能力，但当前产品首先解决个人问题，不预设企业租户模型，也不引入 `tenant_id`。核心不是单一聊天客户端或模型 SDK，而是 PostgreSQL-first 的 Agent Runtime 与控制面：能力准入、版本发布、多 Agent 协作、长任务、人工反馈、审计、回放和持续优化都进入统一 Run/Task 链路。
 
 个人数据、记忆、会话和执行产物默认私有。用户主动分享时，分享对象应是脱离私有上下文、经过版本化和验证的 Skill、Agent、Workflow 或 Work；其他用户可以复用或派生发布物，但不能因此获得发布者的个人数据。
 
-业务项目必须保持为独立程序，通过版本化 HTTP/SSE 提交执行，并通过通用远程 Capability Connector 暴露受保护的业务能力；不要把业务代码打包进 Runtime Worker，更不能把某个业务项目的路由、页面、数据模型或硬编码流程写入 `porthouse` 核心包。独立扩展只承载模型、渠道、通用 Connector 和可跨产品复用的基础能力。
+业务项目必须保持为独立程序，通过版本化 HTTP/SSE 提交执行，并通过通用远程 Capability Connector 暴露受保护的业务能力；不要把业务代码打包进 Runtime Worker，更不能把某个业务项目的路由、页面、数据模型或硬编码流程写入 `joyhousebot` 核心包。独立扩展只承载模型、渠道、通用 Connector 和可跨产品复用的基础能力。
+
+### 公共概念与权限词典
+
+- 面向 JoyHouse、Talent Flow 和其他 App 的运行时契约只以 `EntryPoint`、`Run`、`Artifact`、`Approval` 为稳定顶级概念。Agent、Team、Workflow、Scenario、Skill、Revision、Task、Worker、Trace 和 Capability Graph 属于构建或诊断面；不得要求 App 在启动、轮询和读取结果时理解这些内部类型。
+- `Owner Authority` 表示用户或 JoyHouse 代表已认证用户操作其个人资源；`Installation Authority` 表示一个已安装 App 只能操作 `user_id + installation_id` 范围；`Host Authority` 只允许执行 Runtime 指派的 Task/Action；`Operator Authority` 只用于控制面。Owner 不是 Operator，产品不得以 Control Token 和用户模拟作为日常调用方式。
+- 新增或修改代码统一使用 `Extension`、`Capability`、`Connection`、`App Release`/`App Package`。旧 `Plugin`、`Tool`、无边界 `Integration`、`Task Pack` 和 `App Pack` 名称按调用方同步迁移并删除；不要新增别名、双写或仅转发的兼容层。
+- 目标边界、Authority 与公共执行 API 以 `docs/architecture/PRODUCT_RUNTIME_BOUNDARY.md`、`AUTHORITY_MODEL.md` 和 `PUBLIC_EXECUTION_API.md` 为准。文档只描述已验收的当前能力；变更公共边界时直接更新这些权威 ADR 和协议。
 
 ## 2. 目录职责与边界
 
-- `porthouse/`：核心 Python Runtime。包括 API、Worker、Agent、场景编排、能力目录、权限、存储、渠道、任务、审计和回放。它是可复用框架，不承载具体业务应用代码。
-- `porthouse/api/`、`application/`、`domain/`、`runtime/`、`storage/`：遵循 API/适配层 → application → runtime/domain services → PostgreSQL repositories 的单向边界。API 负责认证、提交与查询；模型和工具只在 Worker 执行。
-- `apps/console/`：Vue/Vite 管理控制台，用于运行监控、Agent 配置、能力目录、场景、执行时间线和回放。它只调用版本化 HTTP/SSE API，不直接读写数据库或实现运行时逻辑。
-- `../happyhouse/`：闭源 HappyHouse 产品仓库，承载 Desktop、Web、Mobile、官网与浏览器扩展。产品只通过公共 HTTP/SSE、App SDK 和 Market 协议使用 Runtime，不得反向成为 Core 依赖。
-- `../happyhouse-market/`：闭源账号、目录、商业授权与生态分发服务。Market 可以分发 App、Skill、Workflow 和 Extension，但不能读取用户私有 Run、Memory 或 Artifact，也不是 Runtime 的必需依赖。
+- `joyhousebot/`：核心 Python Runtime。包括 API、Worker、Agent、场景编排、能力目录、权限、存储、渠道、任务、审计和回放。它是可复用框架，不承载具体业务应用代码。
+- `joyhousebot/api/`、`application/`、`domain/`、`runtime/`、`storage/`：遵循 API/适配层 → application → runtime/domain services → PostgreSQL repositories 的单向边界。API 负责认证、提交与查询；模型和工具只在 Worker 执行。
+- `apps/console/`：Vue/Vite 构建、诊断、安全和运维控制面，目标一级入口只包含 Overview、Runs、Build、Extensions、Settings。它可以在高级构建/诊断视图展示内部资产，但不承载 JoyHouse 的聊天、私人工作台、Market 商店或日常产品体验；只调用版本化 HTTP/SSE API，不直接读写数据库或实现运行时逻辑。
+- `../joyhouse/`：闭源 JoyHouse 产品仓库，承载 Desktop、Web、Mobile、官网与浏览器扩展。产品只通过公共 HTTP/SSE、App SDK 和 Market 协议使用 Runtime，不得反向成为 Core 依赖。
+- `../joyhouse-market/`：闭源账号、目录、商业授权与生态分发服务。Market 可以分发 App、Skill、Workflow 和 Extension，但不能读取用户私有 Run、Memory 或 Artifact，也不是 Runtime 的必需依赖。
 - `bridges/`：独立渠道桥接实现。新增渠道优先保持为适配层，通过公共执行入口接入，不得创建第二套 Run/Task 状态机。
 - `docs/`：架构、部署、CLI、集成与运维文档。涉及公共协议、权限、存储、执行模型或发布流程的重大改动必须同步更新文档。
-- `deploy/`、`ops/`：Runtime 与控制台的部署模板、nginx/systemd/监控配置。HappyHouse 产品部署属于相邻私有仓库；发布前必须核对目标主机实际配置。
+- `deploy/`、`ops/`：Runtime 与控制台的部署模板、nginx/systemd/监控配置。JoyHouse 产品部署属于相邻私有仓库；发布前必须核对目标主机实际配置。
 - `scripts/`：本地启动、构建、预发布检查和打包脚本；调整目录、构建产物或启动方式时必须同步更新。
 - `tests/`：Runtime 契约与集成测试。涉及 PostgreSQL 的测试使用显式测试数据库，不能对开发或生产数据库运行。
 
 ## 3. 运行时不变量
 
 - PostgreSQL 是唯一运行时事实源；不支持 SQLite。Redis 如被使用，只能做缓存或唤醒加速，不能取代 Run/Task 状态机。
-- 第一阶段 HappyHouse、Porthouse、Cloud/Market 和官方 App 共用 `HAPPYHOUSE_DATABASE_URL` 指向的一个 PostgreSQL database。Porthouse 也接受 `PORTHOUSE_DATABASE_URL` 作为仅 Runtime 部署时的专用连接。Runtime 仍只迁移和访问自己的表；Product 使用 `product_*`，Cloud/Market 使用 `cloud_*`/`market_*`，App 使用 `app_<id>_*`。禁止跨模块外键、触发器、直接 JOIN 和越权 Repository。测试必须使用专用 `_test` 数据库。
+- 第一阶段 JoyHouse、joyhousebot、Cloud/Market 和官方 App 共用 `JOYHOUSE_DATABASE_URL` 指向的一个 PostgreSQL database。joyhousebot 也接受 `JOYHOUSEBOT_DATABASE_URL` 作为仅 Runtime 部署时的专用连接。Runtime 仍只迁移和访问自己的表；Product 使用 `product_*`，Cloud/Market 使用 `cloud_*`/`market_*`，App 使用 `app_<id>_*`。禁止跨模块外键、触发器、直接 JOIN 和越权 Repository。测试必须使用专用 `_test` 数据库。
 - 公共执行入口是版本化 HTTP + SSE。聊天、定时任务、渠道入站、多 Agent DAG 和 MCP `tools/call` 必须进入同一 Run/Task/Event/Trace 链路。
-- Agent、Skill、Tool、Scenario、MCP Server 的版本发布必须可审计。草稿 → 发布 → Worker 加载确认 → 生效切换是明确状态机；失败发布不得覆盖已生效版本。
+- Agent、Skill、Capability、Scenario、MCP Server 的版本发布必须可审计。草稿 → 发布 → Worker 加载确认 → 生效切换是明确状态机；失败发布不得覆盖已生效版本。
 - 能力调用必须经过 Capability Registry 的 allowlist、权限、配额和参数校验。Shell 只能在隔离容器中运行；容器不可用时失败关闭，不能降级到宿主机。
-- 外部业务插件必须收到 Runtime 冻结的 `action_id/idempotency_key`，并把同一键传给业务写接口；插件不得自行生成进程内幂等身份。Tool 与 Connector 都走同一 Dispatcher、审批、对账和审计链。
+- 外部业务 Capability 必须收到 Runtime 冻结的 `action_id/idempotency_key`，并把同一键传给业务写接口；Extension 不得自行生成进程内幂等身份。Capability 与 Connector 都走同一 Dispatcher、审批、对账和审计链。
 - 业务输出先形成 Artifact；成为可分享成果时必须进入 Work 的不可变版本、分级、发布、分享链接、撤销和审计链，不能把原始私有 Artifact URL 直接当公开链接。
 - API 仅处理认证、提交和查询；LLM、工具和长任务由 Worker 执行。不得把模型/工具调用重新塞回 HTTP 请求线程。
 - 数据和产物按 `user_id + agent_id + root_run_id` 隔离。密钥只通过环境变量或 `env://VARIABLE` 引用，禁止提交、打印或写入日志。
@@ -48,7 +55,7 @@ uv sync
 # Runtime 测试与静态检查
 bash scripts/install-test-extensions.sh
 .venv/bin/python -m pytest
-.venv/bin/ruff check porthouse tests extensions/*/src scripts/check_complexity.py
+.venv/bin/ruff check joyhousebot tests extensions/*/src scripts/check_complexity.py
 .venv/bin/python scripts/check_complexity.py --check
 
 # 控制台
@@ -61,8 +68,8 @@ cd apps/console && npm install && npm run build
 ## 5. 前后端与扩展约定
 
 - 控制台的 API 类型、请求和错误适配集中在 `apps/console/src/api/`；不要从 Vue 组件直接调用数据库、绕开 HTTP 客户端，或复制 Runtime 业务规则。
-- Runtime 内置 UI 静态产物由 `scripts/build-ui.sh` 生成/同步；不要手工编辑构建后的 `porthouse/static/ui/` 文件。
-- HappyHouse 产品与 Market 在相邻私有仓库中独立构建和发布；本仓库只维护它们依赖的开放协议和 Runtime 契约。
+- Runtime 内置 UI 静态产物由 `scripts/build-ui.sh` 生成/同步；不要手工编辑构建后的 `joyhousebot/static/ui/` 文件。
+- JoyHouse 产品与 Market 在相邻私有仓库中独立构建和发布；本仓库只维护它们依赖的开放协议和 Runtime 契约。
 - 首个公开稳定版本发布前，内部 Python API、模块路径、开发期 HTTP/事件契约和 Schema 可以直接重构；同一变更必须同步更新调用方、测试、文档与迁移，并删除旧路径，不为尚未发布的结构新增兼容 shim、双写或长期 deprecation 层。已经被外部制品或相邻仓库实际采用的协议仍需先核对使用方。任何删除本地数据、压缩迁移或重建数据库的操作都必须单独确认，不能从“允许破坏兼容性”推导出数据删除授权。
 
 ## 6. 代码结构与复杂度

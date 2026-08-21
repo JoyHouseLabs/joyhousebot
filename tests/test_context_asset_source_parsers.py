@@ -6,7 +6,7 @@ import io
 import zipfile
 
 import pytest
-from porthouse_capability_document_processing.ingest import source_parsers
+from joyhousebot_capability_document_processing.ingest import source_parsers
 
 
 def _archive(files: dict[str, str]) -> bytes:
@@ -322,7 +322,7 @@ async def test_registry_fails_closed_for_vault_and_media_without_parser() -> Non
                 "attachments": [
                     {
                         "reference_kind": "cloud_vault",
-                        "uri": "porthouse-cloud://vault/private.pdf",
+                        "uri": "joyhousebot-cloud://vault/private.pdf",
                     }
                 ],
             }

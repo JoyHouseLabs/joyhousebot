@@ -1,14 +1,17 @@
 import {createHash} from "node:crypto";
 import {readFile, writeFile} from "node:fs/promises";
 
-import {canonicalJson, sha256Hex} from "@porthouse/extension-sdk";
+import {canonicalJson, sha256Hex} from "@joyhousebot/extension-sdk";
 
 import type {
   AllowedCommand,
+  AllowedAccountSnapshot,
   Allowlist,
+  ArgumentConstraint,
   CapabilityDefinition,
   CompileCatalogOptions,
   CompiledCatalog,
+  CompiledAccountSnapshot,
   CompiledCommand,
   OpenCliArgument,
   OpenCliManifestCommand,
@@ -71,6 +74,9 @@ export function compileCatalog(
     throw new Error("OpenCLI allowlist has duplicate capabilities");
   }
   commands.sort((left, right) => left.capability.capability_id.localeCompare(right.capability.capability_id));
+  const accountSnapshots = (allowlist.account_snapshots ?? []).map((allowed) =>
+    compileAccountSnapshot(allowed, commands, options),
+  );
   return {
     schema_version: 1,
     extension: {
@@ -88,6 +94,7 @@ export function compileCatalog(
       upstream_manifest_sha256: manifestSha256,
     },
     commands,
+    account_snapshots: accountSnapshots,
   };
 }
 
@@ -109,6 +116,9 @@ export function loadCompiledCatalog(value: unknown): CompiledCatalog {
   ) {
     throw new Error("compiled OpenCLI catalog identity is invalid");
   }
+  if (!Array.isArray(catalog.account_snapshots) || catalog.account_snapshots.length > 32) {
+    throw new Error("compiled OpenCLI account snapshots are invalid");
+  }
   for (const command of catalog.commands) {
     if (
       !ID_PART.test(command.site)
@@ -118,6 +128,15 @@ export function loadCompiledCatalog(value: unknown): CompiledCatalog {
       || command.capability.capability_id !== capabilityId(command.site, command.name)
     ) {
       throw new Error("compiled OpenCLI command is invalid");
+    }
+  }
+  for (const snapshot of catalog.account_snapshots) {
+    if (
+      snapshot.platform !== "xiaohongshu"
+      || snapshot.capability.capability_id !== "social.xiaohongshu.account-snapshot"
+      || !DIGEST.test(snapshot.capability.implementation_digest)
+    ) {
+      throw new Error("compiled OpenCLI account snapshot is invalid");
     }
   }
   return catalog;
@@ -197,7 +216,34 @@ function parseAllowlist(value: unknown): Allowlist {
     throw new Error("OpenCLI allowlist is empty or has an unsupported schema version");
   }
   if (item.commands.length > 2_000) throw new Error("OpenCLI allowlist exceeds policy");
-  return {schema_version: 1, commands: item.commands.map(parseAllowedCommand)};
+  const snapshots = item.account_snapshots;
+  if (snapshots !== undefined && (!Array.isArray(snapshots) || snapshots.length > 32)) {
+    throw new Error("OpenCLI account snapshot allowlist is invalid");
+  }
+  return {
+    schema_version: 1,
+    commands: item.commands.map(parseAllowedCommand),
+    account_snapshots: snapshots?.map(parseAllowedAccountSnapshot) ?? [],
+  };
+}
+
+function parseAllowedAccountSnapshot(value: unknown): AllowedAccountSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("OpenCLI account snapshot allowlist entry must be an object");
+  }
+  const item = value as Record<string, unknown>;
+  const known = new Set(["platform", "capability_version", "timeout_seconds", "expected_duration_seconds"]);
+  const unknown = Object.keys(item).filter((key) => !known.has(key));
+  if (unknown.length) throw new Error(`OpenCLI account snapshot contains unsupported fields: ${unknown.join(", ")}`);
+  if (item.platform !== "xiaohongshu" || !VERSION.test(String(item.capability_version ?? ""))) {
+    throw new Error("OpenCLI account snapshot identity is invalid");
+  }
+  return {
+    platform: "xiaohongshu",
+    capability_version: String(item.capability_version),
+    timeout_seconds: boundedInteger(item.timeout_seconds, 60, 1_800, 600),
+    expected_duration_seconds: boundedInteger(item.expected_duration_seconds, 10, 1_800, 180),
+  };
 }
 
 function parseAllowedCommand(value: unknown): AllowedCommand {
@@ -207,7 +253,7 @@ function parseAllowedCommand(value: unknown): AllowedCommand {
   const item = value as Record<string, unknown>;
   const known = new Set([
     "site", "name", "capability_version", "timeout_seconds", "expected_duration_seconds",
-    "data_classification", "allow_path_arguments", "capture_output_markdown",
+    "data_classification", "allow_path_arguments", "argument_constraints", "capture_output_markdown", "exposed",
   ]);
   const unknown = Object.keys(item).filter((key) => !known.has(key));
   if (unknown.length) throw new Error(`OpenCLI allowlist contains unsupported fields: ${unknown.join(", ")}`);
@@ -231,8 +277,54 @@ function parseAllowedCommand(value: unknown): AllowedCommand {
     allow_path_arguments: item.allow_path_arguments === undefined
       ? []
       : stringArray(item.allow_path_arguments, 32, "allow_path_arguments"),
+    argument_constraints: parseArgumentConstraints(item.argument_constraints),
+    exposed: item.exposed !== false,
     capture_output_markdown: Boolean(item.capture_output_markdown),
   };
+}
+
+function parseArgumentConstraints(value: unknown): Record<string, ArgumentConstraint> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("OpenCLI argument constraints must be an object");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) throw new Error("OpenCLI argument constraints exceed policy");
+  return Object.fromEntries(entries.map(([name, raw]) => {
+    if (!ARGUMENT_NAME.test(name) || !raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("OpenCLI argument constraint is invalid");
+    }
+    const item = raw as Record<string, unknown>;
+    const known = new Set(["minimum", "maximum", "minLength", "maxLength", "pattern"]);
+    const unknown = Object.keys(item).filter((key) => !known.has(key));
+    if (unknown.length) {
+      throw new Error(`OpenCLI argument constraint contains unsupported fields: ${unknown.join(", ")}`);
+    }
+    const constraint: ArgumentConstraint = {};
+    if (item.minimum !== undefined) constraint.minimum = boundedNumber(item.minimum, -1e12, 1e12, "minimum");
+    if (item.maximum !== undefined) constraint.maximum = boundedNumber(item.maximum, -1e12, 1e12, "maximum");
+    if (item.minLength !== undefined) constraint.minLength = boundedInteger(item.minLength, 0, 16_384, 0);
+    if (item.maxLength !== undefined) constraint.maxLength = boundedInteger(item.maxLength, 1, 16_384, 16_384);
+    if (item.pattern !== undefined) {
+      const pattern = String(item.pattern);
+      if (pattern.length > 512 || !pattern.startsWith("^") || !pattern.endsWith("$")) {
+        throw new Error("OpenCLI argument constraint pattern must be bounded and anchored");
+      }
+      try {
+        new RegExp(pattern);
+      } catch {
+        throw new Error("OpenCLI argument constraint pattern is invalid");
+      }
+      constraint.pattern = pattern;
+    }
+    if (constraint.minimum !== undefined && constraint.maximum !== undefined && constraint.minimum > constraint.maximum) {
+      throw new Error("OpenCLI argument constraint range is invalid");
+    }
+    if (constraint.minLength !== undefined && constraint.maxLength !== undefined && constraint.minLength > constraint.maxLength) {
+      throw new Error("OpenCLI argument constraint length range is invalid");
+    }
+    return [name, constraint];
+  }));
 }
 
 function compileCommand(
@@ -256,6 +348,12 @@ function compileCommand(
       throw new Error(`allowed path argument does not exist: ${upstream.site} ${upstream.name} ${name}`);
     }
   }
+  const argumentNames = new Set(upstream.args.map((argument) => argument.name));
+  for (const name of Object.keys(allowed.argument_constraints ?? {})) {
+    if (!argumentNames.has(name)) {
+      throw new Error(`constrained argument does not exist: ${upstream.site} ${upstream.name} ${name}`);
+    }
+  }
   if (allowed.capture_output_markdown && !allowedPaths.has("output")) {
     throw new Error(
       `OpenCLI output capture requires governed output path: ${upstream.site} ${upstream.name}`,
@@ -274,10 +372,132 @@ function compileCommand(
     args: upstream.args,
     columns: upstream.columns ?? [],
     allowed_path_arguments: [...allowedPaths].sort(),
+    argument_constraints: allowed.argument_constraints ?? {},
+    exposed: allowed.exposed !== false,
     capture_output_markdown: Boolean(allowed.capture_output_markdown),
   };
   const capability = buildCapability(upstream, allowed, options, frozen);
   return {...frozen, capability};
+}
+
+function compileAccountSnapshot(
+  allowed: AllowedAccountSnapshot,
+  commands: CompiledCommand[],
+  options: CompileCatalogOptions,
+): CompiledAccountSnapshot {
+  const list = commands.find((item) => item.site === "xiaohongshu" && item.name === "user");
+  const detail = commands.find((item) => item.site === "xiaohongshu" && item.name === "note");
+  if (!list || !detail) {
+    throw new Error("Xiaohongshu account snapshot requires reviewed user and note commands");
+  }
+  if (list.exposed || detail.exposed) {
+    throw new Error("Xiaohongshu account snapshot source commands must remain internal");
+  }
+  const capabilityId = "social.xiaohongshu.account-snapshot";
+  const implementationDigest = `sha256:${sha256Hex(canonicalJson({
+    extension: "capability-opencli",
+    extension_version: options.extensionVersion,
+    pipeline: "xiaohongshu-account-snapshot-v1.1",
+    list_implementation: list.capability.implementation_digest,
+    detail_implementation: detail.capability.implementation_digest,
+    policy: {max_items: 20, min_page_delay_seconds: 2, max_page_delay_seconds: 15},
+  }))}`;
+  return {
+    platform: "xiaohongshu",
+    list_capability_id: list.capability.capability_id,
+    detail_capability_id: detail.capability.capability_id,
+    capability: {
+      capability_id: capabilityId,
+      version: allowed.capability_version,
+      implementation_digest: implementationDigest,
+      name: "小红书账号内容快照",
+      description: "按顺序采集一个小红书账号最近笔记的完整正文与公开互动数据",
+      input_schema: {
+        type: "object",
+        properties: {
+          profile_url: {
+            type: "string",
+            minLength: 1,
+            maxLength: 128,
+            pattern: "^https://www\\.xiaohongshu\\.com/user/profile/[0-9a-fA-F]{24}/?$",
+          },
+          limit: {type: "integer", minimum: 1, maximum: 20, default: 20},
+          page_delay_seconds: {type: "number", minimum: 2, maximum: 15, default: 4},
+          browser_profile_ref: {
+            type: "string",
+            minLength: 1,
+            maxLength: 128,
+            pattern: "^[A-Za-z0-9_.:-]+$",
+            description: "Local Browser Bridge profile alias, or auto when exactly one profile is connected",
+          },
+        },
+        required: ["profile_url", "browser_profile_ref"],
+        additionalProperties: false,
+      },
+      output_schema: accountSnapshotOutputSchema(),
+      permissions: ["social.xiaohongshu.read"],
+      tags: ["social", "xiaohongshu", "read", "account-snapshot", "cookie"],
+      side_effect: "read",
+      idempotent: true,
+      retryable: true,
+      data_classification: "confidential",
+      timeout_seconds: allowed.timeout_seconds ?? 600,
+      expected_duration_seconds: allowed.expected_duration_seconds ?? 180,
+      invocation_concurrency: "sequential",
+      max_concurrent_invocations: 1,
+      cost_policy: {},
+      execution_mode: "durable",
+      supports_stream: true,
+      provenance: {
+        host_protocol_version: "1",
+        sdk_version: "1",
+        extension_id: "capability-opencli",
+        extension_version: options.extensionVersion,
+        extension_build_digest: options.extensionBuildDigest,
+        extension_lockfile_digest: options.extensionLockfileDigest,
+      },
+    },
+  };
+}
+
+function accountSnapshotOutputSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      platform: {const: "xiaohongshu"},
+      profile_url: {type: "string", maxLength: 128},
+      collected_at: {type: "string", format: "date-time"},
+      requested_count: {type: "integer", minimum: 1, maximum: 20},
+      discovered_count: {type: "integer", minimum: 0, maximum: 20},
+      complete_text_count: {type: "integer", minimum: 0, maximum: 20},
+      notes: {
+        type: "array",
+        maxItems: 20,
+        items: {
+          type: "object",
+          properties: {
+            id: {type: "string", maxLength: 128},
+            title: {type: "string", maxLength: 2_000},
+            author: {type: "string", maxLength: 512},
+            content: {type: "string", maxLength: 100_000},
+            tags: {type: "array", maxItems: 100, items: {type: "string", maxLength: 256}},
+            type: {type: "string", maxLength: 64},
+            likes: {type: "string", maxLength: 64},
+            collects: {type: "string", maxLength: 64},
+            comments: {type: "string", maxLength: 64},
+            cover_url: {type: "string", maxLength: 4_096},
+            url: {type: "string", maxLength: 256},
+            status: {enum: ["complete", "unavailable"]},
+            error_code: {type: ["string", "null"], maxLength: 128},
+          },
+          required: ["id", "title", "content", "url", "status"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["platform", "profile_url", "collected_at", "requested_count", "discovered_count", "complete_text_count", "notes"],
+    additionalProperties: false,
+  };
 }
 
 function buildCapability(
@@ -289,14 +509,17 @@ function buildCapability(
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const argument of upstream.args) {
-    properties[argument.name] = argumentSchema(argument, {
-      forceDefault:
-        allowed.capture_output_markdown && argument.name === "download-images" ? false : undefined,
-      descriptionSuffix:
-        allowed.capture_output_markdown && argument.name === "download-images"
-          ? ". Disabled because captured Markdown artifacts must not retain downloaded images."
-          : undefined,
-    });
+    properties[argument.name] = {
+      ...argumentSchema(argument, {
+        forceDefault:
+          allowed.capture_output_markdown && argument.name === "download-images" ? false : undefined,
+        descriptionSuffix:
+          allowed.capture_output_markdown && argument.name === "download-images"
+            ? ". Disabled because captured Markdown artifacts must not retain downloaded images."
+            : undefined,
+      }),
+      ...(allowed.argument_constraints?.[argument.name] ?? {}),
+    };
     if (argument.required) required.push(argument.name);
   }
   if (upstream.browser) {
@@ -305,7 +528,7 @@ function buildCapability(
       minLength: 1,
       maxLength: 128,
       pattern: "^[A-Za-z0-9_.:-]+$",
-      description: "Explicit local Browser Bridge profile reference",
+      description: "Local Browser Bridge profile alias, or auto when exactly one profile is connected",
     };
     required.push("browser_profile_ref");
   }
@@ -425,6 +648,14 @@ function boundedInteger(value: unknown, minimum: number, maximum: number, fallba
   const result = Number(value);
   if (!Number.isInteger(result) || result < minimum || result > maximum) {
     throw new Error("OpenCLI allowlist integer exceeds policy");
+  }
+  return result;
+}
+
+function boundedNumber(value: unknown, minimum: number, maximum: number, name: string): number {
+  const result = Number(value);
+  if (!Number.isFinite(result) || result < minimum || result > maximum) {
+    throw new Error(`OpenCLI argument constraint ${name} exceeds policy`);
   }
   return result;
 }

@@ -8,15 +8,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.context import Principal, RequestContext
-from porthouse.application.knowledge_assets import KnowledgeAssetService
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.services.context import ContextPort
-from porthouse.config.schema import Config
-from porthouse.domain.capabilities.models import CapabilityKind, CapabilityRef
-from porthouse.extension_sdk import CapabilityContext
-from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
+from joyhousebot.api.app import create_app
+from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.knowledge_assets import KnowledgeAssetService
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.services.context import ContextPort
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.capabilities.models import CapabilityKind, CapabilityRef
+from joyhousebot.extension_sdk import CapabilityContext
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -27,8 +27,8 @@ def test_runtime_input_asset_upload_is_owner_scoped_and_integrity_checked(
         tmp_path / "input-assets.db",
         input_asset_directory=str(tmp_path / "runtime-input-assets"),
     )
-    store.create_api_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
-    store.create_api_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
+    store.create_operator_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
+    store.create_operator_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     body = b"private source body"
     digest = hashlib.sha256(body).hexdigest()
@@ -41,26 +41,26 @@ def test_runtime_input_asset_upload_is_owner_scoped_and_integrity_checked(
 
     with client:
         uploaded = client.post(
-            "/v1/input-assets?file_name=private.txt", content=body, headers=headers
+            "/control/v1/input-assets?file_name=private.txt", content=body, headers=headers
         )
         repeated = client.post(
-            "/v1/input-assets?file_name=private.txt", content=body, headers=headers
+            "/control/v1/input-assets?file_name=private.txt", content=body, headers=headers
         )
         owner_detail = client.get(
-            f"/v1/input-assets/{uploaded.json()['asset_id']}",
+            f"/control/v1/input-assets/{uploaded.json()['asset_id']}",
             headers={"Authorization": "Bearer owner-a-token"},
         )
         foreign_detail = client.get(
-            f"/v1/input-assets/{uploaded.json()['asset_id']}",
+            f"/control/v1/input-assets/{uploaded.json()['asset_id']}",
             headers={"Authorization": "Bearer owner-b-token"},
         )
         invalid = client.post(
-            "/v1/input-assets?file_name=invalid.txt",
+            "/control/v1/input-assets?file_name=invalid.txt",
             content=body,
             headers={**headers, "Idempotency-Key": "invalid", "X-Content-SHA256": "0" * 64},
         )
         graph = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers={
                 "Authorization": "Bearer owner-a-token",
                 "Idempotency-Key": "asset-graph-a",
@@ -73,7 +73,7 @@ def test_runtime_input_asset_upload_is_owner_scoped_and_integrity_checked(
             },
         )
         run = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={
                 "Authorization": "Bearer owner-a-token",
                 "Idempotency-Key": "asset-run-a",
@@ -86,7 +86,7 @@ def test_runtime_input_asset_upload_is_owner_scoped_and_integrity_checked(
             },
         )
         foreign_graph = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers={
                 "Authorization": "Bearer owner-b-token",
                 "Idempotency-Key": "asset-graph-b",
@@ -198,8 +198,8 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "knowledge-assets.db")
-    store.create_api_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
-    store.create_api_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
+    store.create_operator_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
+    store.create_operator_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
     repository = KnowledgeRepository(store)
     repository.index_document(
         doc_id="doc-owner-a",
@@ -229,44 +229,48 @@ def test_knowledge_asset_api_lists_details_and_deletes_with_owner_scope(
     foreign = {"Authorization": "Bearer owner-b-token"}
 
     with client:
-        listed = client.get("/v1/knowledge/documents", headers=owner)
-        foreign_list = client.get("/v1/knowledge/documents", headers=foreign)
-        detail = client.get("/v1/knowledge/documents/doc-owner-a", headers=owner)
-        revisions = client.get("/v1/knowledge/documents/doc-owner-a/revisions", headers=owner)
+        listed = client.get("/control/v1/knowledge/documents", headers=owner)
+        foreign_list = client.get("/control/v1/knowledge/documents", headers=foreign)
+        detail = client.get("/control/v1/knowledge/documents/doc-owner-a", headers=owner)
+        revisions = client.get(
+            "/control/v1/knowledge/documents/doc-owner-a/revisions", headers=owner
+        )
         search = client.get(
-            "/v1/knowledge/search",
+            "/control/v1/knowledge/search",
             headers=owner,
             params={"q": "Evidence-backed", "collection_ref": "collection-private"},
         )
         excluded_search = client.get(
-            "/v1/knowledge/search",
+            "/control/v1/knowledge/search",
             headers=owner,
             params={"q": "Evidence-backed", "collection_ref": "another-collection"},
         )
         foreign_search = client.get(
-            "/v1/knowledge/search",
+            "/control/v1/knowledge/search",
             headers=foreign,
             params={"q": "Evidence-backed"},
         )
         source_state = client.get(
-            "/v1/knowledge/source-state",
+            "/control/v1/knowledge/source-state",
             headers=owner,
             params={"source_system": "runtime", "source_id": "doc-owner-a"},
         )
-        health = client.get("/v1/knowledge/health", headers=owner)
-        foreign_health = client.get("/v1/knowledge/health", headers=foreign)
+        health = client.get("/control/v1/knowledge/health", headers=owner)
+        foreign_health = client.get("/control/v1/knowledge/health", headers=foreign)
         foreign_source_state = client.get(
-            "/v1/knowledge/source-state",
+            "/control/v1/knowledge/source-state",
             headers=foreign,
             params={"source_system": "runtime", "source_id": "doc-owner-a"},
         )
         foreign_revisions = client.get(
-            "/v1/knowledge/documents/doc-owner-a/revisions", headers=foreign
+            "/control/v1/knowledge/documents/doc-owner-a/revisions", headers=foreign
         )
-        foreign_detail = client.get("/v1/knowledge/documents/doc-owner-a", headers=foreign)
-        foreign_delete = client.delete("/v1/knowledge/documents/doc-owner-a", headers=foreign)
-        deleted = client.delete("/v1/knowledge/documents/doc-owner-a", headers=owner)
-        after_delete = client.get("/v1/knowledge/documents", headers=owner)
+        foreign_detail = client.get("/control/v1/knowledge/documents/doc-owner-a", headers=foreign)
+        foreign_delete = client.delete(
+            "/control/v1/knowledge/documents/doc-owner-a", headers=foreign
+        )
+        deleted = client.delete("/control/v1/knowledge/documents/doc-owner-a", headers=owner)
+        after_delete = client.get("/control/v1/knowledge/documents", headers=owner)
 
     assert listed.status_code == 200
     assert listed.json()["summary"] == {
@@ -347,8 +351,8 @@ def test_knowledge_bases_manage_collections_without_deleting_sources(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "knowledge-bases.db")
-    store.create_api_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
-    store.create_api_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
+    store.create_operator_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
+    store.create_operator_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
     repository = KnowledgeRepository(store)
     repository.index_document(
         doc_id="doc-a",
@@ -374,38 +378,42 @@ def test_knowledge_bases_manage_collections_without_deleting_sources(
 
     with client:
         created = client.post(
-            "/v1/knowledge/bases",
+            "/control/v1/knowledge/bases",
             headers=owner,
             json={"name": "Runtime Architecture", "description": "Verified design notes"},
         )
         assert created.status_code == 201
         base_id = created.json()["knowledge_base_id"]
         duplicate = client.post(
-            "/v1/knowledge/bases",
+            "/control/v1/knowledge/bases",
             headers=owner,
             json={"name": "Runtime Architecture"},
         )
-        foreign_list = client.get("/v1/knowledge/bases", headers=foreign)
-        foreign_bind = client.put(f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=foreign)
-        foreign_document_bind = client.put(
-            f"/v1/knowledge/bases/{base_id}/documents/doc-b", headers=owner
+        foreign_list = client.get("/control/v1/knowledge/bases", headers=foreign)
+        foreign_bind = client.put(
+            f"/control/v1/knowledge/bases/{base_id}/documents/doc-a", headers=foreign
         )
-        bound = client.put(f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner)
-        bound_again = client.put(f"/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner)
+        foreign_document_bind = client.put(
+            f"/control/v1/knowledge/bases/{base_id}/documents/doc-b", headers=owner
+        )
+        bound = client.put(f"/control/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner)
+        bound_again = client.put(
+            f"/control/v1/knowledge/bases/{base_id}/documents/doc-a", headers=owner
+        )
         scoped = client.get(
-            "/v1/knowledge/documents",
+            "/control/v1/knowledge/documents",
             headers=owner,
             params={"knowledge_base_id": base_id},
         )
-        detail = client.get("/v1/knowledge/documents/doc-a", headers=owner)
+        detail = client.get("/control/v1/knowledge/documents/doc-a", headers=owner)
         archived = client.patch(
-            f"/v1/knowledge/bases/{base_id}",
+            f"/control/v1/knowledge/bases/{base_id}",
             headers=owner,
             json={"status": "archived", "description": "Frozen reference"},
         )
-        deleted = client.delete(f"/v1/knowledge/bases/{base_id}", headers=owner)
-        sources_after_delete = client.get("/v1/knowledge/documents", headers=owner)
-        bases_after_delete = client.get("/v1/knowledge/bases", headers=owner)
+        deleted = client.delete(f"/control/v1/knowledge/bases/{base_id}", headers=owner)
+        sources_after_delete = client.get("/control/v1/knowledge/documents", headers=owner)
+        bases_after_delete = client.get("/control/v1/knowledge/bases", headers=owner)
 
     assert duplicate.status_code == 409
     assert foreign_list.status_code == 200 and foreign_list.json()["items"] == []
@@ -466,7 +474,7 @@ def test_knowledge_revision_failure_preserves_previous_active_index(
         source_url=None,
         title="Versioned notes",
         chunks=[{"text": "replacement that must not activate", "page": 2}],
-        source_system="porthouse-product",
+        source_system="joyhousebot-product",
         source_id="source-versioned",
         source_version="2",
         run_id="run-index-failed",
@@ -508,7 +516,7 @@ def test_knowledge_revision_rejects_stale_generation_after_newer_activation(
         source_url=None,
         title="Older snapshot",
         chunks=[{"text": "old generation content"}],
-        source_system="porthouse-product",
+        source_system="joyhousebot-product",
         source_id="source-ordered",
         source_version="1",
         source_generation=1,
@@ -524,7 +532,7 @@ def test_knowledge_revision_rejects_stale_generation_after_newer_activation(
         source_url=None,
         title="Newer snapshot",
         chunks=[{"text": "new generation content"}],
-        source_system="porthouse-product",
+        source_system="joyhousebot-product",
         source_id="source-ordered",
         source_version="1",
         source_generation=2,
@@ -620,7 +628,7 @@ async def test_context_port_failed_parse_attempt_preserves_active_projection(
         source_url="",
         title="Stable source",
         chunks=[{"text": "stable searchable projection"}],
-        source_system="porthouse-product",
+        source_system="joyhousebot-product",
         source_id="source-failure",
         source_version="1",
         source_generation=1,
@@ -628,9 +636,9 @@ async def test_context_port_failed_parse_attempt_preserves_active_projection(
     doc_id = await port.fail_knowledge_index(
         context,
         source_type="file",
-        source_url="porthouse-local://vault/source-failure.pdf",
+        source_url="joyhousebot-local://vault/source-failure.pdf",
         title="Broken replacement",
-        source_system="porthouse-product",
+        source_system="joyhousebot-product",
         source_id="source-failure",
         source_version="2",
         source_generation=2,
@@ -671,9 +679,9 @@ async def test_context_port_first_failed_parse_remains_visible_for_retry(
     doc_id = await port.fail_knowledge_index(
         context,
         source_type="file",
-        source_url="porthouse-cloud://vault/report.pdf",
+        source_url="joyhousebot-cloud://vault/report.pdf",
         title="Quarterly report",
-        source_system="porthouse-product",
+        source_system="joyhousebot-product",
         source_id="source-first-failure",
         source_version="4",
         source_generation=7,
@@ -697,7 +705,7 @@ class _KnowledgeSubmissionStore:
                 "ref": CapabilityRef(
                     "knowledge.index",
                     "1.0.0",
-                    CapabilityKind.TOOL,
+                    CapabilityKind.CAPABILITY,
                     "capability-context-assets",
                     "1.0.0",
                     "sha256:" + "a" * 64,
@@ -738,7 +746,7 @@ async def test_knowledge_index_request_compiles_to_capability_graph() -> None:
     record = await service.submit_index_request(
         context,
         {
-            "source_system": "porthouse-product",
+            "source_system": "joyhousebot-product",
             "source_id": "source-a",
             "source_version": "2",
             "source_generation": 2,
@@ -778,7 +786,7 @@ async def test_knowledge_index_request_freezes_runtime_input_assets() -> None:
     await service.submit_index_request(
         context,
         {
-            "source_system": "porthouse-product",
+            "source_system": "joyhousebot-product",
             "source_id": "source-file-a",
             "source_version": "1",
             "source_generation": 1,
@@ -826,9 +834,7 @@ def test_app_namespace_shares_source_id_with_personal_library(tmp_path: Path) ->
         )
 
     # 个人检索只看见 NULL namespace；App 检索只看见自己的 installation。
-    personal = repository.search(
-        user_id="owner-a", query="evidence", top_k=10
-    )
+    personal = repository.search(user_id="owner-a", query="evidence", top_k=10)
     assert {row["title"] for row in personal} == {"Personal digest"}
     app_radar = repository.search(
         user_id="owner-a", query="evidence", top_k=10, app_installation_id="appinst-radar"
@@ -845,9 +851,7 @@ def test_app_namespace_shares_source_id_with_personal_library(tmp_path: Path) ->
     ]
     assert [
         row["doc_id"]
-        for row in repository.list_documents(
-            user_id="owner-a", app_installation_id="appinst-radar"
-        )
+        for row in repository.list_documents(user_id="owner-a", app_installation_id="appinst-radar")
     ] == ["doc-appinst-radar"]
 
     # source-state 按 namespace 解析；doc_id 不同（身份哈希含 installation）
@@ -883,8 +887,8 @@ def test_app_namespace_shares_source_id_with_personal_library(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_app_knowledge_router_scopes_and_isolation(tmp_path: Path) -> None:
-    from tests.test_app_pack_control_plane import _manifest as base_manifest
+async def test_app_knowledge_router_is_not_exposed_to_products(tmp_path: Path) -> None:
+    from tests.test_app_release_control_plane import _manifest as base_manifest
 
     store = PostgresTestStore(tmp_path / "knowledge-app-router.db")
     repository = KnowledgeRepository(store)
@@ -899,18 +903,17 @@ async def test_app_knowledge_router_scopes_and_isolation(tmp_path: Path) -> None
     )
 
     # 安装一个声明 knowledge 权限的 App
-    from porthouse.application.app_packs import AppPackService
+    from joyhousebot.application.app_releases import AppReleaseService
 
-    service = AppPackService(store)
+    service = AppReleaseService(store)
     manifest = {
         **base_manifest(),
         "permissions": ["runs.submit", "knowledge.read", "knowledge.write"],
     }
+
     async def _prepare() -> str:
         await service.save_draft(manifest, actor_id="admin")
-        await service.publish(
-            "app.market-radar", "1.0.0", actor_id="admin", user_id="owner-a"
-        )
+        await service.publish("app.market-radar", "1.0.0", actor_id="admin", user_id="owner-a")
         installed = await service.install(
             "app.market-radar",
             "1.0.0",
@@ -941,69 +944,62 @@ async def test_app_knowledge_router_scopes_and_isolation(tmp_path: Path) -> None
     app_client, app_secret = store.create_app_client(
         app_id="app.market-radar",
         name="Market Radar SaaS",
-        allowed_scopes=["knowledge.read", "knowledge.write"],
+        allowed_scopes=["apps.read"],
         actor_id="admin",
     )
     from datetime import datetime, timedelta, timezone
 
-    grant = store.create_app_delegation_grant(
+    store.create_app_delegation_grant(
         client_id=app_client["client_id"],
         installation_id=installation_id,
         user_id="owner-a",
-        scopes=["knowledge.read", "knowledge.write"],
+        scopes=["apps.read"],
         expires_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
         actor_id="token:owner",
     )
-    store.create_api_access_token(
-        user_id="owner-a", actor_id="test", token="owner-a-token"
-    )
+    store.create_operator_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner = {"Authorization": "Bearer owner-a-token"}
     with client:
         exchanged = client.post(
-            "/v1/app-auth/token",
+            "/v2/app-auth/token",
             json={
                 "client_id": app_client["client_id"],
                 "client_secret": app_secret,
-                "grant_id": grant["grant_id"],
-                "scopes": ["knowledge.read", "knowledge.write"],
+                "installation_id": installation_id,
+                "scopes": ["apps.read"],
             },
         )
         assert exchanged.status_code == 200, exchanged.text
         delegated = {"Authorization": f"Bearer {exchanged.json()['access_token']}"}
 
-        # 委托 token 只看到 App namespace
+        # App products only use EntryPoint/Run/Artifact/Approval; knowledge is
+        # not a second product-facing data plane.
         listed = client.get(
-            f"/v1/apps/{installation_id}/knowledge/documents", headers=delegated
+            f"/control/v1/apps/{installation_id}/knowledge/documents", headers=delegated
         )
-        assert listed.status_code == 200, listed.text
-        assert [item["doc_id"] for item in listed.json()["items"]] == ["doc-app-lib"]
+        assert listed.status_code == 404
 
-        # 个人库对委托 token 不可达（scope 只有 knowledge.*，公共 /v1/knowledge 需要 api.read）
-        personal_surface = client.get("/v1/knowledge/documents", headers=delegated)
+        # 个人库对委托 token 不可达（scope 只有 knowledge.*，公共 /control/v1/knowledge 需要 api.read）
+        personal_surface = client.get("/control/v1/knowledge/documents", headers=delegated)
         assert personal_surface.status_code == 403
 
         # 隔离：App 检索搜不到个人文档
         search = client.get(
-            f"/v1/apps/{installation_id}/knowledge/search",
+            f"/control/v1/apps/{installation_id}/knowledge/search",
             headers=delegated,
             params={"q": "evidence"},
         )
-        assert search.status_code == 200, search.text
-        titles = {row["title"] for row in search.json()["items"]}
-        assert titles == {"App library note"}
+        assert search.status_code == 404
 
         # 别的 installation 路径 → 404
         other = client.get(
-            "/v1/apps/appinst-someone-else/knowledge/documents", headers=delegated
+            "/control/v1/apps/appinst-someone-else/knowledge/documents", headers=delegated
         )
         assert other.status_code == 404
 
-        # owner token（scope=*）可以跨 namespace 读取 App 库
+        # Even an Operator cannot recover a removed product API route.
         owner_listed = client.get(
-            f"/v1/apps/{installation_id}/knowledge/documents", headers=owner
+            f"/control/v1/apps/{installation_id}/knowledge/documents", headers=owner
         )
-        assert owner_listed.status_code == 200
-        assert [item["doc_id"] for item in owner_listed.json()["items"]] == [
-            "doc-app-lib"
-        ]
+        assert owner_listed.status_code == 404

@@ -9,21 +9,21 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.dispatcher import CapabilityDispatcher
-from porthouse.capabilities.tool_adapter import ToolCapabilityAdapter, ToolOutput
-from porthouse.config.schema import Config
-from porthouse.contracts import OperationProgressEvent, OperationReconciliationResult
-from porthouse.contracts.tools import Tool
-from porthouse.domain.capabilities import InvocationStatus
-from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from porthouse.runtime.context import ActionOutcomeUnknownError, ToolExecutionContext
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.session.runtime_manager import RuntimeSessionManager
-from tests.support.capabilities import register_tool_fixture, tool_definition
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter, ToolOutput
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts import OperationProgressEvent, OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.capabilities import InvocationStatus
+from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from joyhousebot.runtime.context import ActionOutcomeUnknownError, ToolExecutionContext
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_capability_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -220,7 +220,7 @@ async def test_runtime_automatically_resumes_due_operation(tmp_path: Path) -> No
         max_iterations=3,
         session_manager=RuntimeSessionManager(store),
     )
-    register_tool_fixture(executor.capabilities, tool)
+    register_capability_fixture(executor.capabilities, tool)
     runtime = NativeAgentRuntime(agent=executor, store=store)
     submitted = await runtime.submit_run(
         AgentOptions(
@@ -248,7 +248,7 @@ async def test_runtime_automatically_resumes_due_operation(tmp_path: Path) -> No
     assert tool.reconcile_calls == 2
     assert provider.calls == 2
     await runtime.close()
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 @pytest.mark.asyncio
@@ -308,16 +308,22 @@ async def test_progress_batch_is_deduplicated_and_cursor_is_fenced(tmp_path: Pat
         )
     record = store.get_action_reconciliation(raised.value.action_id)
     assert record is not None
-    claimed = store.claim_operation_reconciliation(
-        record.reconciliation_id, worker_id="worker-a"
-    )
+    claimed = store.claim_operation_reconciliation(record.reconciliation_id, worker_id="worker-a")
     assert claimed is not None
     event = OperationProgressEvent(
         event_id="provider-event-1",
         sequence=1,
         event_type="operation.progress",
         summary="half way",
-        payload={"safe": True},
+        payload={
+            "completed": 7,
+            "total": 20,
+            "current_position": 8,
+            "current_label": "第八篇",
+            "next_position": 9,
+            "next_label": "第九篇",
+            "provider_secret": "must-not-leak",
+        },
     )
     saved = store.persist_operation_reconciliation_observation(
         record.reconciliation_id,
@@ -341,15 +347,16 @@ async def test_progress_batch_is_deduplicated_and_cursor_is_fenced(tmp_path: Pat
         events=[event],
     )
     assert duplicate is not None
-    assert len(
-        store.list_operation_reconciliation_events(
-            record.reconciliation_id, expected_user_id="user-a"
+    assert (
+        len(
+            store.list_operation_reconciliation_events(
+                record.reconciliation_id, expected_user_id="user-a"
+            )
         )
-    ) == 1
+        == 1
+    )
     runtime_events = store.list_runtime_events(context.run_id)
-    assert sum(
-        item.type == "operation.reconciliation_progress" for item in runtime_events
-    ) == 1
+    assert sum(item.type == "operation.reconciliation_progress" for item in runtime_events) == 1
 
     assert store.defer_operation_reconciliation(
         record.reconciliation_id,
@@ -372,15 +379,66 @@ async def test_progress_batch_is_deduplicated_and_cursor_is_fenced(tmp_path: Pat
     assert stale is None
     current = store.get_operation_reconciliation(record.reconciliation_id)
     assert current is not None and current.provider_cursor == "cursor-1"
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="progress-token")
+    store.create_operator_access_token(user_id="user-a", actor_id="test", token="progress-token")
+    store.create_api_access_token(
+        user_id="user-a",
+        actor_id="test",
+        token="public-progress-token",
+        scopes=["runs.read"],
+    )
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     with client:
         response = client.get(
-            f"/v1/runs/{context.run_id}/operations/{record.reconciliation_id}/events",
+            f"/control/v1/runs/{context.run_id}/operations/{record.reconciliation_id}/events",
             headers={"Authorization": "Bearer progress-token"},
+        )
+        public = client.get(
+            f"/v2/runs/{context.run_id}/operations",
+            headers={"Authorization": "Bearer public-progress-token"},
         )
     assert response.status_code == 200
     assert response.json()["items"][0]["event_id"] == "provider-event-1"
+    assert public.status_code == 200
+    progress = public.json()["items"][0]
+    assert progress["completed"] == 7
+    assert progress["total"] == 20
+    assert progress["current_item"] == {"position": 8, "label": "第八篇"}
+    assert progress["next_item"] == {"position": 9, "label": "第九篇"}
+    assert "provider_secret" not in public.text
+
+
+@pytest.mark.asyncio
+async def test_provider_pending_observation_does_not_consume_failure_budget(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "operation-pending-budget.db")
+    _, context = _claimed_context(store, "run-operation-pending-budget")
+    dispatcher = CapabilityDispatcher(store)
+    with pytest.raises(ActionOutcomeUnknownError) as raised:
+        await dispatcher.invoke_tool(
+            _adapter(_AsyncOperationTool()), {"value": "one"}, context=context
+        )
+    record = store.get_action_reconciliation(raised.value.action_id)
+    assert record is not None
+
+    for index in range(record.max_attempts + 5):
+        claimed = store.claim_operation_reconciliation(
+            record.reconciliation_id, worker_id=f"worker-{index}"
+        )
+        assert claimed is not None
+        assert store.defer_operation_reconciliation(
+            record.reconciliation_id,
+            worker_id=f"worker-{index}",
+            lease_version=claimed.lease_version,
+            retry_after_seconds=0,
+            last_error={"code": "OPERATION_PENDING", "message": "still running"},
+            consume_attempt=False,
+        )
+
+    current = store.get_operation_reconciliation(record.reconciliation_id)
+    assert current is not None
+    assert current.status == "pending"
+    assert current.attempt_count == 0
 
 
 @pytest.mark.asyncio
@@ -401,14 +459,14 @@ async def test_manual_reconciliation_api_is_owner_scoped(tmp_path: Path) -> None
         worker_id="worker-one",
         lease_version=run.lease_version,
     )
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
-    store.create_api_access_token(user_id="user-b", actor_id="test", token="token-b")
+    store.create_operator_access_token(user_id="user-a", actor_id="test", token="token-a")
+    store.create_operator_access_token(user_id="user-b", actor_id="test", token="token-b")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
 
     with client:
         owner = {"Authorization": "Bearer token-a"}
         foreign = {"Authorization": "Bearer token-b"}
-        path = f"/v1/runs/{run.run_id}/operations"
+        path = f"/control/v1/runs/{run.run_id}/operations"
         assert client.get(path, headers=owner).json()["items"][0]["status"] == "manual_required"
         assert client.get(path, headers=foreign).status_code == 404
         resolved = client.post(
@@ -423,9 +481,7 @@ async def test_manual_reconciliation_api_is_owner_scoped(tmp_path: Path) -> None
         assert resolved.status_code == 200
         assert resolved.json()["reconciliation"]["status"] == "succeeded"
         assert resolved.json()["run"]["status"] == "queued"
-    assert store.get_action_observation(record.action_id).result["data"] == {
-        "receipt": "receipt-1"
-    }
+    assert store.get_action_observation(record.action_id).result["data"] == {"receipt": "receipt-1"}
 
 
 @pytest.mark.asyncio
@@ -477,9 +533,7 @@ async def test_operator_reconciliation_requires_control_permission(
     run, context = _claimed_context(store, "run-operation-operator")
     dispatcher = CapabilityDispatcher(store)
     with pytest.raises(ActionOutcomeUnknownError) as raised:
-        await dispatcher.invoke_tool(
-            _adapter(_OpaqueAsyncTool()), {}, context=context
-        )
+        await dispatcher.invoke_tool(_adapter(_OpaqueAsyncTool()), {}, context=context)
     record = store.get_action_reconciliation(raised.value.action_id)
     assert record is not None
     with store._pool.connection() as connection:
@@ -496,10 +550,15 @@ async def test_operator_reconciliation_requires_control_permission(
         worker_id="worker-one",
         lease_version=run.lease_version,
     )
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
-    monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "operator-token")
+    store.create_api_access_token(
+        user_id="user-a",
+        actor_id="test",
+        token="token-a",
+        principal_kind="owner",
+    )
+    monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "operator-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
-    path = f"/v1/runs/{run.run_id}/operations/{record.reconciliation_id}/resolve"
+    path = f"/control/v1/runs/{run.run_id}/operations/{record.reconciliation_id}/resolve"
 
     with client:
         denied = client.post(
@@ -513,6 +572,7 @@ async def test_operator_reconciliation_requires_control_permission(
             headers={
                 "Authorization": "Bearer operator-token",
                 "X-Impersonate-User-ID": "user-a",
+                "X-Impersonation-Reason": "Resolve a stuck external operation",
             },
             json={"resolution": "confirm_failed", "note": "provider rejected it"},
         )

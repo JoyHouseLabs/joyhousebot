@@ -1,9 +1,9 @@
 <template>
-  <div class="app-shell" :class="{ 'chat-active': route.path === '/chat', 'sidebar-collapsed': sidebarCollapsed }">
+  <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="app-sidebar">
-      <router-link class="brand" to="/work">
-        <img :src="logoSrc" alt="Porthouse" />
-        <div><strong>Porthouse</strong><span>AI Work Center</span></div>
+      <router-link class="brand" to="/overview">
+        <img :src="logoSrc" alt="joyhousebot" />
+        <div><strong>joyhousebot</strong><span>Runtime Control Plane</span></div>
       </router-link>
 
       <div class="sidebar-scroll">
@@ -35,9 +35,9 @@
       </details>
     </aside>
 
-    <section class="app-stage" :class="{ 'chat-active': route.path === '/chat' }">
+    <section class="app-stage">
       <header class="app-topbar">
-        <div class="mobile-brand"><img :src="logoSrc" alt="" /><strong>Porthouse</strong></div>
+        <div class="mobile-brand"><img :src="logoSrc" alt="" /><strong>joyhousebot</strong></div>
         <button class="sidebar-toggle" type="button" :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSidebar">
           {{ sidebarCollapsed ? '›' : '‹' }}
         </button>
@@ -56,7 +56,7 @@
           {{ theme === 'dark' ? '☀' : '☾' }}
         </button>
       </header>
-      <main class="app-content" :class="{ 'chat-active': route.path === '/chat' }"><router-view /></main>
+      <main class="app-content"><router-view /></main>
       <nav class="mobile-nav" aria-label="移动导航">
         <router-link v-for="center in consoleCenters" :key="center.id" :to="center.to" :class="{ active: activeCenter.id === center.id }">
           <span>{{ center.icon }}</span><small>{{ center.mobileLabel }}</small>
@@ -76,7 +76,7 @@ import { getIdentity } from '../api/monitoring'
 import { clearImpersonationTarget, getImpersonationTarget, getRuntimeUserId } from '../api/identity'
 import { centerForPath, consoleCenters } from '../navigation/centers'
 
-const logoSrc = `${import.meta.env.BASE_URL}porthouse.png`
+const logoSrc = `${import.meta.env.BASE_URL}joyhousebot.png`
 const operatorUserId = getRuntimeUserId()
 const resolvedUserId = ref(getImpersonationTarget() || operatorUserId)
 const actorUserId = ref(operatorUserId)
@@ -84,11 +84,11 @@ const route = useRoute()
 const router = useRouter()
 
 type Theme = 'dark' | 'light'
-const theme = ref<Theme>((localStorage.getItem('porthouse-ui-theme') as Theme) || 'dark')
+const theme = ref<Theme>((localStorage.getItem('joyhousebot-ui-theme') as Theme) || 'dark')
 const apiHealthy = ref(false)
 const dbHealthy = ref(false)
 const identityRole = ref('USER')
-const sidebarCollapsed = ref(localStorage.getItem('porthouse-sidebar-collapsed') === '1')
+const sidebarCollapsed = ref(localStorage.getItem('joyhousebot-sidebar-collapsed') === '1')
 let healthTimer: number | null = null
 
 const activeCenter = computed(() => centerForPath(route.path))
@@ -104,7 +104,7 @@ const healthText = computed(() => {
 })
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', theme.value)
-  localStorage.setItem('porthouse-ui-theme', theme.value)
+  localStorage.setItem('joyhousebot-ui-theme', theme.value)
 }
 
 function toggleTheme() {
@@ -114,14 +114,14 @@ function toggleTheme() {
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
-  localStorage.setItem('porthouse-sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
+  localStorage.setItem('joyhousebot-sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
 }
 
 async function logout() {
   await logoutAdmin().catch(() => undefined)
   clearControlToken()
   clearImpersonationTarget()
-  localStorage.removeItem('porthouse_auth_session')
+  localStorage.removeItem('joyhousebot_auth_session')
   void router.replace('/login')
 }
 

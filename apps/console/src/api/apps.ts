@@ -3,16 +3,16 @@ import { apiFetch } from './http'
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body !== undefined) headers.set('Content-Type', 'application/json')
-  const response = await apiFetch(`/v1/admin/apps${path}`, { ...init, headers })
+  const response = await apiFetch(`/control/v1/admin/apps${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload?.detail || payload?.error?.message || 'App Pack 请求失败')
+  if (!response.ok) throw new Error(payload?.detail || payload?.error?.message || 'App Package 请求失败')
   return payload as T
 }
 
-async function publicRequest<T>(path: string, init?: RequestInit): Promise<T> {
+async function controlRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body !== undefined) headers.set('Content-Type', 'application/json')
-  const response = await apiFetch(`/v1${path}`, { ...init, headers })
+  const response = await apiFetch(`/control/v1${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.detail || payload?.error?.message || 'App 请求失败')
   return payload as T
@@ -41,60 +41,6 @@ export interface AppRelease {
   published_at?: string | null
 }
 
-export interface MarketRegistry {
-  registry_id: string
-  market_id: string
-  base_url: string
-  status: 'active' | 'disabled' | 'compromised'
-  protocol_version: string
-  discovery: Record<string, any>
-  policy: Record<string, any>
-  auth_token_ref: string
-  last_refreshed_at?: string | null
-}
-
-export interface MarketInstallationKey {
-  registry_id: string
-  user_id: string
-  key_id: string
-  public_key: string
-  key_thumbprint: string
-  status: string
-}
-
-export interface AppAcquisition {
-  acquisition_id: string
-  registry_id: string
-  publisher_id: string
-  app_id: string
-  requested_version: string
-  resolved_version: string
-  channel: 'stable' | 'beta' | 'security'
-  status: 'requested' | 'resolving' | 'fetching' | 'verifying' | 'staged' | 'awaiting_acceptance' | 'imported' | 'rejected' | 'quarantined' | 'failed'
-  acquisition_policy: 'manual' | 'download' | 'stage'
-  verification_report: Record<string, any>
-  permission_diff: Record<string, any>
-  bundle_digest: string
-  error?: { type?: string; message?: string } | null
-  updated_at?: string | null
-}
-
-export interface UpdateSubscription {
-  subscription_id: string
-  installation_id: string
-  registry_id: string
-  publisher_id: string
-  app_id: string
-  channel: 'stable' | 'beta' | 'security'
-  version_constraint: string
-  policy: 'notify' | 'download' | 'stage' | 'activate_safe'
-  status: 'active' | 'paused' | 'removed'
-  current_version: string
-  latest_release: Record<string, any>
-  last_error?: { type?: string; message?: string } | null
-  last_checked_at?: string | null
-}
-
 export interface AppInstallation {
   installation_id: string
   app_id: string
@@ -119,8 +65,7 @@ export interface AppClient {
   created_at: string
 }
 
-export interface AppGrant {
-  grant_id: string
+export interface AppAuthorization {
   client_id: string
   installation_id: string
   scopes: string[]
@@ -164,67 +109,10 @@ export interface AppUsage {
   declared_meters: Array<Record<string, any>>
 }
 
-export const listAppPacks = async () => (await request<{ items: AppRelease[] }>('')).items
+export const listAppReleases = async () => (await request<{ items: AppRelease[] }>('')).items
 export const listAppInstallations = async () => (
   await request<{ items: AppInstallation[] }>('/installations/mine')
 ).items
-export const listMarketRegistries = async () => (
-  await request<{ items: MarketRegistry[] }>('/market/registries')
-).items
-export const registerMarketRegistry = (value: {
-  base_url: string
-  trusted_root: Record<string, any>
-  discovery: Record<string, any>
-  auth_token_ref?: string
-  policy?: Record<string, any>
-}) => request<MarketRegistry>('/market/registries', {
-  method: 'POST', body: JSON.stringify(value),
-})
-export const ensureMarketInstallationKey = (registryId: string) => request<MarketInstallationKey>(
-  `/market/registries/${encodeURIComponent(registryId)}/installation-key`,
-  { method: 'POST' },
-)
-export const listAppAcquisitions = async () => (
-  await request<{ items: AppAcquisition[] }>('/market/acquisitions')
-).items
-export const acquireMarketApp = (value: {
-  registry_id: string
-  publisher_id: string
-  app_id: string
-  version?: string | null
-  channel: 'stable' | 'beta' | 'security'
-  offer_id?: string | null
-  entitlement?: Record<string, any> | null
-}) => request<AppAcquisition>('/market/acquisitions', {
-  method: 'POST',
-  headers: { 'Idempotency-Key': `console-market-${crypto.randomUUID()}` },
-  body: JSON.stringify(value),
-})
-export const actOnAppAcquisition = (
-  acquisitionId: string,
-  action: 'accept' | 'reject',
-) => request<AppAcquisition>(
-  `/market/acquisitions/${encodeURIComponent(acquisitionId)}/actions`,
-  { method: 'POST', body: JSON.stringify({ action }) },
-)
-export const listUpdateSubscriptions = async () => (
-  await request<{ items: UpdateSubscription[] }>('/market/update-subscriptions')
-).items
-export const saveUpdateSubscription = (value: {
-  installation_id: string
-  registry_id: string
-  publisher_id: string
-  app_id: string
-  channel: 'stable' | 'beta' | 'security'
-  version_constraint: string
-  policy: 'notify' | 'download' | 'stage'
-  allow_security_patch_download: boolean
-  allow_auto_stage: boolean
-  allow_auto_activate: false
-}) => request<UpdateSubscription>(
-  `/market/update-subscriptions/${encodeURIComponent(value.installation_id)}`,
-  { method: 'PUT', body: JSON.stringify(value) },
-)
 export const saveAppRelease = (manifest: Record<string, any>) => request<AppRelease>(
   `/${encodeURIComponent(manifest.app_id)}/releases/${encodeURIComponent(manifest.version)}`,
   { method: 'PUT', body: JSON.stringify({ manifest }) },
@@ -237,7 +125,7 @@ export const publishAppRelease = (appId: string, version: string) => request<App
   `/${encodeURIComponent(appId)}/releases/${encodeURIComponent(version)}/publish`,
   { method: 'POST' },
 )
-export const installAppPack = (release: AppRelease, configuration: Record<string, unknown> = {}) => request<AppInstallation>(
+export const installAppRelease = (release: AppRelease, configuration: Record<string, unknown> = {}) => request<AppInstallation>(
   `/${encodeURIComponent(release.app_id)}/install`,
   {
     method: 'POST',
@@ -248,7 +136,7 @@ export const installAppPack = (release: AppRelease, configuration: Record<string
     }),
   },
 )
-export const transitionAppPack = (
+export const transitionAppInstallation = (
   installationId: string,
   action: 'activate' | 'disable' | 'rollback' | 'uninstall',
 ) => request<AppInstallation>(
@@ -268,31 +156,33 @@ export const rotateAppClientSecret = (clientId: string) => request<AppClient>(
 export const revokeAppClient = (clientId: string) => request<{ revoked: boolean }>(
   `/clients/${encodeURIComponent(clientId)}`, { method: 'DELETE' },
 )
-export const getAppUsage = (installationId: string) => publicRequest<AppUsage>(
+export const getAppUsage = (installationId: string) => controlRequest<AppUsage>(
   `/apps/${encodeURIComponent(installationId)}/usage`,
 )
 export const listAppCallbacks = async (installationId: string) => (
-  await publicRequest<{ items: AppCallback[] }>(`/apps/${encodeURIComponent(installationId)}/callbacks`)
+  await controlRequest<{ items: AppCallback[] }>(`/apps/${encodeURIComponent(installationId)}/callbacks`)
 ).items
-export const registerAppCallback = (installationId: string, value: { endpoint: string; secret_ref: string; events: string[]; max_attempts: number }) => publicRequest<AppCallback>(
+export const registerAppCallback = (installationId: string, value: { endpoint: string; secret_ref: string; events: string[]; max_attempts: number }) => controlRequest<AppCallback>(
   `/apps/${encodeURIComponent(installationId)}/callbacks`, { method: 'POST', body: JSON.stringify(value) },
 )
-export const revokeAppCallback = (installationId: string, callbackId: string) => publicRequest<{ revoked: boolean }>(
+export const revokeAppCallback = (installationId: string, callbackId: string) => controlRequest<{ revoked: boolean }>(
   `/apps/${encodeURIComponent(installationId)}/callbacks/${encodeURIComponent(callbackId)}`, { method: 'DELETE' },
 )
-export const listAppGrants = async (installationId: string) => (
-  await publicRequest<{ items: AppGrant[] }>(`/apps/${encodeURIComponent(installationId)}/delegations`)
+export const listAppAuthorizations = async (installationId: string) => (
+  await controlRequest<{ items: AppAuthorization[] }>(`/apps/${encodeURIComponent(installationId)}/authorizations`)
 ).items
-export const authorizeAppGrant = (installationId: string, value: { client_id: string; scopes: string[]; expires_at: string }) => publicRequest<AppGrant>(
-  `/apps/${encodeURIComponent(installationId)}/delegations`, { method: 'POST', body: JSON.stringify(value) },
+export const authorizeAppInstallation = (installationId: string, value: { client_id: string; scopes: string[]; expires_at: string }) => controlRequest<AppAuthorization>(
+  `/apps/${encodeURIComponent(installationId)}/authorizations/${encodeURIComponent(value.client_id)}`,
+  { method: 'PUT', body: JSON.stringify({ scopes: value.scopes, expires_at: value.expires_at }) },
 )
-export const revokeAppGrant = (grantId: string) => publicRequest<{ revoked: boolean }>(
-  `/apps/delegations/${encodeURIComponent(grantId)}`, { method: 'DELETE' },
+export const revokeAppAuthorization = (installationId: string, clientId: string) => controlRequest<{ revoked: boolean }>(
+  `/apps/${encodeURIComponent(installationId)}/authorizations/${encodeURIComponent(clientId)}`,
+  { method: 'DELETE' },
 )
 export const listRunAppCallbacks = async (runId: string) => (
-  await publicRequest<{ items: AppCallbackDelivery[] }>(`/runs/${encodeURIComponent(runId)}/app-callbacks`)
+  await controlRequest<{ items: AppCallbackDelivery[] }>(`/runs/${encodeURIComponent(runId)}/app-callbacks`)
 ).items
-export const replayRunAppCallback = (runId: string, eventId: string) => publicRequest<AppCallbackDelivery>(
+export const replayRunAppCallback = (runId: string, eventId: string) => controlRequest<AppCallbackDelivery>(
   `/runs/${encodeURIComponent(runId)}/app-callbacks/${encodeURIComponent(eventId)}/replay`,
   { method: 'POST', headers: { 'Idempotency-Key': `console-replay-${crypto.randomUUID()}` } },
 )

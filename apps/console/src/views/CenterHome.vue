@@ -52,7 +52,7 @@
     </section>
 
     <section class="center-map">
-      <div class="center-section-heading compact"><div><span class="eyebrow">SIX CENTERS</span><h2>切换中心</h2></div></div>
+      <div class="center-section-heading compact"><div><span class="eyebrow">CONTROL PLANE</span><h2>切换控制面</h2></div></div>
       <div class="center-map-grid">
         <router-link v-for="item in consoleCenters" :key="item.id" :to="item.to" :class="{ active: item.id === center.id }">
           <span>{{ item.icon }}</span><div><strong>{{ item.label }}</strong><small>{{ item.caption }}</small></div>

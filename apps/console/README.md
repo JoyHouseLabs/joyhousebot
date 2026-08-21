@@ -1,6 +1,6 @@
-# Porthouse Runtime Console
+# joyhousebot Runtime Console
 
-控制台用于 Porthouse 的平台运行、管理、监控与配置，同时提供 Agent 在线试用。它只消费版本化 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE。
+控制台用于 joyhousebot 的平台运行、管理、监控与配置，同时提供 Agent 在线试用。它只消费版本化 `/v1` HTTP API、`/healthz`、`/readyz` 和 Run SSE。
 
 ## 页面
 
@@ -26,9 +26,9 @@ npm ci
 npm run dev
 ```
 
-若只调试 Console API 适配，可改为自行启动 `uv run porthouse api --port 18790 --config ./config.json`；该命令仍需要已可用的 PostgreSQL 与有效配置，且不会启动 Agent Worker。
+若只调试 Console API 适配，可改为自行启动 `uv run joyhousebot api --port 18790 --config ./config.json`；该命令仍需要已可用的 PostgreSQL 与有效配置，且不会启动 Agent Worker。
 
-访问 `http://localhost:5178/ui/overview`。Vite 将 `/v1`、`/healthz` 和 `/readyz` 代理到 18790。无 Token 的开发模式默认使用测试用户 `porthouse`；后端仅在显式 insecure 模式把该用户引导为管理员。生产环境使用 Bearer Token。operator token 打开控制台时，同一个浏览器身份会作为 `X-Impersonate-User-ID`，普通用户 token 的服务端身份始终优先。
+访问 `http://localhost:5178/ui/overview`。Vite 将 `/v1`、`/healthz` 和 `/readyz` 代理到 18790。无 Token 的开发模式默认使用测试用户 `joyhousebot`；后端仅在显式 insecure 模式把该用户引导为管理员。生产环境使用 Bearer Token。operator token 打开控制台时，同一个浏览器身份会作为 `X-Impersonate-User-ID`，普通用户 token 的服务端身份始终优先。
 
 ## 验证和打包
 
@@ -38,4 +38,4 @@ npm run build
 ./scripts/build-ui.sh
 ```
 
-最后一条命令在仓库根目录执行，将产物同步到 FastAPI 挂载的 `porthouse/static/ui`。
+最后一条命令在仓库根目录执行，将产物同步到 FastAPI 挂载的 `joyhousebot/static/ui`。

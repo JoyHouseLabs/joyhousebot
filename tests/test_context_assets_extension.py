@@ -3,10 +3,10 @@
 from types import SimpleNamespace
 
 import pytest
-from porthouse_capability_context_assets import plugin as context_assets
+from joyhousebot_capability_context_assets import extension as context_assets
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.extension_sdk import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.extension_sdk import CapabilityContext
 
 
 class _FakeContextServices:
@@ -53,8 +53,8 @@ def _context(**overrides):
 
 
 def test_context_assets_registers_scoped_versioned_capabilities() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(context_assets.ContextAssetsPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(context_assets.ContextAssetsExtension())
     definitions = {item.ref.capability_id: item for item in registry.list_capabilities()}
     assert set(definitions) == {
         "fetch_url_to_knowledgebase",
@@ -63,7 +63,7 @@ def test_context_assets_registers_scoped_versioned_capabilities() -> None:
         "retrieve",
     }
     assert definitions["fetch_url_to_knowledgebase"].side_effect == "write"
-    assert definitions["fetch_url_to_knowledgebase"].ref.plugin_id == ("capability-context-assets")
+    assert definitions["fetch_url_to_knowledgebase"].ref.extension_id == ("capability-context-assets")
     assert definitions["knowledge.index"].side_effect == "internal"
     attachment_schema = definitions["knowledge.index"].input_schema["properties"]["attachments"][
         "items"
@@ -84,7 +84,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
             idempotency_key="knowledge:source-a:2",
         ),
         {
-            "source_system": "porthouse-product",
+            "source_system": "joyhousebot-product",
             "source_id": "source-a",
             "source_version": "2",
             "source_generation": 2,
@@ -103,7 +103,7 @@ async def test_knowledge_index_capability_preserves_snapshot_and_run_identity() 
     )
     assert result.success is True
     assert result.write_receipt.idempotency_key == "knowledge:source-a:2"
-    assert services.indexed["source_system"] == "porthouse-product"
+    assert services.indexed["source_system"] == "joyhousebot-product"
     assert services.indexed["source_id"] == "source-a"
     assert services.indexed["source_version"] == "2"
     assert services.indexed["source_generation"] == 2
@@ -136,7 +136,7 @@ async def test_knowledge_index_failure_records_current_chunker_version(
             idempotency_key="knowledge:source-failed:1",
         ),
         {
-            "source_system": "porthouse-product",
+            "source_system": "joyhousebot-product",
             "source_id": "source-failed",
             "source_version": "1",
             "source_generation": 1,
@@ -234,7 +234,7 @@ async def test_knowledge_index_records_parser_failure_on_the_runtime_port() -> N
             idempotency_key="knowledge:source-file:3",
         ),
         {
-            "source_system": "porthouse-product",
+            "source_system": "joyhousebot-product",
             "source_id": "source-file",
             "source_version": "3",
             "source_generation": 3,
@@ -246,7 +246,7 @@ async def test_knowledge_index_records_parser_failure_on_the_runtime_port() -> N
             "attachments": [
                 {
                     "reference_kind": "local_vault",
-                    "uri": "porthouse-local://vault/private.docx",
+                    "uri": "joyhousebot-local://vault/private.docx",
                     "display_name": "private.docx",
                 }
             ],

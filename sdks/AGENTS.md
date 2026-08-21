@@ -1,4 +1,4 @@
-# Porthouse SDK 协作说明
+# joyhousebot SDK 协作说明
 
 本目录只保存跨语言公开契约和客户端工具，不承载 Runtime 状态机、业务 App 或供应商实现。
 

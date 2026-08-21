@@ -1,10 +1,10 @@
 from typing import Any
 
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.capabilities.dispatcher import capability_result_prompt
-from porthouse.contracts.tools import Tool
-from porthouse.runtime.context import ToolExecutionContext
-from tests.support.capabilities import register_tool_fixture
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.capabilities.dispatcher import capability_result_prompt
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.runtime.context import ToolExecutionContext
+from tests.support.capabilities import register_capability_fixture
 
 
 class SampleTool(Tool):
@@ -108,7 +108,7 @@ def test_validate_params_supports_union_types_and_array_bounds() -> None:
 async def test_registry_returns_validation_error() -> None:
     reg = CapabilityRegistry()
     tool = SampleTool()
-    register_tool_fixture(reg, tool)
+    register_capability_fixture(reg, tool)
     result = await reg.invoke_tool(
         "sample",
         {"query": "hi"},

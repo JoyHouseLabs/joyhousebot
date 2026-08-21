@@ -30,7 +30,7 @@ export interface PromptRevision {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   Object.entries(getIdentityHeaders()).forEach(([key, value]) => headers.set(key, value))
-  const response = await apiFetch(`/v1/admin/prompts${path}`, { ...init, headers })
+  const response = await apiFetch(`/control/v1/admin/prompts${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.error?.message ?? payload?.detail ?? 'Prompt API 调用失败')
   return payload as T

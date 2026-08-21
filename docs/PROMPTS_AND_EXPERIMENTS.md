@@ -23,10 +23,10 @@ Prompt ID 以 `prompt.` 开头。每个 Revision 包含不可变的内容摘要�
 
 控制 API：
 
-- `PUT /v1/admin/prompts/{prompt_id}/versions/{version}` 保存草稿
-- `POST /v1/admin/prompts/{prompt_id}/versions/{version}/validate` 保存结构验证证据
-- `POST /v1/admin/prompts/{prompt_id}/versions/{version}/publish` 发布（受 `prompt` Eval gate 约束）
-- `PUT /v1/admin/prompts/bindings` 绑定到已发布 Agent Revision
+- `PUT /control/v1/admin/prompts/{prompt_id}/versions/{version}` 保存草稿
+- `POST /control/v1/admin/prompts/{prompt_id}/versions/{version}/validate` 保存结构验证证据
+- `POST /control/v1/admin/prompts/{prompt_id}/versions/{version}/publish` 发布（受 `prompt` Eval gate 约束）
+- `PUT /control/v1/admin/prompts/bindings` 绑定到已发布 Agent Revision
 
 Run snapshot 中记录 Prompt revision、摘要和精确文本；对 Tool/Connector 仅透出 revision/digest，不透出完整 Prompt 内容。
 
@@ -51,10 +51,10 @@ Experiment assignment 表只保存不可逆 `subject_hash`，不保存原始 use
 
 控制 API：
 
-- `PUT /v1/admin/experiments/{experiment_id}` 保存 draft
-- `POST /v1/admin/experiments/{experiment_id}/start` 校验并启动
-- `PUT /v1/admin/experiments/{experiment_id}/status` 暂停或停止
-- `GET /v1/admin/experiments/{experiment_id}/summary` 查看结果并执行护栏检查
+- `PUT /control/v1/admin/experiments/{experiment_id}` 保存 draft
+- `POST /control/v1/admin/experiments/{experiment_id}/start` 校验并启动
+- `PUT /control/v1/admin/experiments/{experiment_id}/status` 暂停或停止
+- `GET /control/v1/admin/experiments/{experiment_id}/summary` 查看结果并执行护栏检查
 
 ## 后续扩展边界
 

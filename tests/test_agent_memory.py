@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from porthouse.services.memory.store import L0_ABSTRACT_FILENAME, MemoryStore
+from joyhousebot.services.memory.store import L0_ABSTRACT_FILENAME, MemoryStore
 from tests.support.postgres_store import PostgresTestStore
 
 

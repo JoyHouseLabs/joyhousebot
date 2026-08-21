@@ -6,7 +6,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRONTEND="$ROOT/apps/console"
-STATIC="$ROOT/porthouse/static/ui"
+STATIC="$ROOT/joyhousebot/static/ui"
 
 cd "$FRONTEND"
 if ! command -v npm &>/dev/null; then

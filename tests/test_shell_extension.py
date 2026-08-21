@@ -1,11 +1,11 @@
 """Contracts for the optional fail-closed shell capability."""
 
 import pytest
-from porthouse_capability_shell import plugin as shell
+from joyhousebot_capability_shell import extension as shell
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.capabilities.services import CapabilityServiceBroker
-from porthouse.extension_sdk import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.capabilities.services import CapabilityServiceBroker
+from joyhousebot.extension_sdk import CapabilityContext
 
 
 class _FakeSandboxServices:
@@ -36,13 +36,13 @@ def _context(services, **overrides):
 
 
 def test_shell_extension_registers_non_idempotent_external_capability() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(shell.ShellCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(shell.ShellCapabilityExtension())
     definition, _handler = registry.get("exec", "1.0.0")
     assert definition.side_effect == "external"
     assert definition.idempotent is False
     assert definition.retryable is False
-    assert definition.ref.plugin_id == "capability-shell"
+    assert definition.ref.extension_id == "capability-shell"
     assert registry.manifests()[0].execution_isolation == "container"
 
 
@@ -93,7 +93,7 @@ async def test_core_sandbox_service_rejects_network_enablement(tmp_path, monkeyp
     async def available():
         return True
 
-    monkeypatch.setattr("porthouse.capabilities.services.sandbox.is_docker_available", available)
+    monkeypatch.setattr("joyhousebot.capabilities.services.sandbox.is_docker_available", available)
     services = CapabilityServiceBroker(None, scratch_root=tmp_path)
     result = await services.sandbox.execute(
         _context(services),

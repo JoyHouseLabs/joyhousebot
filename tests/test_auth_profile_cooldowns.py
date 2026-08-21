@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from porthouse.agent.auth_profiles import (
+from joyhousebot.agent.auth_profiles import (
     classify_failover_reason,
     is_profile_available,
     mark_profile_failure,

@@ -5,11 +5,11 @@ import time
 
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.api.routers import auth as auth_router
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.security.admin_auth import (
+from joyhousebot.api.app import create_app
+from joyhousebot.api.routers import auth as auth_router
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.security.admin_auth import (
     _hotp,
     decrypt_totp_secret,
     encrypt_totp_secret,
@@ -45,12 +45,12 @@ def test_password_hash_and_totp_primitives() -> None:
 
 
 def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
-    bootstrap_password = "porthouse-bootstrap-password"
-    new_password = "porthouse-secure-password-2026"
-    monkeypatch.setenv("PORTHOUSE_BOOTSTRAP_ADMIN_USER", "platform-admin")
-    monkeypatch.setenv("PORTHOUSE_BOOTSTRAP_ADMIN_PASSWORD", bootstrap_password)
+    bootstrap_password = "joyhousebot-bootstrap-password"
+    new_password = "joyhousebot-secure-password-2026"
+    monkeypatch.setenv("JOYHOUSEBOT_BOOTSTRAP_ADMIN_USER", "platform-admin")
+    monkeypatch.setenv("JOYHOUSEBOT_BOOTSTRAP_ADMIN_PASSWORD", bootstrap_password)
     monkeypatch.setenv(
-        "PORTHOUSE_AUTH_ENCRYPTION_KEY",
+        "JOYHOUSEBOT_AUTH_ENCRYPTION_KEY",
         base64.urlsafe_b64encode(b"a" * 32).decode("ascii"),
     )
     fixed_recovery_codes = [
@@ -73,7 +73,7 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
 
     with TestClient(app) as client:
         login = client.post(
-            "/v1/auth/login",
+            "/control/v1/auth/login",
             json={"user_id": "platform-admin", "password": bootstrap_password},
         )
         assert login.status_code == 200
@@ -81,11 +81,11 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
         assert first["status"] == "authenticated"
         assert first["must_change_password"] is True
         first_headers = {"Authorization": f"Bearer {first['token']}"}
-        assert client.get("/v1/me", headers=first_headers).status_code == 403
-        assert client.get("/v1/auth/status", headers=first_headers).status_code == 200
+        assert client.get("/control/v1/me", headers=first_headers).status_code == 403
+        assert client.get("/control/v1/auth/status", headers=first_headers).status_code == 200
 
         changed = client.post(
-            "/v1/auth/password",
+            "/control/v1/auth/password",
             headers=first_headers,
             json={"current_password": bootstrap_password, "new_password": new_password},
         )
@@ -93,22 +93,23 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
         current = changed.json()
         assert current["status"] == "authenticated"
         headers = {"Authorization": f"Bearer {current['token']}"}
-        identity = client.get("/v1/me", headers=headers)
+        identity = client.get("/control/v1/me", headers=headers)
         assert identity.status_code == 200
         assert identity.json()["is_admin"] is True
 
         delegated_headers = {
             **headers,
             "X-Impersonate-User-ID": "personal-space-a",
+            "X-Impersonation-Reason": "Investigate reported personal-space run",
         }
-        delegated_identity = client.get("/v1/me", headers=delegated_headers)
+        delegated_identity = client.get("/control/v1/me", headers=delegated_headers)
         assert delegated_identity.status_code == 200
         assert delegated_identity.json()["user_id"] == "personal-space-a"
         assert delegated_identity.json()["actor_user_id"] == "platform-admin"
         assert delegated_identity.json()["impersonating"] is True
 
         delegated_run = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers=delegated_headers,
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},
@@ -120,22 +121,22 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
 
         # Authentication and control-plane routes always stay bound to the
         # authenticated administrator even while a personal user_id is active.
-        delegated_auth_status = client.get("/v1/auth/status", headers=delegated_headers)
+        delegated_auth_status = client.get("/control/v1/auth/status", headers=delegated_headers)
         assert delegated_auth_status.status_code == 200
         assert delegated_auth_status.json()["user_id"] == "platform-admin"
 
         malformed_target = client.get(
-            "/v1/me",
+            "/control/v1/me",
             headers={**headers, "X-Impersonate-User-ID": "contains whitespace"},
         )
         assert malformed_target.status_code == 400
 
-        prepared = client.post("/v1/auth/totp/setup", headers=headers)
+        prepared = client.post("/control/v1/auth/totp/setup", headers=headers)
         assert prepared.status_code == 200
         secret = prepared.json()["secret"]
         code = _hotp(secret, int(time.time() // 30))
         confirmed = client.post(
-            "/v1/auth/totp/confirm",
+            "/control/v1/auth/totp/confirm",
             headers=headers,
             json={"code": code},
         )
@@ -143,16 +144,16 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
         recovery_codes = confirmed.json()["recovery_codes"]
         assert len(recovery_codes) == 8
 
-        assert client.post("/v1/auth/logout", headers=headers).status_code == 200
+        assert client.post("/control/v1/auth/logout", headers=headers).status_code == 200
         second_login = client.post(
-            "/v1/auth/login",
+            "/control/v1/auth/login",
             json={"user_id": "platform-admin", "password": new_password},
         )
         assert second_login.status_code == 200
         challenge = second_login.json()
         assert challenge["status"] == "mfa_required"
         verified = client.post(
-            "/v1/auth/mfa/verify",
+            "/control/v1/auth/mfa/verify",
             json={
                 "challenge_token": challenge["challenge_token"],
                 "code": recovery_codes[0],
@@ -160,12 +161,12 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
         )
         assert verified.status_code == 200
         mfa_headers = {"Authorization": f"Bearer {verified.json()['token']}"}
-        auth_status = client.get("/v1/auth/status", headers=mfa_headers).json()
+        auth_status = client.get("/control/v1/auth/status", headers=mfa_headers).json()
         assert auth_status["totp_enabled"] is True
         assert auth_status["recovery_codes_remaining"] == 7
 
         disabled = client.post(
-            "/v1/auth/totp/disable",
+            "/control/v1/auth/totp/disable",
             headers=mfa_headers,
             json={"password": new_password, "code": recovery_codes[1]},
         )
@@ -173,7 +174,7 @@ def test_admin_password_session_and_totp_flow(tmp_path, monkeypatch) -> None:
         assert disabled.json() == {"enabled": False}
 
         final_login = client.post(
-            "/v1/auth/login",
+            "/control/v1/auth/login",
             json={"user_id": "platform-admin", "password": new_password},
         )
         assert final_login.status_code == 200
@@ -204,7 +205,7 @@ def test_admin_session_requires_explicit_impersonation_permission(tmp_path) -> N
 
     with TestClient(app) as client:
         login = client.post(
-            "/v1/auth/login",
+            "/control/v1/auth/login",
             json={"user_id": "limited-admin", "password": password},
         )
         assert login.status_code == 200
@@ -212,11 +213,11 @@ def test_admin_session_requires_explicit_impersonation_permission(tmp_path) -> N
             "Authorization": f"Bearer {login.json()['token']}",
             "X-Impersonate-User-ID": "personal-space-b",
         }
-        denied = client.get("/v1/me", headers=headers)
+        denied = client.get("/control/v1/me", headers=headers)
         assert denied.status_code == 403
         assert denied.json()["detail"] == "user impersonation permission required"
 
         # The same header cannot redirect password/MFA management to another user.
-        own_auth_status = client.get("/v1/auth/status", headers=headers)
+        own_auth_status = client.get("/control/v1/auth/status", headers=headers)
         assert own_auth_status.status_code == 200
         assert own_auth_status.json()["user_id"] == "limited-admin"

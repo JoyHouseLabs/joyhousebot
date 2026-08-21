@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from porthouse.app_sdk import AppRuntimeClient
+from joyhousebot.app_sdk import AppRuntimeClient
 
 _CONFIRMATION = "LAUNCH_APP_SMOKE_RUN"
 _REQUIRED_ENV = (
-    "PORTHOUSE_APP_CLIENT_ID",
-    "PORTHOUSE_APP_CLIENT_SECRET",
-    "PORTHOUSE_APP_GRANT_ID",
-    "PORTHOUSE_APP_INSTALLATION_ID",
+    "JOYHOUSEBOT_APP_CLIENT_ID",
+    "JOYHOUSEBOT_APP_CLIENT_SECRET",
+    "JOYHOUSEBOT_APP_GRANT_ID",
+    "JOYHOUSEBOT_APP_INSTALLATION_ID",
 )
 
 
@@ -33,7 +33,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
     parser.add_argument(
         "--content",
-        default="Porthouse App integration smoke. Do not perform external side effects.",
+        default="joyhousebot App integration smoke. Do not perform external side effects.",
     )
     parser.add_argument("--output-dir", default="artifacts/drills")
     return parser.parse_args()
@@ -50,14 +50,14 @@ def _environment() -> dict[str, str]:
 async def _run(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
     if args.confirm != _CONFIRMATION:
         raise RuntimeError(f"--confirm must equal {_CONFIRMATION}")
-    installation_id = env["PORTHOUSE_APP_INSTALLATION_ID"]
+    installation_id = env["JOYHOUSEBOT_APP_INSTALLATION_ID"]
     started_at = datetime.now(timezone.utc)
     request_key = f"app-smoke:{started_at.strftime('%Y%m%dT%H%M%SZ')}:{uuid4().hex}"
     async with AppRuntimeClient(
         args.base_url,
-        client_id=env["PORTHOUSE_APP_CLIENT_ID"],
-        client_secret=env["PORTHOUSE_APP_CLIENT_SECRET"],
-        grant_id=env["PORTHOUSE_APP_GRANT_ID"],
+        client_id=env["JOYHOUSEBOT_APP_CLIENT_ID"],
+        client_secret=env["JOYHOUSEBOT_APP_CLIENT_SECRET"],
+        grant_id=env["JOYHOUSEBOT_APP_GRANT_ID"],
     ) as client:
         installations = await client.list_apps()
         visible = any(

@@ -4,18 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from porthouse.application.platform import PlatformService
-from porthouse.contracts.plugins import PluginManifest
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.domain.capabilities import (
+from joyhousebot.application.platform import PlatformService
+from joyhousebot.contracts.capability_extensions import CapabilityExtensionManifest
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
     requires_explicit_grant,
     resolve_capability_policy,
 )
-from porthouse.runtime.context import ToolExecutionContext
-from porthouse.runtime.permissions import permission_engine
+from joyhousebot.runtime.context import ToolExecutionContext
+from joyhousebot.runtime.permissions import permission_engine
 from tests.support.postgres_store import PostgresTestStore
 
 _DIGEST = "sha256:" + "a" * 64
@@ -32,7 +32,7 @@ def _definition(
         ref=CapabilityRef(
             capability_id,
             "1.0.0",
-            CapabilityKind.TOOL,
+            CapabilityKind.CAPABILITY,
             "test-capabilities",
             "1.0.0",
             _DIGEST,
@@ -181,24 +181,24 @@ def test_run_snapshot_freezes_effective_catalog(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_saving_agent_allowlist_pins_required_plugin_release(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "agent-capability-pin.db")
-    release = PluginManifest(
-        plugin_id="test-capabilities",
+    release = CapabilityExtensionManifest(
+        extension_id="test-capabilities",
         version="1.0.0",
         name="Test capabilities",
         build_digest=_DIGEST,
-    ).to_dict()
-    store.upsert_plugin_release(release)
+    ).to_release_dict()
+    store.upsert_extension_release(release)
     store.register_runtime_worker(
         worker_id="agent-worker",
         capabilities={"agent": True},
         metadata={"extensions": [release]},
     )
-    store.stage_plugin_release(
+    store.stage_extension_release(
         "test-capabilities", "1.0.0", actor_id="test"
     )
     store.acknowledge_configuration_revision(
         worker_id="agent-worker",
-        aggregate_type="plugin",
+        aggregate_type="extension",
         aggregate_id="test-capabilities",
         revision_id="1.0.0",
     )
@@ -222,9 +222,9 @@ async def test_saving_agent_allowlist_pins_required_plugin_release(tmp_path: Pat
     saved = store.get_agent_revision("agent:v1")
 
     assert saved is not None
-    assert [item.to_dict() for item in saved.plugin_requirements] == [
+    assert [item.to_dict() for item in saved.extension_requirements] == [
         {
-            "plugin_id": "test-capabilities",
+            "extension_id": "test-capabilities",
             "version": "1.0.0",
             "build_digest": _DIGEST,
         }

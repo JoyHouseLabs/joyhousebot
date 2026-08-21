@@ -10,18 +10,18 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.agent.context import ContextBuilder
-from porthouse.agent.context_manifest import build_turn_manifest, source_entry
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.providers.base import LLMProvider, LLMResponse
-from porthouse.runtime.action_identity import payload_hash
-from porthouse.runtime.context import RunContext
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.session.runtime_manager import RuntimeSessionManager
+from joyhousebot.agent.context import ContextBuilder
+from joyhousebot.agent.context_manifest import build_turn_manifest, source_entry
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.providers.base import LLMProvider, LLMResponse
+from joyhousebot.runtime.action_identity import payload_hash
+from joyhousebot.runtime.context import RunContext
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -323,10 +323,10 @@ async def test_runtime_persists_manifest_before_model_and_public_api_is_redacted
     store = PostgresTestStore(tmp_path / "context-runtime.db")
     run_id = "context-runtime"
     _create_run(store, run_id)
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="context-owner", actor_id="test", token="context-owner-token"
     )
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="other-user", actor_id="test", token="context-other-token"
     )
     provider = _FinalProvider()
@@ -369,11 +369,11 @@ async def test_runtime_persists_manifest_before_model_and_public_api_is_redacted
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     with client:
         own = client.get(
-            f"/v1/runs/{run_id}/context-manifest",
+            f"/control/v1/runs/{run_id}/context-manifest",
             headers={"Authorization": "Bearer context-owner-token"},
         )
         other = client.get(
-            f"/v1/runs/{run_id}/context-manifest",
+            f"/control/v1/runs/{run_id}/context-manifest",
             headers={"Authorization": "Bearer context-other-token"},
         )
     assert own.status_code == 200
@@ -383,7 +383,7 @@ async def test_runtime_persists_manifest_before_model_and_public_api_is_redacted
     assert "top secret context" not in json.dumps(body)
     assert "worker_id" not in json.dumps(body)
     assert other.status_code == 404
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@
       <div class="heading-actions">
         <span class="refresh-note">{{ lastUpdated ? `更新于 ${formatClock(lastUpdated)}` : '尚未更新' }}</span>
         <button class="secondary-button" type="button" :disabled="loading" @click="refresh">{{ loading ? '刷新中…' : '刷新' }}</button>
-        <router-link class="primary-button" to="/chat">试用 Agent</router-link>
+        <router-link class="primary-button" to="/runs">查看 Runs</router-link>
       </div>
     </header>
 
@@ -55,7 +55,7 @@
           <span class="state-dot" :class="{ on: worker.healthy }" />
           <div class="worker-summary-main"><strong>{{ workerRole(worker) }}</strong><small>{{ worker.worker_id }} · {{ worker.healthy ? '健康' : '陈旧 / 离线' }}</small></div>
           <span class="worker-summary-capacity">{{ workerSlots(worker) }} 槽位</span>
-          <span class="worker-summary-plugin">{{ workerPlugin(worker) }}</span>
+          <span class="worker-summary-extension">{{ workerExtension(worker) }}</span>
           <time>{{ relativeTime(worker.last_heartbeat) }}</time>
         </article>
       </div>
@@ -125,8 +125,8 @@
         <div class="panel-heading"><div><span class="eyebrow">SCHEDULE</span><h2>调度任务</h2></div></div>
         <div v-if="schedules.length" class="schedule-list">
           <article v-for="schedule in schedules.slice(0, 6)" :key="schedule.id">
-            <span class="schedule-mark" :class="{ enabled: schedule.enabled }">{{ schedule.enabled ? 'ON' : 'OFF' }}</span>
-            <div><strong>{{ schedule.name }}</strong><small>{{ scheduleText(schedule) }}</small><p>{{ schedule.payload.message }}</p></div>
+            <span class="schedule-mark" :class="{ enabled: schedule.enabled && !schedule.paused }">{{ schedule.paused ? 'PAUSE' : schedule.enabled ? 'ON' : 'OFF' }}</span>
+            <div><strong>{{ schedule.name }}</strong><small>{{ scheduleText(schedule) }}</small><p>{{ schedule.pause_reason || schedule.payload.message }}</p></div>
             <time>{{ nextRunText(schedule) }}</time>
           </article>
         </div>
@@ -200,9 +200,9 @@ function formatClock(value: Date) { return value.toLocaleTimeString('zh-CN', { h
 function relativeTime(value?: string) { if (!value) return '—'; const delta = Date.now() - new Date(value).getTime(); if (delta < 60_000) return '刚刚'; if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`; if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`; return new Date(value).toLocaleDateString('zh-CN') }
 function workerRole(worker: RuntimeWorker) { if (worker.capabilities?.scheduler) return 'Scheduler 调度节点'; if (worker.capabilities?.agent) return 'Agent 执行节点'; return 'Runtime Worker' }
 function workerSlots(worker: RuntimeWorker) { return Number(worker.metadata?.task_worker_count || 0) || '—' }
-function workerPlugin(worker: RuntimeWorker) { const extensions = Array.isArray(worker.metadata?.extensions) ? worker.metadata.extensions as Array<Record<string, unknown>> : []; return String(extensions[0]?.name || '核心运行时') }
+function workerExtension(worker: RuntimeWorker) { const extensions = Array.isArray(worker.metadata?.extensions) ? worker.metadata.extensions as Array<Record<string, unknown>> : []; return String(extensions[0]?.name || '核心运行时') }
 function scheduleText(item: ScheduleItem) { const monitor = item.payload.kind === 'agent_monitor'; const managed = item.payload.managed_by === 'agent_revision' ? '托管 · ' : ''; const light = monitor && item.payload.context_mode === 'light' ? 'Light · ' : ''; const guard = monitor && item.payload.preflight_mode === 'runtime_attention' ? '变化触发 · ' : ''; const hours = item.payload.active_hours ? `${item.payload.active_hours.start}–${item.payload.active_hours.end} ${item.payload.active_hours.timezone} · ` : ''; const prefix = monitor ? `Agent Monitor · ${managed}${light}${guard}${hours}` : ''; if (item.schedule.kind === 'cron') return `${prefix}${item.schedule.expr || 'cron'}`; if (item.schedule.kind === 'every') return `${prefix}每 ${Math.round(Number(item.schedule.every_ms || 0) / 1000)} 秒`; return `${prefix}单次执行` }
-function nextRunText(item: ScheduleItem) { const value = item.state?.next_run_at_ms; return item.enabled && value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '未计划' }
+function nextRunText(item: ScheduleItem) { const value = item.state?.next_run_at_ms; if (item.paused) return '已熔断'; return item.enabled && value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '未计划' }
 
 onMounted(() => { void refresh(); timer = window.setInterval(refresh, 10_000) })
 onUnmounted(() => { if (timer) window.clearInterval(timer) })

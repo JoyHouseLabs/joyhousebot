@@ -1,6 +1,6 @@
-# Porthouse QQ Channel
+# joyhousebot QQ Channel
 
-可选 QQ Channel 扩展。它只负责 QQ Open Platform 与 Porthouse Channel SDK 之间的协议转换；Run、Task、
+可选 QQ Channel 扩展。它只负责 QQ Open Platform 与 joyhousebot Channel SDK 之间的协议转换；Run、Task、
 PostgreSQL Outbox、租约、重试和审计仍由 Core 负责。
 
 QQ 不是默认产品渠道。只有明确需要 QQ 私信入口时才安装：

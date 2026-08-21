@@ -27,6 +27,14 @@ export interface OpenCliManifestCommand {
   sourceFile?: string;
 }
 
+export interface ArgumentConstraint {
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+}
+
 export interface AllowedCommand {
   site: string;
   name: string;
@@ -35,6 +43,10 @@ export interface AllowedCommand {
   expected_duration_seconds?: number;
   data_classification?: "public" | "internal" | "confidential" | "restricted";
   allow_path_arguments?: string[];
+  /** Release-reviewed restrictions that narrow (never widen) an upstream argument. */
+  argument_constraints?: Record<string, ArgumentConstraint>;
+  /** Internal commands may be composed by a reviewed pipeline but cannot be invoked directly. */
+  exposed?: boolean;
   /** Capture one bounded Markdown document emitted below the managed output workspace. */
   capture_output_markdown?: boolean;
 }
@@ -42,6 +54,14 @@ export interface AllowedCommand {
 export interface Allowlist {
   schema_version: 1;
   commands: AllowedCommand[];
+  account_snapshots?: AllowedAccountSnapshot[];
+}
+
+export interface AllowedAccountSnapshot {
+  platform: "xiaohongshu";
+  capability_version: string;
+  timeout_seconds?: number;
+  expected_duration_seconds?: number;
 }
 
 export interface CapabilityDefinition {
@@ -87,7 +107,16 @@ export interface CompiledCommand {
   args: OpenCliArgument[];
   columns: string[];
   allowed_path_arguments: string[];
+  argument_constraints: Record<string, ArgumentConstraint>;
+  exposed: boolean;
   capture_output_markdown: boolean;
+  capability: CapabilityDefinition;
+}
+
+export interface CompiledAccountSnapshot {
+  platform: "xiaohongshu";
+  list_capability_id: string;
+  detail_capability_id: string;
   capability: CapabilityDefinition;
 }
 
@@ -108,6 +137,7 @@ export interface CompiledCatalog {
     upstream_manifest_sha256: string;
   };
   commands: CompiledCommand[];
+  account_snapshots: CompiledAccountSnapshot[];
 }
 
 export interface CompileCatalogOptions {

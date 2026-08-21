@@ -7,17 +7,17 @@ from typing import Any
 
 import pytest
 
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.contracts.tools import Tool
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
-from porthouse.orchestration.clarification import ClarificationEngine
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.context import CancellationToken
-from porthouse.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.runtime.schema_limits import MAX_STRUCTURED_CONTRACT_BYTES
-from tests.support.capabilities import register_tool_fixture, tool_definition
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.domain.scenarios import ClarificationNode, ScenarioField, ScenarioVersion
+from joyhousebot.orchestration.clarification import ClarificationEngine
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.context import CancellationToken
+from joyhousebot.runtime.models import AgentOptions, GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.runtime.schema_limits import MAX_STRUCTURED_CONTRACT_BYTES
+from tests.support.capabilities import register_capability_fixture, tool_definition
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -601,7 +601,7 @@ async def test_graph_task_invokes_capability_through_unified_dispatcher(
         def __init__(self) -> None:
             self.capabilities = CapabilityRegistry(store=store)
             tool = EchoCapability()
-            register_tool_fixture(self.capabilities, tool, definition=definition)
+            register_capability_fixture(self.capabilities, tool, definition=definition)
 
         async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
             raise AssertionError("direct capability task must not call the model")

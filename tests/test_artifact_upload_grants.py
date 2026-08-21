@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.dispatcher import CapabilityDispatcher
-from porthouse.config.schema import Config
-from porthouse.runtime.context import ActionOutcomeUnknownError
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.config.schema import Config
+from joyhousebot.runtime.context import ActionOutcomeUnknownError
 from tests.support.postgres_store import PostgresTestStore
 from tests.test_operation_reconciliation import (
     _adapter,
@@ -40,7 +40,7 @@ async def test_scoped_upload_is_one_use_and_worker_materializes_artifact(
     body = b"verified host artifact"
     digest = hashlib.sha256(body).hexdigest()
     path = (
-        f"/v1/runs/{context.run_id}/operations/"
+        f"/host/v1/runs/{context.run_id}/operations/"
         f"{reconciliation.reconciliation_id}/artifact-upload-grants"
     )
     with client:
@@ -75,7 +75,7 @@ async def test_scoped_upload_is_one_use_and_worker_materializes_artifact(
             "Authorization": f"Bearer {value['upload_token']}",
             "Content-Type": "text/plain",
             "X-Content-SHA256": digest,
-            "X-Porthouse-Action-ID": reconciliation.action_id,
+            "X-JoyHouseBot-Action-ID": reconciliation.action_id,
             "Content-Length": str(len(body)),
         }
         wrong_scope = client.put(
@@ -133,5 +133,5 @@ async def test_scoped_upload_is_one_use_and_worker_materializes_artifact(
     assert artifacts[0]["artifact_id"] == grant["artifact_id"]
     assert artifacts[0]["content_sha256"] == digest
     assert artifacts[0]["provenance"]["operation_id"] == "provider-42"
-    assert artifacts[0]["uri"].startswith("porthouse-artifact://sha256/")
+    assert artifacts[0]["uri"].startswith("joyhousebot-artifact://sha256/")
     assert len(artifacts) == 1

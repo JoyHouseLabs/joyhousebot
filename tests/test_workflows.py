@@ -6,31 +6,31 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.agent_teams import AgentTeamService
-from porthouse.application.context import Principal, RequestContext
-from porthouse.application.workflows import WorkflowService
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.config.schema import Config
-from porthouse.contracts.tools import Tool
-from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from porthouse.domain.agents import AgentRevision
-from porthouse.domain.capabilities import (
+from joyhousebot.api.app import create_app
+from joyhousebot.application.agent_teams import AgentTeamService
+from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.workflows import WorkflowService
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from porthouse.domain.scenarios import ScenarioField, ScenarioVersion
-from porthouse.runtime.models import TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.domain.scenarios import ScenarioField, ScenarioVersion
+from joyhousebot.runtime.models import TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, PostgresTestStore]:
     store = PostgresTestStore(tmp_path / "workflows.db")
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
-    store.create_api_access_token(user_id="user-b", actor_id="test", token="token-b")
+    store.create_operator_access_token(user_id="user-a", actor_id="test", token="token-a")
+    store.create_operator_access_token(user_id="user-b", actor_id="test", token="token-b")
     return TestClient(create_app(build_api_container(config=Config(), store=store))), store
 
 
@@ -179,9 +179,7 @@ def _teaching_plan() -> dict[str, Any]:
 
 
 class _TeachingTeamAgent:
-    async def process_direct(
-        self, content: str, *, run_context: Any, **_kwargs: Any
-    ) -> str:
+    async def process_direct(self, content: str, *, run_context: Any, **_kwargs: Any) -> str:
         contract = dict(run_context.metadata.get("team_step_contract") or {})
         if contract.get("kind") == "review":
             return json.dumps(
@@ -229,7 +227,7 @@ def test_workflow_versions_publish_and_compile_to_runtime_graph(tmp_path: Path) 
         "change_note": "initial AI draft reviewed by user",
     }
     with client:
-        created = client.post("/v1/workflows", headers=owner, json=payload)
+        created = client.post("/control/v1/workflows", headers=owner, json=payload)
         assert created.status_code == 201, created.text
         workflow = created.json()
         workflow_id = workflow["workflow_id"]
@@ -240,15 +238,15 @@ def test_workflow_versions_publish_and_compile_to_runtime_graph(tmp_path: Path) 
             {"source": "draft", "target": "approve"},
         ]
 
-        owner_list = client.get("/v1/workflows", headers=owner).json()["items"]
+        owner_list = client.get("/control/v1/workflows", headers=owner).json()["items"]
         assert owner_list[0]["workflow_id"] == workflow_id
         assert "user_id" not in owner_list[0]
-        assert client.get("/v1/workflows", headers=other).json()["items"] == []
-        assert client.get(f"/v1/workflows/{workflow_id}", headers=other).status_code == 404
+        assert client.get("/control/v1/workflows", headers=other).json()["items"] == []
+        assert client.get(f"/control/v1/workflows/{workflow_id}", headers=other).status_code == 404
 
         changed = {**payload, "change_note": "tighten the publish gate"}
         revised = client.post(
-            f"/v1/workflows/{workflow_id}/revisions", headers=owner, json=changed
+            f"/control/v1/workflows/{workflow_id}/revisions", headers=owner, json=changed
         )
         assert revised.status_code == 201, revised.text
         workflow = revised.json()
@@ -257,14 +255,14 @@ def test_workflow_versions_publish_and_compile_to_runtime_graph(tmp_path: Path) 
         assert [item["version"] for item in workflow["revisions"]] == [2, 1]
 
         unpublished = client.post(
-            f"/v1/workflows/{workflow_id}/runs",
+            f"/control/v1/workflows/{workflow_id}/runs",
             headers=owner,
             json={"revision_id": second_revision},
         )
         assert unpublished.status_code == 409
 
         published = client.post(
-            f"/v1/workflows/{workflow_id}/publish",
+            f"/control/v1/workflows/{workflow_id}/publish",
             headers=owner,
             json={"revision_id": second_revision},
         )
@@ -272,7 +270,7 @@ def test_workflow_versions_publish_and_compile_to_runtime_graph(tmp_path: Path) 
         assert published.json()["published_revision_id"] == second_revision
 
         started = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={**owner, "Idempotency-Key": "workflow-run-1"},
             json={
                 "execution": {
@@ -297,12 +295,16 @@ def test_workflow_versions_publish_and_compile_to_runtime_graph(tmp_path: Path) 
         assert run.options["metadata"]["workflow_id"] == workflow_id
         assert run.options["metadata"]["app"]["installation_id"] == "appinst-test"
         assert run.options["metadata"]["orchestration"]["mode"] == "workflow"
-        tasks = client.get(f"/v1/runs/{run_id}/tasks", headers=owner).json()["items"]
+        tasks = client.get(f"/control/v1/runs/{run_id}/tasks", headers=owner).json()["items"]
         assert len(tasks) == 3
         assert {item["payload"]["node_type"] for item in tasks} == {"agent", "approval"}
 
-        assert client.delete(f"/v1/workflows/{workflow_id}", headers=other).status_code == 404
-        assert client.delete(f"/v1/workflows/{workflow_id}", headers=owner).status_code == 204
+        assert (
+            client.delete(f"/control/v1/workflows/{workflow_id}", headers=other).status_code == 404
+        )
+        assert (
+            client.delete(f"/control/v1/workflows/{workflow_id}", headers=owner).status_code == 204
+        )
 
 
 def test_workflow_generation_is_design_only_and_invalid_graphs_are_rejected(
@@ -318,12 +320,12 @@ def test_workflow_generation_is_design_only_and_invalid_graphs_are_rejected(
         "graph": invalid,
     }
     with client:
-        rejected = client.post("/v1/workflows", headers=owner, json=payload)
+        rejected = client.post("/control/v1/workflows", headers=owner, json=payload)
         assert rejected.status_code == 422
         assert "cycle" in rejected.json()["error"]["message"]
 
         submitted = client.post(
-            "/v1/workflows/generations",
+            "/control/v1/workflows/generations",
             headers={**owner, "Idempotency-Key": "workflow-design-1"},
             json={"goal": "每天汇总重要信息，生成一份需要我确认的简报"},
         )
@@ -337,13 +339,14 @@ def test_workflow_generation_is_design_only_and_invalid_graphs_are_rejected(
         assert run.options["allowed_tools"] == []
         assert run.options["output_schema"]["properties"]["nodes"]["maxItems"] == 32
 
-        generation = client.get(
-            f"/v1/workflows/generations/{run_id}", headers=owner
-        )
+        generation = client.get(f"/control/v1/workflows/generations/{run_id}", headers=owner)
         assert generation.status_code == 200
         assert generation.json()["status"] == "queued"
         assert (
-            client.get(f"/v1/workflows/generations/{run_id}", headers={"Authorization": "Bearer token-b"}).status_code
+            client.get(
+                f"/control/v1/workflows/generations/{run_id}",
+                headers={"Authorization": "Bearer token-b"},
+            ).status_code
             == 404
         )
 
@@ -459,9 +462,7 @@ async def test_workflow_team_node_runs_a_frozen_recoverable_child_run(
     store = PostgresTestStore(tmp_path / "workflow-team-subrun.db")
     teams = AgentTeamService(store)
     await teams.save_draft(_teaching_team())
-    await teams.publish(
-        "team.teaching-design", "team.teaching-design:v1", actor_id="test"
-    )
+    await teams.publish("team.teaching-design", "team.teaching-design:v1", actor_id="test")
     runtime = NativeAgentRuntime(agent=_TeachingTeamAgent(), store=store)
     service = WorkflowService(runtime, store, default_agent_id="default")
     graph = service._normalize_graph(
@@ -539,9 +540,7 @@ async def test_workflow_team_node_runs_a_frozen_recoverable_child_run(
         "revision",
         "synthesis",
     ]
-    review = next(
-        item for item in child_tasks if item.payload["spec_id"] == "independent-review"
-    )
+    review = next(item for item in child_tasks if item.payload["spec_id"] == "independent-review")
     assert review.result["structured_output"]["verdict"] == "revise"
     assert completed.root_run_id == submitted.run_id
 
@@ -667,7 +666,7 @@ def _panel_definition() -> CapabilityDefinition:
         ref=CapabilityRef(
             _PanelRefreshTool.name,
             "1.0.0",
-            CapabilityKind.TOOL,
+            CapabilityKind.CAPABILITY,
             "test.workflow-capability",
             "1.0.0",
             "sha256:panel",
@@ -687,7 +686,7 @@ class _ZeroModelAgent:
     def __init__(self, store: PostgresTestStore, tool: _PanelRefreshTool) -> None:
         definition = _panel_definition()
         self.capabilities = CapabilityRegistry(store=store)
-        self.capabilities.register_tool(tool, definition=definition)
+        self.capabilities.register_connector_capability(tool, definition=definition)
         store.publish_capability(definition, actor_id="test:workflow-fixture")
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
@@ -728,12 +727,14 @@ def test_workflow_capability_nodes_freeze_published_reference(tmp_path: Path) ->
     node = frozen["nodes"][0]
     assert node["capability"]["capability_id"] == "workflow_panel_refresh"
     assert node["capability"]["version"] == "1.0.0"
-    assert node["capability"]["plugin_id"] == "test.workflow-capability"
+    assert node["capability"]["extension_id"] == "test.workflow-capability"
     assert node["capability_input"] == {"topic": "llm"}
     assert node["max_attempts"] == 3
     defaulted = service._normalize_graph(
         {
-            "name": "Default attempts", "summary": "", "risk_level": "low",
+            "name": "Default attempts",
+            "summary": "",
+            "risk_level": "low",
             "estimated_duration_minutes": 1,
             "nodes": [
                 {
@@ -756,18 +757,20 @@ def test_workflow_capability_nodes_freeze_published_reference(tmp_path: Path) ->
     with pytest.raises(Exception, match="not published"):
         service._normalize_graph(
             {
-                "name": "missing", "summary": "", "risk_level": "low",
+                "name": "missing",
+                "summary": "",
+                "risk_level": "low",
                 "estimated_duration_minutes": 1,
-                "nodes": [
-                    _workflow_node("refresh", "capability", [], capability="missing.tool")
-                ],
+                "nodes": [_workflow_node("refresh", "capability", [], capability="missing.tool")],
                 "policies": {"max_concurrent": 1, "fail_fast": True, "aggregate": True},
             }
         )
     with pytest.raises(Exception, match="expects version"):
         service._normalize_graph(
             {
-                "name": "stale", "summary": "", "risk_level": "low",
+                "name": "stale",
+                "summary": "",
+                "risk_level": "low",
                 "estimated_duration_minutes": 1,
                 "nodes": [
                     _workflow_node(
@@ -864,12 +867,12 @@ async def test_workflow_explicit_aggregation_policy_overrides_inference(
     )
     stored = service._normalize_graph(
         {
-            "name": "check", "summary": "", "risk_level": "low",
+            "name": "check",
+            "summary": "",
+            "risk_level": "low",
             "estimated_duration_minutes": 1,
             "nodes": [
-                _workflow_node(
-                    "refresh", "capability", [], capability="workflow_panel_refresh"
-                )
+                _workflow_node("refresh", "capability", [], capability="workflow_panel_refresh")
             ],
             "policies": {
                 "max_concurrent": 1,
@@ -889,12 +892,12 @@ async def test_workflow_explicit_aggregation_policy_overrides_inference(
     with pytest.raises(Exception, match="aggregation"):
         service._normalize_graph(
             {
-                "name": "bad", "summary": "", "risk_level": "low",
+                "name": "bad",
+                "summary": "",
+                "risk_level": "low",
                 "estimated_duration_minutes": 1,
                 "nodes": [
-                    _workflow_node(
-                        "refresh", "capability", [], capability="workflow_panel_refresh"
-                    )
+                    _workflow_node("refresh", "capability", [], capability="workflow_panel_refresh")
                 ],
                 "policies": {
                     "max_concurrent": 1,

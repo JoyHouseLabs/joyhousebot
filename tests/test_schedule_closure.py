@@ -6,20 +6,20 @@ from pathlib import Path
 
 import pytest
 
-from porthouse.application.app_packs import AppPackService
-from porthouse.application.schedule_submission import build_schedule_submission
-from porthouse.application.workflows import WorkflowService
-from porthouse.channels.repository import ChannelRepository
-from porthouse.cron.service import CronService
-from porthouse.domain.schedules import (
+from joyhousebot.application.app_releases import AppReleaseService
+from joyhousebot.application.schedule_submission import build_schedule_submission
+from joyhousebot.application.workflows import WorkflowService
+from joyhousebot.channels.repository import ChannelRepository
+from joyhousebot.cron.service import CronService
+from joyhousebot.domain.schedules import (
     CronPolicy,
     CronSchedule,
     schedule_run_prompt,
     schedule_run_session_id,
 )
-from porthouse.runtime.models import AgentEvent
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.scheduling.repository import ScheduleRepository
+from joyhousebot.runtime.models import AgentEvent
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.scheduling.repository import ScheduleRepository
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -155,7 +155,7 @@ async def test_monitor_active_hours_skip_automatic_tick_but_not_manual_run(
             "UPDATE schedules SET next_run_at_ms=0 WHERE schedule_id=%s", (job.id,)
         )
     monkeypatch.setattr(
-        "porthouse.cron.service.is_within_active_hours", lambda *_args: False
+        "joyhousebot.cron.service.is_within_active_hours", lambda *_args: False
     )
 
     claimed = cron._claim_due_jobs()
@@ -673,10 +673,10 @@ async def test_misfire_and_overlap_policies_prevent_accidental_runs(tmp_path: Pa
 
 async def _installed_app(
     store: PostgresTestStore, *, manifest: dict | None = None
-) -> tuple[AppPackService, str]:
-    from tests.test_app_pack_control_plane import _manifest as base_manifest
+) -> tuple[AppReleaseService, str]:
+    from tests.test_app_release_control_plane import _manifest as base_manifest
 
-    service = AppPackService(store)
+    service = AppReleaseService(store)
     await service.save_draft(manifest or base_manifest(), actor_id="admin")
     await service.publish(
         "app.market-radar", "1.0.0", actor_id="admin", user_id="opc-user"
@@ -862,10 +862,180 @@ def test_set_enabled_by_installation_toggles_only_app_schedules(
 
 
 @pytest.mark.asyncio
+async def test_schedule_occurrence_budget_pauses_and_requires_explicit_resume(
+    tmp_path: Path,
+) -> None:
+    store = PostgresTestStore(tmp_path / "schedule-occurrence-budget.db")
+    submitted: list[str] = []
+
+    async def on_job(job) -> str:  # noqa: ANN001
+        run_id = f"budget-run-{len(submitted) + 1}"
+        submitted.append(_create_run(store, job, run_id))
+        return run_id
+
+    cron = CronService(store, on_job=on_job, worker_id="scheduler")
+    job = cron.add_job(
+        name="bounded schedule",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        message="do bounded work",
+        user_id="user-1",
+        policy=CronPolicy(max_occurrences=1),
+    )
+    assert await cron.run_job(job.id, user_id="user-1")
+    _finish_run(store, submitted[0], status="completed", content="done")
+
+    current = cron.list_jobs(include_disabled=True, user_id="user-1")[0]
+    assert current.enabled is True
+    assert current.paused is True
+    assert current.pause_reason == "schedule occurrence budget exhausted"
+    assert await cron.run_job(job.id, user_id="user-1") is False
+    summary = cron.execution_summary(job.id, user_id="user-1")
+    assert summary is not None
+    assert summary["admittedOccurrences"] == 1
+    assert summary["successes"] == 1
+    assert summary["events"][0]["type"] == "paused"
+
+    resumed = cron.resume_job(
+        job.id,
+        user_id="user-1",
+        actor_id="owner:user-1",
+    )
+    assert resumed is not None and resumed.paused is False
+    # The immutable lifetime occurrence count is intentionally not reset.
+    assert await cron.run_job(job.id, user_id="user-1") is True
+    occurrence = cron.list_runs(user_id="user-1", job_id=job.id)[0]
+    assert occurrence["status"] == "paused_governance"
+    assert submitted == ["budget-run-1"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_failure_and_quiet_circuits_reset_on_resume(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "schedule-circuits.db")
+    submitted: list[str] = []
+
+    async def on_job(job) -> str:  # noqa: ANN001
+        run_id = f"circuit-run-{len(submitted) + 1}"
+        submitted.append(_create_run(store, job, run_id))
+        return run_id
+
+    cron = CronService(store, on_job=on_job, worker_id="scheduler")
+    job = cron.add_job(
+        name="failure circuit",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        message="check",
+        user_id="user-1",
+        policy=CronPolicy(max_consecutive_failures=2),
+    )
+    for index in range(2):
+        assert await cron.run_job(job.id, user_id="user-1")
+        _finish_run(store, submitted[index], status="failed", content="boom")
+    current = cron.list_jobs(include_disabled=True, user_id="user-1")[0]
+    assert current.paused is True
+    assert current.state.consecutive_failures == 2
+
+    resumed = cron.resume_job(
+        job.id,
+        user_id="user-1",
+        actor_id="owner:user-1",
+        reset_counters=True,
+    )
+    assert resumed is not None
+    assert resumed.state.consecutive_failures == 0
+    assert await cron.run_job(job.id, user_id="user-1")
+    _finish_run(store, submitted[2], status="completed", content="ok")
+    current = cron.list_jobs(include_disabled=True, user_id="user-1")[0]
+    assert current.paused is False
+    assert current.state.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_quiet_backoff_and_circuit(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "schedule-quiet-circuit.db")
+    submitted: list[str] = []
+
+    async def on_job(job) -> str:  # noqa: ANN001
+        run_id = f"quiet-circuit-run-{len(submitted) + 1}"
+        submitted.append(_create_run(store, job, run_id))
+        return run_id
+
+    cron = CronService(store, on_job=on_job, worker_id="scheduler")
+    job = cron.add_job(
+        name="quiet circuit",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        message="watch",
+        payload_kind="agent_monitor",
+        user_id="user-1",
+        policy=CronPolicy(
+            max_consecutive_quiet=3,
+            idle_backoff_multiplier=2,
+            idle_backoff_max_ms=300_000,
+        ),
+    )
+    for index in range(2):
+        assert await cron.run_job(job.id, user_id="user-1")
+        _finish_run(store, submitted[index], status="completed", content="NO_ACTION")
+    current = cron.list_jobs(include_disabled=True, user_id="user-1")[0]
+    now_ms = cron.repository.db_now_ms()
+    assert current.paused is False
+    assert current.state.consecutive_quiet == 2
+    assert int(current.state.next_run_at_ms or 0) >= now_ms + 110_000
+
+    assert await cron.run_job(job.id, user_id="user-1")
+    _finish_run(store, submitted[2], status="completed", content="NO_ACTION")
+    current = cron.list_jobs(include_disabled=True, user_id="user-1")[0]
+    assert current.paused is True
+    assert current.pause_reason == "schedule consecutive quiet circuit opened"
+
+
+@pytest.mark.asyncio
+async def test_schedule_cost_budget_fails_closed_on_missing_billing(tmp_path: Path) -> None:
+    store = PostgresTestStore(tmp_path / "schedule-cost-budget.db")
+
+    async def on_job(job) -> str:  # noqa: ANN001
+        return _create_run(store, job, "cost-budget-run")
+
+    cron = CronService(store, on_job=on_job, worker_id="scheduler")
+    job = cron.add_job(
+        name="cost bounded schedule",
+        schedule=CronSchedule(kind="every", every_ms=60_000),
+        message="costly work",
+        user_id="user-1",
+        policy=CronPolicy(
+            window_ms=3_600_000,
+            max_cost_usd_per_window=1.0,
+        ),
+    )
+    assert await cron.run_job(job.id, user_id="user-1")
+    with store._pool.connection() as connection, connection.transaction():
+        connection.execute(
+            """INSERT INTO execution_spans
+                   (span_id,trace_id,run_id,span_kind,name,status)
+               VALUES ('cost-span','cost-trace','cost-budget-run','model','model','completed')"""
+        )
+        connection.execute(
+            """INSERT INTO model_invocations
+                   (invocation_id,run_id,span_id,provider,model,operation,status,usage,
+                    cost_usd,cache_status,reasoning_availability)
+               VALUES ('cost-invocation','cost-budget-run','cost-span','test','test',
+                       'chat','completed','{}'::jsonb,0,'miss','unavailable')"""
+        )
+    _finish_run(store, "cost-budget-run", status="completed", content="done")
+    current = cron.list_jobs(include_disabled=True, user_id="user-1")[0]
+    assert current.paused is True
+    assert current.pause_reason == (
+        "schedule cost budget cannot be enforced because billing is incomplete"
+    )
+    summary = cron.execution_summary(job.id, user_id="user-1")
+    assert summary is not None
+    assert summary["window"]["runs"] == 1
+    assert summary["window"]["billing_status"] == "missing"
+
+
+@pytest.mark.asyncio
 async def test_app_schedule_zero_model_workflow_acceptance(tmp_path: Path) -> None:
     """A×B release gate: install → schedule → zero-model graph run → attribution."""
 
-    from tests.test_app_pack_control_plane import _manifest as base_manifest
+    from tests.test_app_release_control_plane import _manifest as base_manifest
     from tests.test_workflows import _owner_context, _PanelRefreshTool, _ZeroModelAgent
 
     store = PostgresTestStore(tmp_path / "app-zero-model-acceptance.db")
@@ -934,12 +1104,12 @@ async def test_app_schedule_zero_model_workflow_acceptance(tmp_path: Path) -> No
             }
         ],
     }
-    app_packs = AppPackService(store)
-    await app_packs.save_draft(manifest, actor_id="admin")
-    await app_packs.publish(
+    app_releases = AppReleaseService(store)
+    await app_releases.save_draft(manifest, actor_id="admin")
+    await app_releases.publish(
         "app.market-radar", "1.0.0", actor_id="admin", user_id="owner-a"
     )
-    installed = await app_packs.install(
+    installed = await app_releases.install(
         "app.market-radar",
         "1.0.0",
         user_id="owner-a",
@@ -947,7 +1117,7 @@ async def test_app_schedule_zero_model_workflow_acceptance(tmp_path: Path) -> No
         configuration={},
         granted_permissions=["runs.submit", "schedules.submit"],
     )
-    installation = await app_packs.transition(
+    installation = await app_releases.transition(
         installed["installation_id"],
         user_id="owner-a",
         actor_id="admin",

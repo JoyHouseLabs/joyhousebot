@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
-from porthouse_connector_http_capability import (
+from joyhousebot_connector_http_capability import (
     connector,
     extension_host_manifest_digest,
     request_digest,
     sign_request_body,
     sign_response_body,
 )
+from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "contract" / "extension-host"
@@ -58,7 +58,7 @@ def test_extension_host_schema_accepts_frozen_host_access_and_lifecycle_componen
             "capability_id": "browser.navigate",
             "version": "1.0.0",
             "implementation_digest": f"sha256:{'1' * 64}",
-            "plugin_id": "browser-tools",
+            "extension_id": "browser-tools",
         }
     ]
     validator.validate(invocation)

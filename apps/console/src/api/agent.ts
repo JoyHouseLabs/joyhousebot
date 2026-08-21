@@ -11,7 +11,7 @@ export interface AgentListItem {
 export interface AgentsListResponse { ok: boolean; agents: AgentListItem[] }
 
 export async function getAgents(): Promise<AgentsListResponse> {
-  const response = await apiFetch('/v1/agents', { headers: getIdentityHeaders() })
+  const response = await apiFetch('/control/v1/agents', { headers: getIdentityHeaders() })
   if (!response.ok) throw new Error(await response.text())
   const payload = await response.json()
   const items = payload.items ?? []

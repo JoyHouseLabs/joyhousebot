@@ -1,6 +1,6 @@
 """Unit tests for the provider-neutral acknowledgement scope policy."""
 
-from porthouse.channels.messages_ack import should_send_ack
+from joyhousebot.channels.messages_ack import should_send_ack
 
 # --- should_send_ack ---
 

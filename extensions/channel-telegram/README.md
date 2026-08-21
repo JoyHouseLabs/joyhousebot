@@ -1,4 +1,4 @@
-# Porthouse Telegram Channel
+# joyhousebot Telegram Channel
 
 可选 Telegram long-polling Channel 扩展。Telegram SDK、消息格式、媒体下载、reaction 和 typing
 语义位于本包；Run、Outbox、Lease、重试和审计仍由 Core 负责。

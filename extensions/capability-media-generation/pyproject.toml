@@ -1,20 +1,20 @@
 [project]
-name = "porthouse-capability-media-generation"
+name = "joyhousebot-capability-media-generation"
 version = "0.1.0"
-description = "Image and video generation capabilities for Porthouse"
+description = "Image and video generation capabilities for joyhousebot"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [
-    "porthouse>=0.1.2,<0.2",
+    "joyhousebot>=2.0.0,<3",
     "httpx>=0.25.0",
 ]
 
-[project.entry-points."porthouse.capabilities"]
-capability-media-generation = "porthouse_capability_media_generation:create_plugin"
+[project.entry-points."joyhousebot.capabilities"]
+capability-media-generation = "joyhousebot_capability_media_generation:create_extension"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/porthouse_capability_media_generation"]
+packages = ["src/joyhousebot_capability_media_generation"]

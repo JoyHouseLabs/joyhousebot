@@ -1,10 +1,10 @@
 
 import pytest
-from porthouse_channel_slack import SLACK_EXTENSION_MANIFEST, SlackChannelPlugin
-from porthouse_channel_slack.plugin import ack_emoji_for_slack
+from joyhousebot_channel_slack import SLACK_EXTENSION_MANIFEST, SlackChannelExtension
+from joyhousebot_channel_slack.extension import ack_emoji_for_slack
 
-from porthouse.channels.manager import ChannelManager
-from porthouse.config.schema import Config, ExtensionsConfig
+from joyhousebot.channels.manager import ChannelManager
+from joyhousebot.config.schema import Config, ExtensionsConfig
 
 
 def test_slack_reaction_aliases_belong_to_the_extension() -> None:
@@ -31,26 +31,26 @@ class SocketClient:
         self.responses.append(response)
 
 
-def _configured_plugin(adapter=None) -> SlackChannelPlugin:
-    plugin = SlackChannelPlugin()
-    plugin.configure(
+def _configured_extension(adapter=None) -> SlackChannelExtension:
+    extension = SlackChannelExtension()
+    extension.configure(
         {"enabled": True, "bot_token": "xoxb-test", "app_token": "xapp-test"},
         adapter or RecordingAdapter(),
     )
-    return plugin
+    return extension
 
 
 def test_slack_extension_has_versioned_channel_manifest() -> None:
     assert SLACK_EXTENSION_MANIFEST.extension_id == "channel-slack"
     assert SLACK_EXTENSION_MANIFEST.extension_types == ("channel",)
-    assert SLACK_EXTENSION_MANIFEST.distribution_name == "porthouse-channel-slack"
-    assert SlackChannelPlugin().extension_manifest is SLACK_EXTENSION_MANIFEST
+    assert SLACK_EXTENSION_MANIFEST.distribution_name == "joyhousebot-channel-slack"
+    assert SlackChannelExtension().extension_manifest is SLACK_EXTENSION_MANIFEST
 
 
 def test_channel_manager_loads_explicit_slack_extension_entry_point() -> None:
     config = Config(
         extensions=ExtensionsConfig(
-            enabled=["channel-slack"],
+            allowed_ids=["channel-slack"],
             discover_entry_points=True,
             settings={
                 "channel-slack": {"bot_token": "xoxb-test", "app_token": "xapp-test"}
@@ -58,29 +58,29 @@ def test_channel_manager_loads_explicit_slack_extension_entry_point() -> None:
         )
     )
     manager = ChannelManager(config)
-    assert list(manager.plugins) == ["slack"]
+    assert list(manager.extensions) == ["slack"]
     assert manager.registry.source_for("slack") == "entry-point:channel-slack"
 
 
 @pytest.mark.asyncio
 async def test_slack_extension_fails_closed_without_vendor_sdk(monkeypatch) -> None:
-    monkeypatch.setattr("porthouse_channel_slack.plugin.SLACK_AVAILABLE", False)
-    plugin = _configured_plugin()
-    await plugin.start()
-    assert plugin.is_running is False
+    monkeypatch.setattr("joyhousebot_channel_slack.extension.SLACK_AVAILABLE", False)
+    extension = _configured_extension()
+    await extension.start()
+    assert extension.is_running is False
 
 
 def test_slack_group_and_dm_policies_remain_extension_owned() -> None:
-    plugin = _configured_plugin()
-    plugin._config["dm"] = {
+    extension = _configured_extension()
+    extension._config["dm"] = {
         "enabled": True,
         "policy": "allowlist",
         "allow_from": ["allowed-user"],
     }
-    plugin._config["group_policy"] = "allowlist"
-    plugin._config["group_allow_from"] = ["allowed-channel"]
+    extension._config["group_policy"] = "allowlist"
+    extension._config["group_allow_from"] = ["allowed-channel"]
 
-    assert plugin._is_allowed("allowed-user", "dm", "im") is True
-    assert plugin._is_allowed("other-user", "dm", "im") is False
-    assert plugin._is_allowed("user", "allowed-channel", "channel") is True
-    assert plugin._is_allowed("user", "other-channel", "channel") is False
+    assert extension._is_allowed("allowed-user", "dm", "im") is True
+    assert extension._is_allowed("other-user", "dm", "im") is False
+    assert extension._is_allowed("user", "allowed-channel", "channel") is True
+    assert extension._is_allowed("user", "other-channel", "channel") is False

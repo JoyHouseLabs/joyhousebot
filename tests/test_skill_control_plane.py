@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.skills import validate_skill_document
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.skills import validate_skill_document
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -24,7 +24,7 @@ def _draft(version: str = "1.0.0", instruction: str | None = None) -> dict:
         "input_schema": {"type": "object"},
         "output_schema": {"type": "object"},
         "required_capabilities": [],
-        "required_integrations": [],
+        "required_connections": [],
         "examples": [{"input": "研究市场", "output": "机会简报"}],
         "eval_cases": [
             {
@@ -101,30 +101,32 @@ def test_skill_admin_api_closes_draft_validate_publish_and_disable_loop(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "skill-api.db")
-    store.create_api_access_token(user_id="operator", actor_id="test", token="skill-token")
+    store.create_operator_access_token(
+        user_id="operator", actor_id="test", token="skill-token"
+    )
     store.upsert_platform_admin(user_id="operator", permissions=["*"], actor_id="test")
     container = build_api_container(config=Config(), store=store)
     headers = {"Authorization": "Bearer skill-token"}
     with TestClient(create_app(container)) as client:
-        created = client.post("/v1/admin/skills", headers=headers, json=_draft())
+        created = client.post("/control/v1/admin/skills", headers=headers, json=_draft())
         assert created.status_code == 200, created.text
         checked = client.post(
-            "/v1/admin/skills/skill.market-research/versions/1.0.0/validate",
+            "/control/v1/admin/skills/skill.market-research/versions/1.0.0/validate",
             headers=headers,
         )
         assert checked.status_code == 200 and checked.json()["valid"]
         published = client.post(
-            "/v1/admin/skills/skill.market-research/versions/1.0.0/publish",
+            "/control/v1/admin/skills/skill.market-research/versions/1.0.0/publish",
             headers=headers,
             json={"require_healthy_workers": False},
         )
         assert published.status_code == 200, published.text
         assert published.json()["rollout_id"].startswith("rollout_")
-        listed = client.get("/v1/admin/skills", headers=headers)
+        listed = client.get("/control/v1/admin/skills", headers=headers)
         assert listed.status_code == 200
         assert listed.json()["items"][0]["current_version"] == "1.0.0"
         disabled = client.put(
-            "/v1/admin/skills/skill.market-research/status",
+            "/control/v1/admin/skills/skill.market-research/status",
             headers=headers,
             json={"status": "disabled"},
         )

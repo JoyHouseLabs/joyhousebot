@@ -10,12 +10,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _STATE_SCHEMA = {
@@ -91,12 +91,12 @@ def test_bounded_loop_configuration_rejects_unbounded_or_unverified_execution() 
 
 def test_graph_api_freezes_bounded_loop_definition(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "graph-bounded-loop-api.db")
-    store.create_api_access_token(user_id="loop-owner", actor_id="test", token="loop-token")
+    store.create_operator_access_token(user_id="loop-owner", actor_id="test", token="loop-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     tasks = _loop_tasks(max_iterations=7)
     with client:
         created = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers={"Authorization": "Bearer loop-token"},
             json={
                 "goal": "freeze bounded loop",
@@ -116,7 +116,7 @@ def test_graph_api_freezes_bounded_loop_definition(tmp_path: Path) -> None:
         )
         assert created.status_code == 202, created.json()
         revisions = client.get(
-            f"/v1/runs/{created.json()['run_id']}/graph-revisions",
+            f"/control/v1/runs/{created.json()['run_id']}/graph-revisions",
             headers={"Authorization": "Bearer loop-token"},
         )
     assert revisions.status_code == 200
@@ -350,9 +350,7 @@ async def test_bounded_loop_resume_reuses_committed_iterations_without_duplicate
             key=lambda task: task.payload["bounded_loop_iteration"],
         )
         assert len(children) == 2
-        assert [child.task_id for child in children] == [
-            child.task_id for child in before_children
-        ]
+        assert [child.task_id for child in children] == [child.task_id for child in before_children]
         assert all(child.status == "completed" for child in children)
         assert resumed_parent.result["stop_reason"] == "bounded_loop_completed"
         assert resumed_parent.result["structured_output"]["state"] == {

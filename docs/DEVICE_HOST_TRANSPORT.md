@@ -23,19 +23,19 @@ Runtime Action + reconciliation
 device_operation_deliveries (PostgreSQL)
              ^
              | authenticated HTTPS claim / heartbeat / result
-HappyHouse Device Host --> loopback HMAC --> Node Supervisor --> OpenCLI/Extension
+JoyHouse Device Host --> loopback HMAC --> Node Supervisor --> OpenCLI/Extension
 ```
 
 ## 2. 身份与密钥
 
-用户通过正常 Runtime 身份调用 `POST /v1/device-hosts`。响应只返回一次 `jhd_...` 设备 token，Runtime
+用户通过正常 Runtime 身份调用 `POST /host/v1/device-hosts`。响应只返回一次 `jhd_...` 设备 token，Runtime
 数据库只保存 SHA-256 指纹。Desktop 应把原始 token 写入 macOS Keychain、Windows Credential Manager 或
 等价系统密钥库，并仅通过环境变量注入 Device Host 子进程。
 
 设备 API 同时要求：
 
 - `Authorization: Bearer <device-token>`；
-- `X-Porthouse-Device-ID: <registered-device-id>`；
+- `X-JoyHouseBot-Device-ID: <registered-device-id>`；
 - 数据库中设备仍为 `active`；
 - 心跳中的 Host revision 与 manifest digest 和注册值完全相同。
 
@@ -61,30 +61,30 @@ Core 只新增三个规范化事实投影：
 
 | Method | Path | 用途 |
 |---|---|---|
-| `POST` | `/v1/device-hosts` | 注册精确 Host 与 Capability 清单，返回一次 token |
-| `GET` | `/v1/device-hosts` | 查询自己的设备、在线时间和能力摘要 |
-| `POST` | `/v1/device-hosts/{id}/token:rotate` | 轮换 token |
-| `DELETE` | `/v1/device-hosts/{id}` | 撤销设备并停止新领取 |
-| `POST` | `/v1/runs/{run}/operations/{reconciliation}/device-deliveries` | 为已冻结 operation 建立幂等交付 |
-| `GET` | `/v1/device-deliveries/{id}` | 查询交付状态，不返回私有执行输入 |
-| `GET` | `/v1/device-deliveries/{id}/events` | 查询执行证据 |
+| `POST` | `/host/v1/device-hosts` | 注册精确 Host 与 Capability 清单，返回一次 token |
+| `GET` | `/host/v1/device-hosts` | 查询自己的设备、在线时间和能力摘要 |
+| `POST` | `/host/v1/device-hosts/{id}/token:rotate` | 轮换 token |
+| `DELETE` | `/host/v1/device-hosts/{id}` | 撤销设备并停止新领取 |
+| `POST` | `/host/v1/runs/{run}/operations/{reconciliation}/device-deliveries` | 为已冻结 operation 建立幂等交付 |
+| `GET` | `/host/v1/device-deliveries/{id}` | 查询交付状态，不返回私有执行输入 |
+| `GET` | `/host/v1/device-deliveries/{id}/events` | 查询执行证据 |
 
 设备 API：
 
 | Method | Path | 用途 |
 |---|---|---|
-| `POST` | `/v1/device-host/heartbeat` | 校验设备和精确 Host build，更新在线时间 |
-| `POST` | `/v1/device-host/operations:claim` | 使用 `SKIP LOCKED` 批量领取并取得 fencing version |
-| `POST` | `/v1/device-host/operations/{id}:heartbeat` | 在未过期 lease 上续约 |
-| `POST` | `/v1/device-host/operations/{id}/events:append` | 幂等追加有界进度事件 |
-| `POST` | `/v1/device-host/operations/{id}:complete` | 提交有摘要的终态并回写原 reconciliation |
+| `POST` | `/host/v1/device-host/heartbeat` | 校验设备和精确 Host build，更新在线时间 |
+| `POST` | `/host/v1/device-host/operations:claim` | 使用 `SKIP LOCKED` 批量领取并取得 fencing version |
+| `POST` | `/host/v1/device-host/operations/{id}:heartbeat` | 在未过期 lease 上续约 |
+| `POST` | `/host/v1/device-host/operations/{id}/events:append` | 幂等追加有界进度事件 |
+| `POST` | `/host/v1/device-host/operations/{id}:complete` | 提交有摘要的终态并回写原 reconciliation |
 
 SSE 唤醒是可选优化，目前正确性只依赖 PostgreSQL + HTTPS claim。断线后轮询恢复，不需要常驻 WebSocket。
 
 ### 自动设备投递
 
 Scheduler Worker 的 `DeviceHostService.auto_enqueue_pending` 周期扫描（默认每 5 秒，
-`PORTHOUSE_DEVICE_DELIVERY_INTERVAL` 可调）：对状态仍为 `pending`/`manual_required`、
+`JOYHOUSEBOT_DEVICE_DELIVERY_INTERVAL` 可调）：对状态仍为 `pending`/`manual_required`、
 尚无 delivery、且其精确 `capability_id+version` 被某台 `active` 设备声明过的 reconciliation，
 自动为目标设备（默认设备优先）创建幂等 delivery（deadline 1 小时、尝试 3 次后回到人工路径）。
 候选 action 在冻结前都已通过能力审批，该 pass 只选择执行者，不产生新的治理决定。
@@ -114,7 +114,7 @@ version，且 lease 尚未过期。旧进程即使保留 token，也不能用旧
 5. 上传有界事件和终态。
 
 它和 Supervisor 一起使用 `hosts/node/runtime-lock.json` 的 Node `v24.19.0`，不探测用户全局 Node。纯本地
-HappyHouse 可以直接调用 loopback Supervisor，不依赖 Cloud Device API。
+JoyHouse 可以直接调用 loopback Supervisor，不依赖 Cloud Device API。
 
 ## 7. 当前限制
 
@@ -124,4 +124,4 @@ HappyHouse 可以直接调用 loopback Supervisor，不依赖 Cloud Device API�
 - Pi 的模型预算 grant 属于 D8，动态反向 Tool Broker 属于 D10，不在本传输中偷渡实现。
 Device delivery 可冻结 `model_access` 和 `tool_access`。Device Host 按当前 fenced claim 分别换取短期
 `jhm_` 与 `jht_` grant，再通过签名本机 envelope 交给 Supervisor；设备总 token 不进入 Extension。
-Tool grant 只能访问 `/v1/host-tool-requests`，并随 claim、设备或 Run 失效。
+Tool grant 只能访问 `/host/v1/host-tool-requests`，并随 claim、设备或 Run 失效。

@@ -1,4 +1,4 @@
-# Porthouse Node Extension Host
+# joyhousebot Node Extension Host
 
 通用 Supervisor 把精确安装、已 allowlist 的 Node Extension 暴露为 Extension Host Profile。它不拥有
 Run/Task/Approval 状态，只通过签名 Remote Capability v1 接收调用，并把每个 Extension 放入独立故障域。
@@ -23,9 +23,9 @@ Server Extension 必须选择 `runner=oci`；Alpha 遇到 OCI 配置会失败关
 ```bash
 npm ci
 npm run build
-export PORTHOUSE_NODE_HOST_CONFIG=/absolute/path/host.config.json
-export PORTHOUSE_NODE_HOST_KEY_ID=runtime-key-id
-export PORTHOUSE_NODE_HOST_SIGNING_SECRET='env secret with at least 32 bytes'
+export JOYHOUSEBOT_NODE_HOST_CONFIG=/absolute/path/host.config.json
+export JOYHOUSEBOT_NODE_HOST_KEY_ID=runtime-key-id
+export JOYHOUSEBOT_NODE_HOST_SIGNING_SECRET='env secret with at least 32 bytes'
 node dist/cli.js
 ```
 

@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from porthouse.domain.collaboration_blueprints import normalize_collaboration_blueprint
-from porthouse.orchestration.blueprint_compiler import compile_plan_against_blueprint
+from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from joyhousebot.domain.collaboration_blueprints import normalize_collaboration_blueprint
+from joyhousebot.orchestration.blueprint_compiler import compile_plan_against_blueprint
 
 _CORPUS = json.loads(
     (Path(__file__).parent / "evals" / "blueprint_plan_eval_cases.json").read_text()

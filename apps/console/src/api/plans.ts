@@ -49,12 +49,12 @@ async function jsonOrThrow<T>(response: Response, fallback: string): Promise<T> 
 }
 
 export const getRunPlan = async (runId: string) => jsonOrThrow<RunPlan>(
-  await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/plan`),
+  await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/plan`),
   '读取执行计划失败',
 )
 
 export const actRunPlan = async (runId: string, action: 'confirm' | 'regenerate' | 'cancel', feedback?: string) => jsonOrThrow<{ run: Record<string, unknown>; plan_confirmation: Record<string, unknown>; no_op?: boolean }>(
-  await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/plan/confirmation`, {
+  await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/plan/confirmation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, feedback: feedback || null }),

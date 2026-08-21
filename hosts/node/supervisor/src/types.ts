@@ -3,7 +3,7 @@ import type {
   ChannelDriverIdentity,
   EventSourceIdentity,
   ExtensionHostManifest,
-} from "@porthouse/extension-sdk";
+} from "@joyhousebot/extension-sdk";
 
 export interface ResourcePolicy {
   request_timeout_ms: number;

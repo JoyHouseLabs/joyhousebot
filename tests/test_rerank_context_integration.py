@@ -1,6 +1,6 @@
-from porthouse.capabilities.services.context import ContextPort
-from porthouse.contracts import CapabilityContext
-from porthouse.domain.capabilities import CapabilityResult, InvocationStatus
+from joyhousebot.capabilities.services.context import ContextPort
+from joyhousebot.contracts import CapabilityContext
+from joyhousebot.domain.capabilities import CapabilityResult, InvocationStatus
 
 
 async def test_context_port_applies_only_frozen_rerank_policy() -> None:

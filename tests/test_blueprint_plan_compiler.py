@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from porthouse.domain.collaboration_blueprints import normalize_collaboration_blueprint
-from porthouse.orchestration.blueprint_compiler import (
+from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from joyhousebot.domain.collaboration_blueprints import normalize_collaboration_blueprint
+from joyhousebot.orchestration.blueprint_compiler import (
     BlueprintRepairError,
     PlanBoundaryViolationError,
     apply_blueprint_boundary,

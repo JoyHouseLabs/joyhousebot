@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from porthouse.providers.usage import (
+from joyhousebot.providers.usage import (
     cache_hit_usage,
     missing_usage,
     normalized_usage,
     partial_usage,
 )
-from porthouse.runtime.models import AgentOptions, AgentUsage
-from porthouse.runtime.planning_loop import _budget_reason
+from joyhousebot.runtime.models import AgentOptions, AgentUsage
+from joyhousebot.runtime.planning_loop import _budget_reason
 
 
 def test_catalog_pricing_preserves_logical_and_billed_usage() -> None:

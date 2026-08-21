@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import type {OperationProgressEvent, RemoteCapabilityResponse} from "@porthouse/extension-sdk";
+import type {OperationProgressEvent, RemoteCapabilityResponse} from "@joyhousebot/extension-sdk";
 
 import type {
   CloudDeviceTransport,

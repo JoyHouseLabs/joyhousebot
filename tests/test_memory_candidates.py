@@ -10,18 +10,18 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agents import AgentRevision
-from porthouse.domain.memory_policy import EffectiveMemoryPolicy
-from porthouse.providers.base import LLMProvider, LLMResponse
-from porthouse.runtime.context import RunContext, ToolExecutionContext
-from porthouse.services.memory.store import MemoryStore
-from porthouse.services.memory.writes import MemoryWriteController
-from porthouse.session.models import Session
-from porthouse.session.runtime_manager import RuntimeSessionManager
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agents import AgentRevision
+from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
+from joyhousebot.providers.base import LLMProvider, LLMResponse
+from joyhousebot.runtime.context import RunContext, ToolExecutionContext
+from joyhousebot.services.memory.store import MemoryStore
+from joyhousebot.services.memory.writes import MemoryWriteController
+from joyhousebot.session.models import Session
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -71,9 +71,7 @@ def test_replace_candidate_detects_document_change_instead_of_overwriting(
         policy=EffectiveMemoryPolicy.from_dict(context.memory_policy),
         context=context,
     )
-    receipt = controller.replace(
-        "MEMORY.md", "candidate version", source_kind="test.replace"
-    )
+    receipt = controller.replace("MEMORY.md", "candidate version", source_kind="test.replace")
     memory.write_long_term("concurrent version")
 
     candidate, outcome = store.resolve_memory_candidate(
@@ -248,15 +246,15 @@ async def test_consolidation_stages_each_durable_layer_without_direct_write(
     }
     memory = MemoryStore(store, context.memory_scope)
     assert memory.list_relative() == []
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 def test_memory_candidate_api_is_owner_scoped_and_resolution_is_idempotent(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "candidate-api.db")
-    store.create_api_access_token(user_id="memory-owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other-owner", actor_id="test", token="other-token")
+    store.create_operator_access_token(user_id="memory-owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="other-owner", actor_id="test", token="other-token")
     context = _tool_context()
     receipt = MemoryWriteController(
         store,
@@ -269,20 +267,20 @@ def test_memory_candidate_api_is_owner_scoped_and_resolution_is_idempotent(
     other = {"Authorization": "Bearer other-token"}
 
     with client:
-        listed = client.get("/v1/memory/candidates", headers=owner)
-        foreign_list = client.get("/v1/memory/candidates", headers=other)
+        listed = client.get("/control/v1/memory/candidates", headers=owner)
+        foreign_list = client.get("/control/v1/memory/candidates", headers=other)
         foreign_resolve = client.post(
-            f"/v1/memory/candidates/{receipt.candidate_id}/resolve",
+            f"/control/v1/memory/candidates/{receipt.candidate_id}/resolve",
             headers=other,
             json={"resolution": "accept"},
         )
         accepted = client.post(
-            f"/v1/memory/candidates/{receipt.candidate_id}/resolve",
+            f"/control/v1/memory/candidates/{receipt.candidate_id}/resolve",
             headers=owner,
             json={"resolution": "accept", "note": "confirmed"},
         )
         accepted_again = client.post(
-            f"/v1/memory/candidates/{receipt.candidate_id}/resolve",
+            f"/control/v1/memory/candidates/{receipt.candidate_id}/resolve",
             headers=owner,
             json={"resolution": "accept"},
         )
@@ -300,8 +298,8 @@ def test_memory_document_api_lists_layers_and_keeps_full_content_owner_scoped(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "memory-document-api.db")
-    store.create_api_access_token(user_id="memory-owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other-owner", actor_id="test", token="other-token")
+    store.create_operator_access_token(user_id="memory-owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="other-owner", actor_id="test", token="other-token")
     owner_scope = "user:memory-owner:agent:default"
     owner_memory = MemoryStore(store, owner_scope)
     owner_memory.write_profile("Owner prefers concise answers.")
@@ -323,34 +321,34 @@ def test_memory_document_api_lists_layers_and_keeps_full_content_owner_scoped(
     other = {"Authorization": "Bearer other-token"}
     query = {"agent_id": "default"}
     with client:
-        listed = client.get("/v1/memory/documents", headers=owner, params=query)
+        listed = client.get("/control/v1/memory/documents", headers=owner, params=query)
         episodic = client.get(
-            "/v1/memory/documents",
+            "/control/v1/memory/documents",
             headers=owner,
             params={**query, "layer": "episodic"},
         )
         searched = client.get(
-            "/v1/memory/documents",
+            "/control/v1/memory/documents",
             headers=owner,
             params={**query, "search": "Atlas"},
         )
         detail = client.get(
-            "/v1/memory/documents/PROFILE.md",
+            "/control/v1/memory/documents/PROFILE.md",
             headers=owner,
             params={**query, "scope_key": owner_scope},
         )
         foreign_detail = client.get(
-            "/v1/memory/documents/PROFILE.md",
+            "/control/v1/memory/documents/PROFILE.md",
             headers=other,
             params={**query, "scope_key": owner_scope},
         )
         candidates = client.get(
-            "/v1/memory/candidates",
+            "/control/v1/memory/candidates",
             headers=owner,
             params={"agent_id": "default", "status": "all"},
         )
         other_agent_candidates = client.get(
-            "/v1/memory/candidates",
+            "/control/v1/memory/candidates",
             headers=owner,
             params={"agent_id": "other-agent", "status": "all"},
         )

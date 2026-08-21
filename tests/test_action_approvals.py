@@ -7,25 +7,25 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from porthouse_capability_filesystem.plugin import FilesystemCapabilityPlugin
-from porthouse_capability_shell.plugin import ShellCapabilityPlugin
+from joyhousebot_capability_filesystem.extension import FilesystemCapabilityExtension
+from joyhousebot_capability_shell.extension import ShellCapabilityExtension
 
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.dispatcher import CapabilityDispatcher
-from porthouse.capabilities.plugin_registry import CapabilityPluginRegistry
-from porthouse.capabilities.tool_adapter import ToolCapabilityAdapter
-from porthouse.config.schema import Config
-from porthouse.contracts.tools import Tool
-from porthouse.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
-from porthouse.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from porthouse.runtime.action_identity import payload_hash
-from porthouse.runtime.approval_policy import approval_input_preview
-from porthouse.runtime.context import ActionApprovalRequiredError, ToolExecutionContext
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.session.runtime_manager import RuntimeSessionManager
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.capabilities.extension_registry import CapabilityExtensionRegistry
+from joyhousebot.capabilities.tool_adapter import ToolCapabilityAdapter
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.capabilities import CapabilityDefinition, CapabilityKind, CapabilityRef
+from joyhousebot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from joyhousebot.runtime.action_identity import payload_hash
+from joyhousebot.runtime.approval_policy import approval_input_preview
+from joyhousebot.runtime.context import ActionApprovalRequiredError, ToolExecutionContext
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -75,7 +75,7 @@ def _ref() -> CapabilityRef:
     return CapabilityRef(
         "approval_write",
         "1.0.0",
-        CapabilityKind.TOOL,
+        CapabilityKind.CAPABILITY,
         "test.approvals",
         "1.0.0",
         "sha256:test",
@@ -279,7 +279,7 @@ async def test_runtime_resumes_same_action_after_approval(tmp_path: Path) -> Non
         max_iterations=3,
         session_manager=RuntimeSessionManager(store),
     )
-    executor.capabilities.register_tool(tool, definition=_definition())
+    executor.capabilities.register_connector_capability(tool, definition=_definition())
     store.publish_capability(_definition(), actor_id="test:trusted-fixture")
     runtime = NativeAgentRuntime(agent=executor, store=store)
 
@@ -293,9 +293,7 @@ async def test_runtime_resumes_same_action_after_approval(tmp_path: Path) -> Non
     )
     waiting = await runtime.wait(submitted.run_id, timeout=3)
     assert waiting.status == "waiting_approval"
-    approvals = store.list_run_approval_requests(
-        submitted.run_id, expected_user_id="user-a"
-    )
+    approvals = store.list_run_approval_requests(submitted.run_id, expected_user_id="user-a")
     assert len(approvals) == 1
     assert tool.calls == 0
     assert store.resolve_approval_request(
@@ -315,7 +313,7 @@ async def test_runtime_resumes_same_action_after_approval(tmp_path: Path) -> Non
     assert tool.calls == 1
     assert store.list_action_intents(submitted.run_id)[0].status == "observed"
     await runtime.close()
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 def test_approval_claim_is_single_consumer_and_action_is_immutable(tmp_path: Path) -> None:
@@ -346,9 +344,7 @@ def test_approval_claim_is_single_consumer_and_action_is_immutable(tmp_path: Pat
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(
             pool.map(
-                lambda worker: store.claim_approved_action(
-                    request.action_id, worker_id=worker
-                ),
+                lambda worker: store.claim_approved_action(request.action_id, worker_id=worker),
                 ("worker-a", "worker-b"),
             )
         )
@@ -412,25 +408,38 @@ def test_approval_api_is_owner_scoped_and_operator_policy_is_enforced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = PostgresTestStore(tmp_path / "approval-api.db")
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
-    store.create_api_access_token(user_id="user-b", actor_id="test", token="token-b")
-    owner_request = _pending_request(store, "run-approval-api")
-    operator_request = _pending_request(
-        store, "run-approval-operator", required_role="operator"
+    store.create_operator_access_token(
+        user_id="user-a",
+        actor_id="test",
+        token="token-a",
+        role="viewer",
+        permissions=[],
     )
+    store.create_operator_access_token(
+        user_id="user-b",
+        actor_id="test",
+        token="token-b",
+        role="viewer",
+        permissions=[],
+    )
+    owner_request = _pending_request(store, "run-approval-api")
+    operator_request = _pending_request(store, "run-approval-operator", required_role="operator")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner = {"Authorization": "Bearer token-a"}
     foreign = {"Authorization": "Bearer token-b"}
 
     with client:
-        listed = client.get(f"/v1/runs/{owner_request.run_id}/approvals", headers=owner)
+        listed = client.get(f"/control/v1/runs/{owner_request.run_id}/approvals", headers=owner)
         assert listed.status_code == 200
         assert listed.json()["items"][0]["input_hash"] == owner_request.input_hash
-        assert client.get(
-            f"/v1/runs/{owner_request.run_id}/approvals", headers=foreign
-        ).status_code == 404
+        assert (
+            client.get(
+                f"/control/v1/runs/{owner_request.run_id}/approvals", headers=foreign
+            ).status_code
+            == 404
+        )
         approved = client.post(
-            f"/v1/runs/{owner_request.run_id}/approvals/{owner_request.approval_id}/resolve",
+            f"/control/v1/runs/{owner_request.run_id}/approvals/{owner_request.approval_id}/resolve",
             headers=owner,
             json={"resolution": "approve"},
         )
@@ -438,17 +447,18 @@ def test_approval_api_is_owner_scoped_and_operator_policy_is_enforced(
         assert approved.json()["run"]["status"] == "queued"
 
         forbidden = client.post(
-            f"/v1/runs/{operator_request.run_id}/approvals/{operator_request.approval_id}/resolve",
+            f"/control/v1/runs/{operator_request.run_id}/approvals/{operator_request.approval_id}/resolve",
             headers=owner,
             json={"resolution": "approve"},
         )
         assert forbidden.status_code == 403
-        monkeypatch.setenv("PORTHOUSE_CONTROL_TOKEN", "operator-token")
+        monkeypatch.setenv("JOYHOUSEBOT_CONTROL_TOKEN", "operator-token")
         operator = client.post(
-            f"/v1/runs/{operator_request.run_id}/approvals/{operator_request.approval_id}/resolve",
+            f"/control/v1/runs/{operator_request.run_id}/approvals/{operator_request.approval_id}/resolve",
             headers={
                 "Authorization": "Bearer operator-token",
                 "X-Impersonate-User-ID": "user-a",
+                "X-Impersonation-Reason": "Resolve operator-only approval",
             },
             json={"resolution": "approve"},
         )
@@ -464,9 +474,9 @@ def test_confidential_approval_preview_hides_values() -> None:
 
 
 def test_extension_side_effect_metadata_is_versioned_for_approval() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(FilesystemCapabilityPlugin())
-    registry.register_plugin(ShellCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(FilesystemCapabilityExtension())
+    registry.register_extension(ShellCapabilityExtension())
     write, _ = registry.get("write_file", "1.0.0")
     execute, _ = registry.get("exec", "1.0.0")
     assert (write.side_effect, write.ref.version) == ("write", "1.0.0")

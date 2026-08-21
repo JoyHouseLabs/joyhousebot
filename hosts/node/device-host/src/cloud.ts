@@ -1,4 +1,4 @@
-import type {OperationProgressEvent} from "@porthouse/extension-sdk";
+import type {OperationProgressEvent} from "@joyhousebot/extension-sdk";
 
 import type {
   CloudDeviceTransport,
@@ -27,14 +27,14 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
   }
 
   async heartbeat(): Promise<void> {
-    await this.#request("/v1/device-host/heartbeat", {
+    await this.#request("/host/v1/device-host/heartbeat", {
       host_revision: this.#config.hostRevision,
       host_manifest_digest: this.#config.hostManifestDigest,
     });
   }
 
   async claim(sessionId: string): Promise<DeviceDelivery[]> {
-    const response = await this.#request("/v1/device-host/operations:claim", {
+    const response = await this.#request("/host/v1/device-host/operations:claim", {
       claim_session_id: sessionId,
       limit: 5,
       lease_seconds: this.#config.claimLeaseSeconds,
@@ -44,7 +44,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
 
   async renew(delivery: DeviceDelivery, sessionId: string): Promise<void> {
     await this.#request(
-      `/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}:heartbeat`,
+      `/host/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}:heartbeat`,
       {
         claim_session_id: sessionId,
         claim_version: delivery.claim_version,
@@ -55,7 +55,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
 
   async issueModelGrant(delivery: DeviceDelivery, sessionId: string): Promise<string> {
     const response = await this.#request(
-      `/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}/model-grant`,
+      `/host/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}/model-grant`,
       {
         claim_session_id: sessionId,
         claim_version: delivery.claim_version,
@@ -70,7 +70,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
 
   async issueToolGrant(delivery: DeviceDelivery, sessionId: string): Promise<string> {
     const response = await this.#request(
-      `/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}/tool-grant`,
+      `/host/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}/tool-grant`,
       {
         claim_session_id: sessionId,
         claim_version: delivery.claim_version,
@@ -91,7 +91,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
   ): Promise<void> {
     if (events.length === 0) return;
     await this.#request(
-      `/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}/events:append`,
+      `/host/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}/events:append`,
       {
         claim_session_id: sessionId,
         claim_version: delivery.claim_version,
@@ -106,7 +106,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
     result: Record<string, unknown>,
   ): Promise<void> {
     await this.#request(
-      `/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}:complete`,
+      `/host/v1/device-host/operations/${encodeURIComponent(delivery.delivery_id)}:complete`,
       {
         claim_session_id: sessionId,
         claim_version: delivery.claim_version,
@@ -116,7 +116,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
   }
 
   async claimControls(sessionId: string): Promise<DeviceHostControlRequest[]> {
-    const response = await this.#request("/v1/device-host/control-requests:claim", {
+    const response = await this.#request("/host/v1/device-host/control-requests:claim", {
       claim_session_id: sessionId,
       limit: 3,
       lease_seconds: this.#config.claimLeaseSeconds,
@@ -130,7 +130,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
     outcome: {status: "succeeded" | "failed" | "manual_required"; result?: Record<string, unknown>; error?: Record<string, unknown>},
   ): Promise<void> {
     await this.#request(
-      `/v1/device-host/control-requests/${encodeURIComponent(request.request_id)}:complete`,
+      `/host/v1/device-host/control-requests/${encodeURIComponent(request.request_id)}:complete`,
       {
         claim_session_id: sessionId,
         claim_version: request.claim_version,
@@ -147,7 +147,7 @@ export class RuntimeDeviceTransport implements CloudDeviceTransport {
       headers: {
         Authorization: `Bearer ${this.#config.deviceToken}`,
         "Content-Type": "application/json",
-        "X-Porthouse-Device-ID": this.#config.deviceId,
+        "X-JoyHouseBot-Device-ID": this.#config.deviceId,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),

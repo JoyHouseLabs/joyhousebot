@@ -1,5 +1,5 @@
-from porthouse.observability.otel import configure_telemetry, telemetry_span
-from porthouse.observability.prometheus import render_prometheus
+from joyhousebot.observability.otel import configure_telemetry, telemetry_span
+from joyhousebot.observability.prometheus import render_prometheus
 
 
 def test_prometheus_renderer_covers_governed_runtime_families() -> None:
@@ -53,29 +53,29 @@ def test_prometheus_renderer_covers_governed_runtime_families() -> None:
             "active_ages": {"saga": 9},
         }
     )
-    assert 'porthouse_runs_total{status="completed"} 3' in text
-    assert "porthouse_task_claim_delay_ms_p95 12.5" in text
-    assert 'porthouse_reconciliations_total{status="manual_required"} 1' in text
-    assert 'porthouse_verifications_total{status="passed",verifier_type="schema"} 3' in text
-    assert 'porthouse_oldest_active_seconds{kind="saga"} 9.0' in text
+    assert 'joyhousebot_runs_total{status="completed"} 3' in text
+    assert "joyhousebot_task_claim_delay_ms_p95 12.5" in text
+    assert 'joyhousebot_reconciliations_total{status="manual_required"} 1' in text
+    assert 'joyhousebot_verifications_total{status="passed",verifier_type="schema"} 3' in text
+    assert 'joyhousebot_oldest_active_seconds{kind="saga"} 9.0' in text
     assert 'event_type="lease.lost"' in text
-    assert 'porthouse_api_tokens_total{token_type="service",status="active"} 2' in text
-    assert 'porthouse_api_token_risks_total{risk="rotation_overdue"} 1' in text
-    assert 'porthouse_app_callback_deliveries_total{status="dead"} 1' in text
-    assert "porthouse_app_callback_oldest_pending_seconds 15.0" in text
-    assert "porthouse_agent_slots_active 3" in text
-    assert "porthouse_database_pool_waiting 1" in text
-    assert 'porthouse_provider_failure_rate_24h{provider="test",model="test/model"} 10.0' in text
-    assert 'porthouse_team_runs_total{status="waiting_input"} 2' in text
-    assert 'porthouse_team_plan_actions_total{action="confirmed"} 3' in text
-    assert 'porthouse_team_planning_duration_seconds{quantile="p95"} 12.5' in text
-    assert "porthouse_team_plan_confirmation_wait_seconds 300.0" in text
-    assert 'porthouse_team_tasks_total{kind="produce",status="completed"} 7' in text
-    assert 'porthouse_coordinator_replans_total{reason_code="plan_blueprint_violation"} 2' in text
+    assert 'joyhousebot_api_tokens_total{token_type="service",status="active"} 2' in text
+    assert 'joyhousebot_api_token_risks_total{risk="rotation_overdue"} 1' in text
+    assert 'joyhousebot_app_callback_deliveries_total{status="dead"} 1' in text
+    assert "joyhousebot_app_callback_oldest_pending_seconds 15.0" in text
+    assert "joyhousebot_agent_slots_active 3" in text
+    assert "joyhousebot_database_pool_waiting 1" in text
+    assert 'joyhousebot_provider_failure_rate_24h{provider="test",model="test/model"} 10.0' in text
+    assert 'joyhousebot_team_runs_total{status="waiting_input"} 2' in text
+    assert 'joyhousebot_team_plan_actions_total{action="confirmed"} 3' in text
+    assert 'joyhousebot_team_planning_duration_seconds{quantile="p95"} 12.5' in text
+    assert "joyhousebot_team_plan_confirmation_wait_seconds 300.0" in text
+    assert 'joyhousebot_team_tasks_total{kind="produce",status="completed"} 7' in text
+    assert 'joyhousebot_coordinator_replans_total{reason_code="plan_blueprint_violation"} 2' in text
 
 
 def test_telemetry_is_inert_until_explicitly_enabled(monkeypatch) -> None:
-    monkeypatch.delenv("PORTHOUSE_OTEL_ENABLED", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_OTEL_ENABLED", raising=False)
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     assert configure_telemetry(service_name="test-disabled") is False
     with telemetry_span("test.disabled") as span:

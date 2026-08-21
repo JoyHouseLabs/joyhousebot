@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.dispatcher import CapabilityDispatcher
-from porthouse.config.schema import Config
-from porthouse.runtime.context import ActionOutcomeUnknownError
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.config.schema import Config
+from joyhousebot.runtime.context import ActionOutcomeUnknownError
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 from tests.test_operation_reconciliation import (
     _adapter,
@@ -63,7 +63,7 @@ async def test_auto_delivery_routes_frozen_operations_to_the_paired_device(
 
     with client:
         registered = client.post(
-            "/v1/device-hosts",
+            "/host/v1/device-hosts",
             headers=headers,
             json={
                 "device_id": "pixel-a",
@@ -98,10 +98,10 @@ async def test_auto_delivery_routes_frozen_operations_to_the_paired_device(
 
         device_headers = {
             "Authorization": f"Bearer {device_token}",
-            "X-Porthouse-Device-ID": "pixel-a",
+            "X-JoyHouseBot-Device-ID": "pixel-a",
         }
         heartbeat = client.post(
-            "/v1/device-host/heartbeat",
+            "/host/v1/device-host/heartbeat",
             headers=device_headers,
             json={
                 "host_revision": "android-host@1.0.0+build-a",
@@ -111,7 +111,7 @@ async def test_auto_delivery_routes_frozen_operations_to_the_paired_device(
         assert heartbeat.status_code == 200, heartbeat.text
 
         claimed = client.post(
-            "/v1/device-host/operations:claim",
+            "/host/v1/device-host/operations:claim",
             headers=device_headers,
             json={"claim_session_id": "android-session-0001", "lease_seconds": 30},
         )
@@ -125,7 +125,7 @@ async def test_auto_delivery_routes_frozen_operations_to_the_paired_device(
         claim_version = delivery["claim_version"]
 
         completed = client.post(
-            f"/v1/device-host/operations/{delivery_id}:complete",
+            f"/host/v1/device-host/operations/{delivery_id}:complete",
             headers=device_headers,
             json={
                 "claim_session_id": "android-session-0001",

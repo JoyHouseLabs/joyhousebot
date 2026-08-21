@@ -1,18 +1,18 @@
 # Knowledge Runtime boundary
 
-Porthouse Core owns the durable and governed mechanics of Knowledge; source-specific parsing remains an official or
+joyhousebot Core owns the durable and governed mechanics of Knowledge; source-specific parsing remains an official or
 third-party extension capability.
 
 ## Core responsibilities
 
-- authenticated `POST /v1/knowledge/index-requests` submission with a required stable `Idempotency-Key`;
+- authenticated `POST /control/v1/knowledge/index-requests` submission with a required stable `Idempotency-Key`;
 - compilation into the common Run/Task/Event/Trace path;
 - owner-scoped PostgreSQL documents, immutable revisions, chunks, active projection and audit events;
 - atomic revision activation, failed-revision preservation and stale-generation rejection;
 - retrieval over the active projection only;
-- owner-scoped `GET /v1/knowledge/search` with document, revision, page, section and character-range evidence;
-- stable source lookup through `GET /v1/knowledge/source-state` for Product reconciliation and revision history;
-- owner-scoped `GET /v1/knowledge/health` aggregates document readiness, queue depth, success rate, completion latency
+- owner-scoped `GET /control/v1/knowledge/search` with document, revision, page, section and character-range evidence;
+- stable source lookup through `GET /control/v1/knowledge/source-state` for Product reconciliation and revision history;
+- owner-scoped `GET /control/v1/knowledge/health` aggregates document readiness, queue depth, success rate, completion latency
   and bounded failure-code counts for a configurable 1–365 day window; it never returns titles or chunk content;
 - versioned Knowledge base membership and control-plane APIs.
 
@@ -31,7 +31,7 @@ identity and immutable source snapshot. The extension:
 4. asks the narrow Runtime Context service to stage, verify and activate a revision;
 5. returns a write receipt tied to Runtime `action_id` and `idempotency_key`.
 
-`POST /v1/knowledge/index-requests` is the user's explicit authorization to build this private projection. Core freezes
+`POST /control/v1/knowledge/index-requests` is the user's explicit authorization to build this private projection. Core freezes
 only the published capability's narrow `knowledge.write` authority into this internal Graph; that field is not exposed by
 the public Graph API. `knowledge.index` therefore remains a durable side-effecting Action with a write receipt, but does
 not add a second human approval after the owner already requested indexing. External publication, destructive mutation
@@ -46,7 +46,7 @@ the same characters as indexed content. This normalization is recorded as `seman
 later rebuild never silently changes the meaning of an older active revision.
 
 Product-local or cloud Vault identifiers are never sent to a Capability. The Product Gateway reads an owner-authorized
-immutable object, streams it to `POST /v1/input-assets`, then submits a `runtime_input` attachment and its `asset_id`.
+immutable object, streams it to `POST /control/v1/input-assets`, then submits a `runtime_input` attachment and its `asset_id`.
 Run/Graph creation verifies ownership and atomically freezes `runtime_run_input_assets`; the Worker can read the bytes only
 through `ContextPort.read_input_asset()` for that exact owner and Run. The public API never exposes the storage URI or host
 path. Direct `local_vault` and `cloud_vault` references therefore continue to fail closed. OCR, image understanding and
@@ -58,13 +58,13 @@ permissions.
 Worker 的普通运行日志只允许记录 channel、opaque sender/run 标识和内容长度，不得记录输入正文、模型响应预览或解析后的
 私有文档内容；正文只存在于受权限控制的 Session、Run、Trace Blob 或 Artifact 链。
 
-- `POST /v1/input-assets` requires `Idempotency-Key`, `Content-Length` and `X-Content-SHA256`, streams to a private
+- `POST /control/v1/input-assets` requires `Idempotency-Key`, `Content-Length` and `X-Content-SHA256`, streams to a private
   content-addressed object store and returns only immutable metadata;
-- `DELETE /v1/input-assets/{asset_id}` is owner-scoped and idempotent. It returns `404` for another owner and `409` while
+- `DELETE /control/v1/input-assets/{asset_id}` is owner-scoped and idempotent. It returns `404` for another owner and `409` while
   any bound Run is non-terminal; success records a `deleted` lifecycle event and makes later reads/bindings return `404`.
   The content-addressed object is removed by two-phase GC only after no ready asset references it. Deleting an Input Asset
   does not by itself erase historical Run Artifacts derived from it;
-- `POST /v1/runs`, `POST /v1/runs/graphs` and Workflow execution accept up to 20 `input_asset_ids`; binding occurs in the
+- `POST /control/v1/runs`, `POST /control/v1/runs/graphs` and Workflow execution accept up to 20 `input_asset_ids`; binding occurs in the
   same PostgreSQL transaction as Run creation and idempotent replay must name the same set;
 - `runtime_input_asset_events` records create/bind/read lifecycle events while `runtime_logs` records Run-scoped reads;
 - the normal Runtime retention job soft-deletes unneeded assets only after every bound Run is terminal, then reclaims
@@ -95,12 +95,10 @@ Namespace semantics are strict: personal searches, listings and detail reads onl
 only ever sees its own installation's documents. App libraries never leak into the user's personal retrieval context,
 while usage, audit and GDPR ownership remain bound to the installing `user_id`.
 
-Apps reach their library through the path-scoped sub-router (`/v1/apps/{installation_id}/knowledge/...`:
-`index-requests`, `search`, `documents`, `documents/{doc_id}`, `source-state`). Delegation scopes are
-`knowledge.read` / `knowledge.write`; they only unlock the App sub-router, never the personal `/v1/knowledge` surface.
-Indexing under an installation requires the installation to belong to the requesting user and stay active; the
-installation identity is frozen into the indexing Run metadata and reaches the capability context as
-`app_installation_id`.
+The retired App knowledge sub-router is no longer exposed. Product Apps should submit an Entry Point and consume
+Artifacts; they must not learn Runtime knowledge-store concepts or receive `knowledge.*` scopes. Runtime may still
+persist `app_installation_id` as an internal isolation/provenance field for previously indexed documents, but this does
+not create a product-facing data plane.
 
 ## Storage lifecycle
 
@@ -145,7 +143,7 @@ K4 adds four governed loops:
    search as the intentional strategy. At/above the threshold it elects one builder with a PostgreSQL advisory lock and
    creates a Profile-specific partial HNSW index with `CREATE INDEX CONCURRENTLY`; invalid interrupted indexes are
    discarded before retry. Search evidence reports `vector_strategy=exact|hnsw`.
-3. `POST /v1/knowledge/reembedding-jobs` creates an idempotent owner-scoped job for all documents, one Knowledge base or
+3. `POST /control/v1/knowledge/reembedding-jobs` creates an idempotent owner-scoped job for all documents, one Knowledge base or
    one document. Items use database leases, fencing versions, bounded exponential retry and terminal parent closure.
    Re-embedding attaches a second immutable Profile projection to existing chunks; it does not reparse content or switch
    the active source revision. Console **Models → Embedding Profiles** exposes enqueue, progress, refresh and cancel for
@@ -157,7 +155,7 @@ K4 adds four governed loops:
    block Profile publication until recent automated retrieval evidence passes.
 
 Core owns profile governance, revision completeness and PostgreSQL data. Provider Extensions implement the model API but
-cannot install database extensions or inject Runtime DDL. `GET /v1/admin/embedding-profiles/readiness` reports pgvector
+cannot install database extensions or inject Runtime DDL. `GET /control/v1/admin/embedding-profiles/readiness` reports pgvector
 availability, the published default profile and activation blockers without resolving secret values.
 
 Operator activation order:

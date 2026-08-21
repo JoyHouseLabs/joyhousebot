@@ -1,40 +1,38 @@
 from __future__ import annotations
 
 import pytest
+from joyhousebot_sdk import AppClient, AppSimulator, verify_callback
 
-from porthouse.app_sdk import (
-    AppRuntimeClient,
-    AppRuntimeSimulator,
-    verify_app_callback,
-)
-from porthouse.domain.app_callbacks import callback_body, callback_signature
+from joyhousebot.domain.app_callbacks import callback_body, callback_signature
 
 
 @pytest.mark.asyncio
 async def test_app_sdk_exchanges_launches_and_waits_with_simulator() -> None:
-    simulator = AppRuntimeSimulator()
-    async with AppRuntimeClient(
+    simulator = AppSimulator()
+    async with AppClient(
         "https://runtime.test",
         client_id=simulator.client_id,
         client_secret=simulator.client_secret,
-        grant_id=simulator.grant_id,
+        installation_id=simulator.installation_id,
         transport=simulator.transport(),
     ) as client:
-        apps = await client.list_apps()
-        assert apps[0]["installation_id"] == simulator.installation_id
-        launched = await client.launch(
-            simulator.installation_id,
-            "research the market",
+        entrypoint = await client.resolve_entrypoint("default", app_id=simulator.app_id)
+        assert entrypoint["id"] == simulator.entrypoint_id
+        launched = await client.run_entrypoint(
+            "default",
+            {"goal": "research the market"},
             idempotency_key="app-order-42",
+            app_id=simulator.app_id,
         )
-        repeated = await client.launch(
-            simulator.installation_id,
-            "research the market",
+        repeated = await client.run_entrypoint(
+            "default",
+            {"goal": "research the market"},
             idempotency_key="app-order-42",
+            app_id=simulator.app_id,
         )
-        assert repeated["run_id"] == launched["run_id"]
-        completed = await client.wait_run(launched["run_id"], poll_seconds=0.05)
-        assert completed["status"] == "completed"
+        assert repeated.id == launched.id
+        completed = await launched.wait(poll_seconds=0.05)
+        assert completed.status == "succeeded"
 
 
 def test_app_sdk_verifies_callback_identity_signature_and_replay() -> None:
@@ -48,14 +46,14 @@ def test_app_sdk_verifies_callback_identity_signature_and_replay() -> None:
     }
     body = callback_body(payload)
     timestamp = "1000"
-    verified = verify_app_callback(
+    verified = verify_callback(
         {
-            "X-Porthouse-Timestamp": timestamp,
-            "X-Porthouse-Signature": callback_signature(
+            "X-JoyHouseBot-Timestamp": timestamp,
+            "X-JoyHouseBot-Signature": callback_signature(
                 secret, timestamp=timestamp, body=body
             ),
-            "X-Porthouse-Event-ID": "event-2",
-            "X-Porthouse-Event-Type": "run.completed",
+            "X-JoyHouseBot-Event-ID": "event-2",
+            "X-JoyHouseBot-Event-Type": "run.completed",
         },
         body,
         secret=secret,
@@ -64,12 +62,12 @@ def test_app_sdk_verifies_callback_identity_signature_and_replay() -> None:
     assert verified.replay_of_event_id == "event-1"
     assert verified.replay_sequence == 1
     with pytest.raises(ValueError, match="signature"):
-        verify_app_callback(
+        verify_callback(
             {
-                "X-Porthouse-Timestamp": timestamp,
-                "X-Porthouse-Signature": "v1=invalid",
-                "X-Porthouse-Event-ID": "event-2",
-                "X-Porthouse-Event-Type": "run.completed",
+                "X-JoyHouseBot-Timestamp": timestamp,
+                "X-JoyHouseBot-Signature": "v1=invalid",
+                "X-JoyHouseBot-Event-ID": "event-2",
+                "X-JoyHouseBot-Event-Type": "run.completed",
             },
             body,
             secret=secret,

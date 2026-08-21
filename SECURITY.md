@@ -4,7 +4,7 @@ Report vulnerabilities through a private GitHub security advisory or directly to
 
 ## Production baseline
 
-- Configure the shared `PORTHOUSE_DATABASE_URL` with a least-privilege PostgreSQL role and TLS as appropriate. Integrated HappyHouse services can use one database while module repositories retain table ownership boundaries. Production never falls back to SQLite.
+- Configure the shared `JOYHOUSEBOT_DATABASE_URL` with a least-privilege PostgreSQL role and TLS as appropriate. Integrated JoyHouse services can use one database while module repositories retain table ownership boundaries. Production never falls back to SQLite.
 - Issue database-backed API tokens or configure an external OIDC adapter. Only token hashes are stored. Do not enable `gateway.allowInsecureAuth` in production.
 - Treat operator tokens separately from user tokens. Operator impersonation must be explicit and audited.
 - Inject model, channel, and MCP credentials through a secret manager or environment; never commit them to configuration files.

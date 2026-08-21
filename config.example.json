@@ -5,16 +5,16 @@
     "maxConcurrentSessions": 8
   },
   "runtime": {
-    "scratchRoot": "~/.porthouse/runtime-scratch",
+    "scratchRoot": "~/.joyhousebot/runtime-scratch",
     "bootstrapModel": "",
     "store": {
       "databaseUrl": "",
       "poolMinSize": 1,
       "poolMaxSize": 10,
       "autoMigrate": true,
-      "blobDirectory": "~/.porthouse/runtime-blobs",
+      "blobDirectory": "~/.joyhousebot/runtime-blobs",
       "blobInlineThresholdBytes": 65536,
-      "inputAssetDirectory": "~/.porthouse/input-assets",
+      "inputAssetDirectory": "~/.joyhousebot/input-assets",
       "inputAssetMaxBytes": 26214400,
       "leaseSeconds": 60,
       "pollIntervalSeconds": 0.2

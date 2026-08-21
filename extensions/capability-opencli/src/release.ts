@@ -36,7 +36,14 @@ export async function renderHostExtension(options: {
     entrypoint: "dist/worker.js",
     entrypoint_sha256: digest(await readFile(workerPath)),
     runner: "child_process",
-    capabilities: catalog.commands.map((command) => command.capability),
+    capabilities: [
+      ...catalog.commands.filter((command) => command.exposed).map((command) => (
+        hostCapability(command.capability, catalog.extension)
+      )),
+      ...catalog.account_snapshots.map((snapshot) => (
+        hostCapability(snapshot.capability, catalog.extension)
+      )),
+    ],
     environment: {
       OPENCLI_CATALOG_PATH: catalogPath,
       OPENCLI_STATE_PATH: resolve(options.stateRoot, "operations.json"),
@@ -51,6 +58,28 @@ export async function renderHostExtension(options: {
       max_stderr_bytes: 65_536,
       max_crashes: 3,
       crash_window_seconds: 60,
+    },
+  };
+}
+
+function hostCapability<T extends object>(
+  capability: T,
+  extension: {
+    extension_id: string;
+    version: string;
+    build_digest: string;
+    lockfile_digest: string;
+    sdk_version: string;
+  },
+): T & {provenance: Record<string, string>} {
+  return {
+    ...capability,
+    provenance: {
+      host_extension_id: extension.extension_id,
+      host_extension_version: extension.version,
+      host_extension_build_digest: extension.build_digest,
+      host_extension_lockfile_digest: extension.lockfile_digest,
+      host_sdk_version: extension.sdk_version,
     },
   };
 }

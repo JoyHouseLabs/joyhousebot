@@ -8,24 +8,24 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.context import Principal, RequestContext
-from porthouse.application.errors import ConflictError, ValidationError
-from porthouse.application.graph_patch_commands import (
+from joyhousebot.api.app import create_app
+from joyhousebot.application.context import Principal, RequestContext
+from joyhousebot.application.errors import ConflictError, ValidationError
+from joyhousebot.application.graph_patch_commands import (
     ApplyGraphPatchCommand,
     GraphPatchOperationCommand,
     ResolveGraphPatchProposalCommand,
 )
-from porthouse.application.run_commands import GraphTaskCommand
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.capabilities import (
+from joyhousebot.application.run_commands import GraphTaskCommand
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -70,13 +70,13 @@ def test_graph_patch_api_applies_revision_and_executes_materialized_tasks(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "graph-patch-api.db")
-    store.create_api_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other-owner", actor_id="test", token="other-token")
+    store.create_operator_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="other-owner", actor_id="test", token="other-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner = {"Authorization": "Bearer owner-token"}
     with client:
         submitted = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers=owner,
             json={
                 "goal": "patch a pending graph",
@@ -88,18 +88,18 @@ def test_graph_patch_api_applies_revision_and_executes_materialized_tasks(
         run = submitted.json()
         base_revision_id = run["graph_revision_id"]
         applied = client.post(
-            f"/v1/runs/{run['run_id']}/graph-patches",
+            f"/control/v1/runs/{run['run_id']}/graph-patches",
             headers=owner,
             json=_patch_body(base_revision_id),
         )
         duplicate = client.post(
-            f"/v1/runs/{run['run_id']}/graph-patches",
+            f"/control/v1/runs/{run['run_id']}/graph-patches",
             headers=owner,
             json=_patch_body(base_revision_id),
         )
-        listed = client.get(f"/v1/runs/{run['run_id']}/graph-patches", headers=owner)
+        listed = client.get(f"/control/v1/runs/{run['run_id']}/graph-patches", headers=owner)
         foreign = client.get(
-            f"/v1/runs/{run['run_id']}/graph-patches",
+            f"/control/v1/runs/{run['run_id']}/graph-patches",
             headers={"Authorization": "Bearer other-token"},
         )
 
@@ -252,7 +252,7 @@ async def test_high_risk_graph_patch_requires_explicit_owner_confirmation(
     reference = CapabilityRef(
         "test.patch_write",
         "1.0.0",
-        CapabilityKind.TOOL,
+        CapabilityKind.CAPABILITY,
         "test.graph-patch",
         "1.0.0",
         "sha256:patch-write",
@@ -319,7 +319,7 @@ async def test_high_risk_graph_patch_requires_explicit_owner_confirmation(
 
 def test_graph_patch_rejects_started_target_and_snapshot_expansion(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "graph-patch-started.db")
-    store.create_api_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
     runtime = NativeAgentRuntime(agent=None, store=store, worker_enabled=False)
 
     async def submit_and_close():  # noqa: ANN202
@@ -345,7 +345,7 @@ def test_graph_patch_rejects_started_target_and_snapshot_expansion(tmp_path: Pat
     owner = {"Authorization": "Bearer owner-token"}
     with client:
         started = client.post(
-            f"/v1/runs/{submitted.run_id}/graph-patches",
+            f"/control/v1/runs/{submitted.run_id}/graph-patches",
             headers=owner,
             json={
                 "base_revision_id": submitted.graph_revision_id,
@@ -359,7 +359,7 @@ def test_graph_patch_rejects_started_target_and_snapshot_expansion(tmp_path: Pat
             },
         )
         expanded = client.post(
-            f"/v1/runs/{submitted.run_id}/graph-patches",
+            f"/control/v1/runs/{submitted.run_id}/graph-patches",
             headers=owner,
             json={
                 "base_revision_id": submitted.graph_revision_id,
@@ -387,14 +387,14 @@ def test_graph_patch_proposal_requires_independent_resolution_before_activation(
     tmp_path: Path,
 ) -> None:
     store = PostgresTestStore(tmp_path / "graph-patch-proposal-api.db")
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="graph-owner", actor_id="test", token="proposal-owner-token"
     )
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner = {"Authorization": "Bearer proposal-owner-token"}
     with client:
         submitted = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers=owner,
             json={
                 "goal": "approve a proposed graph change",
@@ -407,7 +407,7 @@ def test_graph_patch_proposal_requires_independent_resolution_before_activation(
         run = submitted.json()
         body = _patch_body(run["graph_revision_id"])
         proposed = client.post(
-            f"/v1/runs/{run['run_id']}/graph-patch-proposals",
+            f"/control/v1/runs/{run['run_id']}/graph-patch-proposals",
             headers=owner,
             json=body,
         )
@@ -416,24 +416,23 @@ def test_graph_patch_proposal_requires_independent_resolution_before_activation(
         assert proposal["status"] == "pending"
         assert proposal["validation"]["approval_required"] is True
         assert "candidate_revision" not in proposal
-        before = client.get(f"/v1/runs/{run['run_id']}", headers=owner).json()
+        before = client.get(f"/control/v1/runs/{run['run_id']}", headers=owner).json()
         before_tasks = {
-            item.payload["spec_id"]: item
-            for item in store.list_runtime_tasks(run_id=run["run_id"])
+            item.payload["spec_id"]: item for item in store.list_runtime_tasks(run_id=run["run_id"])
         }
         assert set(before_tasks) == {"first"}
         assert before_tasks["first"].payload["prompt"] == "FIRST"
         listed = client.get(
-            f"/v1/runs/{run['run_id']}/graph-patch-proposals", headers=owner
+            f"/control/v1/runs/{run['run_id']}/graph-patch-proposals", headers=owner
         )
         approved = client.post(
-            f"/v1/runs/{run['run_id']}/graph-patch-proposals/"
+            f"/control/v1/runs/{run['run_id']}/graph-patch-proposals/"
             f"{proposal['proposal_id']}/resolve",
             headers=owner,
             json={"resolution": "approve", "note": "reviewed frozen diff"},
         )
         duplicate = client.post(
-            f"/v1/runs/{run['run_id']}/graph-patch-proposals/"
+            f"/control/v1/runs/{run['run_id']}/graph-patch-proposals/"
             f"{proposal['proposal_id']}/resolve",
             headers=owner,
             json={"resolution": "approve"},
@@ -441,8 +440,7 @@ def test_graph_patch_proposal_requires_independent_resolution_before_activation(
 
     assert before["graph_revision_id"] == run["graph_revision_id"]
     activated_tasks = {
-        item.payload["spec_id"]: item
-        for item in store.list_runtime_tasks(run_id=run["run_id"])
+        item.payload["spec_id"]: item for item in store.list_runtime_tasks(run_id=run["run_id"])
     }
     assert listed.status_code == 200 and listed.json()["items"][0]["status"] == "pending"
     assert approved.status_code == 200, approved.text
@@ -484,9 +482,7 @@ async def test_agent_graph_patch_proposal_can_be_rejected_without_mutating_graph
         operations=(
             GraphPatchOperationCommand(
                 op="append",
-                node=GraphTaskCommand(
-                    id="extra", prompt="EXTRA", dependencies=["root"]
-                ),
+                node=GraphTaskCommand(id="extra", prompt="EXTRA", dependencies=["root"]),
             ),
         ),
     )
@@ -512,10 +508,8 @@ async def test_agent_graph_patch_proposal_can_be_rejected_without_mutating_graph
     saved = store.get_runtime_run(submitted.run_id, expected_user_id="graph-owner")
     assert saved is not None
     assert saved.graph_revision_id == submitted.graph_revision_id
-    assert {task.payload["spec_id"] for task in store.list_runtime_tasks(run_id=submitted.run_id)} == {
-        "root"
-    }
-    assert store.list_graph_patches(
-        submitted.run_id, expected_user_id="graph-owner"
-    ) == []
+    assert {
+        task.payload["spec_id"] for task in store.list_runtime_tasks(run_id=submitted.run_id)
+    } == {"root"}
+    assert store.list_graph_patches(submitted.run_id, expected_user_id="graph-owner") == []
     await container.close()

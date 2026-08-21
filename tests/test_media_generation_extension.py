@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
-from porthouse_capability_media_generation import MediaGenerationPlugin
-from porthouse_capability_media_generation.jimeng import JimengAdapter
-from porthouse_capability_media_generation.signing import sign_openapi_request
+from joyhousebot_capability_media_generation import MediaGenerationExtension
+from joyhousebot_capability_media_generation.jimeng import JimengAdapter
+from joyhousebot_capability_media_generation.signing import sign_openapi_request
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.extension_sdk import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.extension_sdk import CapabilityContext
 
 
 def _context() -> CapabilityContext:
@@ -38,15 +38,15 @@ def _client_factory(handler):
 
 
 def test_media_plugin_registers_governed_provider_neutral_capabilities() -> None:
-    registry = CapabilityPluginRegistry()
-    plugin = MediaGenerationPlugin()
-    registry.register_plugin(plugin)
+    registry = CapabilityExtensionRegistry()
+    plugin = MediaGenerationExtension()
+    registry.register_extension(plugin)
 
     assert plugin.providers.provider_ids == ("jimeng", "volcengine_ark")
     for capability_id in ("image.generate", "image.edit", "video.generate"):
         definition, handler = registry.get(capability_id, "1.0.0")
         assert handler is not None
-        assert definition.ref.plugin_id == "capability-media-generation"
+        assert definition.ref.extension_id == "capability-media-generation"
         assert definition.side_effect == "external"
         assert definition.idempotent is False
         assert definition.retryable is False
@@ -68,7 +68,7 @@ def test_media_plugin_health_reports_presence_without_exposing_credentials(
         "VOLCENGINE_SECRET_ACCESS_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
-    plugin = MediaGenerationPlugin()
+    plugin = MediaGenerationExtension()
 
     missing = plugin.health_checks()
     assert [item["status"] for item in missing] == ["degraded", "degraded"]
@@ -127,11 +127,11 @@ async def test_seedream_image_generation_returns_artifact_and_receipt(
         )
 
     monkeypatch.setattr(
-        "porthouse_capability_media_generation.volcengine_ark.TrackedAsyncClient",
+        "joyhousebot_capability_media_generation.volcengine_ark.TrackedAsyncClient",
         _client_factory(respond),
     )
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(MediaGenerationPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(MediaGenerationExtension())
     result = await registry.invoke(
         "image.generate",
         {
@@ -173,11 +173,11 @@ async def test_seedance_video_is_accepted_then_reconciled(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        "porthouse_capability_media_generation.volcengine_ark.TrackedAsyncClient",
+        "joyhousebot_capability_media_generation.volcengine_ark.TrackedAsyncClient",
         _client_factory(respond),
     )
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(MediaGenerationPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(MediaGenerationExtension())
     _definition, handler = registry.get("video.generate", "1.0.0")
     result = await registry.invoke(
         "video.generate",
@@ -207,11 +207,11 @@ async def test_media_submission_unknown_enters_manual_reconciliation(monkeypatch
         return httpx.Response(503, json={"error": {"message": "upstream unavailable"}})
 
     monkeypatch.setattr(
-        "porthouse_capability_media_generation.volcengine_ark.TrackedAsyncClient",
+        "joyhousebot_capability_media_generation.volcengine_ark.TrackedAsyncClient",
         _client_factory(respond),
     )
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(MediaGenerationPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(MediaGenerationExtension())
     _definition, handler = registry.get("video.generate", "1.0.0")
     result = await registry.invoke(
         "video.generate",
@@ -253,11 +253,11 @@ async def test_jimeng_image_task_is_signed_and_reconciled(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        "porthouse_capability_media_generation.jimeng.TrackedAsyncClient",
+        "joyhousebot_capability_media_generation.jimeng.TrackedAsyncClient",
         _client_factory(respond),
     )
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(MediaGenerationPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(MediaGenerationExtension())
     _definition, handler = registry.get("image.generate", "1.0.0")
     result = await registry.invoke(
         "image.generate",

@@ -15,9 +15,9 @@
     <div v-if="error" class="notice error-notice">{{ error }}</div>
 
     <section class="contract panel">
-      <article><span>01</span><div><strong>Skill 是方法资产</strong><p>内容、Schema、示例、依赖与 Eval 一起形成版本；它不是可执行 Tool。</p></div></article>
+      <article><span>01</span><div><strong>Skill 是方法资产</strong><p>内容、Schema、示例、依赖与 Eval 一起形成版本；它不是可执行 Capability。</p></div></article>
       <article><span>02</span><div><strong>引用必须精确</strong><p>Agent 与 Workflow 冻结 skill_id、version 和 content_sha256，更新不会静默漂移。</p></div></article>
-      <article><span>03</span><div><strong>动作仍受能力治理</strong><p>Skill 只指导如何做；联网、代码与业务写入必须经过 Capability 和 Integration。</p></div></article>
+      <article><span>03</span><div><strong>动作仍受能力治理</strong><p>Skill 只指导如何做；联网、代码与业务写入必须经过 Capability 和 Connection。</p></div></article>
     </section>
 
     <div class="workspace">
@@ -78,10 +78,10 @@
           </section>
 
           <section class="form-section">
-            <header><div><span>02</span><h3>Capability 与 Integration 依赖</h3></div><p>这里只声明完成方法所需的动作；Agent 仍需单独授权。</p></header>
+            <header><div><span>02</span><h3>Capability 与 Connection 依赖</h3></div><p>这里只声明完成方法所需的动作；Agent 仍需单独授权。</p></header>
             <div class="dependency-grid">
               <div><h4>精确 Capability 版本</h4><label v-for="item in capabilities" :key="capabilityKey(item)" class="dependency-row"><input v-model="form.capability_keys" :disabled="readOnly" type="checkbox" :value="capabilityKey(item)" /><span><strong>{{ item.name }}</strong><small>{{ capabilityKey(item) }}</small></span></label><p v-if="!capabilities.length">当前没有已发布 Capability。</p></div>
-              <div><h4>Integration</h4><label v-for="item in integrations" :key="item.connection_id" class="dependency-row"><input v-model="form.required_integrations" :disabled="readOnly" type="checkbox" :value="item.connection_id" /><span><strong>{{ item.name }}</strong><small>{{ item.connection_id }} · {{ item.current_revision_id || '未发布' }}</small></span></label><p v-if="!integrations.length">当前没有已发布远程 Integration。</p></div>
+              <div><h4>Connection</h4><label v-for="item in connections" :key="item.connection_id" class="dependency-row"><input v-model="form.required_connections" :disabled="readOnly" type="checkbox" :value="item.connection_id" /><span><strong>{{ item.name }}</strong><small>{{ item.connection_id }} · {{ item.current_revision_id || '未发布' }}</small></span></label><p v-if="!connections.length">当前没有已发布远程 Connection。</p></div>
             </div>
           </section>
 
@@ -146,7 +146,7 @@ import {
 
 interface SkillForm {
   skill_id: string; version: string; name: string; description: string; instruction_content: string
-  tags: string; capability_keys: string[]; required_integrations: string[]; change_note: string
+  tags: string; capability_keys: string[]; required_connections: string[]; change_note: string
   input_schema: string; output_schema: string; examples: string; eval_cases: string; templates: string; source: string
 }
 
@@ -155,7 +155,7 @@ const skills = ref<SkillSummary[]>([])
 const detail = ref<SkillSummary | null>(null)
 const selectedVersion = ref<SkillVersion | null>(null)
 const capabilities = ref<AdminCapability[]>([])
-const integrations = ref<RemoteConnection[]>([])
+const connections = ref<RemoteConnection[]>([])
 const selectedId = ref('')
 const search = ref('')
 const nextVersion = ref('')
@@ -175,13 +175,13 @@ const readOnly = computed(() => Boolean(selectedVersion.value && selectedVersion
 const persistedDraft = computed(() => Boolean(selectedVersion.value?.status === 'draft' && selectedVersion.value.skill_id === form.skill_id && selectedVersion.value.version === form.version))
 const canPublish = computed(() => Boolean(selectedVersion.value && ['draft', 'retired'].includes(selectedVersion.value.status) && (selectedVersion.value.status === 'retired' || validation.value?.valid)))
 
-function blankForm(): SkillForm { return { skill_id: '', version: '1.0.0', name: '', description: '', instruction_content: '', tags: '', capability_keys: [], required_integrations: [], change_note: '', input_schema: '{\n  "type": "object"\n}', output_schema: '{\n  "type": "object"\n}', examples: '[]', eval_cases: '[\n  {\n    "name": "basic",\n    "input": "",\n    "expected_behavior": ""\n  }\n]', templates: '[]', source: '{\n  "kind": "managed"\n}' } }
+function blankForm(): SkillForm { return { skill_id: '', version: '1.0.0', name: '', description: '', instruction_content: '', tags: '', capability_keys: [], required_connections: [], change_note: '', input_schema: '{\n  "type": "object"\n}', output_schema: '{\n  "type": "object"\n}', examples: '[]', eval_cases: '[\n  {\n    "name": "basic",\n    "input": "",\n    "expected_behavior": ""\n  }\n]', templates: '[]', source: '{\n  "kind": "managed"\n}' } }
 function pretty(value: unknown) { return JSON.stringify(value ?? {}, null, 2) }
-function fill(value: SkillVersion) { Object.assign(form, { skill_id: value.skill_id, version: value.version, name: value.name, description: value.description, instruction_content: value.instruction_content, tags: value.tags.join(', '), capability_keys: value.required_capabilities.map((item) => `${item.capability_id}@${item.version}`), required_integrations: [...value.required_integrations], change_note: value.change_note, input_schema: pretty(value.input_schema), output_schema: pretty(value.output_schema), examples: pretty(value.examples), eval_cases: pretty(value.eval_cases), templates: pretty(value.templates), source: pretty(value.source) }); validation.value = Object.keys(value.validation_report || {}).length ? value.validation_report as SkillValidationReport : null }
+function fill(value: SkillVersion) { Object.assign(form, { skill_id: value.skill_id, version: value.version, name: value.name, description: value.description, instruction_content: value.instruction_content, tags: value.tags.join(', '), capability_keys: value.required_capabilities.map((item) => `${item.capability_id}@${item.version}`), required_connections: [...value.required_connections], change_note: value.change_note, input_schema: pretty(value.input_schema), output_schema: pretty(value.output_schema), examples: pretty(value.examples), eval_cases: pretty(value.eval_cases), templates: pretty(value.templates), source: pretty(value.source) }); validation.value = Object.keys(value.validation_report || {}).length ? value.validation_report as SkillValidationReport : null }
 function parseJson<T>(value: string, field: string): T { try { return JSON.parse(value) as T } catch { throw new Error(`${field} 不是有效 JSON`) } }
-function payload(): SaveSkillDraft { return { skill_id: form.skill_id, version: form.version, name: form.name, description: form.description, instruction_content: form.instruction_content, tags: form.tags.split(',').map((item) => item.trim()).filter(Boolean), required_capabilities: form.capability_keys.map((item) => { const offset = item.lastIndexOf('@'); return { capability_id: item.slice(0, offset), version: item.slice(offset + 1) } }), required_integrations: [...form.required_integrations], change_note: form.change_note, input_schema: parseJson(form.input_schema, 'Input Schema'), output_schema: parseJson(form.output_schema, 'Output Schema'), examples: parseJson(form.examples, 'Examples'), eval_cases: parseJson(form.eval_cases, 'Eval Cases'), templates: parseJson(form.templates, 'Templates'), source: parseJson(form.source, 'Source') } }
+function payload(): SaveSkillDraft { return { skill_id: form.skill_id, version: form.version, name: form.name, description: form.description, instruction_content: form.instruction_content, tags: form.tags.split(',').map((item) => item.trim()).filter(Boolean), required_capabilities: form.capability_keys.map((item) => { const offset = item.lastIndexOf('@'); return { capability_id: item.slice(0, offset), version: item.slice(offset + 1) } }), required_connections: [...form.required_connections], change_note: form.change_note, input_schema: parseJson(form.input_schema, 'Input Schema'), output_schema: parseJson(form.output_schema, 'Output Schema'), examples: parseJson(form.examples, 'Examples'), eval_cases: parseJson(form.eval_cases, 'Eval Cases'), templates: parseJson(form.templates, 'Templates'), source: parseJson(form.source, 'Source') } }
 
-async function load() { loading.value = true; error.value = ''; try { const [skillItems, capabilityItems, connectionItems] = await Promise.all([listSkills(), getAdminCapabilities(), listRemoteConnections().catch(() => [])]); skills.value = skillItems; capabilities.value = capabilityItems; integrations.value = connectionItems.filter((item) => Boolean(item.current_revision_id)); if (selectedId.value) await selectSkill(selectedId.value); else if (skillItems.length) await selectSkill(skillItems[0].skill_id) } catch (cause) { error.value = errorText(cause) } finally { loading.value = false } }
+async function load() { loading.value = true; error.value = ''; try { const [skillItems, capabilityItems, connectionItems] = await Promise.all([listSkills(), getAdminCapabilities(), listRemoteConnections().catch(() => [])]); skills.value = skillItems; capabilities.value = capabilityItems; connections.value = connectionItems.filter((item) => Boolean(item.current_revision_id)); if (selectedId.value) await selectSkill(selectedId.value); else if (skillItems.length) await selectSkill(skillItems[0].skill_id) } catch (cause) { error.value = errorText(cause) } finally { loading.value = false } }
 async function selectSkill(skillId: string) { selectedId.value = skillId; isNewAsset.value = false; editing.value = true; detail.value = await getSkill(skillId); const versions = detail.value.versions || []; const target = versions.find((item) => item.status === 'draft') || versions.find((item) => item.version === detail.value?.current_version) || versions[0]; selectedVersion.value = target || null; nextVersion.value = ''; if (target) fill(target) }
 function chooseVersion(version: string) { const target = detail.value?.versions?.find((item) => item.version === version); if (target) { selectedVersion.value = target; isNewAsset.value = false; nextVersion.value = ''; fill(target) } }
 function createSkill() { selectedId.value = ''; detail.value = null; selectedVersion.value = null; isNewAsset.value = true; editing.value = true; validation.value = null; nextVersion.value = ''; Object.assign(form, blankForm()) }
@@ -197,7 +197,7 @@ function errorText(value: unknown) { return value instanceof Error ? value.messa
 function shortDigest(value: string) { return value.length > 24 ? `${value.slice(0, 18)}…${value.slice(-6)}` : value }
 function statusLabel(value: SkillSummary['status']) { return ({ active: '启用', disabled: '停用', archived: '归档' } as const)[value] }
 function versionStatusLabel(value: SkillVersion['status']) { return ({ draft: 'Draft', staged: '预热中', published: '已发布', retired: '历史版本' } as const)[value] }
-function checkLabel(value: string) { return ({ instruction_content: '方法内容', eval_cases: 'Eval 覆盖', required_capabilities: 'Capability 依赖', required_integrations: 'Integration 依赖', document_schema: '文档结构' } as Record<string, string>)[value] || value }
+function checkLabel(value: string) { return ({ instruction_content: '方法内容', eval_cases: 'Eval 覆盖', required_capabilities: 'Capability 依赖', required_connections: 'Connection 依赖', document_schema: '文档结构' } as Record<string, string>)[value] || value }
 function formatDate(value?: string | null) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
 
 onMounted(load)

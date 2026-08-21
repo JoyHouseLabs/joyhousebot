@@ -7,15 +7,15 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
 from tests.support.postgres_store import PostgresTestStore
 
 
 def _upload(client: TestClient, *, token: str, key: str, body: bytes) -> dict[str, object]:
     response = client.post(
-        "/v1/input-assets?file_name=resume.pdf",
+        "/control/v1/input-assets?file_name=resume.pdf",
         content=body,
         headers={
             "Authorization": f"Bearer {token}",
@@ -33,8 +33,8 @@ def test_input_asset_delete_is_owner_scoped_idempotent_and_audited(tmp_path: Pat
         tmp_path / "input-asset-delete.db",
         input_asset_directory=str(tmp_path / "input-objects"),
     )
-    store.create_api_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
-    store.create_api_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
+    store.create_operator_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
+    store.create_operator_access_token(user_id="owner-b", actor_id="test", token="owner-b-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
     owner = {"Authorization": "Bearer owner-a-token"}
     foreign = {"Authorization": "Bearer owner-b-token"}
@@ -42,10 +42,10 @@ def test_input_asset_delete_is_owner_scoped_idempotent_and_audited(tmp_path: Pat
     with client:
         asset = _upload(client, token="owner-a-token", key="delete-a", body=b"%PDF-a")
         asset_id = str(asset["asset_id"])
-        denied = client.delete(f"/v1/input-assets/{asset_id}", headers=foreign)
-        deleted = client.delete(f"/v1/input-assets/{asset_id}", headers=owner)
-        repeated = client.delete(f"/v1/input-assets/{asset_id}", headers=owner)
-        hidden = client.get(f"/v1/input-assets/{asset_id}", headers=owner)
+        denied = client.delete(f"/control/v1/input-assets/{asset_id}", headers=foreign)
+        deleted = client.delete(f"/control/v1/input-assets/{asset_id}", headers=owner)
+        repeated = client.delete(f"/control/v1/input-assets/{asset_id}", headers=owner)
+        hidden = client.get(f"/control/v1/input-assets/{asset_id}", headers=owner)
 
     assert denied.status_code == 404
     assert deleted.status_code == 200
@@ -68,7 +68,7 @@ def test_input_asset_delete_rejects_assets_bound_to_active_runs(tmp_path: Path) 
         tmp_path / "input-asset-active.db",
         input_asset_directory=str(tmp_path / "active-input-objects"),
     )
-    store.create_api_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
+    store.create_operator_access_token(user_id="owner-a", actor_id="test", token="owner-a-token")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
 
     with client:
@@ -84,7 +84,7 @@ def test_input_asset_delete_rejects_assets_bound_to_active_runs(tmp_path: Path) 
             input_asset_ids=[str(asset["asset_id"])],
         )
         response = client.delete(
-            f"/v1/input-assets/{asset['asset_id']}",
+            f"/control/v1/input-assets/{asset['asset_id']}",
             headers={"Authorization": "Bearer owner-a-token"},
         )
 

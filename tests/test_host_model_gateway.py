@@ -5,16 +5,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.capabilities.dispatcher import CapabilityDispatcher
-from porthouse.config.schema import Config
-from porthouse.model_gateway.app import create_model_gateway_app
-from porthouse.model_gateway.service import HostModelGatewayService
-from porthouse.providers.base import LLMResponse
-from porthouse.providers.usage import normalized_usage
-from porthouse.runtime.context import ActionOutcomeUnknownError
-from porthouse.storage.json_codec import Jsonb
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.config.schema import Config
+from joyhousebot.model_gateway.app import create_model_gateway_app
+from joyhousebot.model_gateway.service import HostModelGatewayService
+from joyhousebot.providers.base import LLMResponse
+from joyhousebot.providers.usage import normalized_usage
+from joyhousebot.runtime.context import ActionOutcomeUnknownError
+from joyhousebot.storage.json_codec import Jsonb
 from tests.support.postgres_store import PostgresTestStore
 from tests.test_operation_reconciliation import (
     _adapter,
@@ -120,7 +120,7 @@ async def test_host_model_gateway_pins_scope_budgets_and_replays_response(
 
     with runtime_client:
         registration = runtime_client.post(
-            "/v1/device-hosts",
+            "/host/v1/device-hosts",
             headers=owner_headers,
             json={
                 "device_id": "host-model-device",
@@ -139,10 +139,10 @@ async def test_host_model_gateway_pins_scope_budgets_and_replays_response(
         assert registration.status_code == 201, registration.text
         device_headers = {
             "Authorization": f"Bearer {registration.json()['device_token']}",
-            "X-Porthouse-Device-ID": "host-model-device",
+            "X-JoyHouseBot-Device-ID": "host-model-device",
         }
         delivery_response = runtime_client.post(
-            f"/v1/runs/{execution.run_id}/operations/"
+            f"/host/v1/runs/{execution.run_id}/operations/"
             f"{reconciliation.reconciliation_id}/device-deliveries",
             headers=owner_headers,
             json={
@@ -162,13 +162,13 @@ async def test_host_model_gateway_pins_scope_budgets_and_replays_response(
         assert delivery_response.status_code == 202, delivery_response.text
         delivery_id = delivery_response.json()["delivery"]["delivery_id"]
         claim = runtime_client.post(
-            "/v1/device-host/operations:claim",
+            "/host/v1/device-host/operations:claim",
             headers=device_headers,
             json={"claim_session_id": "device-model-session-0001", "lease_seconds": 300},
         )
         assert claim.status_code == 200, claim.text
         grant_response = runtime_client.post(
-            f"/v1/device-host/operations/{delivery_id}/model-grant",
+            f"/host/v1/device-host/operations/{delivery_id}/model-grant",
             headers=device_headers,
             json={
                 "claim_session_id": "device-model-session-0001",
@@ -179,7 +179,7 @@ async def test_host_model_gateway_pins_scope_budgets_and_replays_response(
         grant_token = grant_response.json()["model_grant_token"]
         grant_id = grant_response.json()["grant"]["grant_id"]
         assert grant_token.startswith("jhm_")
-        listed = runtime_client.get("/v1/model-grants", headers=owner_headers)
+        listed = runtime_client.get("/host/v1/model-grants", headers=owner_headers)
         assert listed.status_code == 200
         assert "fingerprint" not in str(listed.json()).lower()
 

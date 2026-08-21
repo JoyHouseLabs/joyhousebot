@@ -3,8 +3,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from porthouse.operations.durability_drill import DurabilityDrill
-from porthouse.operations.load_test import LoadTestOptions, percentile, run_api_load_test
+from joyhousebot.operations.durability_drill import DurabilityDrill
+from joyhousebot.operations.load_test import LoadTestOptions, percentile, run_api_load_test
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -48,11 +48,11 @@ async def test_api_load_rehearsal_checks_slos_and_never_reports_token() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/readyz":
             return httpx.Response(200, json={"ok": True})
-        if request.method == "POST" and request.url.path == "/v1/runs":
+        if request.method == "POST" and request.url.path == "/control/v1/runs":
             identity = str(request.headers["idempotency-key"])
             run_id = runs.setdefault(identity, f"run-{len(runs)}")
             return httpx.Response(202, json={"run_id": run_id, "status": "queued"})
-        if request.method == "GET" and request.url.path.startswith("/v1/runs/"):
+        if request.method == "GET" and request.url.path.startswith("/control/v1/runs/"):
             return httpx.Response(
                 200,
                 json={"run_id": request.url.path.rsplit("/", 1)[-1], "status": "completed"},

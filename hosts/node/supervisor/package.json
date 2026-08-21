@@ -1,8 +1,8 @@
 {
-  "name": "@porthouse/node-extension-host",
+  "name": "@joyhousebot/node-extension-host",
   "version": "0.1.0",
   "private": true,
-  "description": "Isolated process supervisor for governed Porthouse Node extensions",
+  "description": "Isolated process supervisor for governed joyhousebot Node extensions",
   "type": "module",
   "main": "dist/index.js",
   "engines": {"node": ">=20"},
@@ -13,7 +13,7 @@
     "start": "node dist/cli.js"
   },
   "dependencies": {
-    "@porthouse/extension-sdk": "file:../../../sdks/node"
+    "@joyhousebot/extension-sdk": "file:../../../sdks/node"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

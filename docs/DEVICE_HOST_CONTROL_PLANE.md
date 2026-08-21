@@ -1,7 +1,7 @@
 # Device Host Control Plane
 
-Porthouse Console is the advanced control plane for paired HappyHouse Desktop
-devices. HappyHouse remains the ordinary-user product: it owns local payload
+joyhousebot Console is the advanced control plane for paired JoyHouse Desktop
+devices. JoyHouse remains the ordinary-user product: it owns local payload
 installation, Keychain storage, browser sessions and local file permissions;
 it does not expose Node, Pi, OpenCLI or raw Host configuration in its normal
 workflow.
@@ -36,13 +36,13 @@ result (128 KiB). Stale or revoked device credentials cannot complete it.
 host-shell instructions. A signed Desktop capability-profile manager must
 apply the corresponding immutable bundle release and report its outcome. If
 that manager is absent or the Desktop needs an update, the result is
-`manual_required`; Porthouse never guesses success.
+`manual_required`; joyhousebot never guesses success.
 
 ## Operator flow
 
-1. HappyHouse starts and pairs its local Device Host using the current user
+1. JoyHouse starts and pairs its local Device Host using the current user
    identity; the device token stays in Keychain.
-2. An operator opens **集成中心 → Device Hosts** in Porthouse Console.
+2. An operator opens **集成中心 → Device Hosts** in joyhousebot Console.
 3. Console submits a fixed diagnostic or deployment request and displays its
    durable status/history.
 4. Desktop executes it when online, reporting only safe diagnostics such as

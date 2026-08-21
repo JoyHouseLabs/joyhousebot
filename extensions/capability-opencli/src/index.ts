@@ -4,4 +4,5 @@ export {compileCatalog, compileCatalogFiles, loadCompiledCatalog} from "./catalo
 export {preflightOpenCli} from "./preflight.js";
 export {directoryDigest, renderHostExtension} from "./release.js";
 export {runOpenCli} from "./runner.js";
+export {runXiaohongshuAccountSnapshot} from "./xiaohongshu-snapshot.js";
 export type * from "./types.js";

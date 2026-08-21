@@ -4,17 +4,17 @@
       <div>
         <span class="eyebrow">APP ARCHITECTURE</span>
         <h1>应用与 Runtime 协作</h1>
-        <p>App 是可以独立交付和售卖的业务产品；Porthouse 是它按需使用的长期执行引擎，不接管 App 的用户系统、交易和业务事实。</p>
+        <p>App 是可以独立交付和售卖的业务产品；joyhousebot 是它按需使用的长期执行引擎，不接管 App 的用户系统、交易和业务事实。</p>
       </div>
       <div class="product-badge"><span>PRODUCT</span><strong>App ≠ Extension</strong></div>
     </header>
 
     <section class="app-control panel">
       <div class="section-heading control-heading">
-        <div><span class="eyebrow">APP PACK CONTROL PLANE</span><h2>应用包与安装状态</h2></div>
+        <div><span class="eyebrow">APP RELEASE CONTROL PLANE</span><h2>App Release 与安装状态</h2></div>
         <div class="heading-actions"><button class="secondary-button" type="button" @click="newDraft">新建草稿</button><button class="secondary-button" type="button" :disabled="loading" @click="load">刷新</button></div>
       </div>
-      <p class="control-note">App Pack 只组合已发布资产；Entry Point 将业务动作锁定到 Agent、Team、Scenario 或 Workflow，但不会创建第五种执行模式。</p>
+      <p class="control-note">App Package 只组合已发布资产；EntryPoint 将业务动作锁定到 Agent、Team、Scenario 或 Workflow，但不会创建第五种执行模式。</p>
       <div v-if="error" class="control-error">{{ error }}</div>
       <div class="app-console-grid">
         <aside class="release-list">
@@ -23,10 +23,10 @@
             <span :class="['release-status', release.status]">{{ release.status }}</span>
             <strong>{{ release.name }}</strong><small>{{ release.app_id }} · {{ release.version }}</small>
           </button>
-          <div v-if="!releases.length && !loading" class="empty-mini">还没有 App Pack 草稿。</div>
+          <div v-if="!releases.length && !loading" class="empty-mini">还没有 App Release 草稿。</div>
         </aside>
         <div class="manifest-editor">
-          <header><div><strong>porthouse.app.json</strong><small>精确版本 + 摘要构成可复现依赖锁</small></div><span v-if="validation" :class="validation.valid ? 'valid' : 'invalid'">{{ validation.valid ? '依赖通过' : '依赖缺失' }}</span></header>
+          <header><div><strong>joyhousebot.app.json</strong><small>精确版本 + 摘要构成可复现依赖锁</small></div><span v-if="validation" :class="validation.valid ? 'valid' : 'invalid'">{{ validation.valid ? '依赖通过' : '依赖缺失' }}</span></header>
           <textarea v-model="manifestText" rows="22" spellcheck="false" />
           <div v-if="validation?.errors?.length" class="validation-errors"><span v-for="item in validation.errors" :key="item">{{ item }}</span></div>
           <footer>
@@ -46,7 +46,6 @@
             <button v-if="['installed', 'disabled'].includes(item.status)" type="button" @click="act(item, 'activate')">启用</button>
             <button v-if="item.status === 'active'" type="button" @click="act(item, 'disable')">停用</button>
             <button v-if="item.previous_version" type="button" @click="act(item, 'rollback')">回滚</button>
-            <button v-if="item.status !== 'uninstalled'" type="button" @click="beginUpdateSubscription(item)">更新策略</button>
             <button v-if="item.status !== 'uninstalled'" type="button" class="danger" @click="act(item, 'uninstall')">卸载</button>
           </nav>
         </article>
@@ -79,81 +78,14 @@
           <div class="compact-form"><label>HTTPS Endpoint<input v-model.trim="callbackForm.endpoint" placeholder="https://app.example/callbacks" /></label><label>Secret env 引用<input v-model.trim="callbackForm.secret_ref" placeholder="env://MY_APP_CALLBACK_SECRET" /></label><button class="primary-button" type="button" @click="addCallback">登记 Callback</button></div>
         </article>
         <article class="governance-card">
-          <header><div><strong>User Grants</strong><small>当前用户 · 单安装授权</small></div><span>{{ appGrants.length }}</span></header>
-          <div v-for="item in appGrants" :key="item.grant_id" class="governance-row"><p><strong>{{ item.client_id }}</strong><small>{{ item.scopes.join(', ') }}</small><small>expires {{ item.expires_at }} · {{ item.enabled ? 'enabled' : 'revoked' }}</small></p><nav><button v-if="item.enabled" class="danger" type="button" @click="removeGrant(item)">撤销</button></nav></div>
-          <div class="compact-form"><label>Client<select v-model="grantForm.client_id"><option value="">选择 Client</option><option v-for="item in appClients.filter(value => value.enabled)" :key="item.client_id" :value="item.client_id">{{ item.name }}</option></select></label><label>Scopes<input v-model.trim="grantForm.scopes" /></label><label>Expires<input v-model="grantForm.expires_at" type="datetime-local" /></label><button class="primary-button" type="button" @click="addGrant">授权</button></div>
+          <header><div><strong>Installation Authorizations</strong><small>当前用户 · 单安装授权</small></div><span>{{ appAuthorizations.length }}</span></header>
+          <div v-for="item in appAuthorizations" :key="item.client_id" class="governance-row"><p><strong>{{ item.client_id }}</strong><small>{{ item.scopes.join(', ') }}</small><small>expires {{ item.expires_at }} · {{ item.enabled ? 'enabled' : 'revoked' }}</small></p><nav><button v-if="item.enabled" class="danger" type="button" @click="removeAuthorization(item)">撤销</button></nav></div>
+          <div class="compact-form"><label>Client<select v-model="authorizationForm.client_id"><option value="">选择 Client</option><option v-for="item in appClients.filter(value => value.enabled)" :key="item.client_id" :value="item.client_id">{{ item.name }}</option></select></label><label>Scopes<input v-model.trim="authorizationForm.scopes" /></label><label>Expires<input v-model="authorizationForm.expires_at" type="datetime-local" /></label><button class="primary-button" type="button" @click="addAuthorization">授权</button></div>
         </article>
       </div>
       <div class="delivery-diagnostics">
         <header><div><strong>Callback 投递诊断</strong><small>输入 App Run ID 查看状态并重放 sent/dead 记录</small></div><div><input v-model.trim="deliveryRunId" placeholder="run_id" /><button class="secondary-button" type="button" @click="loadDeliveries">查询</button></div></header>
         <div v-for="item in callbackDeliveries" :key="item.event_id" class="delivery-row"><code>{{ item.event_id }}</code><span :class="['delivery-status', item.status]">{{ item.status }}</span><small>attempt {{ item.attempt }}/{{ item.max_attempts }} · HTTP {{ item.response_status || '-' }}</small><button v-if="['sent', 'dead'].includes(item.status)" type="button" @click="replayDelivery(item)">创建重放</button></div>
-      </div>
-    </section>
-
-    <section class="market-control panel">
-      <div class="section-heading control-heading">
-        <div><span class="eyebrow">PORTHOUSE MARKET</span><h2>Market 账号、购买与可信获取</h2></div>
-        <span class="market-summary">{{ registries.length }} REGISTRIES · {{ acquisitions.length }} ACQUISITIONS</span>
-      </div>
-      <p class="control-note">市场只负责发现、签名制品、商业授权与治理。购买不会自动安装，Market 也不能授予本地 Capability 权限。</p>
-      <div class="market-grid">
-        <div class="market-column">
-          <header><strong>Registry 信任根</strong><small>TUF ROOT + DISCOVERY</small></header>
-          <article v-for="item in registries" :key="item.registry_id" class="market-card">
-            <div><span :class="['install-dot', item.status === 'active' ? 'active' : 'failed']"></span><strong>{{ item.market_id }}</strong></div>
-            <small>{{ item.status }} · protocol {{ item.protocol_version }} · {{ Object.keys(item.discovery?.contract_keys || {}).length }} contract keys</small>
-            <button class="secondary-button market-open" type="button" :disabled="busy || item.status !== 'active'" @click="openMarket(item)">登录 Market / 浏览购买</button>
-          </article>
-          <details class="market-form">
-            <summary>添加可信 Registry</summary>
-            <label>HTTPS Origin<input v-model.trim="registryForm.base_url" placeholder="https://market.example" /></label>
-            <label>Access Token 引用<input v-model.trim="registryForm.auth_token_ref" placeholder="env://PORTHOUSE_MARKET_TOKEN" /></label>
-            <label>Discovery JSON<textarea v-model="registryForm.discovery" rows="7" spellcheck="false" /></label>
-            <label>TUF root.json<textarea v-model="registryForm.trusted_root" rows="9" spellcheck="false" /></label>
-            <button class="primary-button" type="button" :disabled="busy" @click="registerRegistry">固定信任根</button>
-          </details>
-        </div>
-        <div class="market-column">
-          <header><strong>获取签名 App</strong><small>WORKER VERIFIED</small></header>
-          <div class="acquire-form">
-            <label>Registry<select v-model="acquireForm.registry_id"><option value="">选择 Registry</option><option v-for="item in registries" :key="item.registry_id" :value="item.registry_id">{{ item.market_id }}</option></select></label>
-            <label>Publisher ID<input v-model.trim="acquireForm.publisher_id" placeholder="pub_..." /></label>
-            <label>App ID<input v-model.trim="acquireForm.app_id" placeholder="app.market-radar" /></label>
-            <label>Offer ID<input v-model.trim="acquireForm.offer_id" placeholder="购买后自动填写" /></label>
-            <label>Version<input v-model.trim="acquireForm.version" placeholder="1.0.0（空为当前稳定版）" /></label>
-            <label>Channel<select v-model="acquireForm.channel"><option value="stable">stable</option><option value="beta">beta</option><option value="security">security</option></select></label>
-            <p v-if="receivedEntitlement" class="trust-line">已从 Porthouse Market 接收绑定本机公钥的签名 Entitlement；Bearer Token 不会写入 Runtime。</p>
-            <button class="primary-button" type="button" :disabled="busy || !acquireForm.registry_id" @click="requestAcquisition">解析并暂存</button>
-          </div>
-        </div>
-      </div>
-      <div v-if="updateForm.installation_id" class="update-config">
-        <header><div><strong>持续更新策略</strong><small>{{ updateForm.app_id }} · 自动激活保持关闭</small></div><button type="button" @click="clearUpdateForm">取消</button></header>
-        <label>Registry<select v-model="updateForm.registry_id"><option v-for="item in registries" :key="item.registry_id" :value="item.registry_id">{{ item.market_id }}</option></select></label>
-        <label>Publisher ID<input v-model.trim="updateForm.publisher_id" /></label>
-        <label>版本范围<input v-model.trim="updateForm.version_constraint" placeholder=">=1.0.0 <2.0.0" /></label>
-        <label>频道<select v-model="updateForm.channel"><option value="stable">stable</option><option value="beta">beta</option><option value="security">security</option></select></label>
-        <label>策略<select v-model="updateForm.policy"><option value="notify">仅通知</option><option value="download">验证并下载</option><option value="stage">验证并暂存，等待确认</option></select></label>
-        <button class="primary-button" type="button" :disabled="busy || !updateForm.registry_id" @click="persistUpdateSubscription">保存更新策略</button>
-      </div>
-      <div v-if="updateSubscriptions.length" class="update-subscriptions">
-        <article v-for="item in updateSubscriptions" :key="item.subscription_id">
-          <header><strong>{{ item.app_id }}</strong><span>{{ item.policy }} · {{ item.channel }}</span></header>
-          <small>当前 {{ item.current_version }} · 范围 {{ item.version_constraint }}</small>
-          <p v-if="item.latest_release?.version">发现 {{ item.latest_release.version }}，Scheduler 已按策略处理。</p>
-          <p v-if="item.last_error" class="market-error">{{ item.last_error.type }} · {{ item.last_error.message }}</p>
-        </article>
-      </div>
-      <div class="acquisition-list">
-        <article v-for="item in acquisitions" :key="item.acquisition_id">
-          <header><div><span :class="['acquisition-state', item.status]">{{ item.status }}</span><strong>{{ item.app_id }} {{ item.resolved_version || item.requested_version }}</strong></div><small>{{ item.publisher_id }} · {{ item.channel }}</small></header>
-          <p v-if="item.bundle_digest"><code>{{ item.bundle_digest }}</code></p>
-          <p v-if="['staged', 'awaiting_acceptance'].includes(item.status)" class="trust-line">作者签名、TUF Target 与 Market Attestation 已验证；仍需你确认权限差异。</p>
-          <pre v-if="['staged', 'awaiting_acceptance'].includes(item.status)">{{ JSON.stringify(item.permission_diff, null, 2) }}</pre>
-          <p v-if="item.error" class="market-error">{{ item.error.type }} · {{ item.error.message }}</p>
-          <nav v-if="['staged', 'awaiting_acceptance'].includes(item.status)"><button class="primary-button" type="button" :disabled="busy" @click="acquisitionAction(item, 'accept')">接受并导入草稿</button><button class="secondary-button" type="button" :disabled="busy" @click="acquisitionAction(item, 'reject')">拒绝</button></nav>
-        </article>
-        <div v-if="!acquisitions.length && !loading" class="empty-mini">还没有跨实例获取记录。</div>
       </div>
     </section>
 
@@ -189,7 +121,7 @@
           <div><span>反向业务操作</span><strong>Remote Capability</strong><small>签名请求、action_id、回执与对账</small></div>
         </div>
         <article>
-          <span class="system-label runtime-label">PORTHOUSE</span>
+          <span class="system-label runtime-label">JOYHOUSEBOT</span>
           <h3>Runtime 统一承担</h3>
           <ul><li v-for="item in runtimeOwns" :key="item">{{ item }}</li></ul>
         </article>
@@ -233,75 +165,57 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import {
-  acquireMarketApp,
-  actOnAppAcquisition,
-  authorizeAppGrant,
+  authorizeAppInstallation,
   createAppClient,
-  ensureMarketInstallationKey,
   getAppUsage,
-  installAppPack,
-  listAppAcquisitions,
+  installAppRelease,
   listAppCallbacks,
   listAppClients,
-  listAppGrants,
+  listAppAuthorizations,
   listAppInstallations,
-  listAppPacks,
-  listMarketRegistries,
+  listAppReleases,
   listRunAppCallbacks,
-  listUpdateSubscriptions,
   publishAppRelease,
   registerAppCallback,
-  registerMarketRegistry,
   replayRunAppCallback,
   revokeAppCallback,
   revokeAppClient,
-  revokeAppGrant,
+  revokeAppAuthorization,
   rotateAppClientSecret,
   saveAppRelease,
-  saveUpdateSubscription,
-  transitionAppPack,
+  transitionAppInstallation,
   validateAppRelease,
-  type AppAcquisition,
   type AppCallback,
   type AppCallbackDelivery,
   type AppClient,
-  type AppGrant,
+  type AppAuthorization,
   type AppInstallation,
   type AppRelease,
   type AppUsage,
   type AppValidationReport,
-  type MarketRegistry,
-  type UpdateSubscription,
 } from '../api/apps'
 
 const releases = ref<AppRelease[]>([])
 const installations = ref<AppInstallation[]>([])
-const registries = ref<MarketRegistry[]>([])
-const acquisitions = ref<AppAcquisition[]>([])
-const updateSubscriptions = ref<UpdateSubscription[]>([])
 const selected = ref<AppRelease | null>(null)
 const validation = ref<AppValidationReport | null>(null)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
 const manifestText = ref('')
-const registryForm = ref({ base_url: '', auth_token_ref: '', discovery: '{}', trusted_root: '{}' })
-const acquireForm = ref<{ registry_id: string; publisher_id: string; app_id: string; offer_id: string; version: string; channel: 'stable' | 'beta' | 'security' }>({ registry_id: '', publisher_id: '', app_id: '', offer_id: '', version: '', channel: 'stable' })
-const receivedEntitlement = ref<Record<string, any> | null>(null)
-const updateForm = ref<{ installation_id: string; registry_id: string; publisher_id: string; app_id: string; channel: 'stable' | 'beta' | 'security'; version_constraint: string; policy: 'notify' | 'download' | 'stage' }>({ installation_id: '', registry_id: '', publisher_id: '', app_id: '', channel: 'stable', version_constraint: '*', policy: 'notify' })
 const governanceInstallation = ref<AppInstallation | null>(null)
 const appClients = ref<AppClient[]>([])
 const appCallbacks = ref<AppCallback[]>([])
-const appGrants = ref<AppGrant[]>([])
+const appAuthorizations = ref<AppAuthorization[]>([])
 const appUsage = ref<AppUsage | null>(null)
 const callbackDeliveries = ref<AppCallbackDelivery[]>([])
 const deliveryRunId = ref('')
 const revealedSecret = ref('')
 const clientForm = ref({ name: '', scopes: 'apps.read, apps.launch, runs.read, runs.write' })
 const callbackForm = ref({ endpoint: '', secret_ref: '', events: ['run.completed', 'run.failed', 'run.cancelled', 'run.timed_out'], max_attempts: 8 })
-const grantForm = ref({ client_id: '', scopes: 'apps.read, apps.launch, runs.read, runs.write', expires_at: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 16) })
+const authorizationForm = ref({ client_id: '', scopes: 'apps.read, apps.launch, runs.read, runs.write', expires_at: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 16) })
 
 function draftManifest() {
   return {
@@ -312,11 +226,11 @@ function draftManifest() {
     description: '',
     publisher: '',
     publisher_id: 'pub_myapp01',
-    core: { min_version: '0.1.2', max_version: '' },
+    core: { min_version: '2.0.0', max_version: '' },
     extensions: [], capabilities: [],
     assets: { agents: [], teams: [], skills: [], workflows: [], scenarios: [] },
     entrypoints: [],
-    integrations: [], permissions: [], secrets: [], triggers: [], evaluations: [],
+    connections: [], permissions: [], secrets: [], triggers: [], evaluations: [],
     configuration_schema: {}, ui: {}, metadata: {},
     licenses: { code_expression: 'Apache-2.0' }, evidence: {},
     data_practices: { telemetry: 'none', outbound_domains: [], collects_personal_data: false, retention_days: 0 },
@@ -329,8 +243,8 @@ function selectRelease(release: AppRelease) { selected.value = release; validati
 function parseManifest() { const value = JSON.parse(manifestText.value); if (!value.app_id || !value.version) throw new Error('manifest 必须包含 app_id 和 version'); return value }
 async function load() {
   loading.value = true; error.value = ''
-  try { [releases.value, installations.value, registries.value, acquisitions.value, updateSubscriptions.value] = await Promise.all([listAppPacks(), listAppInstallations(), listMarketRegistries(), listAppAcquisitions(), listUpdateSubscriptions()]); if (!manifestText.value) newDraft() }
-  catch (cause) { error.value = cause instanceof Error ? cause.message : '读取 App Pack 失败' }
+  try { [releases.value, installations.value] = await Promise.all([listAppReleases(), listAppInstallations()]); if (!manifestText.value) newDraft() }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : '读取 App Release 失败' }
   finally { loading.value = false }
 }
 async function save() {
@@ -341,67 +255,14 @@ async function save() {
 }
 async function validateSelected() { if (!selected.value) return; busy.value = true; error.value = ''; try { validation.value = await validateAppRelease(selected.value.app_id, selected.value.version); await load(); const current = releases.value.find(item => item.app_id === selected.value?.app_id && item.version === selected.value?.version); if (current) selectRelease(current) } catch (cause) { error.value = cause instanceof Error ? cause.message : '校验失败' } finally { busy.value = false } }
 async function publishSelected() { if (!selected.value) return; const key = `${selected.value.app_id}:${selected.value.version}`; busy.value = true; error.value = ''; try { await publishAppRelease(selected.value.app_id, selected.value.version); await load(); const current = releases.value.find(item => `${item.app_id}:${item.version}` === key); if (current) selectRelease(current) } catch (cause) { error.value = cause instanceof Error ? cause.message : '发布失败' } finally { busy.value = false } }
-async function installSelected() { if (!selected.value || !window.confirm(`安装 ${selected.value.name} ${selected.value.version} 并授予清单声明的权限？`)) return; busy.value = true; error.value = ''; try { await installAppPack(selected.value); await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : '安装失败' } finally { busy.value = false } }
-async function act(item: AppInstallation, action: 'activate' | 'disable' | 'rollback' | 'uninstall') { if (action === 'uninstall' && !window.confirm(`卸载 ${item.name}？执行记录和审计事件仍会保留。`)) return; busy.value = true; error.value = ''; try { await transitionAppPack(item.installation_id, action); await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : '状态切换失败' } finally { busy.value = false } }
-async function registerRegistry() { busy.value = true; error.value = ''; try { await registerMarketRegistry({ base_url: registryForm.value.base_url, auth_token_ref: registryForm.value.auth_token_ref, discovery: JSON.parse(registryForm.value.discovery), trusted_root: JSON.parse(registryForm.value.trusted_root), policy: {} }); registryForm.value = { base_url: '', auth_token_ref: '', discovery: '{}', trusted_root: '{}' }; await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Registry 登记失败' } finally { busy.value = false } }
-async function openMarket(item: MarketRegistry) {
-  busy.value = true; error.value = ''
-  try {
-    const key = await ensureMarketInstallationKey(item.registry_id)
-    const marketUrl = String(item.discovery?.market_web_url || item.base_url)
-    const url = new URL(marketUrl)
-    url.searchParams.set('installation_public_key', key.public_key)
-    url.searchParams.set('return_origin', window.location.origin)
-    url.searchParams.set('registry_id', item.registry_id)
-    window.open(url.toString(), 'porthouse-market', 'popup,width=1180,height=820')
-  } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Market 打开失败' }
-  finally { busy.value = false }
-}
-function receiveMarketEntitlement(event: MessageEvent) {
-  const registry = registries.value.find((item) => {
-    try { return new URL(String(item.discovery?.market_web_url || item.base_url)).origin === event.origin } catch { return false }
-  })
-  const value = event.data
-  if (!registry || value?.type !== 'porthouse-market-entitlement' || !value.entitlement?.payload || !value.entitlement?.envelope) return
-  const payload = value.entitlement.payload as Record<string, any>
-  const app = payload.app as Record<string, any>
-  if (!app?.publisher_id || !app?.app_id || !payload.offer_id) return
-  receivedEntitlement.value = value.entitlement
-  acquireForm.value = { ...acquireForm.value, registry_id: registry.registry_id, publisher_id: String(app.publisher_id), app_id: String(app.app_id), offer_id: String(payload.offer_id) }
-}
-async function requestAcquisition() { busy.value = true; error.value = ''; try { await acquireMarketApp({ ...acquireForm.value, offer_id: acquireForm.value.offer_id || null, version: acquireForm.value.version || null, entitlement: receivedEntitlement.value }); receivedEntitlement.value = null; await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'App 获取请求失败' } finally { busy.value = false } }
-async function acquisitionAction(item: AppAcquisition, action: 'accept' | 'reject') { if (action === 'accept' && !window.confirm('确认权限、数据出站、Secret、Meter 与 Extension 差异，并把已验证 App 导入为本地草稿？')) return; busy.value = true; error.value = ''; try { await actOnAppAcquisition(item.acquisition_id, action); await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : '获取状态切换失败' } finally { busy.value = false } }
-function clearUpdateForm() { updateForm.value = { installation_id: '', registry_id: '', publisher_id: '', app_id: '', channel: 'stable', version_constraint: '*', policy: 'notify' } }
-function beginUpdateSubscription(item: AppInstallation) {
-  const release = releases.value.find(value => value.app_id === item.app_id && value.version === item.version)
-  const origin = (release?.origin_ref || {}) as Record<string, string>
-  const existing = updateSubscriptions.value.find(value => value.installation_id === item.installation_id)
-  if (!existing && (!origin.registry_id || !origin.publisher_id)) { error.value = '只有从可信 Market 获取的 App 才能建立远程更新订阅。'; return }
-  updateForm.value = {
-    installation_id: item.installation_id,
-    registry_id: existing?.registry_id || origin.registry_id,
-    publisher_id: existing?.publisher_id || origin.publisher_id,
-    app_id: item.app_id,
-    channel: existing?.channel || 'stable',
-    version_constraint: existing?.version_constraint || '*',
-    policy: existing?.policy === 'activate_safe' ? 'notify' : existing?.policy || 'notify',
-  }
-}
-async function persistUpdateSubscription() {
-  busy.value = true; error.value = ''
-  try {
-    await saveUpdateSubscription({ ...updateForm.value, allow_security_patch_download: true, allow_auto_stage: updateForm.value.policy === 'stage', allow_auto_activate: false })
-    clearUpdateForm(); await load()
-  } catch (cause) { error.value = cause instanceof Error ? cause.message : '更新策略保存失败' }
-  finally { busy.value = false }
-}
-
+async function installSelected() { if (!selected.value || !window.confirm(`安装 ${selected.value.name} ${selected.value.version} 并授予清单声明的权限？`)) return; busy.value = true; error.value = ''; try { await installAppRelease(selected.value); await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : '安装失败' } finally { busy.value = false } }
+async function act(item: AppInstallation, action: 'activate' | 'disable' | 'rollback' | 'uninstall') { if (action === 'uninstall' && !window.confirm(`卸载 ${item.name}？执行记录和审计事件仍会保留。`)) return; busy.value = true; error.value = ''; try { await transitionAppInstallation(item.installation_id, action); await load() } catch (cause) { error.value = cause instanceof Error ? cause.message : '状态切换失败' } finally { busy.value = false } }
 function scopeList(value: string) { return [...new Set(value.split(',').map(item => item.trim()).filter(Boolean))] }
 async function refreshGovernance() {
   if (!governanceInstallation.value) return
   const item = governanceInstallation.value
-  ;[appClients.value, appCallbacks.value, appGrants.value, appUsage.value] = await Promise.all([
-    listAppClients(item.app_id), listAppCallbacks(item.installation_id), listAppGrants(item.installation_id), getAppUsage(item.installation_id),
+  ;[appClients.value, appCallbacks.value, appAuthorizations.value, appUsage.value] = await Promise.all([
+    listAppClients(item.app_id), listAppCallbacks(item.installation_id), listAppAuthorizations(item.installation_id), getAppUsage(item.installation_id),
   ])
 }
 async function manageInstallation(item: AppInstallation) { governanceInstallation.value = item; callbackDeliveries.value = []; deliveryRunId.value = ''; busy.value = true; error.value = ''; try { await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'App 治理信息读取失败' } finally { busy.value = false } }
@@ -410,22 +271,20 @@ async function rotateClient(item: AppClient) { if (!window.confirm(`轮换 ${ite
 async function removeClient(item: AppClient) { if (!window.confirm(`撤销 ${item.name}、其 Grants 和 Token？`)) return; busy.value = true; try { await revokeAppClient(item.client_id); await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Client 撤销失败' } finally { busy.value = false } }
 async function addCallback() { if (!governanceInstallation.value) return; busy.value = true; try { await registerAppCallback(governanceInstallation.value.installation_id, callbackForm.value); callbackForm.value.endpoint = ''; callbackForm.value.secret_ref = ''; await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Callback 登记失败' } finally { busy.value = false } }
 async function removeCallback(item: AppCallback) { if (!governanceInstallation.value) return; busy.value = true; try { await revokeAppCallback(governanceInstallation.value.installation_id, item.callback_id); await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Callback 撤销失败' } finally { busy.value = false } }
-async function addGrant() { if (!governanceInstallation.value) return; busy.value = true; try { await authorizeAppGrant(governanceInstallation.value.installation_id, { client_id: grantForm.value.client_id, scopes: scopeList(grantForm.value.scopes), expires_at: new Date(grantForm.value.expires_at).toISOString() }); await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Grant 授权失败' } finally { busy.value = false } }
-async function removeGrant(item: AppGrant) { busy.value = true; try { await revokeAppGrant(item.grant_id); await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Grant 撤销失败' } finally { busy.value = false } }
+async function addAuthorization() { if (!governanceInstallation.value) return; busy.value = true; try { await authorizeAppInstallation(governanceInstallation.value.installation_id, { client_id: authorizationForm.value.client_id, scopes: scopeList(authorizationForm.value.scopes), expires_at: new Date(authorizationForm.value.expires_at).toISOString() }); await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : '安装授权失败' } finally { busy.value = false } }
+async function removeAuthorization(item: AppAuthorization) { if (!governanceInstallation.value) return; busy.value = true; try { await revokeAppAuthorization(governanceInstallation.value.installation_id, item.client_id); await refreshGovernance() } catch (cause) { error.value = cause instanceof Error ? cause.message : '安装授权撤销失败' } finally { busy.value = false } }
 async function loadDeliveries() { if (!deliveryRunId.value) return; busy.value = true; try { callbackDeliveries.value = await listRunAppCallbacks(deliveryRunId.value) } catch (cause) { error.value = cause instanceof Error ? cause.message : '投递记录读取失败' } finally { busy.value = false } }
 async function replayDelivery(item: AppCallbackDelivery) { if (!window.confirm(`为 ${item.event_id} 创建一次新的重放投递？`)) return; busy.value = true; try { await replayRunAppCallback(item.run_id, item.event_id); await loadDeliveries() } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Callback 重放失败' } finally { busy.value = false } }
 
-onMounted(() => { window.addEventListener('message', receiveMarketEntitlement); load() })
-onBeforeUnmount(() => window.removeEventListener('message', receiveMarketEntitlement))
+onMounted(load)
 
 const concepts = [
   { mark: 'A', name: 'App', audience: '用户产品', level: 'product', definition: '解决一个完整业务问题', boundary: '拥有独立界面、用户、计费与业务逻辑，可以单独部署和售卖。' },
-  { mark: 'T', name: 'Task Pack', audience: '持续任务', level: 'product', definition: '可安装的长期任务产品', boundary: '定义目标、节奏、确认点、成本、依赖和成果，不自动授予权限。' },
   { mark: 'S', name: 'Skill', audience: '方法资产', level: 'asset', definition: '如何完成某类工作的版本化方法包', boundary: '包含说明、模板、Schema 与 Eval；不直接获得网络、代码或业务写权限。' },
   { mark: 'W', name: 'Workflow', audience: '执行结构', level: 'asset', definition: '步骤、分支和状态如何流转', boundary: '描述执行顺序，最终仍编译到统一 Run / Task 链路。' },
   { mark: 'G', name: 'Agent', audience: '执行角色', level: 'runtime', definition: '承担角色并选择 Skill 与 Capability', boundary: '冻结模型、策略和能力准入，不等同于一个完整业务产品。' },
   { mark: 'C', name: 'Capability', audience: '原子动作', level: 'runtime', definition: 'Runtime 可以治理和调用的动作', boundary: '所有调用经过参数、权限、审批、幂等、配额和审计。' },
-  { mark: 'I', name: 'Integration', audience: '外部连接', level: 'technical', definition: '连接模型、邮件和既有业务系统', boundary: '负责协议和账号连接，不创建第二套任务状态机。' },
+  { mark: 'C', name: 'Connection', audience: '外部连接', level: 'technical', definition: '连接模型、渠道和既有业务系统', boundary: '只承载连接配置和凭据引用，不创建第二套任务状态机。' },
   { mark: 'E', name: 'Extension', audience: '技术安装', level: 'technical', definition: '扩展 Runtime 的代码制品', boundary: '安装 Provider、Channel、Connector 或 Capability；不是业务 App。' },
 ]
 
@@ -446,11 +305,11 @@ const callbackFlow = [
 ]
 const commerce = [
   { index: '01', name: '独立 SaaS', description: 'App 自己获客、收费和托管，通过 API 使用官方或自建 Runtime。' },
-  { index: '02', name: 'Runtime 随产品交付', description: 'App 套餐中捆绑托管 Porthouse，但用户仍只感知 App 品牌。' },
+  { index: '02', name: 'Runtime 随产品交付', description: 'App 套餐中捆绑托管 joyhousebot，但用户仍只感知 App 品牌。' },
   { index: '03', name: 'Bring Your Own Runtime', description: '客户填写自己的 Runtime 地址和授权，App 仅销售业务价值。' },
 ]
-const ready = ['App Manifest v2、不可变摘要与版本化 Entry Point', '公共 App 列表、安装级幂等 Run 启动与结果隔离', 'App Client、用户 Grant、短期 Token、Secret 轮换与审计', '签名终态 Outbox、重试、死信、人工重放与投递观测', 'App SDK、无数据库模拟器、安装级 Token/模型成本归因', '作者 DSSE、Market Attestation、TUF、Acquisition 与更新策略']
-const next = ['生产支付服务商与税务/KYC 适配', '第三方 Market 互操作认证与产品工作台', '跨区域部署的容量基线与灾备常态演练']
+const ready = ['App Manifest v2、不可变摘要与版本化 Entry Point', '公共 App 列表、安装级幂等 Run 启动与结果隔离', 'App Client、用户 Grant、短期 Token、Secret 轮换与审计', '签名终态 Outbox、重试、死信、人工重放与投递观测', 'App SDK、无数据库模拟器、安装级 Token/模型成本归因']
+const next = ['独立 Market 的签名分发与商业授权客户端', '跨实例发布物互操作认证', '跨区域部署的容量基线与灾备常态演练']
 </script>
 
 <style scoped>
@@ -458,4 +317,3 @@ const next = ['生产支付服务商与税务/KYC 适配', '第三方 Market 互
 .market-control{padding:22px}.market-summary{color:var(--text-muted);font:9px var(--font-mono)}.market-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.market-column{display:grid;align-content:start;gap:9px;padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:11px}.market-column>header{display:flex;justify-content:space-between}.market-column>header strong{color:var(--text-strong);font-size:11px}.market-column>header small{color:var(--text-muted);font:8px var(--font-mono)}.market-card{display:grid;gap:5px;padding:11px;background:var(--surface-raised);border:1px solid var(--border);border-radius:9px}.market-card>div{display:flex;align-items:center;gap:7px}.market-card strong{font-size:10px}.market-card small{color:var(--text-muted);font:8px var(--font-mono)}.market-form,.acquire-form{display:grid;gap:9px;padding:12px;background:var(--surface-raised);border:1px dashed var(--accent-border);border-radius:9px}.market-form summary{color:var(--accent);font-size:10px;cursor:pointer}.market-form label,.acquire-form label{display:grid;gap:5px;color:var(--text-muted);font-size:8px}.market-form input,.market-form textarea,.acquire-form input,.acquire-form select{width:100%;padding:8px;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:6px;font:9px var(--font-mono)}.market-form textarea{resize:vertical}.update-config{display:grid;grid-template-columns:1.2fr 1fr 1fr .7fr 1fr auto;gap:9px;align-items:end;margin-top:14px;padding:13px;background:var(--surface);border:1px dashed var(--accent-border);border-radius:10px}.update-config>header{display:flex;grid-column:1/-1;align-items:center;justify-content:space-between}.update-config>header div{display:grid;gap:3px}.update-config>header strong{font-size:10px}.update-config>header small{color:var(--text-muted);font:8px var(--font-mono)}.update-config>header button{color:var(--text-muted);background:none;border:0;font-size:9px}.update-config label{display:grid;gap:5px;color:var(--text-muted);font-size:8px}.update-config input,.update-config select{width:100%;padding:8px;color:var(--text);background:var(--surface-raised);border:1px solid var(--border);border-radius:6px;font:9px var(--font-mono)}.update-subscriptions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:10px}.update-subscriptions article{display:grid;gap:5px;padding:11px;background:var(--surface-raised);border:1px solid var(--border);border-radius:9px}.update-subscriptions header{display:flex;justify-content:space-between}.update-subscriptions strong{font-size:10px}.update-subscriptions span,.update-subscriptions small{color:var(--text-muted);font:8px var(--font-mono)}.update-subscriptions p{margin:0;color:var(--text-muted);font-size:9px}.acquisition-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.acquisition-list>article{display:grid;gap:9px;padding:14px;background:var(--surface-raised);border:1px solid var(--border);border-radius:10px}.acquisition-list header{display:grid;gap:5px}.acquisition-list header>div{display:flex;align-items:center;gap:8px}.acquisition-list header small,.acquisition-list code{color:var(--text-muted);font:8px var(--font-mono)}.acquisition-list p{margin:0}.acquisition-state{padding:4px 6px;color:var(--text-muted);background:var(--surface-muted);border-radius:5px;font:7px var(--font-mono);text-transform:uppercase}.acquisition-state.awaiting_acceptance,.acquisition-state.imported{color:var(--success);background:rgba(50,182,122,.09)}.acquisition-state.quarantined,.acquisition-state.failed{color:var(--danger);background:var(--danger-subtle)}.trust-line{color:var(--success);font-size:9px;line-height:1.6}.market-error{color:var(--danger);font-size:9px}.acquisition-list pre{max-height:180px;overflow:auto;padding:9px;color:var(--text-muted);background:var(--surface);border-radius:6px;font:8px/1.5 var(--font-mono)}.acquisition-list nav{display:flex;gap:7px}@media(max-width:1100px){.update-config{grid-template-columns:1fr 1fr 1fr}.update-config>.primary-button{width:100%}}@media(max-width:900px){.market-grid,.acquisition-list,.update-subscriptions,.update-config{grid-template-columns:1fr}}
 .governance{padding:22px}.secret-once{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin-bottom:14px;padding:12px;color:var(--warning);background:var(--warning-subtle);border:1px solid var(--warning);border-radius:9px}.secret-once code{overflow:auto;color:var(--text-strong);font:10px var(--font-mono)}.secret-once button,.governance-row button,.delivery-row button{padding:5px 7px;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);border-radius:5px;font-size:8px}.usage-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:12px}.usage-grid article{display:grid;gap:6px;padding:13px;background:var(--surface-raised);border:1px solid var(--border);border-radius:9px}.usage-grid span{color:var(--text-muted);font:8px var(--font-mono)}.usage-grid strong{font-size:18px}.governance-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.governance-card{display:grid;align-content:start;gap:8px;padding:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px}.governance-card>header,.delivery-diagnostics>header{display:flex;justify-content:space-between;gap:10px}.governance-card>header div,.delivery-diagnostics>header>div:first-child{display:grid;gap:3px}.governance-card>header strong,.delivery-diagnostics strong{font-size:11px}.governance-card>header small,.delivery-diagnostics small{color:var(--text-muted);font:8px var(--font-mono)}.governance-card>header>span{font:8px var(--font-mono)}.governance-row{display:flex;justify-content:space-between;gap:8px;padding:9px;background:var(--surface-raised);border-radius:7px}.governance-row p{display:grid;min-width:0;gap:3px;margin:0}.governance-row p strong{overflow:hidden;font-size:9px;text-overflow:ellipsis}.governance-row p small{overflow:hidden;color:var(--text-muted);font:7px var(--font-mono);text-overflow:ellipsis}.governance-row nav{display:flex;gap:4px;align-items:start}.governance-row button.danger{color:var(--danger)}.compact-form{display:grid;gap:7px;margin-top:4px;padding-top:10px;border-top:1px solid var(--border)}.compact-form label{display:grid;gap:4px;color:var(--text-muted);font-size:8px}.compact-form input,.compact-form select,.delivery-diagnostics input{width:100%;padding:7px;color:var(--text);background:var(--surface-raised);border:1px solid var(--border);border-radius:6px;font:8px var(--font-mono)}.delivery-diagnostics{display:grid;gap:7px;margin-top:12px;padding:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px}.delivery-diagnostics>header>div:last-child{display:flex;gap:6px}.delivery-row{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;padding:8px;background:var(--surface-raised);border-radius:7px}.delivery-row code{overflow:hidden;color:var(--text-muted);font:8px var(--font-mono);text-overflow:ellipsis}.delivery-status{padding:3px 5px;border-radius:4px;font:7px var(--font-mono)}.delivery-status.sent{color:var(--success);background:rgba(50,182,122,.09)}.delivery-status.dead{color:var(--danger);background:var(--danger-subtle)}@media(max-width:1100px){.governance-grid{grid-template-columns:1fr}.usage-grid{grid-template-columns:1fr 1fr}}@media(max-width:700px){.usage-grid{grid-template-columns:1fr}.delivery-diagnostics>header{flex-direction:column}.delivery-row{grid-template-columns:1fr auto}.delivery-row small{grid-column:1/-1}}
 </style>
-  ensureMarketInstallationKey,

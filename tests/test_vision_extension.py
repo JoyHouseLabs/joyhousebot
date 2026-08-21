@@ -1,10 +1,10 @@
 import os
 
-from porthouse_capability_vision import VisionCapabilityPlugin
-from porthouse_capability_vision.plugin import VisionHandler
+from joyhousebot_capability_vision import VisionCapabilityExtension
+from joyhousebot_capability_vision.extension import VisionHandler
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.contracts import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.contracts import CapabilityContext
 
 
 class _InputAssets:
@@ -32,15 +32,15 @@ class _Provider:
 
 
 def test_vision_extension_is_versioned_and_requires_scoped_permissions() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(VisionCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(VisionCapabilityExtension())
     definition, _ = registry.get("vision.understand", "0.1.0")
     assert definition.permissions == ("context.read", "vision.read")
-    assert definition.ref.plugin_id == "capability-vision"
+    assert definition.ref.extension_id == "capability-vision"
 
 
 async def test_vision_reads_only_a_frozen_asset_and_returns_bound_evidence(monkeypatch) -> None:
-    monkeypatch.setenv("PORTHOUSE_TEST_VISION_KEY", "test-key")
+    monkeypatch.setenv("JOYHOUSEBOT_TEST_VISION_KEY", "test-key")
     result = await VisionHandler(provider=_Provider()).execute(
         CapabilityContext(
             "user",
@@ -49,7 +49,7 @@ async def test_vision_reads_only_a_frozen_asset_and_returns_bound_evidence(monke
             services=_Services(),
             metadata={
                 "capability_configuration": {
-                    "api_key_env": "PORTHOUSE_TEST_VISION_KEY",
+                    "api_key_env": "JOYHOUSEBOT_TEST_VISION_KEY",
                     "api_url": "https://api.openai.com/v1/chat/completions",
                 }
             },
@@ -61,4 +61,4 @@ async def test_vision_reads_only_a_frozen_asset_and_returns_bound_evidence(monke
     assert observation["evidence"]["asset_id"] == "asset-image"
     assert observation["evidence"]["page"] == 2
     assert "png-bytes" not in str(result.output)
-    os.environ.pop("PORTHOUSE_TEST_VISION_KEY", None)
+    os.environ.pop("JOYHOUSEBOT_TEST_VISION_KEY", None)

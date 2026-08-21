@@ -1,5 +1,5 @@
-from porthouse.orchestration.task_graph import render_value
-from porthouse.runtime.graph_branch_execution import dependency_result_variables
+from joyhousebot.orchestration.task_graph import render_value
+from joyhousebot.runtime.graph_branch_execution import dependency_result_variables
 
 
 def test_dependency_result_variables_expose_bounded_nested_capability_output() -> None:

@@ -1,12 +1,12 @@
 import pytest
 
-from porthouse.config.loader import (
+from joyhousebot.config.loader import (
     CONFIG_PATH_ENV,
     get_config_path,
     load_config,
 )
-from porthouse.config.schema import Config
-from porthouse.providers.factory import create_model_provider
+from joyhousebot.config.schema import Config
+from joyhousebot.providers.factory import create_model_provider
 
 
 def test_load_config_accepts_native_camel_case(tmp_path) -> None:
@@ -44,7 +44,7 @@ def test_extension_settings_resolve_secrets_without_core_provider_schema(
     monkeypatch.setenv("EMAIL_TEST_PASSWORD", "mail-secret")
     path = tmp_path / "config.json"
     path.write_text(
-        '{"extensions":{"enabled":["channel-email"],'
+        '{"extensions":{"allowedIds":["channel-email"],'
         '"discoverEntryPoints":true,'
         '"settings":{"channel-email":{"consentGranted":true,'
         '"imapPassword":"env://EMAIL_TEST_PASSWORD"}}}}'
@@ -52,7 +52,7 @@ def test_extension_settings_resolve_secrets_without_core_provider_schema(
 
     loaded = load_config(path)
 
-    assert loaded.extensions.enabled == ["channel-email"]
+    assert loaded.extensions.allowed_ids == ["channel-email"]
     assert loaded.extensions.discover_entry_points is True
     assert loaded.extensions.settings["channel-email"] == {
         "consent_granted": True,
@@ -75,7 +75,7 @@ def test_model_provider_settings_do_not_require_new_core_schema_fields(
     monkeypatch.setenv("MODEL_EXTENSION_KEY", "extension-key")
     path = tmp_path / "provider-settings.json"
     path.write_text(
-        '{"extensions":{"enabled":["provider-openai-compatible"]},'
+        '{"extensions":{"allowedIds":["provider-openai-compatible"]},'
         '"providers":{"defaultProvider":"openrouter","settings":'
         '{"openrouter":{"apiKey":"env://MODEL_EXTENSION_KEY",'
         '"apiBase":"https://models.example/v1"}}}}'
@@ -94,7 +94,7 @@ def test_config_loading_does_not_discover_or_import_provider_extensions(
 ) -> None:
     path = tmp_path / "provider-isolation.json"
     path.write_text(
-        '{"extensions":{"enabled":["provider-not-installed"]}}'
+        '{"extensions":{"allowedIds":["provider-not-installed"]}}'
     )
     monkeypatch.setenv("LLM_PROVIDER", "not-installed")
     monkeypatch.setenv("LLM_API_KEY", "deployment-key")
@@ -102,7 +102,7 @@ def test_config_loading_does_not_discover_or_import_provider_extensions(
     def fail_discovery(_group):
         raise AssertionError("configuration loading must not discover extensions")
 
-    monkeypatch.setattr("porthouse.extension_discovery.entry_points", fail_discovery)
+    monkeypatch.setattr("joyhousebot.extension_discovery.entry_points", fail_discovery)
     loaded = load_config(path)
 
     assert loaded.providers.default_provider == "not-installed"
@@ -167,7 +167,7 @@ def test_generic_llm_key_requires_explicit_provider(tmp_path, monkeypatch) -> No
 
 def test_generic_llm_provider_and_base_are_explicit(tmp_path, monkeypatch) -> None:
     path = tmp_path / "config.json"
-    path.write_text('{"extensions":{"enabled":["provider-openai-compatible"]}}')
+    path.write_text('{"extensions":{"allowedIds":["provider-openai-compatible"]}}')
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("LLM_API_KEY", "gateway-key")
     monkeypatch.setenv("LLM_API_BASE", "https://models.example/v1")
@@ -185,7 +185,7 @@ def test_explicit_generic_provider_wins_over_unrelated_native_key(
     tmp_path, monkeypatch
 ) -> None:
     path = tmp_path / "config.json"
-    path.write_text('{"extensions":{"enabled":["provider-openai-compatible"]}}')
+    path.write_text('{"extensions":{"allowedIds":["provider-openai-compatible"]}}')
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("LLM_API_KEY", "gateway-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "你的密钥")
@@ -202,7 +202,7 @@ def test_explicit_generic_provider_wins_over_unrelated_native_key(
 
 def test_provider_specific_key_wins_over_generic_key(tmp_path, monkeypatch) -> None:
     path = tmp_path / "config.json"
-    path.write_text('{"extensions":{"enabled":["provider-anthropic"]}}')
+    path.write_text('{"extensions":{"allowedIds":["provider-anthropic"]}}')
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
     monkeypatch.setenv("LLM_API_KEY", "generic-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "native-key")

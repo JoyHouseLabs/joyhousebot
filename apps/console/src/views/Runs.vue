@@ -2,8 +2,8 @@
   <div class="page runs-page">
     <template v-if="!directRunId">
     <header class="page-heading">
-      <div><span class="eyebrow">RUNTIME</span><h1>运行中心</h1><p>定位模型、Agent、Tool 与调度瓶颈，检查原始响应并创建可比较回放。</p></div>
-      <div class="heading-actions"><button class="secondary-button" type="button" @click="loadRuns">刷新</button><router-link class="primary-button" to="/chat">创建 Run</router-link></div>
+      <div><span class="eyebrow">RUNTIME</span><h1>运行中心</h1><p>定位模型、Agent、Capability 与调度瓶颈，检查原始响应并创建可比较回放。</p></div>
+      <div class="heading-actions"><button class="secondary-button" type="button" @click="loadRuns">刷新</button><router-link class="primary-button" to="/agents">管理 Agents</router-link></div>
     </header>
 
     <section class="filter-bar">
@@ -166,7 +166,7 @@
             <div v-if="!children.length" class="empty-state compact">没有动态子 Agent Run</div>
           </section>
           <section v-else-if="activeTab === 'artifacts'" class="artifact-list">
-            <article v-for="artifact in artifacts" :key="artifact.artifact_id"><span>▧</span><div><strong>{{ artifact.name }}</strong><small>{{ artifact.media_type }} · {{ formatDate(artifact.created_at) }}</small><pre v-if="artifact.content != null">{{ preview(artifact.content) }}</pre><router-link class="artifact-to-work" :to="{ path: '/works', query: { run: selected.run_id, artifact: artifact.artifact_id } }">形成成果作品 →</router-link></div></article>
+            <article v-for="artifact in artifacts" :key="artifact.artifact_id"><span>▧</span><div><strong>{{ artifact.name }}</strong><small>{{ artifact.media_type }} · {{ formatDate(artifact.created_at) }}</small><pre v-if="artifact.content != null">{{ preview(artifact.content) }}</pre></div></article>
             <div v-if="!artifacts.length" class="empty-state compact">暂无执行产物</div>
           </section>
           <section v-else class="result-view"><h3>输入</h3><pre>{{ selected.prompt }}</pre><h3>最终输出</h3><pre>{{ selected.result?.content || selected.error?.message || '尚未产生最终输出' }}</pre></section>
@@ -224,7 +224,7 @@ const graphProposals = ref<GraphPatchProposal[]>([])
 const rawViewer = ref<TraceBlob | null>(null); const rawLoading = ref(false); const replaying = ref(false); const replayMode = ref<ReplayRun['mode']>('offline'); const replayModel = ref(''); const replayPrompt = ref('')
 let streamAbort: AbortController | null = null; const seenEvents = new Set<string>()
 
-const tabs = computed(() => [{ key: 'timeline', label: '时间线', count: events.value.length }, { key: 'models', label: '模型调用', count: modelInvocations.value.length }, { key: 'reasoning', label: '原始推理', count: reasoning.value.length }, { key: 'spans', label: '性能', count: spans.value.length }, { key: 'tasks', label: 'Tasks', count: tasks.value.length }, { key: 'patches', label: '图变更', count: graphProposals.value.length }, { key: 'invocations', label: '工具', count: invocations.value.length }, { key: 'feedback', label: '人工反馈', count: feedback.value.length }, { key: 'replays', label: '回放', count: replays.value.length }, { key: 'traces', label: 'HTTP Trace', count: traces.value.length }, { key: 'children', label: '子 Agent', count: children.value.length }, { key: 'logs', label: '日志', count: logs.value.length }, { key: 'artifacts', label: '产物', count: artifacts.value.length }, { key: 'result', label: '输入 / 输出', count: 0 }])
+const tabs = computed(() => [{ key: 'timeline', label: '时间线', count: events.value.length }, { key: 'models', label: '模型调用', count: modelInvocations.value.length }, { key: 'reasoning', label: '原始推理', count: reasoning.value.length }, { key: 'spans', label: '性能', count: spans.value.length }, { key: 'tasks', label: 'Tasks', count: tasks.value.length }, { key: 'patches', label: '图变更', count: graphProposals.value.length }, { key: 'invocations', label: 'Capabilities', count: invocations.value.length }, { key: 'feedback', label: '人工反馈', count: feedback.value.length }, { key: 'replays', label: '回放', count: replays.value.length }, { key: 'traces', label: 'HTTP Trace', count: traces.value.length }, { key: 'children', label: '子 Agent', count: children.value.length }, { key: 'logs', label: '日志', count: logs.value.length }, { key: 'artifacts', label: '产物', count: artifacts.value.length }, { key: 'result', label: '输入 / 输出', count: 0 }])
 const totalModelTokens = computed(() => modelInvocations.value.reduce((sum, item) => sum + Number(item.usage?.total_tokens || 0), 0))
 const totalBilledTokens = computed(() => modelInvocations.value.reduce((sum, item) => sum + Number(item.usage?.billed_total_tokens ?? item.usage?.total_tokens ?? 0), 0))
 const totalModelDuration = computed(() => modelInvocations.value.reduce((sum, item) => sum + Number(item.duration_ms || 0), 0))

@@ -10,6 +10,30 @@ if (args[0] === "doctor") {
 }
 
 const value = (name) => args.find((item) => item.startsWith(`--${name}=`))?.slice(name.length + 3);
+if (args[0] === "xiaohongshu" && args[1] === "user") {
+  process.stdout.write(JSON.stringify([{
+    id: "note123",
+    title: "列表标题",
+    type: "normal",
+    likes: "12",
+    cover: "https://sns-webpic-qc.xhscdn.com/cover.jpg",
+    url: "https://www.xiaohongshu.com/user/profile/user123/note123?xsec_token=secret_token&xsec_source=pc_user",
+  }]));
+  process.exit(0);
+}
+if (args[0] === "xiaohongshu" && args[1] === "note") {
+  if (process.env.FAKE_XHS_NOTE_EXIT) process.exit(Number(process.env.FAKE_XHS_NOTE_EXIT));
+  process.stdout.write(JSON.stringify([
+    {field: "title", value: "完整标题"},
+    {field: "author", value: "示例作者"},
+    {field: "content", value: "这是完整正文。"},
+    {field: "likes", value: "13"},
+    {field: "collects", value: "8"},
+    {field: "comments", value: "5"},
+    {field: "tags", value: "AI, 写作"},
+  ]));
+  process.exit(0);
+}
 const mode = value("mode");
 if (mode?.startsWith("exit-")) process.exit(Number(mode.slice(5)));
 if (mode === "invalid-json") {

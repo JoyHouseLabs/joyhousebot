@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from porthouse.bus.events import OutboundMessage
-from porthouse.channels.manager import ChannelManager
-from porthouse.config.schema import Config
-from porthouse.cron.service import CronService
-from porthouse.domain.schedules import CronSchedule
-from porthouse.services.memory.store import MemoryStore
-from porthouse.services.retrieval.knowledge_repository import KnowledgeRepository
+from joyhousebot.bus.events import OutboundMessage
+from joyhousebot.channels.manager import ChannelManager
+from joyhousebot.config.schema import Config
+from joyhousebot.cron.service import CronService
+from joyhousebot.domain.schedules import CronSchedule
+from joyhousebot.services.memory.store import MemoryStore
+from joyhousebot.services.retrieval.knowledge_repository import KnowledgeRepository
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 
@@ -55,7 +55,10 @@ async def test_cron_is_user_scoped_and_one_gateway_claims_each_occurrence(
     assert [job.id for job in cron_b.list_jobs(user_id="user-b")] == [job_b.id]
     assert not cron_b.remove_job(job_a.id, user_id="user-b")
 
-    now_ms = int(time.time() * 1000)
+    # Schedule due/lease comparisons are owned by the PostgreSQL clock.  Using
+    # the client clock here makes the test flaky when the database container
+    # trails the host by even a few milliseconds.
+    now_ms = cron_a.repository.db_now_ms()
 
     cron_a.repository.set_enabled(
         job_a.id,
@@ -195,7 +198,7 @@ def test_channel_leases_and_outbox_have_single_owner(tmp_path: Path) -> None:
 @pytest.mark.postgres
 def test_postgres_memory_append_and_cron_fencing(tmp_path: Path) -> None:
     database_url = require_postgres()
-    from porthouse.storage.postgres_store import PostgresRuntimeStore
+    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     store_a = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)
     store_b = PostgresRuntimeStore(database_url, min_pool_size=1, max_pool_size=2)
@@ -218,7 +221,7 @@ def test_postgres_memory_append_and_cron_fencing(tmp_path: Path) -> None:
             schedule=CronSchedule(kind="at", at_ms=int(time.time() * 1000) + 60_000),
             user_id="pg-user",
         )
-        now_ms = int(time.time() * 1000)
+        now_ms = cron_a.repository.db_now_ms()
 
         cron_a.repository.set_enabled(
             job.id,

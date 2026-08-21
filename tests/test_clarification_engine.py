@@ -2,16 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from porthouse.domain.capabilities import CapabilityKind, CapabilityRef
-from porthouse.domain.scenarios import (
+from joyhousebot.domain.capabilities import CapabilityKind, CapabilityRef
+from joyhousebot.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
     RoutingDecision,
     ScenarioField,
     ScenarioVersion,
 )
-from porthouse.orchestration import ClarificationEngine, ScenarioRouter
-from porthouse.runtime.coordination_preparation import _enforce_routed_scenario
+from joyhousebot.orchestration import ClarificationEngine, ScenarioRouter
+from joyhousebot.runtime.coordination_preparation import _enforce_routed_scenario
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -35,7 +35,7 @@ def _scenario() -> ScenarioVersion:
             ClarificationEdge("text", "voice", "present(text)"),
             ClarificationEdge("voice", "ready", "present(voice)"),
         ),
-        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
+        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),),
         planning_mode="fixed",
         execution_policy={"execution_class": "interactive"},
         routing_rules=({"contains_any": ["语音", "朗读"]},),
@@ -144,7 +144,7 @@ def test_clarification_resumes_same_run_after_all_answers(tmp_path: Path) -> Non
     )
     second_step, second = engine.resolve(
         run_id="run-tts", user_id="user-a", input_request_id=first.input_request_id,
-        answers={"text": "欢迎使用 Porthouse"},
+        answers={"text": "欢迎使用 joyhousebot"},
     )
     assert second_step.missing_inputs == ("voice",)
     assert second is not None and second.node_id == "voice"
@@ -189,7 +189,7 @@ def test_scenario_numeric_validation_honors_configured_bounds(tmp_path: Path) ->
         ),
         nodes=(ClarificationNode("limit", "question", "How many?", ("limit",)),),
         edges=(),
-        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
+        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),),
     )
     engine = ClarificationEngine(store)
     with pytest.raises(ValueError, match="at least 1"):
@@ -240,7 +240,7 @@ def test_clarification_follows_condition_edge_and_validates_multi_choice(tmp_pat
             ClarificationEdge("ask_sources", "ready", "present(sources)"),
             ClarificationEdge("ask_area", "ready", "present(research_area)"),
         ),
-        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
+        allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),),
     )
     engine = ClarificationEngine(store)
     first = engine.evaluate(scenario, {})

@@ -223,7 +223,7 @@ export async function submitRuntimeRun(input: {
   chatId?: string
   idempotencyKey?: string
 }): Promise<RuntimeRun> {
-  const response = await apiFetch('/v1/runs', {
+  const response = await apiFetch('/control/v1/runs', {
     method: 'POST',
     headers: {
       ...getIdentityHeaders(),
@@ -243,7 +243,7 @@ export async function submitRuntimeRun(input: {
 }
 
 export async function getRuntimeRun(runId: string): Promise<RuntimeRun> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}`, {
     headers: getIdentityHeaders(),
   })
   const payload = await response.json()
@@ -262,7 +262,7 @@ export async function listRuntimeRuns(filters: {
   if (filters.agentId) query.set('agent_id', filters.agentId)
   if (filters.status) query.set('status', filters.status)
   query.set('limit', String(filters.limit ?? 100))
-  const response = await apiFetch(`/v1/runs?${query}`, {
+  const response = await apiFetch(`/control/v1/runs?${query}`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取运行列表失败')
@@ -271,7 +271,7 @@ export async function listRuntimeRuns(filters: {
 }
 
 export async function getRuntimeTasks(runId: string): Promise<RuntimeTask[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/tasks`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/tasks`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取任务失败')
@@ -279,7 +279,7 @@ export async function getRuntimeTasks(runId: string): Promise<RuntimeTask[]> {
 }
 
 export async function getRuntimeLogs(runId: string): Promise<RuntimeLog[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/logs`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/logs`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取日志失败')
@@ -287,7 +287,7 @@ export async function getRuntimeLogs(runId: string): Promise<RuntimeLog[]> {
 }
 
 export async function getRuntimeArtifacts(runId: string): Promise<RuntimeArtifact[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/artifacts`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/artifacts`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取产物失败')
@@ -295,7 +295,7 @@ export async function getRuntimeArtifacts(runId: string): Promise<RuntimeArtifac
 }
 
 export async function getRuntimeInvocations(runId: string): Promise<RuntimeInvocation[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/invocations`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/invocations`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取能力调用失败')
@@ -303,13 +303,13 @@ export async function getRuntimeInvocations(runId: string): Promise<RuntimeInvoc
 }
 
 export async function listGraphPatchProposals(runId: string): Promise<GraphPatchProposal[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/graph-patch-proposals`, { headers: getIdentityHeaders() })
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/graph-patch-proposals`, { headers: getIdentityHeaders() })
   if (!response.ok) throw await readError(response, '读取 GraphPatch 提议失败')
   return (await response.json()).items ?? []
 }
 
 export async function resolveGraphPatchProposal(runId: string, proposalId: string, resolution: 'approve' | 'reject', note = ''): Promise<GraphPatchProposal> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/graph-patch-proposals/${encodeURIComponent(proposalId)}/resolve`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/graph-patch-proposals/${encodeURIComponent(proposalId)}/resolve`, {
     method: 'POST', headers: { ...getIdentityHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution, note: note || null }),
   })
   if (!response.ok) throw await readError(response, '处理 GraphPatch 提议失败')
@@ -317,7 +317,7 @@ export async function resolveGraphPatchProposal(runId: string, proposalId: strin
 }
 
 export async function getPendingRunInputs(runId: string): Promise<PendingRunInput[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/inputs/pending`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/inputs/pending`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取待补充信息失败')
@@ -329,7 +329,7 @@ export async function resolveRunInput(
   inputRequestId: string,
   answers: Record<string, unknown>,
 ): Promise<{ run: RuntimeRun; pending_inputs: PendingRunInput[] }> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/inputs`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/inputs`, {
     method: 'POST',
     headers: {
       ...getIdentityHeaders(),
@@ -343,7 +343,7 @@ export async function resolveRunInput(
 }
 
 export async function cancelRuntimeRun(runId: string): Promise<void> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
     headers: getIdentityHeaders(),
   })
@@ -351,7 +351,7 @@ export async function cancelRuntimeRun(runId: string): Promise<void> {
 }
 
 export async function listRunFeedback(runId: string): Promise<RunFeedback[]> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/feedback`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/feedback`, {
     headers: getIdentityHeaders(),
   })
   if (!response.ok) throw await readError(response, '读取人工反馈失败')
@@ -362,7 +362,7 @@ export async function createRunFeedback(
   runId: string,
   value: Pick<RunFeedback, 'feedback_type' | 'comment'> & Partial<Pick<RunFeedback, 'rating' | 'output_excerpt' | 'turn_id' | 'message_id'>>,
 ): Promise<RunFeedback> {
-  const response = await apiFetch(`/v1/runs/${encodeURIComponent(runId)}/feedback`, {
+  const response = await apiFetch(`/control/v1/runs/${encodeURIComponent(runId)}/feedback`, {
     method: 'POST',
     headers: {
       ...getIdentityHeaders(),
@@ -387,7 +387,7 @@ export async function streamRuntimeEvents(
   for (const [name, value] of Object.entries(getIdentityHeaders())) headers.set(name, value)
   if (cursor > 0) headers.set('Last-Event-ID', String(cursor))
   const response = await fetch(
-    `/v1/runs/${encodeURIComponent(runId)}/events?after_sequence=${cursor}`,
+    `/control/v1/runs/${encodeURIComponent(runId)}/events?after_sequence=${cursor}`,
     { headers, signal: options.signal },
   )
   if (!response.ok || !response.body) throw new Error(`事件流连接失败 (${response.status})`)

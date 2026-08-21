@@ -1,15 +1,15 @@
-from porthouse_provider_anthropic import (
+from joyhousebot_provider_anthropic import (
     ANTHROPIC_PROVIDER_EXTENSION,
     AnthropicProvider,
 )
-from porthouse_provider_openai_compatible import (
+from joyhousebot_provider_openai_compatible import (
     OPENAI_COMPATIBLE_PROVIDER_EXTENSION,
     OpenAICompatibleProvider,
 )
 
-from porthouse.config.schema import Config, ExtensionsConfig, ProviderConfig
-from porthouse.providers.factory import create_model_provider
-from porthouse.providers.registry import ModelProviderRegistry
+from joyhousebot.config.schema import Config, ExtensionsConfig, ProviderConfig
+from joyhousebot.providers.factory import create_model_provider
+from joyhousebot.providers.registry import ModelProviderRegistry
 
 
 def test_anthropic_extension_declares_endpoint_and_manifest() -> None:
@@ -21,13 +21,13 @@ def test_anthropic_extension_declares_endpoint_and_manifest() -> None:
 
 
 def test_provider_registry_discovers_anthropic_entry_point() -> None:
-    registry = ModelProviderRegistry(enabled=["provider-anthropic"])
+    registry = ModelProviderRegistry(allowed_ids=["provider-anthropic"])
     assert registry.ensure_provider("anthropic") is ANTHROPIC_PROVIDER_EXTENSION.providers[0]
     assert registry.source_for("anthropic") == "entry-point:provider-anthropic"
 
 
 def test_factory_builds_anthropic_through_extension_registry() -> None:
-    config = Config(extensions=ExtensionsConfig(enabled=["provider-anthropic"]))
+    config = Config(extensions=ExtensionsConfig(allowed_ids=["provider-anthropic"]))
     config.providers.settings["anthropic"] = ProviderConfig(api_key="test-key")
     provider = create_model_provider(config=config, model="anthropic/claude-test")
     try:
@@ -54,13 +54,13 @@ def test_openai_compatible_extension_owns_endpoint_catalog() -> None:
 
 
 def test_provider_registry_discovers_openai_compatible_entry_point() -> None:
-    registry = ModelProviderRegistry(enabled=["provider-openai-compatible"])
+    registry = ModelProviderRegistry(allowed_ids=["provider-openai-compatible"])
     assert registry.ensure_provider("deepseek") is not None
     assert registry.source_for("deepseek") == "entry-point:provider-openai-compatible"
 
 
 def test_factory_builds_openai_compatible_through_extension_registry() -> None:
-    config = Config(extensions=ExtensionsConfig(enabled=["provider-openai-compatible"]))
+    config = Config(extensions=ExtensionsConfig(allowed_ids=["provider-openai-compatible"]))
     config.providers.settings["openrouter"] = ProviderConfig(api_key="test-key")
     config.providers.default_provider = "openrouter"
     provider = create_model_provider(config=config, model="openrouter/openai/gpt-test")
@@ -74,7 +74,7 @@ def test_factory_builds_openai_compatible_through_extension_registry() -> None:
 
 
 def test_factory_routes_credential_free_local_provider_without_default_alias() -> None:
-    config = Config(extensions=ExtensionsConfig(enabled=["provider-openai-compatible"]))
+    config = Config(extensions=ExtensionsConfig(allowed_ids=["provider-openai-compatible"]))
     config.providers.settings["vllm"] = ProviderConfig(api_base="http://127.0.0.1:11434/v1")
 
     provider = create_model_provider(config=config, model="vllm/qwen3:1.7b")
@@ -89,7 +89,7 @@ def test_factory_routes_credential_free_local_provider_without_default_alias() -
 
 
 def test_factory_routes_ollama_qwen_through_local_openai_compatibility() -> None:
-    config = Config(extensions=ExtensionsConfig(enabled=["provider-openai-compatible"]))
+    config = Config(extensions=ExtensionsConfig(allowed_ids=["provider-openai-compatible"]))
     config.providers.settings["ollama"] = ProviderConfig(api_base="http://127.0.0.1:11434/v1")
 
     provider = create_model_provider(config=config, model="ollama/qwen3:1.7b")

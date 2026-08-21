@@ -8,11 +8,20 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from porthouse.storage.migration_history import migration_checksum
-from porthouse.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
-from porthouse.storage.postgres_store import PostgresRuntimeStore
-from porthouse.storage.runtime_store import destructive_migrate_enabled
+from joyhousebot.storage.migration_history import migration_checksum
+from joyhousebot.storage.postgres_locks import SCHEMA_MIGRATION_LOCK_ID
+from joyhousebot.storage.postgres_migrations import _RUNTIME_CORE_V3_DDL
+from joyhousebot.storage.postgres_store import PostgresRuntimeStore
+from joyhousebot.storage.runtime_store import destructive_migrate_enabled
 from tests.support.postgres_store import TEST_DATABASE_URL
+
+
+def test_runtime_v3_historical_checksum_is_immutable() -> None:
+    # This migration predates the joyhousebot rename and exists on deployed
+    # databases. Even whitespace changes require a new migration version.
+    assert migration_checksum(_RUNTIME_CORE_V3_DDL) == (
+        "ece4de3231dec1e443e261ea1044022f8043ed449bec87c0e574dfcc0fa7784f"
+    )
 
 _CORE_DOMAINS = {
     "runtime",
@@ -43,7 +52,7 @@ _CORE_DOMAINS = {
 @pytest.fixture()
 def store() -> Iterator[PostgresRuntimeStore]:
     runtime_store = PostgresRuntimeStore(
-        TEST_DATABASE_URL, application_name="porthouse-test-migrations"
+        TEST_DATABASE_URL, application_name="joyhousebot-test-migrations"
     )
     yield runtime_store
     runtime_store.close()
@@ -96,7 +105,7 @@ def test_runtime_reopens_when_product_tables_share_the_database(
     try:
         reopened = PostgresRuntimeStore(
             TEST_DATABASE_URL,
-            application_name="porthouse-test-shared-product-database",
+            application_name="joyhousebot-test-shared-product-database",
         )
         try:
             with reopened._pool.connection() as conn:
@@ -203,7 +212,7 @@ def test_recorded_generated_column_migration_is_not_reapplied(
         ).fetchone()["attnum"]
     reopened = PostgresRuntimeStore(
         TEST_DATABASE_URL,
-        application_name="porthouse-test-generated-column-reopen",
+        application_name="joyhousebot-test-generated-column-reopen",
     )
     try:
         with reopened._pool.connection() as conn:
@@ -220,7 +229,7 @@ def test_recorded_generated_column_migration_is_not_reapplied(
 def test_schedule_run_history_is_normalized_without_legacy_json_column(
     store: PostgresRuntimeStore,
 ) -> None:
-    from porthouse.scheduling.repository import ScheduleRepository
+    from joyhousebot.scheduling.repository import ScheduleRepository
 
     repository = ScheduleRepository(store)
     with store._pool.connection() as conn:
@@ -239,7 +248,7 @@ def test_schedule_run_history_is_normalized_without_legacy_json_column(
     assert repository is not None
     assert legacy is None
     assert relation == "schedule_occurrence_runs"
-    assert [row["version"] for row in history] == [1, 2, 3, 4, 5]
+    assert [row["version"] for row in history] == [1, 2, 3, 4, 5, 6]
     with store._pool.connection() as conn:
         installation = conn.execute(
             """SELECT 1 AS present FROM information_schema.columns
@@ -251,6 +260,24 @@ def test_schedule_run_history_is_normalized_without_legacy_json_column(
         ).fetchone()["name"]
     assert installation is not None
     assert index == "ix_schedules_installation"
+    with store._pool.connection() as conn:
+        governance_columns = conn.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_schema='public' AND table_name='schedules'
+                 AND column_name IN ('paused','pause_reason','admitted_occurrences',
+                                     'consecutive_failures','consecutive_quiet')"""
+        ).fetchall()
+        governance_events = conn.execute(
+            "SELECT to_regclass('public.schedule_governance_events') AS name"
+        ).fetchone()["name"]
+    assert {row["column_name"] for row in governance_columns} == {
+        "paused",
+        "pause_reason",
+        "admitted_occurrences",
+        "consecutive_failures",
+        "consecutive_quiet",
+    }
+    assert governance_events == "schedule_governance_events"
 
 
 def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(
@@ -278,7 +305,7 @@ def test_execution_loop_migration_reopens_with_root_turns_in_distinct_scopes(
 
         reopened = PostgresRuntimeStore(
             TEST_DATABASE_URL,
-            application_name="porthouse-test-migration-reopen",
+            application_name="joyhousebot-test-migration-reopen",
         )
         try:
             assert len(reopened.list_runtime_turns(run_id)) == 2
@@ -317,12 +344,12 @@ def test_checksum_drift_fails_closed_and_preserves_history(
 
 
 def test_destructive_gate_requires_exact_phrase(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", raising=False)
+    monkeypatch.delenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", raising=False)
     assert not destructive_migrate_enabled()
     for legacy_value in ("1", "true", "yes", "on"):
-        monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", legacy_value)
+        monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", legacy_value)
         assert not destructive_migrate_enabled()
-    monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
+    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
     assert destructive_migrate_enabled()
 
 
@@ -350,7 +377,7 @@ def test_destructive_value_one_keeps_tables(
 ) -> None:
     run_id = f"mig-sentinel-{uuid4().hex}"
     _insert_sentinel_run(store, run_id)
-    monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", "1")
+    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "1")
     store.migrate()
     assert _sentinel_exists(store, run_id)
     with store._pool.connection() as conn, conn.transaction():
@@ -364,8 +391,8 @@ def test_destructive_phrase_drops_legacy_tables(
 ) -> None:
     run_id = f"mig-sentinel-{uuid4().hex}"
     _insert_sentinel_run(store, run_id)
-    monkeypatch.setenv("PORTHOUSE_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
-    with caplog.at_level("CRITICAL", logger="porthouse.storage.postgres_migrations"):
+    monkeypatch.setenv("JOYHOUSEBOT_DESTRUCTIVE_MIGRATE", "DROP_ALL_TABLES")
+    with caplog.at_level("CRITICAL", logger="joyhousebot.storage.postgres_migrations"):
         store.migrate()
     assert not _sentinel_exists(store, run_id)
     critical = [r for r in caplog.records if r.levelname == "CRITICAL"]
@@ -392,3 +419,59 @@ def test_schema_migration_lock_blocks_other_sessions(
         ).fetchone()
         assert row[0] is True
         probe.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_MIGRATION_LOCK_ID,))
+
+
+def test_legacy_runtime_market_tables_are_removed_by_recorded_migration(
+    store: PostgresRuntimeStore,
+) -> None:
+    legacy_tables = (
+        "app_market_registries",
+        "app_market_installation_keys",
+        "app_acquisitions",
+        "app_acquisition_events",
+        "app_market_entitlements",
+        "app_update_subscriptions",
+        "app_update_subscription_events",
+        "app_market_installation_receipt_signatures",
+        "app_market_installation_grant_consumptions",
+    )
+    with store._pool.connection() as conn, conn.transaction():
+        for table in legacy_tables:
+            conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY)")
+
+    store._migrate_legacy_runtime_market()
+
+    with store._pool.connection() as conn:
+        rows = conn.execute(
+            """SELECT table_name FROM information_schema.tables
+               WHERE table_schema='public' AND table_name = ANY(%s)""",
+            (list(legacy_tables),),
+        ).fetchall()
+        history = conn.execute(
+            """SELECT description FROM schema_migration_history
+               WHERE name='legacy_runtime_market' AND version=1"""
+        ).fetchone()
+    assert rows == []
+    assert history is not None
+    assert history["description"] == "remove retired Runtime-owned Market tables"
+
+
+def test_app_package_provenance_survives_market_removal(
+    store: PostgresRuntimeStore,
+) -> None:
+    with store._pool.connection() as conn:
+        columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                """SELECT column_name FROM information_schema.columns
+                   WHERE table_schema='public' AND table_name='app_releases'
+                     AND column_name IN ('origin_ref','bundle_digest')"""
+            ).fetchall()
+        }
+        history = conn.execute(
+            """SELECT description FROM schema_migration_history
+               WHERE name='app_packs' AND version=2"""
+        ).fetchone()
+    assert columns == {"origin_ref", "bundle_digest"}
+    assert history is not None
+    assert history["description"] == "App Package release provenance independent from Market"

@@ -6,10 +6,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.runtime.action_identity import payload_hash
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.runtime.action_identity import payload_hash
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -54,9 +54,9 @@ def _waiting_approval(store: PostgresTestStore, run_id: str, *, user_id: str = "
     capability_ref = {
         "capability_id": "publish_result",
         "version": "1.0.0",
-        "kind": "tool",
-        "plugin_id": "test.publisher",
-        "plugin_version": "1.0.0",
+        "kind": "capability",
+        "extension_id": "test.publisher",
+        "extension_version": "1.0.0",
         "build_digest": "sha256:test",
     }
     store.create_runtime_turn(
@@ -110,17 +110,21 @@ def _waiting_approval(store: PostgresTestStore, run_id: str, *, user_id: str = "
     )
 
 
-def test_action_items_are_owner_scoped_and_derived_from_existing_runtime_state(tmp_path: Path) -> None:
+def test_action_items_are_owner_scoped_and_derived_from_existing_runtime_state(
+    tmp_path: Path,
+) -> None:
     store = PostgresTestStore(tmp_path / "action-items.db")
-    store.create_api_access_token(user_id="owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other", actor_id="test", token="other-token")
+    store.create_operator_access_token(user_id="owner", actor_id="test", token="owner-token")
+    store.create_operator_access_token(user_id="other", actor_id="test", token="other-token")
     _waiting_input(store, "run-input")
     _waiting_approval(store, "run-approval")
     _waiting_input(store, "run-foreign", user_id="other")
     client = TestClient(create_app(build_api_container(config=Config(), store=store)))
 
     with client:
-        response = client.get("/v1/action-items", headers={"Authorization": "Bearer owner-token"})
+        response = client.get(
+            "/control/v1/action-items", headers={"Authorization": "Bearer owner-token"}
+        )
         assert response.status_code == 200
         items = response.json()["items"]
         assert {item["kind"] for item in items} == {"input", "approval"}
@@ -132,6 +136,8 @@ def test_action_items_are_owner_scoped_and_derived_from_existing_runtime_state(t
         assert approval_item["approval"]["can_resolve"] is True
         assert approval_item["approval"]["capability_ref"]["capability_id"] == "publish_result"
 
-        foreign = client.get("/v1/action-items", headers={"Authorization": "Bearer other-token"})
+        foreign = client.get(
+            "/control/v1/action-items", headers={"Authorization": "Bearer other-token"}
+        )
         assert foreign.status_code == 200
         assert [item["run"]["run_id"] for item in foreign.json()["items"]] == ["run-foreign"]

@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {mkdir, readFile, rename, writeFile} from "node:fs/promises";
 import {dirname} from "node:path";
 
-import type {OperationProgressEvent} from "@porthouse/extension-sdk";
+import type {OperationProgressEvent} from "@joyhousebot/extension-sdk";
 
 import type {CapturedArtifact} from "./capture.js";
 

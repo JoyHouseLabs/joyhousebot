@@ -10,14 +10,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.orchestration.branching import evaluate_branch
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.graph_revision import freeze_graph_revision, graph_task_rows
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.orchestration.branching import evaluate_branch
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.graph_revision import freeze_graph_revision, graph_task_rows
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 _ROUTE_SCHEMA = {
@@ -302,10 +302,14 @@ def test_graph_revision_hash_is_verified_before_atomic_insert(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_graph_revision_api_is_owner_scoped(tmp_path: Path) -> None:
+async def test_graph_revision_control_api_is_operator_user_scoped(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "graph-revision-api.db")
-    store.create_api_access_token(user_id="graph-owner", actor_id="test", token="owner-token")
-    store.create_api_access_token(user_id="other-owner", actor_id="test", token="other-token")
+    store.create_operator_access_token(
+        user_id="graph-owner", actor_id="test", token="owner-token"
+    )
+    store.create_operator_access_token(
+        user_id="other-owner", actor_id="test", token="other-token"
+    )
     runtime = NativeAgentRuntime(agent=_BranchAgent(), store=store)
     submitted = await runtime.submit_graph(
         TaskGraphSpec(
@@ -322,15 +326,15 @@ async def test_graph_revision_api_is_owner_scoped(tmp_path: Path) -> None:
 
     with client:
         own = client.get(
-            f"/v1/runs/{submitted.run_id}/graph-revisions",
+            f"/control/v1/runs/{submitted.run_id}/graph-revisions",
             headers={"Authorization": "Bearer owner-token"},
         )
         foreign = client.get(
-            f"/v1/runs/{submitted.run_id}/graph-revisions",
+            f"/control/v1/runs/{submitted.run_id}/graph-revisions",
             headers={"Authorization": "Bearer other-token"},
         )
         invalid_branch = client.post(
-            "/v1/runs/graphs",
+            "/control/v1/runs/graphs",
             headers={"Authorization": "Bearer owner-token"},
             json={
                 "goal": "unsafe branch",

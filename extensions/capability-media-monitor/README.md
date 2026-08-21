@@ -11,7 +11,7 @@ Artifact / Knowledge / Run trail.
 
 Security and behavior:
 
-- all egress uses Porthouse's DNS-pinned SSRF boundary and bounded response size;
+- all egress uses joyhousebot's DNS-pinned SSRF boundary and bounded response size;
 - only RSS/Atom XML is accepted; DTD/entity declarations are rejected;
 - ETag, Last-Modified, and up to 500 source entry identities stay in an opaque Runtime cursor;
 - feeds without RSS/Atom should use a reviewed OpenCLI source adapter, not an arbitrary scraper.

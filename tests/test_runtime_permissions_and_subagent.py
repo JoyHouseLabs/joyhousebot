@@ -4,13 +4,13 @@ from typing import Any
 
 import pytest
 
-from porthouse.agent.subagent import SubagentManager
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.capabilities.dispatcher import capability_result_prompt
-from porthouse.contracts.tools import Tool
-from porthouse.providers.base import LLMProvider, LLMResponse
-from porthouse.runtime.context import ToolExecutionContext
-from tests.support.capabilities import register_tool_fixture
+from joyhousebot.agent.subagent import SubagentManager
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.capabilities.dispatcher import capability_result_prompt
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.providers.base import LLMProvider, LLMResponse
+from joyhousebot.runtime.context import ToolExecutionContext
+from tests.support.capabilities import register_capability_fixture
 
 
 class EchoTool(Tool):
@@ -26,7 +26,7 @@ class EchoTool(Tool):
 async def test_runtime_permission_policy_blocks_high_risk_and_allowlists() -> None:
     registry = CapabilityRegistry()
     tool = EchoTool()
-    register_tool_fixture(registry, tool)
+    register_capability_fixture(registry, tool)
 
     denied_result = await registry.invoke_tool(
         "exec",
@@ -124,7 +124,7 @@ class FakeRuntimeWithEvents(FakeRuntime):
 
 @pytest.mark.asyncio
 async def test_subagent_passes_distributed_fanout_limit() -> None:
-    from porthouse.runtime.context import RunContext, bind_run_context
+    from joyhousebot.runtime.context import RunContext, bind_run_context
 
     manager = SubagentManager(model="fake", max_spawns_per_run=2)
     runtime = FakeRuntimeWithEvents()

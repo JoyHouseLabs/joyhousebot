@@ -6,7 +6,7 @@
 
 AgentTeam 是 Core 的通用多 Agent 协作机制，不是客服、运维、研发或风控应用。Core 负责版本、委派、
 执行、共享上下文、预算、审批边界与证据；具体成员身份、Prompt、Skill、Workflow、Scenario 和业务页面
-由 App Pack 交付。
+由 App Package 交付。
 
 AgentTeam 不创建第二套 Runtime：
 
@@ -136,14 +136,14 @@ Runtime 强制执行：
 Gate；批准前 Run 保持 `waiting_approval`，拒绝、过期和审计沿用统一审批状态机。具体高风险 Tool 仍必须
 走 Dispatcher、Approval、Action、幂等、对账和审计链，Team 不能扩大 Agent 或 Capability 权限。
 
-## 6. API、Console 与 App Pack
+## 6. API、Console 与 App Package
 
-控制面位于 `/v1/admin/teams`，支持 Draft、Revision 列表、发布、事件、Run Workspace 检查、Blueprint
+控制面位于 `/control/v1/admin/teams`，支持 Draft、Revision 列表、发布、事件、Run Workspace 检查、Blueprint
 预设目录（`/blueprint-presets`）、Blueprint 校验（`/blueprint-validate`）、迁移（`/{team_id}/blueprint-migrate`）
 与最新 rollout（`/{team_id}/rollout/latest`）。Console 面向方案设计者的入口是“构建中心 → Team
 Composer”（四步向导），原 AgentTeams 页面保留为“高级 AgentTeam 配置”。当 Blueprint 护栏
 `require_plan_confirmation` 打开时，Team Run 在计划冻结后进入 `waiting_input`，所有者经
-`GET /v1/runs/{id}/plan` 与 `POST /v1/runs/{id}/plan/confirmation`（confirm / regenerate / cancel）
+`GET /control/v1/runs/{id}/plan` 与 `POST /control/v1/runs/{id}/plan/confirmation`（confirm / regenerate / cancel）
 确认后同一 Run 物化 Task DAG。公共 Run API 使用显式执行模式：
 
 ```json
@@ -160,7 +160,7 @@ Workflow 可以把冻结 Team 作为 `subrun` 节点调用。父 Task 在 Postgr
 `waiting_external`，子 Run 终态后恢复原 Task；子运行结果、用量与证据引用回写父 Task。父 Workflow
 取消会递归请求取消所有未终态子 Run。Team 或成员版本后续退役不影响已冻结 Workflow Revision。
 
-App Pack 使用精确引用安装 Team：
+App Package 使用精确引用安装 Team：
 
 ```json
 {

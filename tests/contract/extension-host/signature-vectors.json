@@ -3,7 +3,7 @@
   "secret": "test-signing-secret-that-is-at-least-32-bytes",
   "request": {
     "method": "POST",
-    "path": "/porthouse/v1/capabilities/host.echo:invoke",
+    "path": "/joyhousebot/v1/capabilities/host.echo:invoke",
     "timestamp": "1700000000",
     "nonce": "nonce-vector-1",
     "projection_canonical": "{\"authorization\":{\"permission_mode\":\"default\",\"permissions\":[\"host.echo.invoke\"]},\"capability\":{\"capability_id\":\"host.echo\",\"implementation_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"version\":\"1.0.0\"},\"input\":{\"count\":1,\"message\":\"你好, Node Host\",\"nested\":{\"enabled\":true}},\"subject\":{\"agent_id\":\"agent-1\",\"session_id\":\"session-1\",\"user_id\":\"user-1\"}}",
@@ -40,7 +40,7 @@
       }
     },
     "canonical_body": "{\"authorization\":{\"permission_mode\":\"default\",\"permissions\":[\"host.echo.invoke\"]},\"capability\":{\"capability_id\":\"host.echo\",\"implementation_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"version\":\"1.0.0\"},\"execution\":{\"action_id\":null,\"idempotency_key\":\"tool:echo-1\",\"request_digest\":\"sha256:eed29da9cd4fe9c1e2add144624b78dcd60901eae35b5c1d3edacfb730632f15\",\"request_id\":\"request-1\",\"root_run_id\":\"run-1\",\"run_id\":\"run-1\",\"task_id\":\"task-1\"},\"input\":{\"count\":1,\"message\":\"你好, Node Host\",\"nested\":{\"enabled\":true}},\"protocol_version\":\"1\",\"subject\":{\"agent_id\":\"agent-1\",\"session_id\":\"session-1\",\"user_id\":\"user-1\"}}",
-    "signature": "v1=3dbbf6f5f3ea0aa777097073cc40797019776e61fea5f55fdacc8b9aa210e4b3"
+    "signature": "v1=fb8b20f00b12a65b5a44da1e31654d849fd7ea43434ab6d83ee98e67150dacf2"
   },
   "response": {
     "status_code": 200,

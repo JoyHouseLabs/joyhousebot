@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from porthouse.domain.capabilities import (
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
@@ -15,17 +15,17 @@ def tool_definition(
     tool: Any,
     *,
     version: str = "1.0.0",
-    plugin_id: str = "test.plugin",
-    plugin_version: str = "1.0.0",
+    extension_id: str = "test.plugin",
+    extension_version: str = "1.0.0",
 ) -> CapabilityDefinition:
     """Bind an ad-hoc test Tool to an explicit immutable plugin release."""
     return CapabilityDefinition(
         ref=CapabilityRef(
             str(tool.name),
             version,
-            CapabilityKind.TOOL,
-            plugin_id,
-            plugin_version,
+            CapabilityKind.CAPABILITY,
+            extension_id,
+            extension_version,
             TEST_PLUGIN_DIGEST,
         ),
         name=str(tool.name),
@@ -43,7 +43,7 @@ def tool_definition(
     )
 
 
-def register_tool_fixture(
+def register_capability_fixture(
     registry: Any,
     tool: Any,
     *,
@@ -56,8 +56,8 @@ def register_tool_fixture(
     publish = getattr(store, "publish_capability", None)
     if callable(publish):
         publish(resolved)
-    registry.register_tool(tool, definition=resolved, optional=optional)
+    registry.register_connector_capability(tool, definition=resolved, optional=optional)
     return resolved
 
 
-__all__ = ["TEST_PLUGIN_DIGEST", "register_tool_fixture", "tool_definition"]
+__all__ = ["TEST_PLUGIN_DIGEST", "register_capability_fixture", "tool_definition"]

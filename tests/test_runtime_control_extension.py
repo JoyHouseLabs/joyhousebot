@@ -3,15 +3,15 @@
 from types import SimpleNamespace
 
 import pytest
-from porthouse_capability_runtime_control import plugin as runtime_control
+from joyhousebot_capability_runtime_control import extension as runtime_control
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.capabilities.services import CapabilityServiceBroker
-from porthouse.cron.service import CronService
-from porthouse.domain.capabilities import InvocationStatus
-from porthouse.domain.schedules import CronSchedule
-from porthouse.extension_sdk import CapabilityContext
-from porthouse.extension_sdk.tools import ToolOutput
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.capabilities.services import CapabilityServiceBroker
+from joyhousebot.cron.service import CronService
+from joyhousebot.domain.capabilities import InvocationStatus
+from joyhousebot.domain.schedules import CronSchedule
+from joyhousebot.extension_sdk import CapabilityContext
+from joyhousebot.extension_sdk.tools import ToolOutput
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -69,14 +69,14 @@ def _context(services, **overrides):
 
 
 def test_runtime_control_extension_registers_four_governed_capabilities() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(runtime_control.RuntimeControlPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(runtime_control.RuntimeControlExtension())
     definitions = {item.ref.capability_id: item for item in registry.list_capabilities()}
     assert set(definitions) == {"cron", "message", "monitor_scratch", "spawn"}
     assert definitions["message"].side_effect == "external"
     assert definitions["message"].idempotent is False
     assert definitions["spawn"].retryable is True
-    assert definitions["cron"].ref.plugin_id == (
+    assert definitions["cron"].ref.extension_id == (
         "capability-runtime-control"
     )
 

@@ -1,13 +1,13 @@
 import pytest
 
-from porthouse.domain.capabilities import (
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
     CapabilityResult,
     InvocationStatus,
 )
-from porthouse.domain.scenarios import (
+from joyhousebot.domain.scenarios import (
     ClarificationEdge,
     ClarificationNode,
     ScenarioField,
@@ -17,7 +17,7 @@ from porthouse.domain.scenarios import (
 
 def test_capability_definition_and_result_are_structured() -> None:
     definition = CapabilityDefinition(
-        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
         name="Web search",
         description="Search public pages",
         input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
@@ -25,7 +25,7 @@ def test_capability_definition_and_result_are_structured() -> None:
         adapter="builtin.web_search",
     )
     result = CapabilityResult.succeeded("inv_1", summary="done", data={"items": []})
-    assert definition.to_dict()["ref"]["kind"] == "tool"
+    assert definition.to_dict()["ref"]["kind"] == "capability"
     assert result.to_dict()["status"] == "succeeded"
     assert result.ok is True
 
@@ -35,7 +35,7 @@ def test_capability_definition_round_trip_preserves_plugin_provenance() -> None:
         ref=CapabilityRef(
             "knowledge.index",
             "1.1.0",
-            CapabilityKind.TOOL,
+            CapabilityKind.CAPABILITY,
             "capability-context-assets",
             "1.1.0",
             f"sha256:{'a' * 64}",
@@ -44,11 +44,11 @@ def test_capability_definition_round_trip_preserves_plugin_provenance() -> None:
         description="Index one immutable source snapshot.",
         input_schema={"type": "object"},
         output_schema={"type": "object"},
-        adapter="plugin",
+        adapter="extension",
         tags=("knowledge",),
         permissions=("knowledge.write",),
         side_effect="write",
-        origin={"plugin_id": "capability-context-assets"},
+        origin={"extension_id": "capability-context-assets"},
     )
 
     assert CapabilityDefinition.from_dict(definition.to_dict()) == definition
@@ -75,5 +75,5 @@ def test_scenario_rejects_invalid_clarification_graph() -> None:
                 ClarificationEdge("voice", "confirm"),
                 ClarificationEdge("confirm", "voice"),
             ),
-            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),),
+            allowed_capabilities=(CapabilityRef("speech.synthesize", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),),
         )

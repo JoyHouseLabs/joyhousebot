@@ -1,8 +1,8 @@
 # Skill 资产与发布模型
 
-Skill 是 Porthouse 中独立的、声明式的“如何完成工作”资产。它可以包含方法说明、Instruction、输入输出
+Skill 是 joyhousebot 中独立的、声明式的“如何完成工作”资产。它可以包含方法说明、Instruction、输入输出
 Schema、模板、示例、依赖和 Eval case，但本身不能联网、执行代码或写入业务系统。真实动作仍由 Capability
-和 Integration 承担，并经过统一 Dispatcher、权限、审批、幂等和审计链。
+和 Connection 承担，并经过统一 Dispatcher、权限、审批、幂等和审计链。
 
 ## 与其他概念的边界
 
@@ -10,7 +10,7 @@ Schema、模板、示例、依赖和 Eval case，但本身不能联网、执行�
 | --- | --- | --- |
 | Skill | 方法、判断标准、上下文要求和输出契约 | 执行外部动作、持有密钥 |
 | Capability | 一个可治理、可调用的原子动作 | 完整业务产品和长期方法沉淀 |
-| Integration | 连接既有业务服务的配置与身份边界 | 决定 Agent 应如何完成任务 |
+| Connection | 连接既有业务服务的配置与身份边界 | 决定 Agent 应如何完成任务 |
 | Agent | 承担角色，绑定 Skill 并获准使用 Capability | 作为独立业务 App 的用户和计费系统 |
 | Workflow | 冻结多步执行结构和每个节点的精确依赖 | 动态修改已发布 Skill 内容 |
 | Extension | 交付技术实现或可导入资产的安装包 | 在安装时绕过控制面直接生效 |
@@ -19,7 +19,7 @@ Schema、模板、示例、依赖和 Eval case，但本身不能联网、执行�
 
 ```text
 Draft 编辑
-  → 发布校验（内容 / JSON Schema / Capability / Integration / Eval 覆盖）
+  → 发布校验（内容 / JSON Schema / Capability / Connection / Eval 覆盖）
   → Staged
   → Agent Worker 按 content_sha256 预热并 ACK
   → Published 原子切换
@@ -55,11 +55,11 @@ Worker 在执行前核对版本与摘要，不能仅凭同名 Skill 加载当前
 
 ## 控制面 API
 
-- `GET /v1/admin/skills`：资产目录；
-- `PUT /v1/admin/skills/{skill_id}/versions/{version}`：创建或更新 Draft；
+- `GET /control/v1/admin/skills`：资产目录；
+- `PUT /control/v1/admin/skills/{skill_id}/versions/{version}`：创建或更新 Draft；
 - `POST .../validate`：保存可审计的确定性校验证据；
 - `POST .../publish`：启动 Worker rollout；
-- `PUT /v1/admin/skills/{skill_id}/status`：启用、停用或归档。
+- `PUT /control/v1/admin/skills/{skill_id}/status`：启用、停用或归档。
 
 控制台 `/ui/skills` 提供 Draft、依赖、Schema、示例、Eval、发布策略、版本历史和回退入口；Agent 控制台只从
 独立 Skill 目录选择已发布版本，不再从 Capability 目录筛选 `kind=skill`。

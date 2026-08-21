@@ -7,23 +7,23 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.agent_teams import AgentTeamService
-from porthouse.application.errors import ConflictError
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from porthouse.domain.collaboration_blueprints import frozen_enforced_blueprint
-from porthouse.orchestration.blueprint_compiler import (
+from joyhousebot.api.app import create_app
+from joyhousebot.application.agent_teams import AgentTeamService
+from joyhousebot.application.errors import ConflictError
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from joyhousebot.domain.collaboration_blueprints import frozen_enforced_blueprint
+from joyhousebot.orchestration.blueprint_compiler import (
     BlueprintRepairError,
     PlanBoundaryViolationError,
     apply_blueprint_boundary,
     enforce_final_plan_boundary,
 )
-from porthouse.orchestration.coordinator_agent import normalize_coordinator_plan
-from porthouse.orchestration.planner import build_coordinator_graph
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.orchestration.coordinator_agent import normalize_coordinator_plan
+from joyhousebot.orchestration.planner import build_coordinator_graph
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -197,9 +197,7 @@ async def test_team_publication_and_workspace_are_durable_and_owner_scoped(
     service = AgentTeamService(store)
     saved = await service.save_draft(_team())
     assert saved["status"] == "draft"
-    published = await service.publish(
-        "team.research", "team.research:v1", actor_id="admin"
-    )
+    published = await service.publish("team.research", "team.research:v1", actor_id="admin")
     assert published["status"] == "published"
 
     team_ref = {
@@ -257,12 +255,15 @@ async def test_team_publication_and_workspace_are_durable_and_owner_scoped(
         coordinator=True,
     )
     assert [item["summary"] for item in coordinator_entries] == ["evidence"]
-    assert store.list_team_workspace_entries(
-        user_id="other-user",
-        root_run_id="team-run",
-        reader_member_id="coordinator",
-        coordinator=True,
-    ) == []
+    assert (
+        store.list_team_workspace_entries(
+            user_id="other-user",
+            root_run_id="team-run",
+            reader_member_id="coordinator",
+            coordinator=True,
+        )
+        == []
+    )
     with pytest.raises(PermissionError, match="outside the frozen Team"):
         store.append_team_workspace_entry(
             entry_id="teamws:intruder",
@@ -283,9 +284,7 @@ class _TeamAgent:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    async def process_direct(
-        self, content: str, *, run_context: Any, **_kwargs: Any
-    ) -> str:
+    async def process_direct(self, content: str, *, run_context: Any, **_kwargs: Any) -> str:
         self.prompts.append(content)
         if run_context.output_schema:
             return json.dumps(_plan())
@@ -298,9 +297,7 @@ async def test_team_run_freezes_member_revision_and_materializes_workspace(
 ) -> None:
     store = PostgresTestStore(tmp_path / "agent-team-runtime.db")
     await AgentTeamService(store).save_draft(_team())
-    await AgentTeamService(store).publish(
-        "team.research", "team.research:v1", actor_id="admin"
-    )
+    await AgentTeamService(store).publish("team.research", "team.research:v1", actor_id="admin")
     team = store.get_published_agent_team("team.research")
     assert team is not None
     agent = _TeamAgent()
@@ -357,16 +354,12 @@ def test_public_run_api_resolves_team_coordinator_and_freezes_revision(
 ) -> None:
     store = PostgresTestStore(tmp_path / "agent-team-api.db")
     store.save_agent_team_revision(_team())
-    store.publish_agent_team_revision(
-        "team.research", "team.research:v1", actor_id="admin"
-    )
-    store.create_api_access_token(
-        user_id="opc-user", actor_id="test", token="team-api-token"
-    )
+    store.publish_agent_team_revision("team.research", "team.research:v1", actor_id="admin")
+    store.create_operator_access_token(user_id="opc-user", actor_id="test", token="team-api-token")
     container = build_api_container(config=Config(), store=store)
     with TestClient(create_app(container)) as client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer team-api-token"},
             json={
                 "execution": {"mode": "team", "team_id": "team.research"},
@@ -379,12 +372,15 @@ def test_public_run_api_resolves_team_coordinator_and_freezes_revision(
     assert run is not None and run.agent_id == "default"
     assert snapshot is not None and snapshot.agent_revision_id == "default:v1"
     assert run.options["metadata"]["team_ref"]["revision_id"] == "team.research:v1"
-    assert store.list_team_workspace_entries(
-        user_id="opc-user",
-        root_run_id="team-run",
-        reader_member_id="coordinator",
-        coordinator=False,
-    ) == []
+    assert (
+        store.list_team_workspace_entries(
+            user_id="opc-user",
+            root_run_id="team-run",
+            reader_member_id="coordinator",
+            coordinator=False,
+        )
+        == []
+    )
 
 
 def _blueprint_team() -> AgentTeamRevision:

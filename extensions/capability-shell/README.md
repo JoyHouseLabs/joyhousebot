@@ -1,4 +1,4 @@
-# Porthouse Shell Capability
+# joyhousebot Shell Capability
 
 Optional command execution inside a fail-closed container sandbox. The extension
 contributes the versioned `exec` capability; Core owns workspace isolation, command

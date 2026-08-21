@@ -1,4 +1,4 @@
-from porthouse.domain.memory_policy import EffectiveMemoryPolicy
+from joyhousebot.domain.memory_policy import EffectiveMemoryPolicy
 
 
 def test_task_only_policy_blocks_persistent_memory() -> None:

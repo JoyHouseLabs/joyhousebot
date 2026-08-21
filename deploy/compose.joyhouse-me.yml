@@ -1,0 +1,69 @@
+# Production overlay for the development host that still owns the pre-rename
+# JoyhouseBot PostgreSQL and blob volumes. The service is joyhousebot; only the
+# physical database/volume identities remain unchanged so the cutover retains
+# Run, Artifact, audit, and operator data.
+x-runtime-volumes: &runtime_volumes
+  - ${JOYHOUSEBOT_CONFIG_FILE:-./deploy/config.runtime.json}:/app/config.json:ro
+  - legacy_runtime_data:/var/lib/joyhousebot
+
+services:
+  postgres:
+    # Keep the legacy physical volume and database identity, but intentionally
+    # run the standard pgvector PostgreSQL 17 image from the base Compose file.
+    # Existing volumes need CREATE EXTENSION vector once; see docs/OPERATIONS.md.
+    environment:
+      POSTGRES_DB: joyhousebot
+      POSTGRES_USER: joyhousebot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U joyhousebot -d joyhousebot"]
+    ports: !override
+      - "127.0.0.1:${JOYHOUSEBOT_POSTGRES_PORT:-15432}:5432"
+    volumes: !override
+      - legacy_postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init/10-enable-pgvector.sql:/docker-entrypoint-initdb.d/10-enable-pgvector.sql:ro
+
+  api:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    ports: !override
+      - "127.0.0.1:18790:18790"
+    volumes: *runtime_volumes
+
+  control:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    volumes: *runtime_volumes
+
+  worker:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    volumes: *runtime_volumes
+
+  model-gateway:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    volumes: *runtime_volumes
+
+  scheduler:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    volumes: *runtime_volumes
+
+  channel-worker:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    volumes: *runtime_volumes
+
+  migrate:
+    environment:
+      JOYHOUSEBOT_DATABASE_URL: postgresql://joyhousebot:${POSTGRES_PASSWORD:?required}@postgres:5432/joyhousebot
+    volumes: *runtime_volumes
+
+volumes:
+  legacy_postgres_data:
+    external: true
+    name: joyhousebot_joyhousebot_pg_data
+  legacy_runtime_data:
+    external: true
+    name: joyhousebot_joyhousebot_runtime_data

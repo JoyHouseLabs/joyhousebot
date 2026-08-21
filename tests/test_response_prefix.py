@@ -1,6 +1,6 @@
 """Unit tests for agent.response_prefix: resolve_response_prefix."""
 
-from porthouse.agent.response_prefix import resolve_response_prefix
+from joyhousebot.agent.response_prefix import resolve_response_prefix
 
 
 def test_resolve_response_prefix_empty_or_whitespace() -> None:

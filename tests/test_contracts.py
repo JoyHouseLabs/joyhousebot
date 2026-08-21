@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from porthouse.contracts import Artifact, CapabilityContext, CapabilityResult
+from joyhousebot.contracts import Artifact, CapabilityContext, CapabilityResult
 
 
 def test_artifact_is_business_opaque_and_serializable() -> None:

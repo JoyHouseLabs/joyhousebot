@@ -2,8 +2,8 @@
 
 import pytest
 
-from porthouse.session.models import Session
-from porthouse.session.runtime_manager import RuntimeSessionManager
+from joyhousebot.session.models import Session
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 # Test constants

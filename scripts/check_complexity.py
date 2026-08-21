@@ -131,7 +131,7 @@ def _function_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
 
 
 def _python_files() -> list[Path]:
-    files = list((ROOT / "porthouse").rglob("*.py"))
+    files = list((ROOT / "joyhousebot").rglob("*.py"))
     files.extend((ROOT / "extensions").glob("*/src/**/*.py"))
     return sorted(path for path in files if "__pycache__" not in path.parts)
 

@@ -45,7 +45,7 @@ async function jsonOrThrow<T>(response: Response, fallback: string): Promise<T> 
 }
 
 export async function loginWithPassword(userId: string, password: string): Promise<LoginResult> {
-  return jsonOrThrow(await fetch('/v1/auth/login', {
+  return jsonOrThrow(await fetch('/control/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, password }),
@@ -53,7 +53,7 @@ export async function loginWithPassword(userId: string, password: string): Promi
 }
 
 export async function verifyLoginMfa(challengeToken: string, code: string): Promise<AuthenticatedLogin> {
-  return jsonOrThrow(await fetch('/v1/auth/mfa/verify', {
+  return jsonOrThrow(await fetch('/control/v1/auth/mfa/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ challenge_token: challengeToken, code }),
@@ -61,11 +61,11 @@ export async function verifyLoginMfa(challengeToken: string, code: string): Prom
 }
 
 export async function getAuthStatus(): Promise<AuthStatus> {
-  return jsonOrThrow(await apiFetch('/v1/auth/status'), '读取账户安全状态失败')
+  return jsonOrThrow(await apiFetch('/control/v1/auth/status'), '读取账户安全状态失败')
 }
 
 export async function changeAdminPassword(currentPassword: string, newPassword: string): Promise<AuthenticatedLogin | { status: 'password_changed'; user_id: string }> {
-  return jsonOrThrow(await apiFetch('/v1/auth/password', {
+  return jsonOrThrow(await apiFetch('/control/v1/auth/password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
@@ -73,11 +73,11 @@ export async function changeAdminPassword(currentPassword: string, newPassword: 
 }
 
 export async function prepareTotp(): Promise<TotpSetup> {
-  return jsonOrThrow(await apiFetch('/v1/auth/totp/setup', { method: 'POST' }), '创建验证器配置失败')
+  return jsonOrThrow(await apiFetch('/control/v1/auth/totp/setup', { method: 'POST' }), '创建验证器配置失败')
 }
 
 export async function confirmTotp(code: string): Promise<{ enabled: true; recovery_codes: string[]; message: string }> {
-  return jsonOrThrow(await apiFetch('/v1/auth/totp/confirm', {
+  return jsonOrThrow(await apiFetch('/control/v1/auth/totp/confirm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),
@@ -85,7 +85,7 @@ export async function confirmTotp(code: string): Promise<{ enabled: true; recove
 }
 
 export async function disableTotp(password: string, code: string): Promise<{ enabled: false }> {
-  return jsonOrThrow(await apiFetch('/v1/auth/totp/disable', {
+  return jsonOrThrow(await apiFetch('/control/v1/auth/totp/disable', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password, code }),
@@ -93,5 +93,5 @@ export async function disableTotp(password: string, code: string): Promise<{ ena
 }
 
 export async function logoutAdmin(): Promise<void> {
-  await apiFetch('/v1/auth/logout', { method: 'POST' })
+  await apiFetch('/control/v1/auth/logout', { method: 'POST' })
 }

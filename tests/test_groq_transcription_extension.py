@@ -1,22 +1,22 @@
 
 import httpx
 import pytest
-from porthouse_capability_groq_transcription import (
-    GroqTranscriptionPlugin,
+from joyhousebot_capability_groq_transcription import (
+    GroqTranscriptionExtension,
     GroqTranscriptionProvider,
 )
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.contracts import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.contracts import CapabilityContext
 
 
-def test_groq_transcription_is_versioned_capability_plugin() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(GroqTranscriptionPlugin())
+def test_groq_transcription_is_versioned_capability_extension() -> None:
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(GroqTranscriptionExtension())
     definition, _ = registry.get("media.transcribe.groq", "1.0.0")
     assert definition.permissions == ("media.transcribe", "filesystem.read")
     assert definition.side_effect == "read"
-    assert definition.ref.plugin_id == "capability-groq-transcription"
+    assert definition.ref.extension_id == "capability-groq-transcription"
 
 
 @pytest.mark.asyncio
@@ -24,8 +24,8 @@ async def test_groq_transcription_requires_explicit_permissions(monkeypatch, tmp
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     audio = tmp_path / "voice.ogg"
     audio.write_bytes(b"audio")
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(GroqTranscriptionPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(GroqTranscriptionExtension())
     result = await registry.invoke(
         "media.transcribe.groq",
         {"file_path": str(audio)},
@@ -53,7 +53,7 @@ async def test_groq_provider_uses_configured_model(monkeypatch, tmp_path) -> Non
             await self.client.aclose()
 
     monkeypatch.setattr(
-        "porthouse_capability_groq_transcription.plugin.TrackedAsyncClient", Client
+        "joyhousebot_capability_groq_transcription.extension.TrackedAsyncClient", Client
     )
     provider = GroqTranscriptionProvider(api_key="test-key")
     assert (

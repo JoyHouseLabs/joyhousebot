@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from porthouse.runtime.supervisor import TaskSupervisor
+from joyhousebot.runtime.supervisor import TaskSupervisor
 
 
 @pytest.mark.asyncio

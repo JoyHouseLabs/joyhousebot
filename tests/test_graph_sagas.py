@@ -8,20 +8,20 @@ from typing import Any
 
 import pytest
 
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.contracts.tools import Tool
-from porthouse.domain.capabilities import (
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
 )
-from porthouse.orchestration.failure_policy import (
+from joyhousebot.orchestration.failure_policy import (
     normalize_failure_policy,
     validate_saga_declarations,
 )
-from porthouse.orchestration.task_graph import validate_and_order_graph
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
+from joyhousebot.orchestration.task_graph import validate_and_order_graph
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -92,7 +92,7 @@ def _refs() -> tuple[CapabilityRef, CapabilityRef, CapabilityRef, CapabilityRef]
             CapabilityRef(
                 capability_id,
                 "1.0.0",
-                CapabilityKind.TOOL,
+                CapabilityKind.CAPABILITY,
                 "test.graph-saga",
                 "1.0.0",
                 f"sha256:{digest}",
@@ -153,10 +153,10 @@ class _SagaAgent:
     ) -> None:
         self.capabilities = CapabilityRegistry(store=store)
         definitions = _definitions()
-        self.capabilities.register_tool(undo, definition=definitions[0])
-        self.capabilities.register_tool(apply, definition=definitions[1])
-        self.capabilities.register_tool(_FailTool(), definition=definitions[2])
-        self.capabilities.register_tool(_ReadTool(), definition=definitions[3])
+        self.capabilities.register_connector_capability(undo, definition=definitions[0])
+        self.capabilities.register_connector_capability(apply, definition=definitions[1])
+        self.capabilities.register_connector_capability(_FailTool(), definition=definitions[2])
+        self.capabilities.register_connector_capability(_ReadTool(), definition=definitions[3])
         for definition in definitions:
             store.publish_capability(
                 definition, actor_id="test:trusted-saga-fixture"

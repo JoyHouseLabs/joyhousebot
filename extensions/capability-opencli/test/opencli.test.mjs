@@ -10,6 +10,7 @@ import {
   compileCatalog,
   preflightOpenCli,
   runOpenCli,
+  runXiaohongshuAccountSnapshot,
 } from "../dist/index.js";
 
 const FIXTURE = new URL("./fixtures/fake-opencli.mjs", import.meta.url).pathname;
@@ -78,12 +79,137 @@ test("builds argv without a shell and rejects flag injection", () => {
     "fixture", "read", "safe query", "--limit=3", "--all", "--format=json",
   ]);
   assert.equal(built.profile, "chrome-main");
+  assert.equal(buildOpenCliArgv(compiled, {
+    query: "safe query", browser_profile_ref: "auto",
+  }, "/tmp/opencli-operation").profile, null);
   assert.throws(() => buildOpenCliArgv(compiled, {
     query: "--format=table", browser_profile_ref: "chrome-main",
   }, "/tmp/opencli-operation"), /cannot begin/);
   assert.throws(() => buildOpenCliArgv(compiled, {
     query: "safe", arbitrary: "--help", browser_profile_ref: "chrome-main",
   }, "/tmp/opencli-operation"), /unknown fields/);
+});
+
+test("enforces release-governed URL and count constraints in schema and argv", () => {
+  const catalog = compile([command({
+    site: "xiaohongshu",
+    name: "user",
+    args: [
+      {name: "id", type: "string", required: true, positional: true},
+      {name: "limit", type: "int", default: 15},
+    ],
+  })], [{
+    site: "xiaohongshu",
+    name: "user",
+    capability_version: "1.0.0",
+    argument_constraints: {
+      id: {pattern: "^(?:[A-Za-z0-9]+|https://www\\.xiaohongshu\\.com/user/profile/[A-Za-z0-9]+/?)$"},
+      limit: {minimum: 1, maximum: 20},
+    },
+  }]);
+  const compiled = catalog.commands[0];
+  assert.equal(compiled.capability.input_schema.properties.limit.maximum, 20);
+  assert.deepEqual(buildOpenCliArgv(compiled, {
+    id: "https://www.xiaohongshu.com/user/profile/abc123",
+    limit: 20,
+    browser_profile_ref: "chrome-main",
+  }, "/tmp/opencli-operation").argv, [
+    "xiaohongshu", "user", "https://www.xiaohongshu.com/user/profile/abc123",
+    "--limit=20", "--format=json",
+  ]);
+  assert.throws(() => buildOpenCliArgv(compiled, {
+    id: "https://evil.example/user/profile/abc123",
+    limit: 20,
+    browser_profile_ref: "chrome-main",
+  }, "/tmp/opencli-operation"), /outside the governed allowlist/);
+  assert.throws(() => buildOpenCliArgv(compiled, {
+    id: "abc123",
+    limit: 21,
+    browser_profile_ref: "chrome-main",
+  }, "/tmp/opencli-operation"), /governed maximum/);
+});
+
+test("builds a semantic account snapshot from internal list and detail commands", async () => {
+  const manifest = [
+    command({
+      site: "xiaohongshu", name: "user",
+      args: [
+        {name: "id", type: "string", required: true, positional: true},
+        {name: "limit", type: "int", default: 15},
+      ],
+    }),
+    command({
+      site: "xiaohongshu", name: "note",
+      args: [{name: "note-id", type: "string", required: true, positional: true}],
+    }),
+  ];
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const catalog = compileCatalog(bytes, manifest, {
+    schema_version: 1,
+    commands: [
+      {site: "xiaohongshu", name: "user", capability_version: "1.0.0", exposed: false},
+      {site: "xiaohongshu", name: "note", capability_version: "1.0.0", exposed: false},
+    ],
+    account_snapshots: [{platform: "xiaohongshu", capability_version: "1.0.0"}],
+  }, metadata);
+  assert.equal(catalog.account_snapshots[0].capability.capability_id, "social.xiaohongshu.account-snapshot");
+  assert.ok(catalog.commands.every((item) => item.exposed === false));
+
+  const workspace = join(tmpdir(), `joyhousebot-xhs-snapshot-${process.pid}-${Date.now()}`);
+  await mkdir(workspace, {recursive: true});
+  const progress = [];
+  try {
+    const running = runXiaohongshuAccountSnapshot({
+      entrypoint: FIXTURE,
+      listCommand: catalog.commands.find((item) => item.name === "user"),
+      detailCommand: catalog.commands.find((item) => item.name === "note"),
+      input: {
+        profile_url: "https://www.xiaohongshu.com/user/profile/user123",
+        limit: 1,
+        page_delay_seconds: 2,
+        browser_profile_ref: "chrome-main",
+      },
+      workspace,
+      timeoutMs: 10_000,
+      maxStdoutBytes: 16_384,
+      maxStderrBytes: 16_384,
+      onProgress: async (event) => { progress.push(event); },
+    });
+    const result = await running.result;
+    assert.equal(result.state, "succeeded");
+    assert.equal(result.output.complete_text_count, 1);
+    assert.equal(result.output.notes[0].content, "这是完整正文。");
+    assert.equal(result.output.notes[0].url, "https://www.xiaohongshu.com/user/profile/user123/note123");
+    assert.doesNotMatch(JSON.stringify(result.output), /secret_token/);
+    assert.deepEqual(progress.map((event) => event.status), ["listed", "complete"]);
+
+    process.env.FAKE_XHS_NOTE_EXIT = "77";
+    const resumedProgress = [];
+    const resumed = runXiaohongshuAccountSnapshot({
+      entrypoint: FIXTURE,
+      listCommand: catalog.commands.find((item) => item.name === "user"),
+      detailCommand: catalog.commands.find((item) => item.name === "note"),
+      input: {
+        profile_url: "https://www.xiaohongshu.com/user/profile/user123",
+        limit: 1,
+        page_delay_seconds: 2,
+        browser_profile_ref: "chrome-main",
+      },
+      checkpoint: result.output,
+      workspace,
+      timeoutMs: 10_000,
+      maxStdoutBytes: 16_384,
+      maxStderrBytes: 16_384,
+      onProgress: async (event) => { resumedProgress.push(event); },
+    });
+    const resumedResult = await resumed.result;
+    assert.equal(resumedResult.state, "succeeded");
+    assert.equal(resumedResult.output.complete_text_count, 1);
+    assert.deepEqual(resumedProgress.map((event) => event.status), ["listed"]);
+  } finally {
+    delete process.env.FAKE_XHS_NOTE_EXIT;
+    await rm(workspace, {recursive: true, force: true});
+  }
 });
 
 test("uses an explicit negative flag for reviewed true-default booleans", () => {
@@ -118,7 +244,7 @@ test("Markdown capture forbids image download side effects", () => {
 });
 
 test("captures one bounded Markdown output as an Artifact instead of a host path", async () => {
-  const workspace = join(tmpdir(), `porthouse-opencli-capture-${process.pid}-${Date.now()}`);
+  const workspace = join(tmpdir(), `joyhousebot-opencli-capture-${process.pid}-${Date.now()}`);
   await mkdir(join(workspace, "article"), {recursive: true});
   await writeFile(join(workspace, "article", "post.md"), "# Captured");
   try {
@@ -139,7 +265,7 @@ test("captures one bounded Markdown output as an Artifact instead of a host path
 
 test("maps OpenCLI JSON, empty, auth, bridge, and timeout outcomes", async () => {
   const compiled = compile().commands[0];
-  const workspace = join(tmpdir(), `porthouse-opencli-${process.pid}-${Date.now()}`);
+  const workspace = join(tmpdir(), `joyhousebot-opencli-${process.pid}-${Date.now()}`);
   await mkdir(workspace, {recursive: true});
   const execute = (mode, timeoutMs = 2_000) => runOpenCli({
     entrypoint: FIXTURE,

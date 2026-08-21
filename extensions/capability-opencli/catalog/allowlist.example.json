@@ -17,6 +17,36 @@
       "capability_version": "1.0.0"
     },
     {
+      "site": "xiaohongshu",
+      "name": "user",
+      "capability_version": "1.0.0",
+      "exposed": false,
+      "argument_constraints": {
+        "id": {
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(?:[A-Za-z0-9]{1,64}|https://www\\.xiaohongshu\\.com/user/profile/[A-Za-z0-9]{1,64}/?)$"
+        },
+        "limit": {
+          "minimum": 1,
+          "maximum": 20
+        }
+      }
+    },
+    {
+      "site": "xiaohongshu",
+      "name": "note",
+      "capability_version": "1.0.0",
+      "exposed": false,
+      "argument_constraints": {
+        "note-id": {
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^https://www\\.xiaohongshu\\.com/user/profile/[A-Za-z0-9]{1,64}/[A-Za-z0-9]{1,64}\\?xsec_token=[A-Za-z0-9_%=-]{1,512}&xsec_source=pc_user$"
+        }
+      }
+    },
+    {
       "site": "weixin",
       "name": "search",
       "capability_version": "1.0.0"
@@ -27,6 +57,14 @@
       "capability_version": "1.0.0",
       "allow_path_arguments": ["output"],
       "capture_output_markdown": true
+    }
+  ],
+  "account_snapshots": [
+    {
+      "platform": "xiaohongshu",
+      "capability_version": "1.1.0",
+      "timeout_seconds": 600,
+      "expected_duration_seconds": 180
     }
   ]
 }

@@ -20,7 +20,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { listExtensionInventory, type ExtensionInventoryItem } from '../api/plugins'
+import { listExtensionInventory, type ExtensionInventoryItem } from '../api/extensions'
 
 const loading = ref(false)
 const error = ref('')

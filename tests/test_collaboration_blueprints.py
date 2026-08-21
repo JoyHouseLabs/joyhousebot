@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from porthouse.domain.agent_teams import AgentTeamMember, AgentTeamRevision
-from porthouse.domain.collaboration_blueprints import (
+from joyhousebot.domain.agent_teams import AgentTeamMember, AgentTeamRevision
+from joyhousebot.domain.collaboration_blueprints import (
     BLUEPRINT_SCHEMA_VERSION,
     PRESET_REGISTRY,
     default_blueprint,

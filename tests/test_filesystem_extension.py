@@ -1,11 +1,11 @@
 """Contracts for the optional Run-scoped filesystem extension."""
 
 import pytest
-from porthouse_capability_filesystem import plugin as filesystem
+from joyhousebot_capability_filesystem import extension as filesystem
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.capabilities.services import CapabilityServiceBroker
-from porthouse.extension_sdk import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.capabilities.services import CapabilityServiceBroker
+from joyhousebot.extension_sdk import CapabilityContext
 
 
 def _context(services, **overrides):
@@ -23,13 +23,13 @@ def _context(services, **overrides):
 
 
 def test_filesystem_extension_registers_four_versioned_capabilities() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(filesystem.FilesystemCapabilityPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(filesystem.FilesystemCapabilityExtension())
     definitions = {item.ref.capability_id: item for item in registry.list_capabilities()}
     assert set(definitions) == {"edit_file", "list_dir", "read_file", "write_file"}
     assert definitions["write_file"].side_effect == "write"
     assert definitions["read_file"].side_effect == "read"
-    assert definitions["read_file"].ref.plugin_id == "capability-filesystem"
+    assert definitions["read_file"].ref.extension_id == "capability-filesystem"
 
 
 @pytest.mark.asyncio

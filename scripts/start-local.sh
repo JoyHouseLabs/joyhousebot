@@ -9,29 +9,31 @@ if [[ -f "${ROOT_DIR}/.env.local" ]]; then
   source "${ROOT_DIR}/.env.local"
   set +a
 fi
-CONFIG_PATH="${PORTHOUSE_CONFIG_PATH:-${ROOT_DIR}/config.json}"
+CONFIG_PATH="${JOYHOUSEBOT_CONFIG_PATH:-${ROOT_DIR}/config.json}"
 # Local development only: fall back to the insecure-auth dev template when no
 # real config.json exists. Production deployments must pass an explicit path.
-if [[ -z "${PORTHOUSE_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
+if [[ -z "${JOYHOUSEBOT_CONFIG_PATH:-}" && ! -f "${CONFIG_PATH}" ]]; then
   CONFIG_PATH="${ROOT_DIR}/config.dev.json"
 fi
-API_HOST="${PORTHOUSE_LOCAL_HOST:-127.0.0.1}"
-API_PORT="${PORTHOUSE_LOCAL_PORT:-18790}"
-MODEL_GATEWAY_PORT="${PORTHOUSE_MODEL_GATEWAY_PORT:-18794}"
-START_MODEL_GATEWAY="${PORTHOUSE_START_MODEL_GATEWAY:-false}"
-NODE_HOST_CONFIG="${PORTHOUSE_NODE_HOST_CONFIG:-}"
-DEVICE_HOST_CONFIG="${PORTHOUSE_DEVICE_HOST_CONFIG:-}"
-WORKER_COUNT="${PORTHOUSE_LOCAL_WORKERS:-2}"
-LOG_ROOT="${PORTHOUSE_LOCAL_LOG_ROOT:-${HOME}/.porthouse/logs/local}"
+API_HOST="${JOYHOUSEBOT_LOCAL_HOST:-127.0.0.1}"
+API_PORT="${JOYHOUSEBOT_LOCAL_PORT:-18790}"
+MODEL_GATEWAY_PORT="${JOYHOUSEBOT_MODEL_GATEWAY_PORT:-18794}"
+START_MODEL_GATEWAY="${JOYHOUSEBOT_START_MODEL_GATEWAY:-false}"
+START_STARTER="${JOYHOUSEBOT_START_STARTER:-true}"
+STARTER_PORT="${JOYHOUSEBOT_STARTER_PORT:-5179}"
+NODE_HOST_CONFIG="${JOYHOUSEBOT_NODE_HOST_CONFIG:-}"
+DEVICE_HOST_CONFIG="${JOYHOUSEBOT_DEVICE_HOST_CONFIG:-}"
+WORKER_COUNT="${JOYHOUSEBOT_LOCAL_WORKERS:-2}"
+LOG_ROOT="${JOYHOUSEBOT_LOCAL_LOG_ROOT:-${HOME}/.joyhousebot/logs/local}"
 RUN_STAMP="$(date '+%Y%m%d-%H%M%S')"
 LOG_DIR="${LOG_ROOT}/${RUN_STAMP}"
 
-LOCAL_PG_HOST="${PORTHOUSE_LOCAL_PG_HOST:-127.0.0.1}"
-LOCAL_PG_PORT="${PORTHOUSE_LOCAL_PG_PORT:-15432}"
-LOCAL_PG_USER="${PORTHOUSE_LOCAL_PG_USER:-porthouse}"
-LOCAL_PG_PASSWORD="${PORTHOUSE_LOCAL_PG_PASSWORD:-porthouse-dev}"
-LOCAL_PG_DATABASE="${PORTHOUSE_LOCAL_PG_DATABASE:-porthouse}"
-LOCAL_EXTENSION_PACKAGES="${PORTHOUSE_LOCAL_EXTENSION_PACKAGES:-}"
+LOCAL_PG_HOST="${JOYHOUSEBOT_LOCAL_PG_HOST:-127.0.0.1}"
+LOCAL_PG_PORT="${JOYHOUSEBOT_LOCAL_PG_PORT:-15432}"
+LOCAL_PG_USER="${JOYHOUSEBOT_LOCAL_PG_USER:-joyhousebot}"
+LOCAL_PG_PASSWORD="${JOYHOUSEBOT_LOCAL_PG_PASSWORD:-joyhousebot-dev}"
+LOCAL_PG_DATABASE="${JOYHOUSEBOT_LOCAL_PG_DATABASE:-joyhousebot}"
+LOCAL_EXTENSION_PACKAGES="${JOYHOUSEBOT_LOCAL_EXTENSION_PACKAGES:-}"
 
 CHILD_PIDS=()
 CHILD_NAMES=()
@@ -74,14 +76,14 @@ trap cleanup INT TERM EXIT
 
 prepare_database() {
   local database_exists=""
-  if [[ -n "${HAPPYHOUSE_DATABASE_URL:-}" ]]; then
-    export PORTHOUSE_DATABASE_URL="${HAPPYHOUSE_DATABASE_URL}"
-    info "PostgreSQL: using shared HAPPYHOUSE_DATABASE_URL"
+  if [[ -n "${JOYHOUSE_DATABASE_URL:-}" ]]; then
+    export JOYHOUSEBOT_DATABASE_URL="${JOYHOUSE_DATABASE_URL}"
+    info "PostgreSQL: using shared JOYHOUSE_DATABASE_URL"
     return
   fi
-  if [[ -n "${PORTHOUSE_DATABASE_URL:-}" ]]; then
-    export PORTHOUSE_DATABASE_URL="${PORTHOUSE_DATABASE_URL}"
-    info "PostgreSQL: using PORTHOUSE_DATABASE_URL as Runtime connection"
+  if [[ -n "${JOYHOUSEBOT_DATABASE_URL:-}" ]]; then
+    export JOYHOUSEBOT_DATABASE_URL="${JOYHOUSEBOT_DATABASE_URL}"
+    info "PostgreSQL: using JOYHOUSEBOT_DATABASE_URL as Runtime connection"
     return
   fi
 
@@ -103,8 +105,8 @@ prepare_database() {
       -U "${LOCAL_PG_USER}" \
       "${LOCAL_PG_DATABASE}"
   fi
-  export PORTHOUSE_DATABASE_URL="postgresql://${LOCAL_PG_USER}:${LOCAL_PG_PASSWORD}@${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
-  export HAPPYHOUSE_DATABASE_URL="${PORTHOUSE_DATABASE_URL}"
+  export JOYHOUSEBOT_DATABASE_URL="postgresql://${LOCAL_PG_USER}:${LOCAL_PG_PASSWORD}@${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
+  export JOYHOUSE_DATABASE_URL="${JOYHOUSEBOT_DATABASE_URL}"
   unset PGPASSWORD
   info "PostgreSQL: ${LOCAL_PG_HOST}:${LOCAL_PG_PORT}/${LOCAL_PG_DATABASE}"
 }
@@ -172,6 +174,18 @@ install_local_extensions() {
   done
 }
 
+build_starter() {
+  [[ "${START_STARTER}" == "true" ]] || return
+  require_command node
+  require_command npm
+  if [[ ! -d "${ROOT_DIR}/apps/starter/node_modules/vue" ]]; then
+    info "installing Starter web dependencies"
+    npm --prefix "${ROOT_DIR}/apps/starter" install --no-audit --no-fund --silent
+  fi
+  info "building Vue Starter"
+  npm --prefix "${ROOT_DIR}/apps/starter" run build --silent
+}
+
 main() {
   local worker_index
   cd "${ROOT_DIR}"
@@ -184,18 +198,23 @@ main() {
   require_command lsof
 
   [[ -f "${CONFIG_PATH}" ]] || fail "config file not found: ${CONFIG_PATH}"
-  [[ "${WORKER_COUNT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_LOCAL_WORKERS must be a positive integer"
-  [[ "${WORKER_COUNT}" -le 32 ]] || fail "PORTHOUSE_LOCAL_WORKERS must not exceed 32"
-  [[ "${API_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_LOCAL_PORT must be a valid port"
-  [[ "${API_PORT}" -le 65535 ]] || fail "PORTHOUSE_LOCAL_PORT must not exceed 65535"
-  [[ "${MODEL_GATEWAY_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_MODEL_GATEWAY_PORT must be a valid port"
-  [[ "${MODEL_GATEWAY_PORT}" -le 65535 ]] || fail "PORTHOUSE_MODEL_GATEWAY_PORT must not exceed 65535"
-  [[ "${LOCAL_PG_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "PORTHOUSE_LOCAL_PG_PORT must be a valid port"
-  [[ "${LOCAL_PG_DATABASE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "PORTHOUSE_LOCAL_PG_DATABASE contains unsupported characters"
-  [[ "${LOCAL_PG_USER}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "PORTHOUSE_LOCAL_PG_USER contains unsupported characters"
-  [[ "${LOCAL_PG_PASSWORD}" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "set PORTHOUSE_DATABASE_URL when the local PostgreSQL password requires URL encoding"
+  [[ "${WORKER_COUNT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_WORKERS must be a positive integer"
+  [[ "${WORKER_COUNT}" -le 32 ]] || fail "JOYHOUSEBOT_LOCAL_WORKERS must not exceed 32"
+  [[ "${API_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PORT must be a valid port"
+  [[ "${API_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_LOCAL_PORT must not exceed 65535"
+  [[ "${MODEL_GATEWAY_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_MODEL_GATEWAY_PORT must be a valid port"
+  [[ "${MODEL_GATEWAY_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_MODEL_GATEWAY_PORT must not exceed 65535"
+  [[ "${STARTER_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_STARTER_PORT must be a valid port"
+  [[ "${STARTER_PORT}" -le 65535 ]] || fail "JOYHOUSEBOT_STARTER_PORT must not exceed 65535"
+  [[ "${LOCAL_PG_PORT}" =~ ^[1-9][0-9]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_PORT must be a valid port"
+  [[ "${LOCAL_PG_DATABASE}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_DATABASE contains unsupported characters"
+  [[ "${LOCAL_PG_USER}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "JOYHOUSEBOT_LOCAL_PG_USER contains unsupported characters"
+  [[ "${LOCAL_PG_PASSWORD}" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "set JOYHOUSEBOT_DATABASE_URL when the local PostgreSQL password requires URL encoding"
   if lsof -nP -iTCP:"${API_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
     fail "TCP port ${API_PORT} is already in use"
+  fi
+  if [[ "${START_STARTER}" == "true" ]] && lsof -nP -iTCP:"${STARTER_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+    fail "TCP port ${STARTER_PORT} is already in use"
   fi
 
   prepare_database
@@ -208,25 +227,31 @@ main() {
   # resolve to an unrelated system executable.
   uv sync --frozen --extra dev --quiet
   install_local_extensions
+  build_starter
   # Apply schema changes once before any runtime role starts. Starting every
   # role with auto-migration enabled can interleave DDL from a later process
   # with catalog bootstrap writes from an earlier one.
-  PORTHOUSE_AUTO_MIGRATE=true uv run porthouse check --config "${CONFIG_PATH}"
-  uv run porthouse discover-extensions --config "${CONFIG_PATH}"
-  export PORTHOUSE_AUTO_MIGRATE=false
+  JOYHOUSEBOT_AUTO_MIGRATE=true uv run joyhousebot check --config "${CONFIG_PATH}"
+  uv run joyhousebot discover-extensions --config "${CONFIG_PATH}"
+  export JOYHOUSEBOT_AUTO_MIGRATE=false
 
-  start_role api uv run porthouse api \
+  start_role api uv run joyhousebot api \
     --surface combined --config "${CONFIG_PATH}" --host "${API_HOST}" --port "${API_PORT}"
-  start_role scheduler uv run porthouse scheduler --config "${CONFIG_PATH}"
+  start_role scheduler uv run joyhousebot scheduler --config "${CONFIG_PATH}"
   for worker_index in $(seq 1 "${WORKER_COUNT}"); do
-    start_role "worker-${worker_index}" uv run porthouse worker --config "${CONFIG_PATH}"
+    start_role "worker-${worker_index}" uv run joyhousebot worker --config "${CONFIG_PATH}"
   done
-  start_role channel-worker uv run porthouse channel-worker --config "${CONFIG_PATH}"
+  start_role channel-worker uv run joyhousebot channel-worker --config "${CONFIG_PATH}"
+  if [[ "${START_STARTER}" == "true" ]]; then
+    start_role starter "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/starter_server.py" \
+      --host "${API_HOST}" --port "${STARTER_PORT}" \
+      --runtime-host "${API_HOST}" --runtime-port "${API_PORT}"
+  fi
   if [[ "${START_MODEL_GATEWAY}" == "true" ]]; then
     if lsof -nP -iTCP:"${MODEL_GATEWAY_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
       fail "TCP port ${MODEL_GATEWAY_PORT} is already in use"
     fi
-    start_role model-gateway uv run porthouse model-gateway \
+    start_role model-gateway uv run joyhousebot model-gateway \
       --config "${CONFIG_PATH}" --host 127.0.0.1 --port "${MODEL_GATEWAY_PORT}"
   fi
   if [[ -n "${NODE_HOST_CONFIG}" || -n "${DEVICE_HOST_CONFIG}" ]]; then
@@ -238,18 +263,21 @@ main() {
   if [[ -n "${NODE_HOST_CONFIG}" ]]; then
     [[ -f "${NODE_HOST_CONFIG}" ]] || fail "Node Host config not found: ${NODE_HOST_CONFIG}"
     (cd "${ROOT_DIR}/hosts/node/supervisor" && npm run build --silent)
-    start_role node-host env PORTHOUSE_NODE_HOST_CONFIG="${NODE_HOST_CONFIG}" \
+    start_role node-host env JOYHOUSEBOT_NODE_HOST_CONFIG="${NODE_HOST_CONFIG}" \
       node "${ROOT_DIR}/hosts/node/supervisor/dist/cli.js"
   fi
   if [[ -n "${DEVICE_HOST_CONFIG}" ]]; then
     [[ -f "${DEVICE_HOST_CONFIG}" ]] || fail "Device Host config not found: ${DEVICE_HOST_CONFIG}"
     (cd "${ROOT_DIR}/hosts/node/device-host" && npm run build --silent)
-    start_role device-host env PORTHOUSE_DEVICE_HOST_CONFIG="${DEVICE_HOST_CONFIG}" \
+    start_role device-host env JOYHOUSEBOT_DEVICE_HOST_CONFIG="${DEVICE_HOST_CONFIG}" \
       node "${ROOT_DIR}/hosts/node/device-host/dist/cli.js"
   fi
 
   wait_for_api
   info "ready: http://${API_HOST}:${API_PORT}/ui/"
+  if [[ "${START_STARTER}" == "true" ]]; then
+    info "starter: http://${API_HOST}:${STARTER_PORT}"
+  fi
   info "press Ctrl+C to stop all selected Runtime and Host roles"
   tail -n 20 -F "${LOG_DIR}"/*.log &
   TAIL_PID="$!"

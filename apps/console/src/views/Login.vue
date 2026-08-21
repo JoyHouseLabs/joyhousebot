@@ -1,7 +1,7 @@
 <template>
   <main class="login-page">
     <section class="login-card">
-      <div class="login-brand"><img :src="logoSrc" alt="Porthouse" /><div><strong>Porthouse</strong><span>AGENT CLOUD</span></div></div>
+      <div class="login-brand"><img :src="logoSrc" alt="joyhousebot" /><div><strong>joyhousebot</strong><span>AGENT CLOUD</span></div></div>
       <span class="eyebrow">CONTROL PLANE</span>
       <h1>登录控制台</h1>
       <p class="login-lead">验证管理员身份，并选择本次要管理的个人 user_id。</p>
@@ -13,7 +13,7 @@
         <button class="login-mode-button" type="button" @click="resetLogin">返回账号密码</button>
       </form>
       <form v-else-if="mode === 'password'" @submit.prevent="loginWithAdminPassword">
-        <label><span>管理员账号</span><input v-model.trim="adminUserId" required maxlength="128" autocomplete="username" placeholder="porthouse" /></label>
+        <label><span>管理员账号</span><input v-model.trim="adminUserId" required maxlength="128" autocomplete="username" placeholder="joyhousebot" /></label>
         <label>
           <span>操作 user_id <small>个人数据与执行归属</small></span>
           <input v-model.trim="operationUserId" maxlength="128" autocomplete="off" placeholder="留空则使用管理员账号" />
@@ -27,12 +27,12 @@
         <button class="login-mode-button" type="button" @click="mode = 'token'">使用 API Token 登录</button>
       </form>
       <form v-else @submit.prevent="loginWithToken">
-        <label><span>Token 归属 user_id</span><input v-model.trim="tokenUserId" required maxlength="128" autocomplete="username" placeholder="porthouse" /></label>
+        <label><span>Token 归属 user_id</span><input v-model.trim="tokenUserId" required maxlength="128" autocomplete="username" placeholder="joyhousebot" /></label>
         <label><span>API 访问令牌</span><input v-model.trim="token" type="password" autocomplete="current-password" placeholder="粘贴数据库访问令牌" /></label>
         <button class="primary-button login-submit" type="submit" :disabled="loading">{{ loading ? '验证中…' : '验证 Token' }}</button>
         <button class="login-mode-button" type="button" @click="mode = 'password'">返回账号密码登录</button>
       </form>
-      <div class="login-hint"><strong>本地开发默认管理员</strong><p>账号 <code>porthouse</code>，初始密码 <code>porthouse</code>。首次密码登录后必须立即修改；生产环境没有内置固定密码。</p></div>
+      <div class="login-hint"><strong>本地开发默认管理员</strong><p>账号 <code>joyhousebot</code>，初始密码 <code>joyhousebot</code>。首次密码登录后必须立即修改；生产环境没有内置固定密码。</p></div>
     </section>
   </main>
 </template>
@@ -47,7 +47,7 @@ import { clearImpersonationTarget, getImpersonationTarget, getRuntimeUserId, set
 
 const router = useRouter()
 const route = useRoute()
-const logoSrc = `${import.meta.env.BASE_URL}porthouse.png`
+const logoSrc = `${import.meta.env.BASE_URL}joyhousebot.png`
 const existingAdminUserId = getRuntimeUserId()
 const adminUserId = ref(existingAdminUserId)
 const operationUserId = ref(getImpersonationTarget() || existingAdminUserId)
@@ -72,7 +72,7 @@ async function completeLogin(result: AuthenticatedLogin) {
   if (targetUserId === result.user_id) clearImpersonationTarget()
   else setImpersonationTarget(targetUserId)
   setControlToken(result.token)
-  localStorage.setItem('porthouse_auth_session', '1')
+  localStorage.setItem('joyhousebot_auth_session', '1')
   if (result.must_change_password) {
     await router.replace('/security?required=1')
     return
@@ -136,7 +136,7 @@ async function loginWithToken() {
     const identity = await getIdentity()
     if (!identity?.user_id) throw new Error('身份验证失败')
     setRuntimeUserId(identity.user_id)
-    localStorage.setItem('porthouse_auth_session', '1')
+    localStorage.setItem('joyhousebot_auth_session', '1')
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/overview'
     await router.replace(redirect)
   } catch (cause) {

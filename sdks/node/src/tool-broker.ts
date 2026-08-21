@@ -25,7 +25,7 @@ export class HostToolBrokerClient {
   async submit<TInput extends Record<string, unknown>>(
     request: HostToolRequest<TInput>,
   ): Promise<{request: HostToolRequestRecord; created: boolean}> {
-    return this.#request("/v1/host-tool-requests", {
+    return this.#request("/host/v1/host-tool-requests", {
       method: "POST",
       body: JSON.stringify(request),
     }) as Promise<{request: HostToolRequestRecord; created: boolean}>;
@@ -35,7 +35,7 @@ export class HostToolBrokerClient {
     requestId: string,
   ): Promise<HostToolRequestRecord<TOutput>> {
     const value = await this.#request(
-      `/v1/host-tool-requests/${encodeURIComponent(requestId)}`,
+      `/host/v1/host-tool-requests/${encodeURIComponent(requestId)}`,
       {method: "GET"},
     ) as {request: HostToolRequestRecord<TOutput>};
     return value.request;

@@ -7,16 +7,16 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.bootstrap.host_tool_worker import HostToolBrokerWorker
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.capabilities.dispatcher import CapabilityDispatcher
-from porthouse.capabilities.tool_adapter import ToolOutput
-from porthouse.config.schema import Config
-from porthouse.contracts.tools import Tool
-from porthouse.runtime.context import ActionOutcomeUnknownError
-from tests.support.capabilities import register_tool_fixture
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.bootstrap.host_tool_worker import HostToolBrokerWorker
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.capabilities.dispatcher import CapabilityDispatcher
+from joyhousebot.capabilities.tool_adapter import ToolOutput
+from joyhousebot.config.schema import Config
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.runtime.context import ActionOutcomeUnknownError
+from tests.support.capabilities import register_capability_fixture
 from tests.support.postgres_store import PostgresTestStore
 from tests.test_operation_reconciliation import (
     _adapter,
@@ -58,7 +58,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
     assert reconciliation is not None
     store.create_run_execution_snapshot(execution.run_id, "default")
     registry = CapabilityRegistry(store=store)
-    host_tool_definition = register_tool_fixture(registry, _HostReadTool())
+    host_tool_definition = register_capability_fixture(registry, _HostReadTool())
 
     store.create_api_access_token(
         user_id="user-a", actor_id="test", token="device-owner-token"
@@ -88,17 +88,17 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
 
     with client:
         registered = client.post(
-            "/v1/device-hosts", headers=headers, json=registration_body
+            "/host/v1/device-hosts", headers=headers, json=registration_body
         )
         assert registered.status_code == 201, registered.text
         device_token = registered.json()["device_token"]
         assert device_token.startswith("jhd_")
         assert "token" not in str(
-            client.get("/v1/device-hosts", headers=headers).json()["items"][0]
+            client.get("/host/v1/device-hosts", headers=headers).json()["items"][0]
         ).lower()
 
         foreign = client.post(
-            f"/v1/runs/{execution.run_id}/operations/"
+            f"/host/v1/runs/{execution.run_id}/operations/"
             f"{reconciliation.reconciliation_id}/device-deliveries",
             headers={"Authorization": "Bearer foreign-owner-token"},
             json={"device_id": "macbook-a", "operation_id": "provider-42"},
@@ -106,7 +106,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         assert foreign.status_code == 404
 
         recursive = client.post(
-            f"/v1/runs/{execution.run_id}/operations/"
+            f"/host/v1/runs/{execution.run_id}/operations/"
             f"{reconciliation.reconciliation_id}/device-deliveries",
             headers=headers,
             json={
@@ -123,7 +123,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         assert recursive.status_code == 422
 
         created = client.post(
-            f"/v1/runs/{execution.run_id}/operations/"
+            f"/host/v1/runs/{execution.run_id}/operations/"
             f"{reconciliation.reconciliation_id}/device-deliveries",
             headers=headers,
             json={
@@ -142,10 +142,10 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
 
         device_headers = {
             "Authorization": f"Bearer {device_token}",
-            "X-Porthouse-Device-ID": "macbook-a",
+            "X-JoyHouseBot-Device-ID": "macbook-a",
         }
         heartbeat = client.post(
-            "/v1/device-host/heartbeat",
+            "/host/v1/device-host/heartbeat",
             headers=device_headers,
             json={
                 "host_revision": registration_body["host_revision"],
@@ -156,7 +156,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
 
         session_id = "device-session-0001"
         claimed = client.post(
-            "/v1/device-host/operations:claim",
+            "/host/v1/device-host/operations:claim",
             headers=device_headers,
             json={"claim_session_id": session_id, "lease_seconds": 30},
         )
@@ -167,7 +167,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         claim_version = delivery["claim_version"]
 
         issued_tool_grant = client.post(
-            f"/v1/device-host/operations/{delivery_id}/tool-grant",
+            f"/host/v1/device-host/operations/{delivery_id}/tool-grant",
             headers=device_headers,
             json={
                 "claim_session_id": session_id,
@@ -187,7 +187,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
             "input": {"value": "from-node"},
         }
         submitted_tool = client.post(
-            "/v1/host-tool-requests",
+            "/host/v1/host-tool-requests",
             headers=tool_headers,
             json=host_request_body,
         )
@@ -195,14 +195,14 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         assert submitted_tool.json()["created"] is True
         host_tool_request_id = submitted_tool.json()["request"]["request_id"]
         duplicate_tool = client.post(
-            "/v1/host-tool-requests",
+            "/host/v1/host-tool-requests",
             headers=tool_headers,
             json=host_request_body,
         )
         assert duplicate_tool.status_code == 202, duplicate_tool.text
         assert duplicate_tool.json()["created"] is False
         denied_tool = client.post(
-            "/v1/host-tool-requests",
+            "/host/v1/host-tool-requests",
             headers=tool_headers,
             json={
                 **host_request_body,
@@ -226,7 +226,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         )
         await host_tool_worker.execute(claimed_tool)
         polled_tool = client.get(
-            f"/v1/host-tool-requests/{host_tool_request_id}",
+            f"/host/v1/host-tool-requests/{host_tool_request_id}",
             headers=tool_headers,
         )
         assert polled_tool.status_code == 200, polled_tool.text
@@ -236,7 +236,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         }
         for index in range(2, 65):
             within_budget = client.post(
-                "/v1/host-tool-requests",
+                "/host/v1/host-tool-requests",
                 headers=tool_headers,
                 json={
                     **host_request_body,
@@ -245,7 +245,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
             )
             assert within_budget.status_code == 202, within_budget.text
         exhausted = client.post(
-            "/v1/host-tool-requests",
+            "/host/v1/host-tool-requests",
             headers=tool_headers,
             json={
                 **host_request_body,
@@ -255,7 +255,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         assert exhausted.status_code == 409
 
         stale = client.post(
-            f"/v1/device-host/operations/{delivery_id}/events:append",
+            f"/host/v1/device-host/operations/{delivery_id}/events:append",
             headers=device_headers,
             json={
                 "claim_session_id": session_id,
@@ -273,7 +273,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         assert stale.status_code == 409
 
         appended = client.post(
-            f"/v1/device-host/operations/{delivery_id}/events:append",
+            f"/host/v1/device-host/operations/{delivery_id}/events:append",
             headers=device_headers,
             json={
                 "claim_session_id": session_id,
@@ -298,7 +298,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
             "artifacts": [],
         }
         completed = client.post(
-            f"/v1/device-host/operations/{delivery_id}:complete",
+            f"/host/v1/device-host/operations/{delivery_id}:complete",
             headers=device_headers,
             json={
                 "claim_session_id": session_id,
@@ -310,7 +310,7 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         assert completed.json()["delivery"]["status"] == "completed"
 
         replay = client.post(
-            f"/v1/device-host/operations/{delivery_id}:complete",
+            f"/host/v1/device-host/operations/{delivery_id}:complete",
             headers=device_headers,
             json={
                 "claim_session_id": session_id,
@@ -320,16 +320,16 @@ async def test_device_host_claim_is_fenced_and_completion_resumes_operation(
         )
         assert replay.status_code == 200, replay.text
 
-        revoked = client.delete("/v1/device-hosts/macbook-a", headers=headers)
+        revoked = client.delete("/host/v1/device-hosts/macbook-a", headers=headers)
         assert revoked.status_code == 204
         rejected = client.post(
-            "/v1/device-host/operations:claim",
+            "/host/v1/device-host/operations:claim",
             headers=device_headers,
             json={"claim_session_id": "device-session-0002"},
         )
         assert rejected.status_code == 401
         rejected_tool_grant = client.get(
-            f"/v1/host-tool-requests/{host_tool_request_id}",
+            f"/host/v1/host-tool-requests/{host_tool_request_id}",
             headers=tool_headers,
         )
         assert rejected_tool_grant.status_code == 401

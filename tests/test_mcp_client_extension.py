@@ -2,11 +2,11 @@ from contextlib import AsyncExitStack
 from types import SimpleNamespace
 
 import pytest
-from porthouse_connector_mcp_client import MCPToolWrapper, create_extension
-from porthouse_connector_mcp_client import connector as mcp_connector
+from joyhousebot_connector_mcp_client import MCPToolWrapper, create_extension
+from joyhousebot_connector_mcp_client import connector as mcp_connector
 
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.connectors import ToolConnectorRegistry
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.connectors import CapabilityConnectorRegistry
 
 
 def _tool_def(name: str = "read.file"):
@@ -20,7 +20,7 @@ def _tool_def(name: str = "read.file"):
 def test_mcp_connector_has_independent_manifest_and_entry_contract():
     extension = create_extension()
     assert extension.manifest.extension_id == "connector-mcp-client"
-    assert extension.manifest.extension_types == ("tool_connector",)
+    assert extension.manifest.extension_types == ("connector",)
     assert extension.manifest.build_digest.startswith("sha256:")
 
 
@@ -28,8 +28,8 @@ def test_remote_tool_definition_is_not_owned_by_core():
     wrapper = MCPToolWrapper(SimpleNamespace(), "files", _tool_def())
     definition = mcp_connector._definition("files", _tool_def(), wrapper)
     assert definition.ref.kind.value == "connector"
-    assert definition.ref.plugin_id == "connector-mcp-client"
-    assert definition.ref.plugin_build_digest == create_extension().manifest.build_digest
+    assert definition.ref.extension_id == "connector-mcp-client"
+    assert definition.ref.extension_build_digest == create_extension().manifest.build_digest
     assert definition.side_effect == "unknown"
     assert definition.connection_ids == ("files",)
 
@@ -72,7 +72,7 @@ async def test_generic_registry_connects_configured_extension():
 
     declared = create_extension()
     extension = type(declared)(manifest=declared.manifest, connect=connect)
-    connectors = ToolConnectorRegistry()
+    connectors = CapabilityConnectorRegistry()
     connectors.register(extension, source="test")
     async with AsyncExitStack() as stack:
         await connectors.connect_configured(

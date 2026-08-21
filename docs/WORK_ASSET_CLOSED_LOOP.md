@@ -57,7 +57,7 @@ Runtime 表或以跨模块 JOIN 获取用户数据。第一阶段可以使用同
 
 ### 已实现的交接基线
 
-- App Pack Manifest 可声明 `work_consumers`，包括媒体类型、用途、最大数据分级和输入 Schema；
+- App Package Manifest 可声明 `work_consumers`，包括媒体类型、用途、最大数据分级和输入 Schema；
 - Work 控制台只展示当前用户已安装、已激活且与当前 Work 媒体类型/分级兼容的消费者；
 - `work_handoffs` 固定 Work 版本、内容摘要、数据分级、App/安装版本、用途和幂等键；
 - 目标 App 用绑定 `user_id + installation_id` 的委托 Token 读取冻结输入，不能读取其他 Work；
@@ -153,15 +153,15 @@ Work 被归档、版本升级或分享撤销不应篡改历史 Handoff。新的�
 
 | 操作 | 建议接口 | 关键约束 |
 | --- | --- | --- |
-| 查询可用消费者 | `GET /v1/works/{id}/consumers` | 仅返回已安装、已授权、声明输入兼容的 App |
-| 创建交接 | `POST /v1/works/{id}/handoffs` | 要求 `Idempotency-Key`、精确版本、App revision、用途 |
-| 查询历史 | `GET /v1/works/{id}/handoffs` | 仅 Work 所有者可见 |
-| 获取冻结输入 | `GET /v1/work-handoffs/{id}/input` | 仅绑定安装的委托 App Token 可读；最小字段投影 |
-| 查询回执 | `GET /v1/work-handoffs/{id}/receipts` | 所有者可读；委托 App 仅可读自身交接的最小回执投影 |
-| App 接收回执 | `POST /v1/work-handoffs/{id}/receipt` | 幂等、Schema 校验；记录业务对象和 Run 引用 |
-| 取消交接 | `POST /v1/work-handoffs/{id}/cancel` | 撤销未完成交接的读取资格；不伪造删除已发生的外部写入 |
+| 查询可用消费者 | `GET /control/v1/works/{id}/consumers` | 仅返回已安装、已授权、声明输入兼容的 App |
+| 创建交接 | `POST /control/v1/works/{id}/handoffs` | 要求 `Idempotency-Key`、精确版本、App revision、用途 |
+| 查询历史 | `GET /control/v1/works/{id}/handoffs` | 仅 Work 所有者可见 |
+| 获取冻结输入 | `GET /handoffs/v1/{id}/input` | 仅绑定安装的委托 App Token 可读；最小字段投影 |
+| 查询回执 | `GET /handoffs/v1/{id}/receipts` | 所有者可读；委托 App 仅可读自身交接的最小回执投影 |
+| App 接收回执 | `POST /handoffs/v1/{id}/receipt` | 幂等、Schema 校验；记录业务对象和 Run 引用 |
+| 取消交接 | `POST /handoffs/v1/{id}/cancel` | 撤销未完成交接的读取资格；不伪造删除已发生的外部写入 |
 
-App Pack Manifest 使用 `work_consumers` 声明消费者，包含 `consumer_id`、`media_types`、`purposes`、
+App Package Manifest 使用 `work_consumers` 声明消费者，包含 `consumer_id`、`media_types`、`purposes`、
 `max_data_classification` 和可选 `input_schema`。Runtime 只根据当前用户已激活、输入兼容的安装显示入口。
 外部写入审批和输出 receipt Schema 是下一阶段的扩展，不会由 Runtime 擅自推断。
 
@@ -171,7 +171,7 @@ App Pack Manifest 使用 `work_consumers` 声明消费者，包含 `consumer_id`
 - **Work 页面**：显示版本、来源证据、发布状态、分享、协作者，以及“用此成果继续”和交接时间线。
 - **App 页面**：显示“来自 Work vN”的来源卡片，不能把 Work 内容伪装成本 App 自有数据；提供“查看来源”和“形成新版本”。
 - **公开页**：只展示被允许公开的 Work 投影；非公开、内部、机密 Work 不能因分享 UI 或 App 回执泄漏内容。
-- **HappyHouse 产品**：将 Work 显示为“成果”，而非 Runtime 术语。用户看到的是“把机会分析交给市场雷达继续跟进”，
+- **JoyHouse 产品**：将 Work 显示为“成果”，而非 Runtime 术语。用户看到的是“把机会分析交给市场雷达继续跟进”，
   而不是“创建 Work Handoff”。
 
 ## 8. 实施顺序与验收
@@ -187,16 +187,16 @@ App Pack Manifest 使用 `work_consumers` 声明消费者，包含 `consumer_id`
 
 - [x] 新增 Runtime 所有的 `work_handoffs`、`work_handoff_receipts` 和审计迁移；
 - [x] 实现版本冻结、App 委托读取、幂等回执和撤销；
-- [x] 扩展 App Pack Manifest 的 `work_consumers`，Console 根据声明发现消费者；
-- [x] 覆盖“内容资料包 → 内容工作室”的 Runtime/App Pack 集成测试；
-- [ ] 市场机会雷达与 HappyHouse 产品层的真实业务回写，作为首个产品级接入。
+- [x] 扩展 App Package Manifest 的 `work_consumers`，Console 根据声明发现消费者；
+- [x] 覆盖“内容资料包 → 内容工作室”的 Runtime/App Package 集成测试；
+- [ ] 市场机会雷达与 JoyHouse 产品层的真实业务回写，作为首个产品级接入。
 
 ### P2：结果回流与持续经营
 
 - App 通过 receipt 回报业务状态、关联 Run 和验证摘要；
 - Work 时间线展示交接、执行、审批、验证和后续版本关系；
 - 支持用户从 App 产物形成新版本或关联成果，保留完整来源图；
-- 将未处理的失败/待确认交接投影到 HappyHouse 的“今天/待处理”，而不是新增第二套收件箱状态机。
+- 将未处理的失败/待确认交接投影到 JoyHouse 的“今天/待处理”，而不是新增第二套收件箱状态机。
 
 ### 验收场景
 
@@ -211,5 +211,5 @@ App Pack Manifest 使用 `work_consumers` 声明消费者，包含 `consumer_id`
 
 - 不把 Work 做成知识库、文件系统、CRM 或项目管理工具；这些仍是书房与独立 App 的责任。
 - 不允许任意 App 浏览用户所有 Work、Memory、会话或 Artifact。
-- 不将 App 业务模型、页面或数据库迁移写入 Porthouse Core。
+- 不将 App 业务模型、页面或数据库迁移写入 joyhousebot Core。
 - 不承诺所有模型回复自动变成“人生资产”；沉淀必须有用户确认或明确的业务规则和证据。

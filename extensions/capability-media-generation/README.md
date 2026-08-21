@@ -1,6 +1,6 @@
 # Media Generation Capability
 
-Porthouse 的可选媒体生成扩展。它通过稳定的 Capability 协议提供：
+joyhousebot 的可选媒体生成扩展。它通过稳定的 Capability 协议提供：
 
 - `image.generate`：文生图；
 - `image.edit`：图生图/多图编辑；
@@ -43,10 +43,10 @@ uv pip install -e extensions/capability-media-generation
 }
 ```
 
-运行 `porthouse discover-extensions --config config.json` 后启动或重启 Agent Worker。扩展被发现和发布后，在 Console 的
-`集成中心 → Plugins → Media Generation → 组件 → 配置与启停` 中选择默认供应商和即梦
+运行 `joyhousebot discover-extensions --config config.json` 后启动或重启 Agent Worker。扩展被发现和发布后，在 Console 的
+`Extensions → Media Generation → Capability 配置` 中选择默认供应商和即梦
 `req_key`。Console 会独立显示 Runtime/Worker 状态和 Worker 凭据检查。Agent revision 还需显式允许
-三个 Capability，并授予 `media.generate` 权限；只安装插件或填写模型参数不会自动扩大 Agent 权限。
+三个 Capability，并授予 `media.generate` 权限；只安装 Extension 或填写模型参数不会自动扩大 Agent 权限。
 
 ## 凭据
 

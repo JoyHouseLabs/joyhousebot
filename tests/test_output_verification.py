@@ -7,16 +7,16 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.providers.base import LLMProvider, LLMResponse
-from porthouse.runtime.context import RunContext
-from porthouse.runtime.models import AgentOptions
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.runtime.verification import verify_output
-from porthouse.session.runtime_manager import RuntimeSessionManager
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.providers.base import LLMProvider, LLMResponse
+from joyhousebot.runtime.context import RunContext
+from joyhousebot.runtime.models import AgentOptions
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.runtime.verification import verify_output
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
 from tests.support.postgres_store import PostgresTestStore
 
 _SCHEMA = {
@@ -84,7 +84,7 @@ async def test_schema_failure_is_repaired_in_a_new_durable_turn(tmp_path: Path) 
         "final_response",
     ]
     await runtime.close()
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 @pytest.mark.asyncio
@@ -118,7 +118,7 @@ async def test_schema_repair_prompt_contains_private_field_level_diagnostics(
         "message": "final output does not match the required JSON Schema",
     }
     await runtime.close()
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_repair_limit_fails_without_false_completion(tmp_path: Path) -> No
     ]
     assert store.list_runtime_artifacts(submitted.run_id) == []
     await runtime.close()
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 @pytest.mark.asyncio
@@ -197,9 +197,7 @@ async def test_artifact_and_deterministic_verifiers_record_safe_evidence(tmp_pat
         },
     )
 
-    decision = await verify_output(
-        context, "report ready", turn_id="turn-report", attempt=1
-    )
+    decision = await verify_output(context, "report ready", turn_id="turn-report", attempt=1)
 
     assert decision.passed
     records = store.list_verification_records(run.run_id)
@@ -242,27 +240,36 @@ def test_run_lease_fences_stale_verification_worker(tmp_path: Path) -> None:
         "input_hash": "sha256:input",
     }
 
-    assert store.begin_verification(
-        **values, worker_id="worker-one", run_lease_version=first.lease_version
-    ) is None
+    assert (
+        store.begin_verification(
+            **values, worker_id="worker-one", run_lease_version=first.lease_version
+        )
+        is None
+    )
     claimed = store.begin_verification(
         **values, worker_id="worker-two", run_lease_version=second.lease_version
     )
     assert claimed is not None
-    assert store.complete_verification(
-        claimed.verification_id,
-        status="passed",
-        evidence={},
-        worker_id="worker-one",
-        run_lease_version=first.lease_version,
-    ) is None
-    assert store.complete_verification(
-        claimed.verification_id,
-        status="passed",
-        evidence={"ok": True},
-        worker_id="worker-two",
-        run_lease_version=second.lease_version,
-    ).status == "passed"
+    assert (
+        store.complete_verification(
+            claimed.verification_id,
+            status="passed",
+            evidence={},
+            worker_id="worker-one",
+            run_lease_version=first.lease_version,
+        )
+        is None
+    )
+    assert (
+        store.complete_verification(
+            claimed.verification_id,
+            status="passed",
+            evidence={"ok": True},
+            worker_id="worker-two",
+            run_lease_version=second.lease_version,
+        ).status
+        == "passed"
+    )
 
 
 @pytest.mark.asyncio
@@ -296,7 +303,9 @@ async def test_verified_turn_replay_reuses_response_and_record(tmp_path: Path) -
         max_turns=1,
     )
 
-    first = await executor.process_direct("answer", session_key=context.session_key, run_context=context)
+    first = await executor.process_direct(
+        "answer", session_key=context.session_key, run_context=context
+    )
     replayed = await executor.process_direct(
         "answer", session_key=context.session_key, run_context=context
     )
@@ -304,13 +313,13 @@ async def test_verified_turn_replay_reuses_response_and_record(tmp_path: Path) -
     assert first == replayed == '{"answer": 42}'
     assert provider.calls == 1
     assert len(store.list_verification_records(run.run_id)) == 1
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
 
 
 def test_verification_api_is_owner_scoped_and_omits_policy(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "verification-api.db")
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
-    store.create_api_access_token(user_id="user-b", actor_id="test", token="token-b")
+    store.create_operator_access_token(user_id="user-a", actor_id="test", token="token-a")
+    store.create_operator_access_token(user_id="user-b", actor_id="test", token="token-b")
     store.create_runtime_run(
         run_id="run-verification-api",
         user_id="user-a",
@@ -349,11 +358,11 @@ def test_verification_api_is_owner_scoped_and_omits_policy(tmp_path: Path) -> No
 
     with client:
         own = client.get(
-            f"/v1/runs/{run.run_id}/verifications",
+            f"/control/v1/runs/{run.run_id}/verifications",
             headers={"Authorization": "Bearer token-a"},
         )
         other = client.get(
-            f"/v1/runs/{run.run_id}/verifications",
+            f"/control/v1/runs/{run.run_id}/verifications",
             headers={"Authorization": "Bearer token-b"},
         )
 
@@ -366,18 +375,14 @@ def test_verification_api_is_owner_scoped_and_omits_policy(tmp_path: Path) -> No
 
 def test_run_api_persists_verification_contract_for_worker(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "verification-submit.db")
-    store.create_api_access_token(user_id="user-a", actor_id="test", token="token-a")
+    store.create_operator_access_token(user_id="user-a", actor_id="test", token="token-a")
     container = build_api_container(config=Config(), store=store)
     client = TestClient(create_app(container))
-    policy = {
-        "verifiers": [
-            {"id": "answer-present", "type": "deterministic", "rule": "non_empty"}
-        ]
-    }
+    policy = {"verifiers": [{"id": "answer-present", "type": "deterministic", "rule": "non_empty"}]}
 
     with client:
         response = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers={"Authorization": "Bearer token-a"},
             json={
                 "execution": {"mode": "agent", "agent_id": "default"},

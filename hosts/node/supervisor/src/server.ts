@@ -11,7 +11,7 @@ import {
   verifySignedRequest,
   type InvocationRequest,
   type SignedRequestMetadata,
-} from "@porthouse/extension-sdk";
+} from "@joyhousebot/extension-sdk";
 
 import {NodeExtensionSupervisor} from "./supervisor.js";
 
@@ -197,7 +197,7 @@ function sendJson(
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": String(body.length),
-    "X-Porthouse-Response-Signature": signResponseBody({
+    "X-JoyHouseBot-Response-Signature": signResponseBody({
       statusCode,
       nonce,
       body,

@@ -1,8 +1,8 @@
-# Porthouse WhatsApp Channel
+# joyhousebot WhatsApp Channel
 
 可选 WhatsApp Channel 扩展，由两个独立制品组成：
 
-- `porthouse-channel-whatsapp` Python adapter：连接 Runtime 的统一 Run/Outbox/Lease 链；
+- `joyhousebot-channel-whatsapp` Python adapter：连接 Runtime 的统一 Run/Outbox/Lease 链；
 - `bridge/` Node.js sidecar：通过 Baileys 连接 WhatsApp Web，只实现供应商协议。
 
 ```bash

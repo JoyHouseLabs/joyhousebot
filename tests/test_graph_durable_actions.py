@@ -8,22 +8,22 @@ from typing import Any
 
 import pytest
 
-from porthouse.agent.executor import NativeAgentExecutor
-from porthouse.capabilities import CapabilityRegistry
-from porthouse.capabilities.tool_adapter import ToolOutput
-from porthouse.contracts import OperationReconciliationResult
-from porthouse.contracts.tools import Tool
-from porthouse.domain.capabilities import (
+from joyhousebot.agent.executor import NativeAgentExecutor
+from joyhousebot.capabilities import CapabilityRegistry
+from joyhousebot.capabilities.tool_adapter import ToolOutput
+from joyhousebot.contracts import OperationReconciliationResult
+from joyhousebot.contracts.tools import Tool
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityKind,
     CapabilityRef,
     InvocationStatus,
 )
-from porthouse.providers.base import LLMProvider, LLMResponse
-from porthouse.runtime.models import GraphTaskSpec, TaskGraphSpec
-from porthouse.runtime.runner import NativeAgentRuntime
-from porthouse.session.runtime_manager import RuntimeSessionManager
-from tests.support.capabilities import register_tool_fixture
+from joyhousebot.providers.base import LLMProvider, LLMResponse
+from joyhousebot.runtime.models import GraphTaskSpec, TaskGraphSpec
+from joyhousebot.runtime.runner import NativeAgentRuntime
+from joyhousebot.session.runtime_manager import RuntimeSessionManager
+from tests.support.capabilities import register_capability_fixture
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -36,7 +36,7 @@ class _CapabilityAgent:
         definition: CapabilityDefinition | None = None,
     ) -> None:
         self.capabilities = CapabilityRegistry(store=store)
-        register_tool_fixture(self.capabilities, tool, definition=definition)
+        register_capability_fixture(self.capabilities, tool, definition=definition)
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("direct Graph Capability Task must not call a model")
@@ -160,8 +160,8 @@ class _ChainedCapabilityAgent:
         publish: _CapturePublicationTool,
     ) -> None:
         self.capabilities = CapabilityRegistry(store=store)
-        self.read_definition = register_tool_fixture(self.capabilities, read)
-        self.publish_definition = register_tool_fixture(self.capabilities, publish)
+        self.read_definition = register_capability_fixture(self.capabilities, read)
+        self.publish_definition = register_capability_fixture(self.capabilities, publish)
 
     async def process_direct(self, *_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("direct Graph Capability Task must not call a model")
@@ -172,7 +172,7 @@ def _approval_definition() -> CapabilityDefinition:
         ref=CapabilityRef(
             _ApprovalWriteTool.name,
             "1.0.0",
-            CapabilityKind.TOOL,
+            CapabilityKind.CAPABILITY,
             "test.graph-actions",
             "1.0.0",
             "sha256:graph-approval",
@@ -436,7 +436,7 @@ async def test_graph_agent_verification_is_task_fenced_and_repairs_once(
 
     completed = await _wait_for_status(store, submitted.run_id, {"completed"})
     await runtime.close()
-    await executor.close_tool_connectors()
+    await executor.close_capability_connectors()
     assert completed.status == "completed"
     task = store.list_runtime_tasks(run_id=submitted.run_id)[0]
     assert task.status == "completed", task.error

@@ -6,7 +6,7 @@ async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   for (const [key, value] of Object.entries(getApiHeaders())) headers.set(key, value)
   for (const [key, value] of Object.entries(getIdentityHeaders())) headers.set(key, value)
-  const response = await fetch(`/v1/admin${path}`, { ...init, headers })
+  const response = await fetch(`/control/v1/admin${path}`, { ...init, headers })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload?.detail ?? payload?.error?.message ?? '管理 API 调用失败')
   return payload as T
@@ -96,6 +96,7 @@ export interface AccessToken {
   token_id: string
   user_id: string
   label: string
+  principal_kind: 'owner' | 'installation' | 'operator'
   enabled: boolean
   expires_at?: string | null
   created_by: string
@@ -139,9 +140,9 @@ export interface AdminCapability {
     capability_id: string
     version: string
     kind: 'tool' | 'connector'
-    plugin_id?: string
-    plugin_version?: string
-    plugin_build_digest?: string
+    extension_id?: string
+    extension_version?: string
+    extension_build_digest?: string
   }
   name: string
   description: string
@@ -311,7 +312,7 @@ export const rollbackConfigurationRollout = (rolloutId: string) =>
 export const getConfigurationEvents = async () => (await adminFetch<{ items: ConfigurationEvent[] }>('/configuration-events')).items
 export const getAccessEvents = async () => (await adminFetch<{ items: Array<Record<string, unknown>> }>('/access-events')).items
 export const getAccessTokens = async () => (await adminFetch<{ items: AccessToken[] }>('/access-tokens')).items
-export const createAccessToken = (value: { user_id: string; label?: string; expires_at?: string }) =>
+export const createAccessToken = (value: { user_id: string; label?: string; expires_at?: string; principal_kind?: 'owner' | 'operator' }) =>
   adminFetch<AccessToken & { token: string }>('/access-tokens', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
   })
@@ -424,7 +425,7 @@ export async function streamAdminRunEvents(
   let cursor = Math.max(0, options.afterSequence ?? 0)
   const headers = new Headers({ Accept: 'text/event-stream', ...getApiHeaders(), ...getIdentityHeaders() })
   const response = await fetch(
-    `/v1/admin/runs/${encodeURIComponent(runId)}/events?after_sequence=${cursor}`,
+    `/control/v1/admin/runs/${encodeURIComponent(runId)}/events?after_sequence=${cursor}`,
     { headers, signal: options.signal },
   )
   if (!response.ok || !response.body) throw new Error(`管理事件流连接失败 (${response.status})`)

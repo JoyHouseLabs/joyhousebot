@@ -6,17 +6,17 @@ Driver 与产品控制面继续按独立 Extension 分阶段实施（2026-08-16�
 
 ## 1. 设计结论
 
-Porthouse Core 保持 Python-first，Node.js、其他语言、OCI 容器和远程服务通过隔离的
+joyhousebot Core 保持 Python-first，Node.js、其他语言、OCI 容器和远程服务通过隔离的
 Extension Host 接入。Extension Host 不是第二个 Runtime，也不建立新的公共执行协议：它是
 [Remote Capability v1](REMOTE_CAPABILITY_PROTOCOL.md) 的运行环境与长程流式执行 Profile。
 
 协议关系如下：
 
 ```text
-HappyHouse / App / Skill
+JoyHouse / App / Skill
           |
           v
-Porthouse Run / Task / Action / Approval / Artifact / Audit
+joyhousebot Run / Task / Action / Approval / Artifact / Audit
           |
           v
 Capability Dispatcher
@@ -60,7 +60,7 @@ Extension Host 用于确实需要独立语言运行环境、依赖树或长生�
 - 已经提供标准 MCP Server 的能力优先使用 MCP Gateway；
 - 独立业务系统继续使用 Remote Capability，不打包进 Runtime Worker；
 - 普通 HTTP API 优先使用通用 HTTP Connector；
-- HappyHouse 产品界面和业务数据模型继续留在独立 App；
+- JoyHouse 产品界面和业务数据模型继续留在独立 App；
 - 任意 npm 包、任意脚本和宿主机 Shell 不能直接开放给 Agent。
 
 ## 3. Host 内核与扩展包分层
@@ -116,7 +116,7 @@ Runtime 在 `operation.cursor` 发送上次已提交的 opaque cursor。响应�
 每个事件必须携带稳定 `event_id`、非负 `sequence`、规范化 `event_type`，单事件 payload 不超过 32 KiB，
 单批不超过 256 KiB。Core 在同一 PostgreSQL 事务中去重事件并推进 cursor；重复批次不会产生重复 Run Event，
 旧 lease owner 也不能推进 cursor。每个 operation 最多保留 10,000 条 provider event，详情通过
-`GET /v1/runs/{run_id}/operations/{reconciliation_id}/events` 分页查询，Run 列表不加载事件正文。
+`GET /control/v1/runs/{run_id}/operations/{reconciliation_id}/events` 分页查询，Run 列表不加载事件正文。
 
 ### 大型 Artifact 上传
 
@@ -167,7 +167,7 @@ claim/reconcile 和 PostgreSQL；不能依赖一条常驻 WebSocket 作为事实
 Node SDK 是具体 npm 生态与 Host 内核之间唯一允许的编程接口。概念接口如下：
 
 ```ts
-export interface HappyHouseNodeExtension {
+export interface JoyHouseNodeExtension {
   manifest(): ExtensionManifest;
   capabilities(): CapabilityDefinition[];
   activate(context: ExtensionContext): Promise<void>;

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from porthouse.agent.skills import SkillsLoader
-from porthouse.domain.capabilities import (
+from joyhousebot.agent.skills import SkillsLoader
+from joyhousebot.domain.capabilities import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityKind,
@@ -15,7 +15,7 @@ from tests.support.postgres_store import PostgresTestStore
 
 def _definition(description: str = "Search public pages") -> CapabilityDefinition:
     return CapabilityDefinition(
-        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+        ref=CapabilityRef("web.search", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
         name="Web search",
         description=description,
         input_schema={
@@ -92,7 +92,7 @@ def test_capability_invocation_is_idempotent_and_user_scoped(tmp_path: Path) -> 
     store = PostgresTestStore(tmp_path / "invocations.db")
     _run(store)
     invocation = CapabilityInvocation(
-        capability=CapabilityRef("web.search", "1.0.0", CapabilityKind.TOOL, "test.plugin", "1.0.0", "sha256:test"),
+        capability=CapabilityRef("web.search", "1.0.0", CapabilityKind.CAPABILITY, "test.plugin", "1.0.0", "sha256:test"),
         user_id="user-a",
         agent_id="coordinator",
         session_id="session-1",

@@ -2,18 +2,18 @@ import asyncio
 
 import httpx
 import pytest
-from porthouse_provider_anthropic import AnthropicProvider
-from porthouse_provider_openai_compatible import OpenAICompatibleProvider
+from joyhousebot_provider_anthropic import AnthropicProvider
+from joyhousebot_provider_openai_compatible import OpenAICompatibleProvider
 
-from porthouse.config.schema import Config, ExtensionsConfig, ProviderConfig
-from porthouse.providers.factory import create_model_provider
-from porthouse.providers.observability import bind_model_observation
-from porthouse.providers.provider_support import (
+from joyhousebot.config.schema import Config, ExtensionsConfig, ProviderConfig
+from joyhousebot.providers.factory import create_model_provider
+from joyhousebot.providers.observability import bind_model_observation
+from joyhousebot.providers.provider_support import (
     error_metadata,
     sanitize_tools,
     user_friendly_error,
 )
-from porthouse.runtime.context import CancellationToken, RunContext, bind_run_context
+from joyhousebot.runtime.context import CancellationToken, RunContext, bind_run_context
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -24,14 +24,14 @@ class _TestError(Exception):
 
 
 def test_provider_factory_rejects_non_ascii_api_key() -> None:
-    config = Config(extensions=ExtensionsConfig(enabled=["provider-anthropic"]))
+    config = Config(extensions=ExtensionsConfig(allowed_ids=["provider-anthropic"]))
     config.providers.settings["anthropic"] = ProviderConfig(api_key="你的密钥")
     with pytest.raises(RuntimeError, match="ASCII"):
         create_model_provider(config=config, model="anthropic/claude-test")
 
 
 def test_openrouter_keeps_vendor_qualified_model_name() -> None:
-    config = Config(extensions=ExtensionsConfig(enabled=["provider-openai-compatible"]))
+    config = Config(extensions=ExtensionsConfig(allowed_ids=["provider-openai-compatible"]))
     config.providers.default_provider = "openrouter"
     config.providers.settings["openrouter"] = ProviderConfig(api_key="gateway-key")
     provider = create_model_provider(

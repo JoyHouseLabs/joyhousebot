@@ -6,11 +6,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agents import AgentDefinition, AgentRevision
-from porthouse.runtime.models import AgentEvent
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.runtime.models import AgentEvent
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -114,21 +114,23 @@ def test_experiment_admin_api_can_start_and_report_summary(tmp_path: Path) -> No
     store = PostgresTestStore(tmp_path / "online-experiment-api.db")
     agent_id, v1, v2 = _agents(store)
     store.upsert_platform_admin(user_id="admin", permissions=["*"], actor_id="test")
-    store.create_api_access_token(user_id="admin", actor_id="test", token="experiment-token")
+    store.create_operator_access_token(
+        user_id="admin", actor_id="test", token="experiment-token"
+    )
     headers = {"Authorization": "Bearer experiment-token"}
     with TestClient(create_app(build_api_container(config=Config(), store=store))) as client:
         saved = client.put(
-            "/v1/admin/experiments/experiment.prompt-policy-v2",
+            "/control/v1/admin/experiments/experiment.prompt-policy-v2",
             headers=headers,
             json=_experiment(agent_id, v1, v2),
         )
         assert saved.status_code == 200, saved.text
         started = client.post(
-            "/v1/admin/experiments/experiment.prompt-policy-v2/start", headers=headers
+            "/control/v1/admin/experiments/experiment.prompt-policy-v2/start", headers=headers
         )
         assert started.status_code == 200, started.text
         accepted = client.post(
-            "/v1/runs",
+            "/control/v1/runs",
             headers=headers,
             json={
                 "execution": {"mode": "agent", "agent_id": agent_id},
@@ -142,7 +144,7 @@ def test_experiment_admin_api_can_start_and_report_summary(tmp_path: Path) -> No
         assignment = dict(run.options["metadata"])["experiment_assignment"]
         assert assignment["target_revision_id"] in {v1, v2}
         summary = client.get(
-            "/v1/admin/experiments/experiment.prompt-policy-v2/summary", headers=headers
+            "/control/v1/admin/experiments/experiment.prompt-policy-v2/summary", headers=headers
         )
         assert summary.status_code == 200, summary.text
         assert summary.json()["summary"]["experiment"]["status"] == "running"

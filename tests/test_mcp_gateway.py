@@ -5,14 +5,26 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from porthouse.api.mcp_gateway import MCPGateway
+from joyhousebot.api.mcp_gateway import MCPGateway, _signature_for_schema
+
+
+def test_signature_skips_json_properties_that_are_python_keywords() -> None:
+    signature = _signature_for_schema(
+        {
+            "type": "object",
+            "required": ["query", "from"],
+            "properties": {"query": {"type": "string"}, "from": {"type": "string"}},
+        }
+    )
+
+    assert tuple(signature.parameters) == ("query",)
 
 
 class _Store:
     def list_capability_definitions(self):
         return [
             {
-                "ref": {"capability_id": "catalog.item.filter", "version": "1", "kind": "tool", "plugin_id": "sample-catalog", "plugin_version": "1", "plugin_build_digest": "sha256:test"},
+                "ref": {"capability_id": "catalog.item.filter", "version": "1", "kind": "capability", "extension_id": "sample-catalog", "extension_version": "1", "extension_build_digest": "sha256:test"},
                 "name": "Catalog filter",
                 "description": "Filter catalog items",
                 "input_schema": {
@@ -24,7 +36,7 @@ class _Store:
                 "timeout_seconds": 20,
             },
             {
-                "ref": {"capability_id": "skill.internal", "version": "1", "kind": "skill", "plugin_id": "sample-catalog", "plugin_version": "1", "plugin_build_digest": "sha256:test"},
+                "ref": {"capability_id": "skill.internal", "version": "1", "kind": "skill", "extension_id": "sample-catalog", "extension_version": "1", "extension_build_digest": "sha256:test"},
                 "name": "Internal skill",
                 "description": "Not an MCP tool",
                 "input_schema": {"type": "object"},
@@ -97,7 +109,7 @@ class _PermStore(_Store):
     def list_capability_definitions(self):
         return [
             {
-                "ref": {"capability_id": "catalog.search", "version": "1", "kind": "tool", "plugin_id": "sample-catalog", "plugin_version": "1", "plugin_build_digest": "sha256:test"},
+                "ref": {"capability_id": "catalog.search", "version": "1", "kind": "capability", "extension_id": "sample-catalog", "extension_version": "1", "extension_build_digest": "sha256:test"},
                 "name": "Search",
                 "description": "Search the catalog",
                 "input_schema": {"type": "object"},

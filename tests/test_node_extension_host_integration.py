@@ -12,9 +12,9 @@ from typing import Any
 
 import httpx
 import pytest
-from porthouse_connector_http_capability import RemoteCapabilityTool, connector
+from joyhousebot_connector_http_capability import RemoteCapabilityTool, connector
 
-from porthouse.extension_sdk.tools import InvocationStatus, ToolInvocationError
+from joyhousebot.extension_sdk.tools import InvocationStatus, ToolInvocationError
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST_ROOT = ROOT / "hosts" / "node" / "fixtures" / "echo-host"
@@ -103,7 +103,7 @@ def _service(port: int):
         "echo-host",
         {
             "service_profile": "business",
-            "base_url": f"http://127.0.0.1:{port}/porthouse/v1",
+            "base_url": f"http://127.0.0.1:{port}/joyhousebot/v1",
             "allow_insecure_http": True,
             "key_id": KEY_ID,
             "signing_secret": SECRET,
@@ -118,7 +118,7 @@ def _service(port: int):
 def _host_profile(host: RunningHost) -> dict[str, Any]:
     return {
         "service_profile": "extension_host",
-        "base_url": f"http://127.0.0.1:{host.port}/porthouse/v1",
+        "base_url": f"http://127.0.0.1:{host.port}/joyhousebot/v1",
         "allow_insecure_http": True,
         "key_id": KEY_ID,
         "signing_secret": SECRET,
@@ -197,7 +197,7 @@ async def test_node_echo_host_signed_manifest_preflight(echo_host: RunningHost) 
         "echo-host", _host_profile(echo_host)
     )
     assert result["manifest_digest"] == echo_host.manifest_digest
-    assert result["host"]["host_id"] == "porthouse-node-echo-host"
+    assert result["host"]["host_id"] == "joyhousebot-node-echo-host"
     assert result["runtime"]["language"] == "node"
 
     mismatched = {

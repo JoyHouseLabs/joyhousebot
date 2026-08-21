@@ -36,6 +36,8 @@ export interface ScheduleItem {
   user_id: string
   agent_id: string
   enabled: boolean
+  paused: boolean
+  pause_reason?: string | null
   schedule: { kind: string; at_ms?: number | null; every_ms?: number | null; expr?: string | null; tz?: string | null }
   payload: {
     kind?: 'agent_turn' | 'agent_monitor'
@@ -83,16 +85,16 @@ async function jsonOrThrow<T>(response: Response, fallback: string): Promise<T> 
 }
 
 export async function getUsage(): Promise<RuntimeUsageSummary> {
-  return jsonOrThrow(await apiFetch('/v1/usage', { headers: identityHeaders() }), '读取用量失败')
+  return jsonOrThrow(await apiFetch('/control/v1/usage', { headers: identityHeaders() }), '读取用量失败')
 }
 
 export async function getIdentity(): Promise<RuntimeIdentity> {
-  return jsonOrThrow(await apiFetch('/v1/me', { headers: identityHeaders() }), '读取身份失败')
+  return jsonOrThrow(await apiFetch('/control/v1/me', { headers: identityHeaders() }), '读取身份失败')
 }
 
 export async function getSchedules(): Promise<ScheduleItem[]> {
   const payload = await jsonOrThrow<{ items: ScheduleItem[] }>(
-    await apiFetch('/v1/schedules?include_disabled=true', { headers: identityHeaders() }),
+    await apiFetch('/control/v1/schedules?include_disabled=true', { headers: identityHeaders() }),
     '读取调度失败',
   )
   return payload.items ?? []
@@ -110,5 +112,5 @@ export async function getServiceHealth(): Promise<ServiceHealth> {
 }
 
 export async function getOperationalMetrics(): Promise<OperationalMetrics> {
-  return jsonOrThrow(await apiFetch('/v1/system/metrics', { headers: identityHeaders() }), '读取运行指标失败')
+  return jsonOrThrow(await apiFetch('/control/v1/system/metrics', { headers: identityHeaders() }), '读取运行指标失败')
 }

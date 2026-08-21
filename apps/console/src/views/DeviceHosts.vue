@@ -1,13 +1,13 @@
 <template>
   <div class="page device-page">
     <header class="page-heading">
-      <div><span class="eyebrow">DEVICE HOST CONTROL</span><h1>本机能力控制台</h1><p>在这里检测、诊断和调试 HappyHouse Desktop 的本机能力；普通用户无需理解 Node、Pi 或 OpenCLI。</p></div>
+      <div><span class="eyebrow">DEVICE HOST CONTROL</span><h1>本机能力控制台</h1><p>在这里检测、诊断和调试 JoyHouse Desktop 的本机能力；普通用户无需理解 Node、Pi 或 OpenCLI。</p></div>
       <button class="secondary-button" type="button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新状态' }}</button>
     </header>
 
     <div v-if="error" class="notice error-notice">{{ error }}</div>
     <section class="summary-grid">
-      <article class="panel"><span>已登记设备</span><strong>{{ devices.length }}</strong><small>由 HappyHouse Desktop 自动完成配对</small></article>
+      <article class="panel"><span>已登记设备</span><strong>{{ devices.length }}</strong><small>由 JoyHouse Desktop 自动完成配对</small></article>
       <article class="panel"><span>当前在线</span><strong>{{ onlineCount }}</strong><small>最近 90 秒内完成心跳</small></article>
       <article class="panel"><span>Node 能力</span><strong>{{ capabilityCount }}</strong><small>精确版本与实现摘要</small></article>
       <article class="panel"><span>Host 模型授权</span><strong>{{ activeGrantCount }}</strong><small>短期预算凭证，不展示密钥</small></article>
@@ -15,7 +15,7 @@
 
     <section class="panel boundary-panel">
       <div><span class="eyebrow">SECURITY BOUNDARY</span><h2>设备身份、模型授权、工具授权彼此分离</h2></div>
-      <p>HappyHouse 在系统 Keychain 保存设备 Token；Extension 只获得当前 delivery 的短期 <code>jhm_</code> / <code>jht_</code> grant。Console 只能下发固定、可审计的控制请求，不能执行任意命令。</p>
+      <p>JoyHouse 在系统 Keychain 保存设备 Token；Extension 只获得当前 delivery 的短期 <code>jhm_</code> / <code>jht_</code> grant。Console 只能下发固定、可审计的控制请求，不能执行任意命令。</p>
     </section>
 
     <section class="device-grid">
@@ -39,7 +39,7 @@
         </section>
         <footer><button class="secondary-button" type="button" :disabled="device.status === 'revoked' || rotating === device.device_id" @click="rotate(device)">{{ rotating === device.device_id ? '轮换中…' : '轮换设备 Token' }}</button><button class="secondary-button danger-text" type="button" :disabled="device.status === 'revoked' || revoking === device.device_id" @click="revoke(device)">{{ revoking === device.device_id ? '撤销中…' : '撤销设备' }}</button></footer>
       </article>
-      <article v-if="!devices.length && !loading" class="panel empty-state"><strong>尚未连接 HappyHouse Desktop</strong><p>打开并登录 HappyHouse Desktop 后，它会自动配对本机执行环境。Console 不保存本机密钥，也不会要求普通用户处理 Runtime 配置。</p></article>
+      <article v-if="!devices.length && !loading" class="panel empty-state"><strong>尚未连接 JoyHouse Desktop</strong><p>打开并登录 JoyHouse Desktop 后，它会自动配对本机执行环境。Console 不保存本机密钥，也不会要求普通用户处理 Runtime 配置。</p></article>
     </section>
 
     <section v-if="rotatedToken" class="notice token-notice"><strong>新设备 Token 只显示一次</strong><code>{{ rotatedToken }}</code><button class="secondary-button" type="button" @click="copyToken">复制后关闭</button></section>

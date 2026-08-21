@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {readFile, realpath} from "node:fs/promises";
 import {isAbsolute, relative, resolve} from "node:path";
 
-import type {ExtensionHostManifest} from "@porthouse/extension-sdk";
+import type {ExtensionHostManifest} from "@joyhousebot/extension-sdk";
 
 import type {InstalledExtension, SupervisorConfig} from "./types.js";
 

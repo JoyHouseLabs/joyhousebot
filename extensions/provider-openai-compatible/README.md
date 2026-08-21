@@ -1,4 +1,4 @@
-# Porthouse OpenAI-compatible Provider
+# joyhousebot OpenAI-compatible Provider
 
 可选 OpenAI-compatible Chat Completions 模型扩展，声明 OpenAI、OpenRouter、DeepSeek、
 Gemini compatible API、智谱、DashScope、Moonshot、MiniMax、Groq、Ollama、vLLM、AiHubMix 和自定义端点。

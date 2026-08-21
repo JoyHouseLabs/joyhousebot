@@ -105,13 +105,13 @@ async function payload<T>(response: Response, fallback: string): Promise<T> {
 }
 
 export async function listWorkflows(): Promise<Workflow[]> {
-  const response = await apiFetch('/v1/workflows')
+  const response = await apiFetch('/control/v1/workflows')
   return (await payload<{ items: Workflow[] }>(response, '读取工作流失败')).items
 }
 
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   return payload<Workflow>(
-    await apiFetch(`/v1/workflows/${encodeURIComponent(workflowId)}`),
+    await apiFetch(`/control/v1/workflows/${encodeURIComponent(workflowId)}`),
     '读取工作流详情失败',
   )
 }
@@ -123,7 +123,7 @@ export async function startWorkflowGeneration(input: {
   base_graph?: WorkflowGraph
 }): Promise<{ run_id: string; status: string }> {
   return payload(
-    await apiFetch('/v1/workflows/generations', {
+    await apiFetch('/control/v1/workflows/generations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify(input),
@@ -134,14 +134,14 @@ export async function startWorkflowGeneration(input: {
 
 export async function getWorkflowGeneration(runId: string): Promise<WorkflowGeneration> {
   return payload(
-    await apiFetch(`/v1/workflows/generations/${encodeURIComponent(runId)}`),
+    await apiFetch(`/control/v1/workflows/generations/${encodeURIComponent(runId)}`),
     '读取工作流设计结果失败',
   )
 }
 
 export async function createWorkflow(input: SaveWorkflowInput): Promise<Workflow> {
   return payload(
-    await apiFetch('/v1/workflows', {
+    await apiFetch('/control/v1/workflows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -155,7 +155,7 @@ export async function createWorkflowRevision(
   input: SaveWorkflowInput,
 ): Promise<Workflow> {
   return payload(
-    await apiFetch(`/v1/workflows/${encodeURIComponent(workflowId)}/revisions`, {
+    await apiFetch(`/control/v1/workflows/${encodeURIComponent(workflowId)}/revisions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -169,7 +169,7 @@ export async function publishWorkflow(
   revisionId: string,
 ): Promise<Workflow> {
   return payload(
-    await apiFetch(`/v1/workflows/${encodeURIComponent(workflowId)}/publish`, {
+    await apiFetch(`/control/v1/workflows/${encodeURIComponent(workflowId)}/publish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ revision_id: revisionId }),
@@ -183,7 +183,7 @@ export async function executeWorkflow(
   input: { revision_id?: string; input?: string; preview?: boolean },
 ): Promise<{ run_id: string; status: string }> {
   return payload(
-    await apiFetch(`/v1/workflows/${encodeURIComponent(workflowId)}/runs`, {
+    await apiFetch(`/control/v1/workflows/${encodeURIComponent(workflowId)}/runs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
       body: JSON.stringify(input),
@@ -194,7 +194,7 @@ export async function executeWorkflow(
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
   await payload(
-    await apiFetch(`/v1/workflows/${encodeURIComponent(workflowId)}`, { method: 'DELETE' }),
+    await apiFetch(`/control/v1/workflows/${encodeURIComponent(workflowId)}`, { method: 'DELETE' }),
     '删除工作流失败',
   )
 }

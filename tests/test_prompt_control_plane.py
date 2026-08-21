@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.domain.agents import AgentDefinition, AgentRevision
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -97,28 +97,30 @@ def test_prompt_rejects_undeclared_template_variable(tmp_path: Path) -> None:
 def test_prompt_admin_api_has_draft_validate_publish_and_bind_loop(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "prompt-api.db")
     store.upsert_platform_admin(user_id="admin", permissions=["*"], actor_id="test")
-    store.create_api_access_token(user_id="admin", actor_id="test", token="prompt-token")
+    store.create_operator_access_token(
+        user_id="admin", actor_id="test", token="prompt-token"
+    )
     agent_id, agent_revision_id = _published_agent(store)
     headers = {"Authorization": "Bearer prompt-token"}
     with TestClient(create_app(build_api_container(config=Config(), store=store))) as client:
         saved = client.put(
-            "/v1/admin/prompts/prompt.evidence-policy/versions/1",
+            "/control/v1/admin/prompts/prompt.evidence-policy/versions/1",
             headers=headers,
             json=_prompt(),
         )
         assert saved.status_code == 200, saved.text
         checked = client.post(
-            "/v1/admin/prompts/prompt.evidence-policy/versions/1/validate",
+            "/control/v1/admin/prompts/prompt.evidence-policy/versions/1/validate",
             headers=headers,
         )
         assert checked.status_code == 200 and checked.json()["valid"]
         released = client.post(
-            "/v1/admin/prompts/prompt.evidence-policy/versions/1/publish",
+            "/control/v1/admin/prompts/prompt.evidence-policy/versions/1/publish",
             headers=headers,
         )
         assert released.status_code == 200, released.text
         bound = client.put(
-            "/v1/admin/prompts/bindings",
+            "/control/v1/admin/prompts/bindings",
             headers=headers,
             json={
                 "target_id": agent_id,
@@ -127,5 +129,5 @@ def test_prompt_admin_api_has_draft_validate_publish_and_bind_loop(tmp_path: Pat
             },
         )
         assert bound.status_code == 200, bound.text
-        listed = client.get("/v1/admin/prompts", headers=headers)
+        listed = client.get("/control/v1/admin/prompts", headers=headers)
         assert listed.status_code == 200 and listed.json()["items"][0]["current"]

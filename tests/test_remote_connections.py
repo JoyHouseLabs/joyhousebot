@@ -5,17 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from porthouse_connector_http_capability import (
+from joyhousebot_connector_http_capability import (
     HTTP_CAPABILITY_CONNECTOR_MANIFEST,
     create_extension,
 )
 
-from porthouse.api.app import create_app
-from porthouse.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
-from porthouse.connectors import ToolConnectorRegistry
-from porthouse.domain.remote_connections import (
+from joyhousebot.api.app import create_app
+from joyhousebot.bootstrap.agent_runtime_catalog import AgentRuntimeCatalog
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
+from joyhousebot.connectors import CapabilityConnectorRegistry
+from joyhousebot.domain.remote_connections import (
     materialize_remote_connection,
     normalize_remote_connection,
 )
@@ -42,7 +42,7 @@ def _configuration(*, capability_version: str = "1.0.0") -> dict:
     return {
         "service_profile": "business",
         "enabled": True,
-        "base_url": "https://crm.example.test/porthouse/v1",
+        "base_url": "https://crm.example.test/joyhousebot/v1",
         "key_id": "crm-key-1",
         "signing_secret_ref": "env://CRM_REMOTE_TEST_SECRET",
         "require_response_signature": True,
@@ -68,19 +68,19 @@ def _store(tmp_path: Path) -> PostgresTestStore:
 
 def _activate_connector(store: PostgresTestStore, worker_id: str = "agent-remote-a") -> None:
     release = HTTP_CAPABILITY_CONNECTOR_MANIFEST.to_release_dict()
-    store.upsert_plugin_release(release)
+    store.upsert_extension_release(release)
     store.register_runtime_worker(
         worker_id=worker_id,
         capabilities={"agent": True},
         metadata={"extensions": [release]},
     )
-    store.stage_plugin_release(
-        release["plugin_id"], release["version"], actor_id="test"
+    store.stage_extension_release(
+        release["extension_id"], release["version"], actor_id="test"
     )
     assert store.acknowledge_configuration_revision(
         worker_id=worker_id,
-        aggregate_type="plugin",
-        aggregate_id=release["plugin_id"],
+        aggregate_type="extension",
+        aggregate_id=release["extension_id"],
         revision_id=release["version"],
     )
 
@@ -169,9 +169,9 @@ async def test_worker_preflight_discovers_exact_remote_capability(
         configuration=_configuration(),
         actor_id="admin",
     )
-    connectors = ToolConnectorRegistry()
+    connectors = CapabilityConnectorRegistry()
     connectors.register(create_extension(), source="test")
-    loop = SimpleNamespace(tool_connectors=connectors)
+    loop = SimpleNamespace(capability_connectors=connectors)
     catalog = AgentRuntimeCatalog(config=Config(), store=store)
     catalog._runtime = SimpleNamespace(  # noqa: SLF001
         default_agent_id="default", worker_id="agent-remote-a"
@@ -189,7 +189,7 @@ async def test_worker_preflight_discovers_exact_remote_capability(
 
     discovered = store.get_capability_release_definition("crm.lead.read", "1.0.0")
     assert discovered is not None
-    assert discovered["ref"]["plugin_id"] == "connector-http-capability"
+    assert discovered["ref"]["extension_id"] == "connector-http-capability"
     assert discovered["origin"]["remote_service_id"] == "crm"
 
 
@@ -217,14 +217,14 @@ async def test_worker_runs_extension_host_preflight_before_discovery(
         connect=declared.connect,
         preflight=preflight,
     )
-    connectors = ToolConnectorRegistry()
+    connectors = CapabilityConnectorRegistry()
     connectors.register(extension, source="test")
     catalog = AgentRuntimeCatalog(config=Config(), store=store)
     catalog._runtime = SimpleNamespace(  # noqa: SLF001
         default_agent_id="default", worker_id="agent-remote-a"
     )
     catalog.resolve = lambda _key: SimpleNamespace(  # type: ignore[method-assign]
-        tool_connectors=connectors
+        capability_connectors=connectors
     )
     monkeypatch.setenv("CRM_REMOTE_TEST_SECRET", "s" * 32)
 
@@ -294,7 +294,7 @@ async def test_capability_preheat_syncs_active_remote_connection_generation(
 
 def test_remote_connection_control_api_never_returns_secret_values(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.create_api_access_token(
+    store.create_operator_access_token(
         user_id="operator", actor_id="test", token="remote-connection-token"
     )
     store.upsert_platform_admin(
@@ -310,17 +310,17 @@ def test_remote_connection_control_api_never_returns_secret_values(tmp_path: Pat
     headers = {"Authorization": "Bearer remote-connection-token"}
     with TestClient(create_app(container)) as client:
         created = client.post(
-            "/v1/admin/remote-connections", headers=headers, json=body
+            "/control/v1/admin/remote-connections", headers=headers, json=body
         )
         assert created.status_code == 201
-        listed = client.get("/v1/admin/remote-connections", headers=headers)
+        listed = client.get("/control/v1/admin/remote-connections", headers=headers)
         assert listed.status_code == 200
         payload = listed.json()["items"][0]
         serialized = str(payload)
         assert "env://CRM_REMOTE_TEST_SECRET" in serialized
         assert "signing_secret'" not in serialized
         rejected = client.post(
-            "/v1/admin/remote-connections",
+            "/control/v1/admin/remote-connections",
             headers=headers,
             json={**body, "connection_id": "bad", "signing_secret_ref": "plaintext"},
         )

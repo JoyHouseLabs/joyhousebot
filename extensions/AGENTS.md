@@ -1,4 +1,4 @@
-# Porthouse Extension 协作说明
+# joyhousebot Extension 协作说明
 
 本目录保存可独立安装、发现、启停和升级的 Runtime 技术扩展。
 
@@ -23,5 +23,5 @@
 时不影响 Core 启动，并为注册、调用、失败关闭和卸载路径提供测试。
 
 需要专属业务持久化的 Extension 应升级为 Connector/App 服务。第一阶段官方服务使用共享
-`PORTHOUSE_DATABASE_URL` 和 `app_<id>_*` 表；远程第三方服务可以使用自己的数据库。两者都应优先复用 Core
+`JOYHOUSEBOT_DATABASE_URL` 和 `app_<id>_*` 表；远程第三方服务可以使用自己的数据库。两者都应优先复用 Core
 的通用 Invocation、Receipt、Outbox、Artifact 和审计机制，不能由 Extension 直接注入 DDL。

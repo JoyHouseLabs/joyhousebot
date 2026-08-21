@@ -5,8 +5,8 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
-from porthouse.contracts.plugins import PluginManifest
-from porthouse.domain.agents import AgentDefinition, AgentRevision, PluginReleaseRequirement
+from joyhousebot.contracts.capability_extensions import CapabilityExtensionManifest
+from joyhousebot.domain.agents import AgentDefinition, AgentRevision, ExtensionReleaseRequirement
 from tests.support.postgres_store import PostgresTestStore, require_postgres
 
 TEST_PLUGIN_DIGEST = f"sha256:{'d' * 64}"
@@ -100,26 +100,26 @@ def test_default_agent_seed_does_not_restore_pruned_revision(tmp_path: Path) -> 
     assert profile.revision.revision_id == "default:v2"
 
 
-def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> None:
+def test_agent_revision_requires_exact_active_extension_release(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "agent-plugin-requirements.db")
     definition, revision = _profile()
     pinned = replace(
         revision,
-        plugin_requirements=(
-            PluginReleaseRequirement("sample.catalog", "0.4.0", TEST_PLUGIN_DIGEST),
+        extension_requirements=(
+            ExtensionReleaseRequirement("sample.catalog", "0.4.0", TEST_PLUGIN_DIGEST),
         ),
     )
-    with pytest.raises(ValueError, match="unavailable plugin release"):
+    with pytest.raises(ValueError, match="unavailable Extension release"):
         store.save_agent_revision(definition, pinned)
-    store.upsert_plugin_release(
-        PluginManifest(
-            plugin_id="sample.catalog",
+    store.upsert_extension_release(
+        CapabilityExtensionManifest(
+            extension_id="sample.catalog",
             version="0.4.0",
             name="Sample Catalog",
             build_digest=TEST_PLUGIN_DIGEST,
-        ).to_dict()
+        ).to_release_dict()
     )
-    store.stage_plugin_release(
+    store.stage_extension_release(
         "sample.catalog",
         "0.4.0",
         actor_id="test:trusted-fixture",
@@ -127,7 +127,7 @@ def test_agent_revision_requires_exact_active_plugin_release(tmp_path: Path) -> 
     )
     store.save_agent_revision(definition, pinned)
     restored = store.get_agent_revision("researcher:v1")
-    assert restored and restored.plugin_requirements == pinned.plugin_requirements
+    assert restored and restored.extension_requirements == pinned.extension_requirements
 
 
 def test_draft_can_be_published_and_published_revision_is_immutable(
@@ -262,7 +262,7 @@ def test_run_snapshot_freezes_agent_revision_and_skill_bindings(tmp_path: Path) 
 @pytest.mark.postgres
 def test_postgres_run_snapshot_round_trip() -> None:
     database_url = require_postgres()
-    from porthouse.storage.postgres_store import PostgresRuntimeStore
+    from joyhousebot.storage.postgres_store import PostgresRuntimeStore
 
     store = PostgresRuntimeStore(database_url, application_name="test-agent-snapshot")
     run_id = f"agent-snapshot-{uuid4().hex}"

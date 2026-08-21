@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from porthouse.api.app import create_app
-from porthouse.application.app_packs import AppPackService
-from porthouse.bootstrap.container import build_api_container
-from porthouse.config.schema import Config
+from joyhousebot.api.app import create_app
+from joyhousebot.application.app_releases import AppReleaseService
+from joyhousebot.bootstrap.container import build_api_container
+from joyhousebot.config.schema import Config
 from tests.support.postgres_store import PostgresTestStore
 
 
@@ -21,7 +21,7 @@ def _headers(token: str) -> dict[str, str]:
 
 def _user(store: PostgresTestStore, user_id: str) -> dict[str, str]:
     token = f"token-{user_id}"
-    store.create_api_access_token(user_id=user_id, actor_id="test", token=token)
+    store.create_operator_access_token(user_id=user_id, actor_id="test", token=token)
     return _headers(token)
 
 
@@ -58,12 +58,12 @@ def _consumer_manifest() -> dict:
         "version": "1.0.0",
         "name": "Content Studio",
         "description": "Turns approved research into a content production plan.",
-        "publisher": "Porthouse",
-        "core": {"min_version": "0.1.2"},
+        "publisher": "joyhousebot",
+        "core": {"min_version": "2.0.0"},
         "extensions": [],
         "capabilities": [],
         "assets": {"agents": [], "teams": [], "skills": [], "workflows": [], "scenarios": []},
-        "integrations": [],
+        "connections": [],
         "permissions": ["work_handoffs.read", "work_handoffs.write"],
         "secrets": [],
         "work_consumers": [
@@ -109,7 +109,7 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
     container = build_api_container(config=Config(), store=store)
     with TestClient(create_app(container)) as client:
         foreign = client.post(
-            "/v1/works",
+            "/control/v1/works",
             headers=owner,
             json={
                 "run_id": "foreign-run",
@@ -120,7 +120,7 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         assert foreign.status_code == 404
 
         created = client.post(
-            "/v1/works",
+            "/control/v1/works",
             headers={**owner, "Idempotency-Key": "first-work"},
             json={
                 "run_id": "work-run-v1",
@@ -137,13 +137,10 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         assert work["published_version"] is None
         assert work["version"]["source_artifact_sha256"]
         assert work["version"]["evidence_manifest_sha256"]
-        assert (
-            work["version"]["evidence_manifest"]["artifact"]["artifact_id"]
-            == "work-artifact-v1"
-        )
+        assert work["version"]["evidence_manifest"]["artifact"]["artifact_id"] == "work-artifact-v1"
 
         unsafe_publish = client.patch(
-            f"/v1/works/{work_id}",
+            f"/control/v1/works/{work_id}",
             headers=owner,
             json={"status": "published", "visibility": "public"},
         )
@@ -151,7 +148,7 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         assert "classification" in unsafe_publish.text
 
         published = client.patch(
-            f"/v1/works/{work_id}",
+            f"/control/v1/works/{work_id}",
             headers=owner,
             json={
                 "status": "published",
@@ -161,7 +158,7 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         )
         assert published.status_code == 200, published.text
         assert published.json()["published_version"] == 1
-        public_v1 = client.get(f"/v1/public/works/{slug}")
+        public_v1 = client.get(f"/shares/v1/works/{slug}")
         assert public_v1.status_code == 200
         assert public_v1.json()["version"] == 1
         assert "evidence_manifest" not in public_v1.json()
@@ -169,15 +166,15 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         assert "source_run_id" not in public_v1.json()
 
         shared = client.post(
-            f"/v1/works/{work_id}/shares",
+            f"/control/v1/works/{work_id}/shares",
             headers=owner,
             json={"permission": "download", "expires_in_seconds": 3600},
         )
         assert shared.status_code == 201, shared.text
         token = shared.json()["token"]
         share_id = shared.json()["share_id"]
-        assert client.get(f"/v1/public/shares/{token}").json()["permission"] == "download"
-        listed_shares = client.get(f"/v1/works/{work_id}/shares", headers=owner)
+        assert client.get(f"/shares/v1/tokens/{token}").json()["permission"] == "download"
+        listed_shares = client.get(f"/control/v1/works/{work_id}/shares", headers=owner)
         assert token not in listed_shares.text
         with store._pool.connection() as conn:
             persisted = conn.execute(
@@ -187,13 +184,13 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         assert persisted["token_hash"] != token
 
         granted = client.put(
-            f"/v1/works/{work_id}/collaborators/work-editor",
+            f"/control/v1/works/{work_id}/collaborators/work-editor",
             headers=owner,
             json={"role": "editor"},
         )
         assert granted.status_code == 200, granted.text
         new_version = client.post(
-            f"/v1/works/{work_id}/versions",
+            f"/control/v1/works/{work_id}/versions",
             headers=collaborator,
             json={
                 "run_id": "work-run-v2",
@@ -207,43 +204,41 @@ def test_work_versions_publication_sharing_revocation_and_audit(tmp_path: Path) 
         assert new_version.json()["status"] == "draft"
 
         # A new draft does not destroy the prior published outcome or pinned share.
-        assert client.get(f"/v1/public/works/{slug}").json()["version"] == 1
-        assert client.get(f"/v1/public/shares/{token}").json()["version"] == 1
+        assert client.get(f"/shares/v1/works/{slug}").json()["version"] == 1
+        assert client.get(f"/shares/v1/tokens/{token}").json()["version"] == 1
         forbidden_publish = client.patch(
-            f"/v1/works/{work_id}",
+            f"/control/v1/works/{work_id}",
             headers=collaborator,
             json={"status": "published"},
         )
         assert forbidden_publish.status_code == 404
 
         republished = client.patch(
-            f"/v1/works/{work_id}",
+            f"/control/v1/works/{work_id}",
             headers=owner,
             json={"status": "published"},
         )
         assert republished.status_code == 200
         assert republished.json()["published_version"] == 2
-        assert client.get(f"/v1/public/works/{slug}").json()["version"] == 2
-        assert client.get(f"/v1/public/shares/{token}").json()["version"] == 1
+        assert client.get(f"/shares/v1/works/{slug}").json()["version"] == 2
+        assert client.get(f"/shares/v1/tokens/{token}").json()["version"] == 1
 
         revoked = client.post(
-            f"/v1/works/{work_id}/shares/{share_id}/revoke", headers=owner
+            f"/control/v1/works/{work_id}/shares/{share_id}/revoke", headers=owner
         )
         assert revoked.status_code == 200
-        assert client.get(f"/v1/public/shares/{token}").status_code == 404
+        assert client.get(f"/shares/v1/tokens/{token}").status_code == 404
 
-        collaborators = client.get(
-            f"/v1/works/{work_id}/collaborators", headers=owner
-        )
+        collaborators = client.get(f"/control/v1/works/{work_id}/collaborators", headers=owner)
         assert collaborators.json()["items"][0]["user_id"] == "work-editor"
         removed = client.delete(
-            f"/v1/works/{work_id}/collaborators/work-editor", headers=owner
+            f"/control/v1/works/{work_id}/collaborators/work-editor", headers=owner
         )
         assert removed.status_code == 204
-        assert client.get(f"/v1/works/{work_id}", headers=collaborator).status_code == 404
-        assert client.get(f"/v1/works/{work_id}", headers=stranger).status_code == 404
+        assert client.get(f"/control/v1/works/{work_id}", headers=collaborator).status_code == 404
+        assert client.get(f"/control/v1/works/{work_id}", headers=stranger).status_code == 404
 
-        audit = client.get(f"/v1/works/{work_id}/audit", headers=owner)
+        audit = client.get(f"/control/v1/works/{work_id}/audit", headers=owner)
         event_types = {item["event_type"] for item in audit.json()["items"]}
         assert {
             "work.created",
@@ -281,7 +276,7 @@ def test_uri_artifact_requires_content_digest_and_object_version_for_work(
     container = build_api_container(config=Config(), store=store)
     with TestClient(create_app(container)) as client:
         response = client.post(
-            "/v1/works",
+            "/control/v1/works",
             headers=owner,
             json={
                 "run_id": "work-uri-run",
@@ -296,12 +291,12 @@ def test_uri_artifact_requires_content_digest_and_object_version_for_work(
 @pytest.mark.asyncio
 async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Path) -> None:
     store = PostgresTestStore(tmp_path / "work-handoff.db")
-    app_packs = AppPackService(store)
-    await app_packs.save_draft(_consumer_manifest(), actor_id="admin")
-    await app_packs.publish(
+    app_releases = AppReleaseService(store)
+    await app_releases.save_draft(_consumer_manifest(), actor_id="admin")
+    await app_releases.publish(
         "app.content-studio", "1.0.0", actor_id="admin", user_id="handoff-owner"
     )
-    installation = await app_packs.install(
+    installation = await app_releases.install(
         "app.content-studio",
         "1.0.0",
         user_id="handoff-owner",
@@ -309,7 +304,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         configuration={},
         granted_permissions=["work_handoffs.read", "work_handoffs.write"],
     )
-    installation = await app_packs.transition(
+    installation = await app_releases.transition(
         installation["installation_id"],
         user_id="handoff-owner",
         actor_id="admin",
@@ -326,7 +321,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
     container = build_api_container(config=Config(), store=store)
     with TestClient(create_app(container)) as client:
         work = client.post(
-            "/v1/works",
+            "/control/v1/works",
             headers={**owner, "Idempotency-Key": "handoff-work"},
             json={
                 "run_id": "handoff-run",
@@ -337,7 +332,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         assert work.status_code == 201, work.text
         work_id = work.json()["work_id"]
 
-        consumers = client.get(f"/v1/works/{work_id}/consumers", headers=owner)
+        consumers = client.get(f"/control/v1/works/{work_id}/consumers", headers=owner)
         assert consumers.status_code == 200, consumers.text
         assert consumers.json()["items"] == [
             {
@@ -359,7 +354,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
             "purpose": "create_content_plan",
         }
         handoff = client.post(
-            f"/v1/works/{work_id}/handoffs",
+            f"/control/v1/works/{work_id}/handoffs",
             headers={**owner, "Idempotency-Key": "handoff-once"},
             json=payload,
         )
@@ -368,7 +363,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         assert handoff_value["status"] == "authorized"
         assert handoff_value["work_version"] == 1
         duplicate = client.post(
-            f"/v1/works/{work_id}/handoffs",
+            f"/control/v1/works/{work_id}/handoffs",
             headers={**owner, "Idempotency-Key": "handoff-once"},
             json=payload,
         )
@@ -399,17 +394,21 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         assert issued is not None
         _, access_token = issued
         app_headers = {"Authorization": f"Bearer {access_token}"}
-        assert client.get("/v1/works", headers=app_headers).status_code == 403
-        assert client.get(
-            f"/v1/works/{work_id}/handoffs", headers=app_headers
-        ).status_code == 403
-        assert client.post(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipt",
-            headers={**owner, "Idempotency-Key": "owner-cannot-receipt"},
-            json={"status": "accepted"},
-        ).status_code == 422
+        assert client.get("/control/v1/works", headers=app_headers).status_code == 403
+        assert (
+            client.get(f"/control/v1/works/{work_id}/handoffs", headers=app_headers).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                f"/handoffs/v1/{handoff_value['handoff_id']}/receipt",
+                headers={**owner, "Idempotency-Key": "owner-cannot-receipt"},
+                json={"status": "accepted"},
+            ).status_code
+            == 422
+        )
         frozen_input = client.get(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/input", headers=app_headers
+            f"/handoffs/v1/{handoff_value['handoff_id']}/input", headers=app_headers
         )
         assert frozen_input.status_code == 200, frozen_input.text
         assert frozen_input.json()["work"]["version"]["content"] == {
@@ -418,7 +417,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         }
 
         accepted = client.post(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipt",
+            f"/handoffs/v1/{handoff_value['handoff_id']}/receipt",
             headers={**app_headers, "Idempotency-Key": "handoff-receipt"},
             json={
                 "status": "accepted",
@@ -428,7 +427,7 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         )
         assert accepted.status_code == 201, accepted.text
         receipt = client.post(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipt",
+            f"/handoffs/v1/{handoff_value['handoff_id']}/receipt",
             headers={**app_headers, "Idempotency-Key": "handoff-verified"},
             json={
                 "status": "verified",
@@ -440,19 +439,23 @@ async def test_work_handoff_pins_a_version_and_records_app_receipts(tmp_path: Pa
         assert receipt.json()["handoff"]["status"] == "verified"
         assert receipt.json()["receipt"]["external_reference"] == "content-plan-42"
         receipts = client.get(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipts", headers=owner
+            f"/handoffs/v1/{handoff_value['handoff_id']}/receipts", headers=owner
         )
         assert receipts.status_code == 200
         assert receipts.json()["items"][0]["status"] == "verified"
         app_receipts = client.get(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/receipts", headers=app_headers
+            f"/handoffs/v1/{handoff_value['handoff_id']}/receipts", headers=app_headers
         )
         assert app_receipts.status_code == 200
         assert app_receipts.json()["items"][0]["status"] == "verified"
-        assert client.get(
-            f"/v1/work-handoffs/{handoff_value['handoff_id']}/input", headers=app_headers
-        ).status_code == 404
-        audit = client.get(f"/v1/works/{work_id}/audit", headers=owner)
+        assert (
+            client.get(
+                f"/handoffs/v1/{handoff_value['handoff_id']}/input",
+                headers=app_headers,
+            ).status_code
+            == 404
+        )
+        audit = client.get(f"/control/v1/works/{work_id}/audit", headers=owner)
         assert {item["event_type"] for item in audit.json()["items"]} >= {
             "handoff.authorized",
             "handoff.input_accessed",
@@ -474,7 +477,7 @@ def test_archived_work_is_not_public_and_cannot_be_reopened(tmp_path: Path) -> N
     container = build_api_container(config=Config(), store=store)
     with TestClient(create_app(container)) as client:
         created = client.post(
-            "/v1/works",
+            "/control/v1/works",
             headers=owner,
             json={
                 "run_id": "archive-run",
@@ -485,15 +488,24 @@ def test_archived_work_is_not_public_and_cannot_be_reopened(tmp_path: Path) -> N
         ).json()
         work_id = created["work_id"]
         slug = created["public_slug"]
-        assert client.patch(
-            f"/v1/works/{work_id}",
-            headers=owner,
-            json={"status": "published", "visibility": "public"},
-        ).status_code == 200
-        assert client.patch(
-            f"/v1/works/{work_id}", headers=owner, json={"status": "archived"}
-        ).status_code == 200
-        assert client.get(f"/v1/public/works/{slug}").status_code == 404
-        assert client.patch(
-            f"/v1/works/{work_id}", headers=owner, json={"status": "published"}
-        ).status_code == 422
+        assert (
+            client.patch(
+                f"/control/v1/works/{work_id}",
+                headers=owner,
+                json={"status": "published", "visibility": "public"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.patch(
+                f"/control/v1/works/{work_id}", headers=owner, json={"status": "archived"}
+            ).status_code
+            == 200
+        )
+        assert client.get(f"/shares/v1/works/{slug}").status_code == 404
+        assert (
+            client.patch(
+                f"/control/v1/works/{work_id}", headers=owner, json={"status": "published"}
+            ).status_code
+            == 422
+        )

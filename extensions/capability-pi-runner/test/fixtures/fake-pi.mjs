@@ -4,8 +4,8 @@ import {join} from "node:path";
 const models = JSON.parse(await readFile(join(process.env.PI_CODING_AGENT_DIR, "models.json"), "utf8"));
 await writeFile(join(process.cwd(), "pi-capture.json"), JSON.stringify({
   argv: process.argv.slice(2),
-  apiKey: models.providers.porthouse.apiKey,
-  tokenAvailable: String(process.env.PORTHOUSE_MODEL_GRANT ?? "").startsWith("jhm_"),
+  apiKey: models.providers.joyhousebot.apiKey,
+  tokenAvailable: String(process.env.JOYHOUSEBOT_MODEL_GRANT ?? "").startsWith("jhm_"),
 }));
 
 let buffer = "";

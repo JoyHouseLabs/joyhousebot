@@ -1,13 +1,16 @@
 # OpenCLI Capability Extension
 
-`capability-opencli` 是官方 Node Invocation Extension。它把 OpenCLI 的明确网站命令编译成 Porthouse
+`capability-opencli` 是官方 Node Invocation Extension。它把 OpenCLI 的明确网站命令编译成 joyhousebot
 Capability，不暴露任意命令字符串、argv、Shell、动态插件安装或任意 URL。
 
 ## 冻结发布
 
 发布者必须准备精确版本的上游 `cli-manifest.json` 和人工审核后的 allowlist；仓库中的
-`catalog/allowlist.pilot.json` 准入 GitHub/X 试点命令，以及只读的微信公众号搜索与文章 Markdown
-导入。再运行：
+`catalog/allowlist.pilot.json` 准入 GitHub/X 试点命令、只读的小红书账号内容采集，以及微信公众号搜索与文章 Markdown
+导入。OpenCLI 的语义账号快照仅保留为可选适配示例，不进入默认 Pilot；JoyHouse 的小红书账号采集
+由独立 Python Social Browser Connector 承担。若显式启用该示例，它只接受账号 ID 或
+`www.xiaohongshu.com/user/profile/...`，并在 Catalog 与 Worker
+两层强制每次 1–20 条。再运行：
 
 ```bash
 npm ci
@@ -48,8 +51,9 @@ Worker 启动时逐字匹配 Catalog 中的 Node 版本。Desktop 使用仓库
 `hosts/node/runtime-lock.json` 固定的 Node 24.19.0 LTS，不依赖用户全局 Node/npm。OpenCLI 固定为 1.8.6，
 升级必须重新编译 Catalog、形成新的 Host/Capability Revision 并经过 preflight 与 Worker ACK。
 
-每个浏览器命令必须传入明确 `browser_profile_ref`。Cookie 和 Chrome Profile 内容只留在本机；Runtime
-只持久化引用。读操作的临时失败最多恢复三次，写操作在不确定边界失败时进入人工复核，绝不自动重放。
+每个浏览器命令必须传入明确 `browser_profile_ref`。传入 `auto` 时仅在恰好一个 Browser Bridge
+Profile 在线时由 OpenCLI 自动选择；零个或多个 Profile 都会失败关闭。Cookie 和 Chrome Profile 内容只留在本机；
+Runtime 只持久化引用。读操作的临时失败最多恢复三次，写操作在不确定边界失败时进入人工复核，绝不自动重放。
 
 本机预检：
 

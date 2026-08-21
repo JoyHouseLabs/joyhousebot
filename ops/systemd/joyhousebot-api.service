@@ -1,0 +1,30 @@
+[Unit]
+Description=joyhousebot API gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated non-root service account, matching the non-root Dockerfile
+# hardening. Create it and grant install/data paths before enabling:
+#   useradd --system --home-dir /var/lib/joyhousebot --shell /usr/sbin/nologin joyhousebot
+#   install -d -o joyhousebot -g joyhousebot /var/lib/joyhousebot
+#   chown -R joyhousebot:joyhousebot /opt/joyhousebot
+User=joyhousebot
+Group=joyhousebot
+WorkingDirectory=/opt/joyhousebot
+Environment=JOYHOUSEBOT_CONFIG_PATH=/opt/joyhousebot/config.json
+EnvironmentFile=/etc/joyhousebot/joyhousebot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/joyhousebot/.venv/bin/joyhousebot api --surface combined --config /opt/joyhousebot/config.json --host 127.0.0.1 --port 18790
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/joyhousebot /var/lib/joyhousebot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,8 +1,8 @@
-from porthouse_capability_media_monitor.feed import new_entries, next_cursor, parse_feed
-from porthouse_capability_media_monitor.plugin import MediaMonitorPlugin
+from joyhousebot_capability_media_monitor.extension import MediaMonitorExtension
+from joyhousebot_capability_media_monitor.feed import new_entries, next_cursor, parse_feed
 
-from porthouse.capabilities import CapabilityPluginRegistry
-from porthouse.contracts import CapabilityContext
+from joyhousebot.capabilities import CapabilityExtensionRegistry
+from joyhousebot.contracts import CapabilityContext
 
 RSS = """<?xml version="1.0"?>
 <rss><channel><title>News</title>
@@ -12,12 +12,12 @@ RSS = """<?xml version="1.0"?>
 
 
 def test_media_monitor_registers_a_scoped_read_capability() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(MediaMonitorPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(MediaMonitorExtension())
     definition, _ = registry.get("media.feed.read", "0.1.0")
     assert definition.permissions == ("network.http.read",)
     assert definition.side_effect == "read"
-    assert definition.ref.plugin_id == "capability-media-monitor"
+    assert definition.ref.extension_id == "capability-media-monitor"
 
 
 def test_rss_parser_generates_stable_identities_and_cursor() -> None:
@@ -33,8 +33,8 @@ def test_rss_parser_generates_stable_identities_and_cursor() -> None:
 
 
 async def test_media_monitor_requires_the_network_permission() -> None:
-    registry = CapabilityPluginRegistry()
-    registry.register_plugin(MediaMonitorPlugin())
+    registry = CapabilityExtensionRegistry()
+    registry.register_extension(MediaMonitorExtension())
     result = await registry.invoke(
         "media.feed.read",
         {"feed_url": "https://example.com/feed.xml"},
